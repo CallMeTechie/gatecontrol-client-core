@@ -16,10 +16,11 @@ const CHECK_DELAY = 10000;       // 10s nach App-Start
 const CHECK_INTERVAL = 21600000; // 6 Stunden
 
 class Updater {
-  constructor({ serverUrl, apiKey, log }) {
+  constructor({ serverUrl, apiKey, log, clientType = 'community' }) {
     this.log = log;
     this.serverUrl = serverUrl;
     this.apiKey = apiKey;
+    this.clientType = clientType;
     this.currentVersion = app.getVersion();
     this.downloadPath = null;
     this.latestRelease = null;
@@ -80,10 +81,11 @@ class Updater {
       this.log.info(`Update-Check: ${url} (aktuelle Version: ${this.currentVersion})`);
 
       const res = await axios.get(url, {
-        params: { version: this.currentVersion, platform: 'windows' },
+        params: { version: this.currentVersion, platform: 'windows', client: this.clientType },
         headers: {
           'X-API-Token': this.apiKey,
           'X-Client-Platform': 'windows',
+          'X-Client-Type': this.clientType,
         },
         timeout: 15000,
       });
