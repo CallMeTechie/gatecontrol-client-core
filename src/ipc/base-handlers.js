@@ -10,8 +10,7 @@
 
 'use strict';
 
-const { i18n } = require('../i18n');
-const { t } = i18n;
+const { t } = require('../i18n');
 
 // Config keys the renderer is allowed to write
 const CONFIG_WRITABLE_KEYS = new Set([
