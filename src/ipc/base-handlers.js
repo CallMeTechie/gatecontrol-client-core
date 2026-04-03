@@ -10,6 +10,9 @@
 
 'use strict';
 
+const { i18n } = require('../i18n');
+const { t } = i18n;
+
 // Config keys the renderer is allowed to write
 const CONFIG_WRITABLE_KEYS = new Set([
   'app.startMinimized', 'app.startWithWindows', 'app.theme',
@@ -143,10 +146,10 @@ function registerBaseHandlers(ipcMain, ctx) {
   ipcMain.handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'WireGuard-Konfiguration importieren',
+      title: t('dialog.importTitle'),
       filters: [
-        { name: 'WireGuard Config', extensions: ['conf'] },
-        { name: 'Alle Dateien', extensions: ['*'] },
+        { name: t('dialog.filterConfig'), extensions: ['conf'] },
+        { name: t('dialog.filterAll'), extensions: ['*'] },
       ],
       properties: ['openFile'],
     });
@@ -169,7 +172,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       const { data, width, height } = imageData;
       const code = jsQR(new Uint8ClampedArray(data), width, height);
 
-      if (!code) return { success: false, error: 'Kein QR-Code erkannt' };
+      if (!code) return { success: false, error: t('server.qrTimeout') };
 
       await wgService.writeConfig(wgConfigFile, code.data);
       return { success: true, config: code.data };
@@ -218,7 +221,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       const lines = content.split('\n').slice(-200);
       return lines.join('\n');
     } catch {
-      return 'Keine Logs verfügbar';
+      return t('logs.empty');
     }
   });
 }
