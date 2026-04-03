@@ -20,6 +20,9 @@ const { getMachineFingerprint } = require('./utils/machine-id');
 const { createLogger } = require('./utils/logger');
 const { createStores } = require('./utils/store');
 
+// ── i18n ──────────────────────────────────────────────────
+const i18n = require('./i18n');
+
 // ── IPC ─────────────────────────────────────────────────────
 const { registerBaseHandlers } = require('./ipc/base-handlers');
 
@@ -45,4 +48,7 @@ module.exports = {
 
   // Lifecycle
   setupAppLifecycle,
+
+  // i18n
+  i18n,
 };

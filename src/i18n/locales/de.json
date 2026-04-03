@@ -1,0 +1,147 @@
+{
+  "nav": {
+    "status": "Status",
+    "settings": "Einstellungen",
+    "logs": "Logs"
+  },
+  "status": {
+    "connected": "Verbunden",
+    "connecting": "Verbinde...",
+    "reconnecting": "Erneut verbinden...",
+    "disconnected": "Getrennt"
+  },
+  "action": {
+    "connect": "Verbinden",
+    "disconnect": "Trennen",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "testConnection": "Verbindung testen",
+    "saveAndRegister": "Speichern & Registrieren",
+    "importFile": "Datei importieren",
+    "scanQr": "QR-Code scannen",
+    "refresh": "Aktualisieren"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "server": "Server",
+    "serverUrl": "Server-URL",
+    "apiKey": "API-Schlüssel",
+    "showApiKey": "API-Schlüssel anzeigen",
+    "importConfig": "Konfiguration importieren",
+    "splitTunnel": "Split-Tunnel",
+    "splitTunnelDesc": "Nur bestimmte Routen über VPN leiten",
+    "splitRoutesLabel": "Routen (eine pro Zeile)",
+    "splitRoutesExamples": "z. B. 10.0.0.0/8 oder 192.168.1.0/24",
+    "app": "Anwendung",
+    "autostart": "Autostart",
+    "minimized": "Minimiert starten",
+    "autoConnect": "Automatisch verbinden",
+    "checkInterval": "Prüfintervall (s)",
+    "pollInterval": "Abfrageintervall (s)",
+    "theme": "Design",
+    "language": "Sprache"
+  },
+  "stats": {
+    "endpoint": "Endpunkt",
+    "handshake": "Letzter Handshake",
+    "rx": "↓ Empfangen",
+    "tx": "↑ Gesendet",
+    "dataUsage": "Datennutzung",
+    "period24h": "24 Stunden",
+    "period7d": "7 Tage",
+    "period30d": "30 Tage",
+    "periodTotal": "Gesamt"
+  },
+  "killswitch": {
+    "label": "Kill-Switch",
+    "desc": "Internetverbindung bei VPN-Trennung blockieren"
+  },
+  "services": {
+    "title": "Erreichbare Dienste"
+  },
+  "dns": {
+    "testBtn": "DNS-Leak-Test starten",
+    "testing": "Teste DNS...",
+    "noLeak": "Kein DNS-Leak",
+    "noLeakDetail": "Ihre DNS-Anfragen werden sicher über {{ servers }} geleitet.",
+    "leak": "DNS-Leak erkannt",
+    "leakDetail": "Externe DNS-Server erkannt: {{ servers }}",
+    "testFailed": "DNS-Leak-Test fehlgeschlagen"
+  },
+  "logs": {
+    "title": "Logs",
+    "loading": "Lade Logs...",
+    "empty": "Keine Logs vorhanden"
+  },
+  "update": {
+    "title": "Update",
+    "available": "Version {{ version }} verfügbar",
+    "readyToInstall": "Update bereit zur Installation",
+    "install": "Jetzt installieren",
+    "later": "Später",
+    "checkBtn": "Nach Updates suchen",
+    "noUpdate": "Kein Update verfügbar"
+  },
+  "peer": {
+    "expired": "Peer-Zertifikat abgelaufen",
+    "expiresToday": "Peer-Zertifikat läuft heute ab",
+    "expiresInDays": "Peer-Zertifikat läuft in {{ days }} Tagen ab"
+  },
+  "tray": {
+    "openWindow": "Fenster öffnen",
+    "settings": "Einstellungen",
+    "quit": "Beenden",
+    "checkUpdate": "Nach Updates suchen",
+    "installUpdate": "Update {{ version }} installieren",
+    "connectedSince": "Verbunden seit {{ duration }}",
+    "noUpdateAvailable": "Kein Update verfügbar"
+  },
+  "notify": {
+    "connected": "VPN verbunden",
+    "disconnected": "VPN getrennt",
+    "connectionError": "Verbindungsfehler",
+    "reconnecting": "Erneut verbinden...",
+    "reconnected": "Verbindung wiederhergestellt",
+    "reconnectFailed": "Verbindung konnte nicht wiederhergestellt werden",
+    "peerExpiredTitle": "Peer-Zertifikat abgelaufen",
+    "peerExpiredBody": "Ihr Peer-Zertifikat ist abgelaufen. Bitte erneuern Sie es.",
+    "peerExpiresTodayTitle": "Peer-Zertifikat läuft heute ab",
+    "peerExpiresTodayBody": "Ihr Peer-Zertifikat läuft heute ab. Bitte erneuern Sie es.",
+    "peerExpiresSoonTitle": "Peer-Zertifikat läuft bald ab",
+    "peerExpiresSoonBody": "Ihr Peer-Zertifikat läuft in {{ days }} Tagen ab.",
+    "peerExpiryNotice": "Peer-Ablaufbenachrichtigung"
+  },
+  "server": {
+    "testInProgress": "Verbindungstest läuft...",
+    "testSuccess": "Verbindung erfolgreich",
+    "testError": "Verbindungsfehler: {{ error }}",
+    "urlAndKeyRequired": "Server-URL und API-Schlüssel erforderlich",
+    "registering": "Registriere Gerät...",
+    "registered": "Gerät registriert (Peer-ID: {{ peerId }})",
+    "configImported": "Konfiguration importiert: {{ path }}",
+    "importError": "Import fehlgeschlagen: {{ error }}",
+    "qrSuccess": "QR-Code erfolgreich gescannt",
+    "qrTimeout": "QR-Code-Scan abgelaufen",
+    "cameraError": "Kamerafehler: {{ error }}"
+  },
+  "split": {
+    "activateOnReconnect": "Split-Tunnel wird beim Neuverbinden aktiviert",
+    "fullTunnelOnReconnect": "Vollständiger Tunnel wird beim Neuverbinden aktiviert",
+    "noRoutes": "Keine Routen konfiguriert",
+    "routesSaved": "{{ count }} Route(n) gespeichert",
+    "routesSavedPending": "{{ count }} Route(n) gespeichert – wird beim Neuverbinden angewendet"
+  },
+  "dialog": {
+    "importTitle": "Konfiguration importieren",
+    "filterConfig": "Konfigurationsdateien",
+    "filterAll": "Alle Dateien"
+  },
+  "titlebar": {
+    "minimize": "Minimieren",
+    "close": "In Tray minimieren"
+  },
+  "locale": {
+    "de": "Deutsch",
+    "en": "English"
+  }
+}

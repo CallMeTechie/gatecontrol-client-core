@@ -1,0 +1,147 @@
+{
+  "nav": {
+    "status": "Status",
+    "settings": "Settings",
+    "logs": "Logs"
+  },
+  "status": {
+    "connected": "Connected",
+    "connecting": "Connecting...",
+    "reconnecting": "Reconnecting...",
+    "disconnected": "Disconnected"
+  },
+  "action": {
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "save": "Save",
+    "cancel": "Cancel",
+    "testConnection": "Test Connection",
+    "saveAndRegister": "Save & Register",
+    "importFile": "Import File",
+    "scanQr": "Scan QR Code",
+    "refresh": "Refresh"
+  },
+  "settings": {
+    "title": "Settings",
+    "server": "Server",
+    "serverUrl": "Server URL",
+    "apiKey": "API Key",
+    "showApiKey": "Show API Key",
+    "importConfig": "Import Configuration",
+    "splitTunnel": "Split Tunnel",
+    "splitTunnelDesc": "Route only specific traffic through VPN",
+    "splitRoutesLabel": "Routes (one per line)",
+    "splitRoutesExamples": "e.g. 10.0.0.0/8 or 192.168.1.0/24",
+    "app": "Application",
+    "autostart": "Autostart",
+    "minimized": "Start minimized",
+    "autoConnect": "Auto connect",
+    "checkInterval": "Check interval (s)",
+    "pollInterval": "Poll interval (s)",
+    "theme": "Theme",
+    "language": "Language"
+  },
+  "stats": {
+    "endpoint": "Endpoint",
+    "handshake": "Last handshake",
+    "rx": "↓ Received",
+    "tx": "↑ Sent",
+    "dataUsage": "Data usage",
+    "period24h": "24 hours",
+    "period7d": "7 days",
+    "period30d": "30 days",
+    "periodTotal": "Total"
+  },
+  "killswitch": {
+    "label": "Kill Switch",
+    "desc": "Block internet connection when VPN disconnects"
+  },
+  "services": {
+    "title": "Reachable Services"
+  },
+  "dns": {
+    "testBtn": "Run DNS Leak Test",
+    "testing": "Testing DNS...",
+    "noLeak": "No DNS Leak",
+    "noLeakDetail": "Your DNS requests are securely routed through {{ servers }}.",
+    "leak": "DNS Leak Detected",
+    "leakDetail": "External DNS servers detected: {{ servers }}",
+    "testFailed": "DNS leak test failed"
+  },
+  "logs": {
+    "title": "Logs",
+    "loading": "Loading logs...",
+    "empty": "No logs available"
+  },
+  "update": {
+    "title": "Update",
+    "available": "Version {{ version }} available",
+    "readyToInstall": "Update ready to install",
+    "install": "Install now",
+    "later": "Later",
+    "checkBtn": "Check for updates",
+    "noUpdate": "No update available"
+  },
+  "peer": {
+    "expired": "Peer certificate expired",
+    "expiresToday": "Peer certificate expires today",
+    "expiresInDays": "Peer certificate expires in {{ days }} days"
+  },
+  "tray": {
+    "openWindow": "Open window",
+    "settings": "Settings",
+    "quit": "Quit",
+    "checkUpdate": "Check for updates",
+    "installUpdate": "Install update {{ version }}",
+    "connectedSince": "Connected since {{ duration }}",
+    "noUpdateAvailable": "No update available"
+  },
+  "notify": {
+    "connected": "VPN connected",
+    "disconnected": "VPN disconnected",
+    "connectionError": "Connection error",
+    "reconnecting": "Reconnecting...",
+    "reconnected": "Connection restored",
+    "reconnectFailed": "Failed to restore connection",
+    "peerExpiredTitle": "Peer certificate expired",
+    "peerExpiredBody": "Your peer certificate has expired. Please renew it.",
+    "peerExpiresTodayTitle": "Peer certificate expires today",
+    "peerExpiresTodayBody": "Your peer certificate expires today. Please renew it.",
+    "peerExpiresSoonTitle": "Peer certificate expiring soon",
+    "peerExpiresSoonBody": "Your peer certificate expires in {{ days }} days.",
+    "peerExpiryNotice": "Peer expiry notice"
+  },
+  "server": {
+    "testInProgress": "Testing connection...",
+    "testSuccess": "Connection successful",
+    "testError": "Connection error: {{ error }}",
+    "urlAndKeyRequired": "Server URL and API key are required",
+    "registering": "Registering device...",
+    "registered": "Device registered (Peer ID: {{ peerId }})",
+    "configImported": "Configuration imported: {{ path }}",
+    "importError": "Import failed: {{ error }}",
+    "qrSuccess": "QR code scanned successfully",
+    "qrTimeout": "QR code scan timed out",
+    "cameraError": "Camera error: {{ error }}"
+  },
+  "split": {
+    "activateOnReconnect": "Split tunnel will be activated on reconnect",
+    "fullTunnelOnReconnect": "Full tunnel will be activated on reconnect",
+    "noRoutes": "No routes configured",
+    "routesSaved": "{{ count }} route(s) saved",
+    "routesSavedPending": "{{ count }} route(s) saved – will be applied on reconnect"
+  },
+  "dialog": {
+    "importTitle": "Import Configuration",
+    "filterConfig": "Configuration files",
+    "filterAll": "All files"
+  },
+  "titlebar": {
+    "minimize": "Minimize",
+    "close": "Minimize to tray"
+  },
+  "locale": {
+    "de": "Deutsch",
+    "en": "English"
+  }
+}
