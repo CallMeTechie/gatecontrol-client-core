@@ -16,11 +16,14 @@ const CHECK_DELAY = 10000;       // 10s nach App-Start
 const CHECK_INTERVAL = 21600000; // 6 Stunden
 
 class Updater {
-  constructor({ serverUrl, apiKey, log, clientType = 'community' }) {
+  constructor({ serverUrl, apiKey, log, clientType }) {
     this.log = log;
     this.serverUrl = serverUrl;
     this.apiKey = apiKey;
-    this.clientType = clientType;
+    // Auto-detect aus app.name falls nicht explizit gesetzt
+    const appName = (app.getName() || '').toLowerCase();
+    this.clientType = clientType || (appName.includes('pro') ? 'pro' : 'community');
+    this.appName = app.getName() || '';
     this.currentVersion = app.getVersion();
     this.downloadPath = null;
     this.latestRelease = null;
@@ -86,6 +89,7 @@ class Updater {
           'X-API-Token': this.apiKey,
           'X-Client-Platform': 'windows',
           'X-Client-Type': this.clientType,
+          'X-Client-Name': this.appName,
         },
         timeout: 15000,
       });
