@@ -45,12 +45,14 @@ class KillSwitch {
 
     let endpoint = null;
     let vpnSubnet = null;
+    let vpnLocalIp = null;
 
     try {
       const config = await fs.readFile(configPath, 'utf-8');
       const parsed = this._parseConfig(config);
       endpoint = parsed.endpoint;
       vpnSubnet = parsed.vpnSubnet;
+      vpnLocalIp = parsed.vpnLocalIp;
     } catch (err) {
       this.log.warn('Config konnte nicht geparst werden:', err.message);
     }
@@ -113,6 +115,17 @@ class KillSwitch {
           dir: 'out',
           action: 'allow',
           remoteip: vpnSubnet,
+        });
+      }
+
+      // 4b. ALLOW: Allen ausgehenden Traffic von der lokalen VPN-IP
+      //     (erlaubt Internet-Traffic durch den WireGuard-Tunnel)
+      if (vpnLocalIp) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_VPN_Out`,
+          dir: 'out',
+          action: 'allow',
+          localip: vpnLocalIp,
         });
       }
 
@@ -236,7 +249,7 @@ class KillSwitch {
   /**
    * Firewall-Regel hinzufügen (alle Werte validiert)
    */
-  async _addRule({ name, dir, action, protocol, remoteip, remoteport, localport }) {
+  async _addRule({ name, dir, action, protocol, remoteip, remoteport, localip, localport }) {
     const args = ['advfirewall', 'firewall', 'add', 'rule',
       `name=${name}`,
       `dir=${dir}`,
@@ -244,6 +257,10 @@ class KillSwitch {
       `protocol=${protocol || 'any'}`,
     ];
 
+    if (localip) {
+      validateIp(localip);
+      args.push(`localip=${localip}`);
+    }
     if (remoteip) {
       if (remoteip !== 'any') {
         if (remoteip.includes('/')) validateCidr(remoteip);
@@ -274,6 +291,7 @@ class KillSwitch {
       `${this.rulePrefix}_Allow_WG_Endpoint`,
       `${this.rulePrefix}_Allow_API`,
       `${this.rulePrefix}_Allow_VPN_Subnet`,
+      `${this.rulePrefix}_Allow_VPN_Out`,
       `${this.rulePrefix}_Allow_VPN_DNS`,
       `${this.rulePrefix}_Allow_VPN_DNS_TCP`,
       `${this.rulePrefix}_Allow_VPN_In`,
@@ -297,6 +315,7 @@ class KillSwitch {
   _parseConfig(content) {
     let endpoint = null;
     let vpnSubnet = null;
+    let vpnLocalIp = null;
 
     const PORT_RE = /^\d{1,5}$/;
 
@@ -317,6 +336,7 @@ class KillSwitch {
         const cidr = addrMatch[1].trim().split(',')[0].trim();
         const parts = cidr.split('/');
         if (parts.length === 2 && IPV4_RE.test(parts[0])) {
+          vpnLocalIp = parts[0];
           const ip = parts[0].split('.');
           const mask = parseInt(parts[1], 10);
           if (mask >= 0 && mask <= 32) {
@@ -327,7 +347,7 @@ class KillSwitch {
       }
     }
 
-    return { endpoint, vpnSubnet };
+    return { endpoint, vpnSubnet, vpnLocalIp };
   }
 }
 
