@@ -67,54 +67,14 @@ class KillSwitch {
     try {
       await this._removeAllRules();
 
-      // Aktuelle Firewall-Policy speichern, dann auf Block setzen
+      // Aktuelle Firewall-Policy speichern
       this._savedPolicy = await this._getCurrentPolicy();
-      await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,blockoutbound');
-      this.log.info('Firewall Default-Policy auf Block gesetzt');
 
-      // 1. ALLOW: Loopback
-      await this._addRule({
-        name: `${this.rulePrefix}_Allow_Loopback`,
-        dir: 'out',
-        action: 'allow',
-        remoteip: '127.0.0.0/8',
-      });
+      // WICHTIG: Alle Allow-Regeln ZUERST erstellen, DANN Block-Policy setzen.
+      // Verhindert Race Condition: Ohne Regeln würde Block-Policy den
+      // WireGuard-Tunnel sofort unterbrechen (Keepalives geblockt → Tunnel stirbt).
 
-      // 2. ALLOW: Lokales Netzwerk (private Subnetze)
-      for (const subnet of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
-        await this._addRule({
-          name: `${this.rulePrefix}_Allow_LAN_${subnet.replace(/[./]/g, '_')}`,
-          dir: 'out',
-          action: 'allow',
-          remoteip: subnet,
-        });
-      }
-
-      // 2b. ALLOW: Physisches Netzwerk-Subnetz (z.B. öffentliche OVH-IPs)
-      const localSubnets = this._getLocalSubnets(vpnLocalIp);
-      this._localSubnetRuleNames = [];
-      for (const subnet of localSubnets) {
-        const ruleSuffix = subnet.replace(/[./]/g, '_');
-        const outName = `${this.rulePrefix}_Allow_PhysNet_${ruleSuffix}`;
-        const inName = `${this.rulePrefix}_Allow_PhysNet_In_${ruleSuffix}`;
-        this._localSubnetRuleNames.push(outName, inName);
-
-        await this._addRule({
-          name: outName,
-          dir: 'out',
-          action: 'allow',
-          remoteip: subnet,
-        });
-        await this._addRule({
-          name: inName,
-          dir: 'in',
-          action: 'allow',
-          remoteip: subnet,
-        });
-        this.log.info(`Physisches Subnetz erlaubt: ${subnet}`);
-      }
-
-      // 3. ALLOW: WireGuard Endpoint (UDP zum VPN-Server)
+      // 1. ALLOW: WireGuard Endpoint (UDP zum VPN-Server) — ZUERST!
       await this._addRule({
         name: `${this.rulePrefix}_Allow_WG_Endpoint`,
         dir: 'out',
@@ -124,7 +84,17 @@ class KillSwitch {
         protocol: 'udp',
       });
 
-      // 3b. ALLOW: GateControl API (TCP/HTTPS zum Server)
+      // 1b. ALLOW: Eingehend vom WireGuard Endpoint (UDP-Antworten)
+      await this._addRule({
+        name: `${this.rulePrefix}_Allow_WG_Endpoint_In`,
+        dir: 'in',
+        action: 'allow',
+        remoteip: endpoint.host,
+        remoteport: endpoint.port,
+        protocol: 'udp',
+      });
+
+      // 2. ALLOW: GateControl API (TCP/HTTPS zum Server)
       await this._addRule({
         name: `${this.rulePrefix}_Allow_API`,
         dir: 'out',
@@ -134,17 +104,7 @@ class KillSwitch {
         protocol: 'tcp',
       });
 
-      // 4. ALLOW: VPN-Subnetz
-      if (vpnSubnet) {
-        await this._addRule({
-          name: `${this.rulePrefix}_Allow_VPN_Subnet`,
-          dir: 'out',
-          action: 'allow',
-          remoteip: vpnSubnet,
-        });
-      }
-
-      // 4b. ALLOW: Allen ausgehenden Traffic von der lokalen VPN-IP
+      // 3. ALLOW: Allen ausgehenden Traffic von der lokalen VPN-IP
       //     (erlaubt Internet-Traffic durch den WireGuard-Tunnel)
       if (vpnLocalIp) {
         await this._addRule({
@@ -152,6 +112,16 @@ class KillSwitch {
           dir: 'out',
           action: 'allow',
           localip: vpnLocalIp,
+        });
+      }
+
+      // 4. ALLOW: VPN-Subnetz
+      if (vpnSubnet) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_VPN_Subnet`,
+          dir: 'out',
+          action: 'allow',
+          remoteip: vpnSubnet,
         });
       }
 
@@ -175,17 +145,7 @@ class KillSwitch {
         });
       }
 
-      // 6. ALLOW: DHCP
-      await this._addRule({
-        name: `${this.rulePrefix}_Allow_DHCP`,
-        dir: 'out',
-        action: 'allow',
-        protocol: 'udp',
-        localport: '68',
-        remoteport: '67',
-      });
-
-      // 7. ALLOW: Eingehender Traffic vom VPN-Subnetz
+      // 6. ALLOW: Eingehender Traffic vom VPN-Subnetz
       if (vpnSubnet) {
         await this._addRule({
           name: `${this.rulePrefix}_Allow_VPN_In`,
@@ -195,7 +155,13 @@ class KillSwitch {
         });
       }
 
-      // 8. ALLOW: Eingehender Loopback
+      // 7. ALLOW: Loopback
+      await this._addRule({
+        name: `${this.rulePrefix}_Allow_Loopback`,
+        dir: 'out',
+        action: 'allow',
+        remoteip: '127.0.0.0/8',
+      });
       await this._addRule({
         name: `${this.rulePrefix}_Allow_Loopback_In`,
         dir: 'in',
@@ -203,8 +169,14 @@ class KillSwitch {
         remoteip: '127.0.0.0/8',
       });
 
-      // 9. ALLOW: Eingehender LAN-Traffic
+      // 8. ALLOW: Lokales Netzwerk (private Subnetze)
       for (const subnet of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_LAN_${subnet.replace(/[./]/g, '_')}`,
+          dir: 'out',
+          action: 'allow',
+          remoteip: subnet,
+        });
         await this._addRule({
           name: `${this.rulePrefix}_Allow_LAN_In_${subnet.replace(/[./]/g, '_')}`,
           dir: 'in',
@@ -212,6 +184,44 @@ class KillSwitch {
           remoteip: subnet,
         });
       }
+
+      // 9. ALLOW: Physisches Netzwerk-Subnetz (z.B. andere VMs auf OVH)
+      const localSubnets = this._getLocalSubnets(vpnLocalIp);
+      this._localSubnetRuleNames = [];
+      for (const subnet of localSubnets) {
+        const ruleSuffix = subnet.replace(/[./]/g, '_');
+        const outName = `${this.rulePrefix}_Allow_PhysNet_${ruleSuffix}`;
+        const inName = `${this.rulePrefix}_Allow_PhysNet_In_${ruleSuffix}`;
+        this._localSubnetRuleNames.push(outName, inName);
+
+        await this._addRule({
+          name: outName,
+          dir: 'out',
+          action: 'allow',
+          remoteip: subnet,
+        });
+        await this._addRule({
+          name: inName,
+          dir: 'in',
+          action: 'allow',
+          remoteip: subnet,
+        });
+        this.log.info(`Physisches Subnetz erlaubt: ${subnet}`);
+      }
+
+      // 10. ALLOW: DHCP
+      await this._addRule({
+        name: `${this.rulePrefix}_Allow_DHCP`,
+        dir: 'out',
+        action: 'allow',
+        protocol: 'udp',
+        localport: '68',
+        remoteport: '67',
+      });
+
+      // JETZT Block-Policy setzen — alle Regeln sind bereits aktiv
+      await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,blockoutbound');
+      this.log.info('Firewall Default-Policy auf Block gesetzt');
 
       this.enabled = true;
       this.log.info('Kill-Switch aktiviert');
@@ -315,6 +325,7 @@ class KillSwitch {
       `${this.rulePrefix}_Allow_Loopback`,
       `${this.rulePrefix}_Allow_Loopback_In`,
       `${this.rulePrefix}_Allow_WG_Endpoint`,
+      `${this.rulePrefix}_Allow_WG_Endpoint_In`,
       `${this.rulePrefix}_Allow_API`,
       `${this.rulePrefix}_Allow_VPN_Subnet`,
       `${this.rulePrefix}_Allow_VPN_Out`,
@@ -361,9 +372,16 @@ class KillSwitch {
 
         // Calculate subnet from IP and netmask
         const maskNum = this._ipToNum(addr.netmask);
-        const networkNum = ipNum & maskNum;
+        let prefix = this._maskToPrefix(maskNum);
+
+        // Öffentliche Subnetze auf /24 begrenzen.
+        // Windows/OVH meldet oft /8 für öffentliche IPs — das würde
+        // Millionen von IPs außerhalb des VPN erlauben und den
+        // Kill-Switch wirkungslos machen.
+        if (prefix < 24) prefix = 24;
+        const cappedMask = (0xFFFFFFFF << (32 - prefix)) >>> 0;
+        const networkNum = ipNum & cappedMask;
         const networkIp = this._numToIp(networkNum);
-        const prefix = this._maskToPrefix(maskNum);
         const cidr = `${networkIp}/${prefix}`;
 
         if (!subnets.includes(cidr)) {
@@ -419,9 +437,14 @@ class KillSwitch {
         if (parts.length === 2 && IPV4_RE.test(parts[0])) {
           vpnLocalIp = parts[0];
           const ip = parts[0].split('.');
-          const mask = parseInt(parts[1], 10);
+          let mask = parseInt(parts[1], 10);
           if (mask >= 0 && mask <= 32) {
-            if (mask <= 24) ip[3] = '0';
+            // /32 ist eine Host-Adresse, nicht das VPN-Subnetz.
+            // WireGuard vergibt /32 an Clients, das Subnetz ist aber /24.
+            // Ohne Erweiterung würden DNS-Regeln nur die eigene IP abdecken,
+            // nicht den DNS-Server (z.B. 10.8.0.1).
+            if (mask > 24) mask = 24;
+            ip[3] = '0';
             vpnSubnet = `${ip.join('.')}/${mask}`;
           }
         }
