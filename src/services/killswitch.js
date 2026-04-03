@@ -15,6 +15,7 @@
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs').promises;
+const os = require('os');
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +31,7 @@ class KillSwitch {
     this.rulePrefix = 'GateControl_KS';
     this.enabled = false;
     this._savedPolicy = null;
+    this._localSubnetRuleNames = [];
   }
 
   /**
@@ -78,7 +80,7 @@ class KillSwitch {
         remoteip: '127.0.0.0/8',
       });
 
-      // 2. ALLOW: Lokales Netzwerk
+      // 2. ALLOW: Lokales Netzwerk (private Subnetze)
       for (const subnet of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
         await this._addRule({
           name: `${this.rulePrefix}_Allow_LAN_${subnet.replace(/[./]/g, '_')}`,
@@ -86,6 +88,30 @@ class KillSwitch {
           action: 'allow',
           remoteip: subnet,
         });
+      }
+
+      // 2b. ALLOW: Physisches Netzwerk-Subnetz (z.B. öffentliche OVH-IPs)
+      const localSubnets = this._getLocalSubnets(vpnLocalIp);
+      this._localSubnetRuleNames = [];
+      for (const subnet of localSubnets) {
+        const ruleSuffix = subnet.replace(/[./]/g, '_');
+        const outName = `${this.rulePrefix}_Allow_PhysNet_${ruleSuffix}`;
+        const inName = `${this.rulePrefix}_Allow_PhysNet_In_${ruleSuffix}`;
+        this._localSubnetRuleNames.push(outName, inName);
+
+        await this._addRule({
+          name: outName,
+          dir: 'out',
+          action: 'allow',
+          remoteip: subnet,
+        });
+        await this._addRule({
+          name: inName,
+          dir: 'in',
+          action: 'allow',
+          remoteip: subnet,
+        });
+        this.log.info(`Physisches Subnetz erlaubt: ${subnet}`);
       }
 
       // 3. ALLOW: WireGuard Endpoint (UDP zum VPN-Server)
@@ -302,11 +328,66 @@ class KillSwitch {
       `${this.rulePrefix}_Allow_LAN_In_10_0_0_0_8`,
       `${this.rulePrefix}_Allow_LAN_In_172_16_0_0_12`,
       `${this.rulePrefix}_Allow_LAN_In_192_168_0_0_16`,
+      ...(this._localSubnetRuleNames || []),
     ];
 
     await Promise.all(ruleNames.map(name =>
       netsh('advfirewall', 'firewall', 'delete', 'rule', `name=${name}`).catch(() => {})
     ));
+  }
+
+  /**
+   * Lokale Netzwerk-Subnetze ermitteln (physische Interfaces, nicht VPN)
+   * Gibt CIDR-Notationen zurück für alle nicht-internen, nicht-privaten Subnetze
+   */
+  _getLocalSubnets(vpnLocalIp) {
+    const subnets = [];
+    const interfaces = os.networkInterfaces();
+    const privateRanges = [
+      { start: 0x0A000000, end: 0x0AFFFFFF },   // 10.0.0.0/8
+      { start: 0xAC100000, end: 0xAC1FFFFF },   // 172.16.0.0/12
+      { start: 0xC0A80000, end: 0xC0A8FFFF },   // 192.168.0.0/16
+      { start: 0x7F000000, end: 0x7FFFFFFF },   // 127.0.0.0/8
+    ];
+
+    for (const [, addrs] of Object.entries(interfaces)) {
+      for (const addr of addrs) {
+        if (addr.family !== 'IPv4' || addr.internal) continue;
+        if (addr.address === vpnLocalIp) continue;
+
+        const ipNum = this._ipToNum(addr.address);
+        const isPrivate = privateRanges.some(r => ipNum >= r.start && ipNum <= r.end);
+        if (isPrivate) continue; // Already covered by LAN rules
+
+        // Calculate subnet from IP and netmask
+        const maskNum = this._ipToNum(addr.netmask);
+        const networkNum = ipNum & maskNum;
+        const networkIp = this._numToIp(networkNum);
+        const prefix = this._maskToPrefix(maskNum);
+        const cidr = `${networkIp}/${prefix}`;
+
+        if (!subnets.includes(cidr)) {
+          subnets.push(cidr);
+        }
+      }
+    }
+    return subnets;
+  }
+
+  _ipToNum(ip) {
+    const parts = ip.split('.').map(Number);
+    return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+  }
+
+  _numToIp(num) {
+    return [(num >>> 24) & 0xFF, (num >>> 16) & 0xFF, (num >>> 8) & 0xFF, num & 0xFF].join('.');
+  }
+
+  _maskToPrefix(maskNum) {
+    let bits = 0;
+    let m = maskNum;
+    while (m & 0x80000000) { bits++; m = (m << 1) >>> 0; }
+    return bits;
   }
 
   /**
