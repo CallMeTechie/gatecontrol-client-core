@@ -49,6 +49,14 @@ class Updater {
   }
 
   /**
+   * Manueller Update-Check (öffentlich)
+   */
+  async check() {
+    await this._check();
+    return this.getUpdateInfo();
+  }
+
+  /**
    * Timer stoppen
    */
   stop() {

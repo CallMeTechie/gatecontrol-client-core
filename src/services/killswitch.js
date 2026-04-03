@@ -8,6 +8,8 @@
  * - GateControl Server-Kommunikation
  *
  * Implementiert über Windows Firewall (netsh advfirewall)
+ * Verwendet Default-Policy "block" statt expliziter Block-Regeln,
+ * damit Allow-Regeln korrekt greifen.
  */
 
 const { execFile } = require('child_process');
@@ -27,6 +29,7 @@ class KillSwitch {
     this.log = log;
     this.rulePrefix = 'GateControl_KS';
     this.enabled = false;
+    this._savedPolicy = null;
   }
 
   /**
@@ -52,8 +55,18 @@ class KillSwitch {
       this.log.warn('Config konnte nicht geparst werden:', err.message);
     }
 
+    if (!endpoint) {
+      this.log.error('Kill-Switch abgebrochen: WireGuard-Endpoint konnte nicht ermittelt werden');
+      throw new Error('Kill-Switch: WireGuard-Endpoint nicht gefunden');
+    }
+
     try {
       await this._removeAllRules();
+
+      // Aktuelle Firewall-Policy speichern, dann auf Block setzen
+      this._savedPolicy = await this._getCurrentPolicy();
+      await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,blockoutbound');
+      this.log.info('Firewall Default-Policy auf Block gesetzt');
 
       // 1. ALLOW: Loopback
       await this._addRule({
@@ -73,17 +86,15 @@ class KillSwitch {
         });
       }
 
-      // 3. ALLOW: WireGuard Endpoint
-      if (endpoint) {
-        await this._addRule({
-          name: `${this.rulePrefix}_Allow_WG_Endpoint`,
-          dir: 'out',
-          action: 'allow',
-          remoteip: endpoint.host,
-          remoteport: endpoint.port,
-          protocol: 'udp',
-        });
-      }
+      // 3. ALLOW: WireGuard Endpoint (UDP zum VPN-Server)
+      await this._addRule({
+        name: `${this.rulePrefix}_Allow_WG_Endpoint`,
+        dir: 'out',
+        action: 'allow',
+        remoteip: endpoint.host,
+        remoteport: endpoint.port,
+        protocol: 'udp',
+      });
 
       // 4. ALLOW: VPN-Subnetz
       if (vpnSubnet) {
@@ -95,7 +106,27 @@ class KillSwitch {
         });
       }
 
-      // 5. ALLOW: DHCP
+      // 5. ALLOW: DNS über VPN (UDP/TCP Port 53 im VPN-Subnetz)
+      if (vpnSubnet) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_VPN_DNS`,
+          dir: 'out',
+          action: 'allow',
+          remoteip: vpnSubnet,
+          remoteport: '53',
+          protocol: 'udp',
+        });
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_VPN_DNS_TCP`,
+          dir: 'out',
+          action: 'allow',
+          remoteip: vpnSubnet,
+          remoteport: '53',
+          protocol: 'tcp',
+        });
+      }
+
+      // 6. ALLOW: DHCP
       await this._addRule({
         name: `${this.rulePrefix}_Allow_DHCP`,
         dir: 'out',
@@ -105,27 +136,40 @@ class KillSwitch {
         remoteport: '67',
       });
 
-      // 6. BLOCK: Outbound
+      // 7. ALLOW: Eingehender Traffic vom VPN-Subnetz
+      if (vpnSubnet) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_VPN_In`,
+          dir: 'in',
+          action: 'allow',
+          remoteip: vpnSubnet,
+        });
+      }
+
+      // 8. ALLOW: Eingehender Loopback
       await this._addRule({
-        name: `${this.rulePrefix}_Block_All_Out`,
-        dir: 'out',
-        action: 'block',
-        remoteip: 'any',
+        name: `${this.rulePrefix}_Allow_Loopback_In`,
+        dir: 'in',
+        action: 'allow',
+        remoteip: '127.0.0.0/8',
       });
 
-      // 7. BLOCK: Inbound
-      await this._addRule({
-        name: `${this.rulePrefix}_Block_All_In`,
-        dir: 'in',
-        action: 'block',
-        remoteip: 'any',
-      });
+      // 9. ALLOW: Eingehender LAN-Traffic
+      for (const subnet of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
+        await this._addRule({
+          name: `${this.rulePrefix}_Allow_LAN_In_${subnet.replace(/[./]/g, '_')}`,
+          dir: 'in',
+          action: 'allow',
+          remoteip: subnet,
+        });
+      }
 
       this.enabled = true;
       this.log.info('Kill-Switch aktiviert');
 
     } catch (err) {
       this.log.error('Kill-Switch Aktivierung fehlgeschlagen:', err);
+      await this._restorePolicy();
       await this._removeAllRules();
       throw err;
     }
@@ -136,6 +180,7 @@ class KillSwitch {
    */
   async disable() {
     this.log.info('Deaktiviere Kill-Switch...');
+    await this._restorePolicy();
     await this._removeAllRules();
     this.enabled = false;
     this.log.info('Kill-Switch deaktiviert');
@@ -147,10 +192,34 @@ class KillSwitch {
   async isActive() {
     try {
       const { stdout } = await netsh('advfirewall', 'firewall', 'show', 'rule',
-        `name=${this.rulePrefix}_Block_All_Out`);
+        `name=${this.rulePrefix}_Allow_WG_Endpoint`);
       return stdout.includes(this.rulePrefix);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Aktuelle Firewall-Policy abfragen
+   */
+  async _getCurrentPolicy() {
+    try {
+      const { stdout } = await netsh('advfirewall', 'show', 'allprofiles', 'firewallpolicy');
+      return stdout;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Firewall-Policy auf Standard zurücksetzen
+   */
+  async _restorePolicy() {
+    try {
+      await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,allowoutbound');
+      this.log.info('Firewall Default-Policy wiederhergestellt');
+    } catch (err) {
+      this.log.error('Firewall-Policy Wiederherstellung fehlgeschlagen:', err.message);
     }
   }
 
@@ -190,15 +259,20 @@ class KillSwitch {
    */
   async _removeAllRules() {
     const ruleNames = [
-      `${this.rulePrefix}_Block_All_Out`,
-      `${this.rulePrefix}_Block_All_In`,
       `${this.rulePrefix}_Allow_Loopback`,
+      `${this.rulePrefix}_Allow_Loopback_In`,
       `${this.rulePrefix}_Allow_WG_Endpoint`,
       `${this.rulePrefix}_Allow_VPN_Subnet`,
+      `${this.rulePrefix}_Allow_VPN_DNS`,
+      `${this.rulePrefix}_Allow_VPN_DNS_TCP`,
+      `${this.rulePrefix}_Allow_VPN_In`,
       `${this.rulePrefix}_Allow_DHCP`,
       `${this.rulePrefix}_Allow_LAN_10_0_0_0_8`,
       `${this.rulePrefix}_Allow_LAN_172_16_0_0_12`,
       `${this.rulePrefix}_Allow_LAN_192_168_0_0_16`,
+      `${this.rulePrefix}_Allow_LAN_In_10_0_0_0_8`,
+      `${this.rulePrefix}_Allow_LAN_In_172_16_0_0_12`,
+      `${this.rulePrefix}_Allow_LAN_In_192_168_0_0_16`,
     ];
 
     await Promise.all(ruleNames.map(name =>

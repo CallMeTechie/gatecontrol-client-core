@@ -542,19 +542,42 @@ class WireGuardNative {
 
       const entries = splitTunnelRoutes.split('\n')
         .map(s => s.trim())
-        .filter(s => s && !s.startsWith('#') && /^[\d./]+$/.test(s));
+        .filter(s => s && !s.startsWith('#'));
 
       if (entries.length === 0) {
-        this.log.warn('Split-Tunneling: Keine gültigen IP-Einträge gefunden');
+        this.log.warn('Split-Tunneling: Keine gültigen Einträge gefunden');
       }
 
       for (const entry of entries) {
         try {
-          const routeTarget = entry.includes('/') ? validateCidr(entry) : `${validateIp(entry)}/32`;
+          let targets = [];
 
-          await netsh('interface', 'ip', 'add', 'route', routeTarget, ifName, ip, 'metric=5');
-          this._splitRoutes.push(routeTarget);
-          this.log.info(`Split-Route: ${routeTarget} -> Tunnel`);
+          if (/^[\d./]+$/.test(entry)) {
+            // IP oder CIDR
+            const routeTarget = entry.includes('/') ? validateCidr(entry) : `${validateIp(entry)}/32`;
+            targets.push(routeTarget);
+          } else if (/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(entry)) {
+            // Domain — DNS-Auflösung
+            try {
+              const addresses = await dns.resolve4(entry);
+              for (const addr of addresses) {
+                targets.push(`${validateIp(addr)}/32`);
+              }
+              this.log.info(`Domain ${entry} aufgelöst: ${addresses.join(', ')}`);
+            } catch (dnsErr) {
+              this.log.warn(`DNS-Auflösung fehlgeschlagen für ${entry}: ${dnsErr.message}`);
+              continue;
+            }
+          } else {
+            this.log.warn(`Split-Route übersprungen (ungültiges Format): ${entry}`);
+            continue;
+          }
+
+          for (const routeTarget of targets) {
+            await netsh('interface', 'ip', 'add', 'route', routeTarget, ifName, ip, 'metric=5');
+            this._splitRoutes.push(routeTarget);
+            this.log.info(`Split-Route: ${routeTarget} -> Tunnel`);
+          }
         } catch (err) {
           this.log.warn(`Split-Route fehlgeschlagen für ${entry}: ${err.message}`);
         }
