@@ -96,6 +96,16 @@ class KillSwitch {
         protocol: 'udp',
       });
 
+      // 3b. ALLOW: GateControl API (TCP/HTTPS zum Server)
+      await this._addRule({
+        name: `${this.rulePrefix}_Allow_API`,
+        dir: 'out',
+        action: 'allow',
+        remoteip: endpoint.host,
+        remoteport: '443',
+        protocol: 'tcp',
+      });
+
       // 4. ALLOW: VPN-Subnetz
       if (vpnSubnet) {
         await this._addRule({
@@ -262,6 +272,7 @@ class KillSwitch {
       `${this.rulePrefix}_Allow_Loopback`,
       `${this.rulePrefix}_Allow_Loopback_In`,
       `${this.rulePrefix}_Allow_WG_Endpoint`,
+      `${this.rulePrefix}_Allow_API`,
       `${this.rulePrefix}_Allow_VPN_Subnet`,
       `${this.rulePrefix}_Allow_VPN_DNS`,
       `${this.rulePrefix}_Allow_VPN_DNS_TCP`,
