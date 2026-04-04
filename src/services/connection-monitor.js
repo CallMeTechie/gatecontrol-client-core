@@ -33,7 +33,7 @@ class ConnectionMonitor {
     this.running = true;
     this.failCount = 0;
 
-    this.log.info(`Connection Monitor gestartet (Interval: ${this.interval / 1000}s)`);
+    this.log.info(`Connection monitor started (interval: ${this.interval / 1000}s)`);
 
     // Sofort ersten Check
     this._check();
@@ -53,7 +53,7 @@ class ConnectionMonitor {
     }
 
     this.failCount = 0;
-    this.log.info('Connection Monitor gestoppt');
+    this.log.info('Connection monitor stopped');
   }
 
   /**
@@ -66,7 +66,7 @@ class ConnectionMonitor {
       const stats = await this.wgService.getStats();
 
       if (!stats) {
-        this._handleFailure('Keine WireGuard-Statistiken verfügbar');
+        this._handleFailure('No WireGuard statistics available');
         return;
       }
 
@@ -75,13 +75,13 @@ class ConnectionMonitor {
         const age = Math.floor(Date.now() / 1000) - stats.handshakeTimestamp;
 
         if (age > this.handshakeTimeout) {
-          this._handleFailure(`Handshake zu alt: ${age}s`);
+          this._handleFailure(`Handshake too old: ${age}s`);
           return;
         }
 
         this.lastHandshake = stats.handshakeTimestamp;
       } else if (!stats.connected) {
-        this._handleFailure('Keine aktive Verbindung');
+        this._handleFailure('No active connection');
         return;
       }
 
@@ -100,7 +100,7 @@ class ConnectionMonitor {
       }
 
     } catch (err) {
-      this._handleFailure(`Check-Fehler: ${err.message}`);
+      this._handleFailure(`Check error: ${err.message}`);
     }
   }
 
@@ -109,14 +109,14 @@ class ConnectionMonitor {
    */
   _handleFailure(reason) {
     this.failCount++;
-    this.log.warn(`Connection Check fehlgeschlagen (${this.failCount}/${this.maxFailures}): ${reason}`);
+    this.log.warn(`Connection check failed (${this.failCount}/${this.maxFailures}): ${reason}`);
 
     if (this.onStats) {
       this.onStats({ connected: false });
     }
 
     if (this.failCount >= this.maxFailures) {
-      this.log.error('Max Failures erreicht, trigger Reconnect');
+      this.log.error('Max failures reached, triggering reconnect');
       this.stop();
 
       if (this.onDisconnect) {

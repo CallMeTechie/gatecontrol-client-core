@@ -88,7 +88,7 @@ function registerBaseHandlers(ipcMain, ctx) {
         results.passed = clientIp.startsWith(subnet) || clientIp.startsWith('10.') || clientIp === '127.0.0.1';
       }
     } catch (err) {
-      log.debug('DNS-Leak-Test fehlgeschlagen:', err.message);
+      log.debug('DNS leak test failed:', err.message);
     }
 
     return results;
@@ -98,7 +98,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   ipcMain.handle('config:get', (_, key) => store.get(key));
   ipcMain.handle('config:set', (_, key, value) => {
     if (!CONFIG_WRITABLE_KEYS.has(key)) {
-      log.warn(`config:set verweigert für Key: ${key}`);
+      log.warn(`config:set rejected for key: ${key}`);
       return;
     }
     store.set(key, value);
@@ -212,15 +212,60 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Logs ────────────────────────────────────────────────
-  ipcMain.handle('logs:get', async () => {
+  ipcMain.handle('logs:get', async (_, opts = {}) => {
     const fs = require('fs').promises;
     try {
       const logPath = log.transports.file.getFile().path;
-      const content = await fs.readFile(logPath, 'utf-8');
-      const lines = content.split('\n').slice(-200);
+      const stat = await fs.stat(logPath);
+
+      // Read max 1 MB from end of file
+      const MAX_READ = 1024 * 1024;
+      let content;
+      if (stat.size > MAX_READ) {
+        const fh = await fs.open(logPath, 'r');
+        const buf = Buffer.alloc(MAX_READ);
+        await fh.read(buf, 0, MAX_READ, stat.size - MAX_READ);
+        await fh.close();
+        content = buf.toString('utf-8');
+        // Drop first partial line
+        const firstNewline = content.indexOf('\n');
+        if (firstNewline > 0) content = content.slice(firstNewline + 1);
+      } else {
+        content = await fs.readFile(logPath, 'utf-8');
+      }
+
+      let lines = content.split('\n').filter(l => l.trim());
+
+      // Time filter
+      if (opts.period && opts.period !== 'all') {
+        const hours = opts.period === '24h' ? 24 : opts.period === '12h' ? 12 : opts.period === '1h' ? 1 : 0;
+        if (hours > 0) {
+          const cutoff = new Date(Date.now() - hours * 3600000);
+          lines = lines.filter(line => {
+            // electron-log format: [YYYY-MM-DD HH:MM:SS.mmm] or [HH:MM:SS.mmm]
+            const m = line.match(/\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
+            if (!m) return true; // keep lines without timestamp
+            return new Date(m[1]) >= cutoff;
+          });
+        }
+      }
+
+      // Reverse: newest first
+      lines.reverse();
+
       return lines.join('\n');
     } catch {
       return t('logs.empty');
+    }
+  });
+
+  ipcMain.handle('logs:export', async () => {
+    const fs = require('fs').promises;
+    try {
+      const logPath = log.transports.file.getFile().path;
+      return logPath;
+    } catch {
+      return null;
     }
   });
 }

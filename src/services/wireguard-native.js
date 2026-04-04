@@ -111,9 +111,9 @@ class WireGuardNative {
 
     try {
       this.lib = koffi.load(dllPath);
-      this.log.info(`wireguard.dll geladen: ${dllPath}`);
+      this.log.info(`wireguard.dll loaded: ${dllPath}`);
     } catch (err) {
-      this.log.error(`wireguard.dll konnte nicht geladen werden: ${err.message}`);
+      this.log.error(`wireguard.dll could not be loaded: ${err.message}`);
       throw new Error(`WireGuard-DLL nicht gefunden: ${dllPath}`);
     }
 
@@ -228,10 +228,10 @@ class WireGuardNative {
     if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
       try {
         const { address } = await dns.lookup(host, { family: 4 });
-        this.log.info(`Endpoint aufgelöst: ${host} -> ${address}`);
+        this.log.info(`Endpoint resolved: ${host} -> ${address}`);
         host = address;
       } catch (err) {
-        this.log.error(`DNS-Auflösung fehlgeschlagen für ${host}: ${err.message}`);
+        this.log.error(`DNS resolution failed for ${host}: ${err.message}`);
         return buf;
       }
     }
@@ -393,7 +393,7 @@ class WireGuardNative {
     const dir = path.dirname(configPath);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(configPath, content, { mode: 0o600 });
-    this.log.info(`Config geschrieben: ${configPath}`);
+    this.log.info(`Config written: ${configPath}`);
   }
 
   /**
@@ -431,7 +431,7 @@ class WireGuardNative {
     }
 
     // Adapter erstellen
-    this.log.info(`Erstelle WireGuard-Adapter: ${this.tunnelName}`);
+    this.log.info(`Creating WireGuard adapter: ${this.tunnelName}`);
     const nameUtf16 = Buffer.from(this.tunnelName + '\0', 'utf16le');
     const typeUtf16 = Buffer.from('GateControl\0', 'utf16le');
 
@@ -440,7 +440,7 @@ class WireGuardNative {
       throw new Error('WireGuard-Adapter konnte nicht erstellt werden (Admin-Rechte?)');
     }
 
-    this.log.info('Adapter erstellt, setze Konfiguration...');
+    this.log.info('Adapter created, applying configuration...');
 
     const configBuffer = await this._buildConfigBuffer(parsed);
     const success = this._setConfiguration(this.adapter, configBuffer, configBuffer.length);
@@ -459,7 +459,7 @@ class WireGuardNative {
 
     await this._configureNetwork(parsed, splitTunnelRoutes);
 
-    this.log.info('Tunnel-Verbindung hergestellt');
+    this.log.info('Tunnel connection established');
   }
 
   /**
@@ -474,12 +474,12 @@ class WireGuardNative {
     const mask = this._cidrToMask(cidr);
     const ifName = validateIfaceName(this.tunnelName);
 
-    this.log.info(`Konfiguriere Netzwerk: ${ip}/${cidr}`);
+    this.log.info(`Configuring network: ${ip}/${cidr}`);
 
     try {
       await netsh('interface', 'ip', 'set', 'address', ifName, 'static', ip, mask);
     } catch (err) {
-      this.log.warn(`IP-Konfiguration fehlgeschlagen: ${err.message}`);
+      this.log.warn(`IP configuration failed: ${err.message}`);
     }
 
     // DNS auf VPN-Interface setzen
@@ -494,12 +494,12 @@ class WireGuardNative {
           }
         }
       } catch (err) {
-        this.log.warn(`DNS-Konfiguration fehlgeschlagen: ${err.message}`);
+        this.log.warn(`DNS configuration failed: ${err.message}`);
       }
 
       try {
         await execFileAsync('ipconfig', ['/flushdns']);
-        this.log.info('DNS-Cache geleert');
+        this.log.info('DNS cache flushed');
       } catch {}
     }
 
@@ -522,10 +522,10 @@ class WireGuardNative {
               const ifIndex = validateInt(ifOut.trim());
               this._endpointRoute = { endpointIP, gateway, ifIndex };
               await netsh('interface', 'ip', 'add', 'route', `${endpointIP}/32`, `interface=${ifIndex}`, `nexthop=${gateway}`, 'metric=1');
-              this.log.info(`Endpoint-Route: ${endpointIP} via ${gateway} (if=${ifIndex})`);
+              this.log.info(`Endpoint route: ${endpointIP} via ${gateway} (if=${ifIndex})`);
             }
           } catch (err) {
-            this.log.warn(`Endpoint-Route fehlgeschlagen: ${err.message}`);
+            this.log.warn(`Endpoint route failed: ${err.message}`);
           }
         }
       }
@@ -533,11 +533,11 @@ class WireGuardNative {
       try {
         await netsh('interface', 'ip', 'add', 'route', '0.0.0.0/0', ifName, ip, 'metric=5');
       } catch (err) {
-        this.log.debug(`Route-Konfiguration: ${err.message}`);
+        this.log.debug(`Route configuration: ${err.message}`);
       }
 
     } else if (splitTunnelRoutes) {
-      this.log.info(`Split-Tunneling aktiv, konfiguriere Routen...`);
+      this.log.info(`Split tunneling active, configuring routes...`);
       this._splitRoutes = [];
 
       const entries = splitTunnelRoutes.split('\n')
@@ -545,7 +545,7 @@ class WireGuardNative {
         .filter(s => s && !s.startsWith('#'));
 
       if (entries.length === 0) {
-        this.log.warn('Split-Tunneling: Keine gültigen Einträge gefunden');
+        this.log.warn('Split tunneling: no valid entries found');
       }
 
       for (const entry of entries) {
@@ -563,23 +563,23 @@ class WireGuardNative {
               for (const addr of addresses) {
                 targets.push(`${validateIp(addr)}/32`);
               }
-              this.log.info(`Domain ${entry} aufgelöst: ${addresses.join(', ')}`);
+              this.log.info(`Domain ${entry} resolved: ${addresses.join(', ')}`);
             } catch (dnsErr) {
-              this.log.warn(`DNS-Auflösung fehlgeschlagen für ${entry}: ${dnsErr.message}`);
+              this.log.warn(`DNS resolution failed for ${entry}: ${dnsErr.message}`);
               continue;
             }
           } else {
-            this.log.warn(`Split-Route übersprungen (ungültiges Format): ${entry}`);
+            this.log.warn(`Split route skipped (invalid format): ${entry}`);
             continue;
           }
 
           for (const routeTarget of targets) {
             await netsh('interface', 'ip', 'add', 'route', routeTarget, ifName, ip, 'metric=5');
             this._splitRoutes.push(routeTarget);
-            this.log.info(`Split-Route: ${routeTarget} -> Tunnel`);
+            this.log.info(`Split route: ${routeTarget} -> Tunnel`);
           }
         } catch (err) {
-          this.log.warn(`Split-Route fehlgeschlagen für ${entry}: ${err.message}`);
+          this.log.warn(`Split route failed for ${entry}: ${err.message}`);
         }
       }
 
@@ -600,7 +600,7 @@ class WireGuardNative {
         }
       }
 
-      this.log.info(`Split-Tunneling: ${this._splitRoutes.length} Routen aktiv`);
+      this.log.info(`Split tunneling: ${this._splitRoutes.length} routes active`);
     }
   }
 
@@ -619,19 +619,19 @@ class WireGuardNative {
    * Tunnel trennen
    */
   async disconnect() {
-    this.log.info('Trenne Tunnel...');
+    this.log.info('Disconnecting tunnel...');
 
     if (this.adapter) {
       try {
         this._setAdapterState(this.adapter, WIREGUARD_STATE_DOWN);
       } catch (err) {
-        this.log.debug('Adapter-Deaktivierung:', err.message);
+        this.log.debug('Adapter deactivation:', err.message);
       }
 
       try {
         this._closeAdapter(this.adapter);
       } catch (err) {
-        this.log.debug('Adapter-Close:', err.message);
+        this.log.debug('Adapter close:', err.message);
       }
 
       this.adapter = null;
@@ -645,7 +645,7 @@ class WireGuardNative {
           await netsh('interface', 'ip', 'delete', 'route', route, ifName);
         } catch {}
       }
-      this.log.info(`${this._splitRoutes.length} Split-Routen entfernt`);
+      this.log.info(`${this._splitRoutes.length} split routes removed`);
       this._splitRoutes = null;
     }
 
@@ -656,7 +656,7 @@ class WireGuardNative {
       try {
         const { endpointIP, ifIndex } = this._endpointRoute;
         await netsh('interface', 'ip', 'delete', 'route', `${validateIp(endpointIP)}/32`, `interface=${validateInt(ifIndex)}`);
-        this.log.info(`Endpoint-Route entfernt: ${endpointIP}`);
+        this.log.info(`Endpoint route removed: ${endpointIP}`);
       } catch { /* Route ggf. schon weg */ }
       this._endpointRoute = null;
     }
@@ -666,7 +666,7 @@ class WireGuardNative {
       await netsh('interface', 'ip', 'delete', 'address', ifName, 'addr=0.0.0.0', 'gateway=all');
     } catch { /* Interface ggf. schon weg */ }
 
-    this.log.info('Tunnel getrennt');
+    this.log.info('Tunnel disconnected');
   }
 
   /**
@@ -719,7 +719,7 @@ class WireGuardNative {
       const actualSize = sizePtr.readUInt32LE(0);
       return this._parseConfigBuffer(buf.subarray(0, actualSize));
     } catch (err) {
-      this.log.debug('Stats-Abfrage fehlgeschlagen:', err.message);
+      this.log.debug('Stats query failed:', err.message);
       return null;
     }
   }

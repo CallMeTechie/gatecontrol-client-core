@@ -112,7 +112,7 @@ class ApiClient {
 
     this.peerId = data.peerId;
     this.configHash = data.hash || null;
-    this.log.info(`Registriert als Peer: ${data.peerId}`);
+    this.log.info(`Registered as peer: ${data.peerId}`);
     return data;
   }
 
@@ -149,7 +149,7 @@ class ApiClient {
 
       if (data.updated && data.config) {
         this.configHash = data.hash;
-        this.log.info('Neue Konfiguration verfügbar');
+        this.log.info('New configuration available');
         return data.config;
       }
 
@@ -176,7 +176,7 @@ class ApiClient {
         hostname: os.hostname(),
       });
     } catch (err) {
-      this.log.debug('Heartbeat fehlgeschlagen:', err.message);
+      this.log.debug('Heartbeat failed:', err.message);
     }
   }
 
@@ -194,7 +194,7 @@ class ApiClient {
         timestamp: new Date().toISOString(),
       });
     } catch (err) {
-      this.log.debug('Status-Report fehlgeschlagen:', err.message);
+      this.log.debug('Status report failed:', err.message);
     }
   }
 
@@ -208,7 +208,7 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/services');
       return res.data?.services || [];
     } catch (err) {
-      this.log.debug('Services-Abfrage fehlgeschlagen:', err.message);
+      this.log.debug('Services query failed:', err.message);
       return [];
     }
   }
@@ -223,7 +223,7 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/dns-check');
       return res.data;
     } catch (err) {
-      this.log.debug('DNS-Check fehlgeschlagen:', err.message);
+      this.log.debug('DNS check failed:', err.message);
       return null;
     }
   }
@@ -238,7 +238,7 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/permissions');
       return res.data?.permissions || null;
     } catch (err) {
-      this.log.debug('Permissions-Abfrage fehlgeschlagen:', err.message);
+      this.log.debug('Permissions query failed:', err.message);
       return null;
     }
   }
@@ -255,7 +255,7 @@ class ApiClient {
       });
       return res.data?.traffic || null;
     } catch (err) {
-      this.log.debug('Traffic-Abfrage fehlgeschlagen:', err.message);
+      this.log.debug('Traffic query failed:', err.message);
       return null;
     }
   }
@@ -272,7 +272,7 @@ class ApiClient {
       });
       return res.data?.peer || null;
     } catch (err) {
-      this.log.debug('Peer-Info fehlgeschlagen:', err.message);
+      this.log.debug('Peer info failed:', err.message);
       return null;
     }
   }

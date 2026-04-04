@@ -39,11 +39,11 @@ class KillSwitch {
    */
   async enable(configPath) {
     if (this.enabled) {
-      this.log.debug('Kill-Switch bereits aktiv');
+      this.log.debug('Kill-switch already active');
       return;
     }
 
-    this.log.info('Aktiviere Kill-Switch...');
+    this.log.info('Enabling kill-switch...');
 
     let endpoint = null;
     let vpnSubnet = null;
@@ -56,11 +56,11 @@ class KillSwitch {
       vpnSubnet = parsed.vpnSubnet;
       vpnLocalIp = parsed.vpnLocalIp;
     } catch (err) {
-      this.log.warn('Config konnte nicht geparst werden:', err.message);
+      this.log.warn('Config could not be parsed:', err.message);
     }
 
     if (!endpoint) {
-      this.log.error('Kill-Switch abgebrochen: WireGuard-Endpoint konnte nicht ermittelt werden');
+      this.log.error('Kill-switch aborted: WireGuard endpoint could not be determined');
       throw new Error('Kill-Switch: WireGuard-Endpoint nicht gefunden');
     }
 
@@ -206,7 +206,7 @@ class KillSwitch {
           action: 'allow',
           remoteip: subnet,
         });
-        this.log.info(`Physisches Subnetz erlaubt: ${subnet}`);
+        this.log.info(`Physical subnet allowed: ${subnet}`);
       }
 
       // 10. ALLOW: DHCP
@@ -221,13 +221,13 @@ class KillSwitch {
 
       // JETZT Block-Policy setzen — alle Regeln sind bereits aktiv
       await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,blockoutbound');
-      this.log.info('Firewall Default-Policy auf Block gesetzt');
+      this.log.info('Firewall default policy set to block');
 
       this.enabled = true;
-      this.log.info('Kill-Switch aktiviert');
+      this.log.info('Kill-switch enabled');
 
     } catch (err) {
-      this.log.error('Kill-Switch Aktivierung fehlgeschlagen:', err);
+      this.log.error('Kill-switch activation failed:', err);
       await this._restorePolicy();
       await this._removeAllRules();
       throw err;
@@ -238,11 +238,11 @@ class KillSwitch {
    * Kill-Switch deaktivieren
    */
   async disable() {
-    this.log.info('Deaktiviere Kill-Switch...');
+    this.log.info('Disabling kill-switch...');
     await this._restorePolicy();
     await this._removeAllRules();
     this.enabled = false;
-    this.log.info('Kill-Switch deaktiviert');
+    this.log.info('Kill-switch disabled');
   }
 
   /**
@@ -276,9 +276,9 @@ class KillSwitch {
   async _restorePolicy() {
     try {
       await netsh('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,allowoutbound');
-      this.log.info('Firewall Default-Policy wiederhergestellt');
+      this.log.info('Firewall default policy restored');
     } catch (err) {
-      this.log.error('Firewall-Policy Wiederherstellung fehlgeschlagen:', err.message);
+      this.log.error('Firewall policy restoration failed:', err.message);
     }
   }
 
@@ -313,7 +313,7 @@ class KillSwitch {
 
     args.push('enable=yes');
 
-    this.log.debug(`Firewall-Regel: netsh ${args.join(' ')}`);
+    this.log.debug(`Firewall rule: netsh ${args.join(' ')}`);
     await netsh(...args);
   }
 

@@ -71,7 +71,9 @@
   "logs": {
     "title": "Logs",
     "loading": "Lade Logs...",
-    "empty": "Keine Logs vorhanden"
+    "empty": "Keine Logs vorhanden",
+    "export": "Export",
+    "filterAll": "Alle"
   },
   "update": {
     "title": "Update",
