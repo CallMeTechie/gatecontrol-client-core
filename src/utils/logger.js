@@ -2,7 +2,7 @@
  * GateControl – Logger Setup (Core)
  *
  * Configures electron-log with standard settings:
- * - File transport: info level, 5 MB max
+ * - File transport: info level, 1 MB max
  * - Console transport: debug level
  */
 
@@ -23,7 +23,7 @@ function createLogger(options = {}) {
   const {
     fileLevel = 'info',
     consoleLevel = 'debug',
-    maxFileSize = 5 * 1024 * 1024,
+    maxFileSize = 1024 * 1024, // 1 MB
   } = options;
 
   log.transports.file.level = fileLevel;
