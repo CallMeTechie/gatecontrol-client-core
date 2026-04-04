@@ -19,6 +19,7 @@ const validation = require('./utils/validation');
 const { getMachineFingerprint } = require('./utils/machine-id');
 const { createLogger } = require('./utils/logger');
 const { createStores } = require('./utils/store');
+const E2EEHandler = require('./utils/e2ee');
 
 // ── i18n ──────────────────────────────────────────────────
 const i18n = require('./i18n');
@@ -42,6 +43,7 @@ module.exports = {
   getMachineFingerprint,
   createLogger,
   createStores,
+  E2EEHandler,
 
   // IPC
   registerBaseHandlers,
