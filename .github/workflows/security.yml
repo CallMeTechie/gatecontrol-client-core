@@ -1,0 +1,77 @@
+name: Security & Quality
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run npm audit
+        run: npm audit --audit-level=high || true
+
+      - name: Check for critical vulnerabilities
+        run: |
+          RESULT=$(npm audit --json 2>/dev/null | node -e "
+            const data=require('fs').readFileSync('/dev/stdin','utf8');
+            try {
+              const audit=JSON.parse(data);
+              const critical=(audit.metadata?.vulnerabilities?.critical||0);
+              console.log(critical);
+            } catch { console.log('0'); }
+          ")
+          echo "High/Critical vulnerabilities: $RESULT"
+          if [ "$RESULT" -gt 0 ] 2>/dev/null; then
+            echo "::error::Found $RESULT high/critical vulnerabilities"
+            exit 1
+          fi
+
+  eslint-security:
+    name: ESLint Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install ESLint with security plugin
+        run: npm install --no-save eslint@8 eslint-plugin-security
+
+      - name: Create security ESLint config
+        run: |
+          cat > .eslintrc.security.json << 'ESLINTEOF'
+          {
+            "plugins": ["security"],
+            "extends": ["plugin:security/recommended"],
+            "env": { "node": true, "es2022": true },
+            "parserOptions": { "ecmaVersion": 2022 },
+            "rules": {
+              "security/detect-eval-with-expression": "error",
+              "security/detect-non-literal-fs-filename": "warn",
+              "security/detect-non-literal-require": "warn",
+              "security/detect-possible-timing-attacks": "warn",
+              "security/detect-child-process": "warn"
+            }
+          }
+          ESLINTEOF
+
+      - name: Run ESLint security scan
+        run: npx eslint -c .eslintrc.security.json "src/**/*.js" --no-eslintrc --format stylish
