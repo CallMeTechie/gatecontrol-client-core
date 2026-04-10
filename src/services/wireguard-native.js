@@ -536,13 +536,13 @@ class WireGuardNative {
 
           if (endpointIP) {
             try {
+              // Single PowerShell call instead of two — saves ~3-5s of .NET cold-start
               const { stdout } = await execFileAsync('powershell', ['-Command',
-                '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop']);
-              const gateway = validateIp(stdout.trim());
+                '$r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1; "$($r.NextHop)|$($r.InterfaceIndex)"']);
+              const [gwStr, ifStr] = stdout.trim().split('|');
+              const gateway = validateIp(gwStr);
               if (gateway && gateway !== '0.0.0.0') {
-                const { stdout: ifOut } = await execFileAsync('powershell', ['-Command',
-                  '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex']);
-                const ifIndex = validateInt(ifOut.trim());
+                const ifIndex = validateInt(ifStr);
                 this._endpointRoute = { endpointIP, gateway, ifIndex };
                 await netsh('interface', 'ip', 'add', 'route', `${endpointIP}/32`, `interface=${ifIndex}`, `nexthop=${gateway}`, 'metric=1');
                 this.log.info(`Endpoint route: ${endpointIP} via ${gateway} (if=${ifIndex})`);
