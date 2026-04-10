@@ -483,15 +483,22 @@ class WireGuardNative {
     }
 
     // DNS auf VPN-Interface setzen
-    if (parsed.dns) {
-      const dnsServers = parsed.dns.split(',').map(s => s.trim()).filter(s => IPV4_RE.test(s));
+    {
+      let dnsServers = [];
+      if (parsed.dns) {
+        dnsServers = parsed.dns.split(',').map(s => s.trim()).filter(s => IPV4_RE.test(s));
+      }
+      // Fallback: VPN gateway IP (dnsmasq/split-horizon resolver)
+      if (dnsServers.length === 0) {
+        const gatewayIp = ip.split('.').slice(0, 3).join('.') + '.1';
+        dnsServers = [gatewayIp];
+        this.log.info(`No DNS in config, using gateway fallback: ${gatewayIp}`);
+      }
 
       try {
-        if (dnsServers.length > 0) {
-          await netsh('interface', 'ip', 'set', 'dns', ifName, 'static', validateIp(dnsServers[0]));
-          for (let i = 1; i < dnsServers.length; i++) {
-            await netsh('interface', 'ip', 'add', 'dns', ifName, validateIp(dnsServers[i]), `index=${i + 1}`);
-          }
+        await netsh('interface', 'ip', 'set', 'dns', ifName, 'static', validateIp(dnsServers[0]));
+        for (let i = 1; i < dnsServers.length; i++) {
+          await netsh('interface', 'ip', 'add', 'dns', ifName, validateIp(dnsServers[i]), `index=${i + 1}`);
         }
       } catch (err) {
         this.log.warn(`DNS configuration failed: ${err.message}`);
@@ -511,21 +518,38 @@ class WireGuardNative {
       if (peer.Endpoint) {
         const epMatch = peer.Endpoint.match(/^(.+):(\d+)$/);
         if (epMatch) {
-          const endpointIP = validateIp(epMatch[1]);
-          try {
-            const { stdout } = await execFileAsync('powershell', ['-Command',
-              '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop']);
-            const gateway = validateIp(stdout.trim());
-            if (gateway && gateway !== '0.0.0.0') {
-              const { stdout: ifOut } = await execFileAsync('powershell', ['-Command',
-                '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex']);
-              const ifIndex = validateInt(ifOut.trim());
-              this._endpointRoute = { endpointIP, gateway, ifIndex };
-              await netsh('interface', 'ip', 'add', 'route', `${endpointIP}/32`, `interface=${ifIndex}`, `nexthop=${gateway}`, 'metric=1');
-              this.log.info(`Endpoint route: ${endpointIP} via ${gateway} (if=${ifIndex})`);
+          let endpointIP = epMatch[1];
+
+          // Hostname → DNS-Resolution (wie _encodeEndpoint)
+          if (!IPV4_RE.test(endpointIP)) {
+            try {
+              const { address } = await dns.lookup(endpointIP, { family: 4 });
+              this.log.info(`Endpoint resolved for route: ${endpointIP} -> ${address}`);
+              endpointIP = address;
+            } catch (err) {
+              this.log.warn(`Endpoint DNS resolution failed: ${err.message} — skipping route`);
+              endpointIP = null;
             }
-          } catch (err) {
-            this.log.warn(`Endpoint route failed: ${err.message}`);
+          } else {
+            endpointIP = validateIp(endpointIP);
+          }
+
+          if (endpointIP) {
+            try {
+              const { stdout } = await execFileAsync('powershell', ['-Command',
+                '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop']);
+              const gateway = validateIp(stdout.trim());
+              if (gateway && gateway !== '0.0.0.0') {
+                const { stdout: ifOut } = await execFileAsync('powershell', ['-Command',
+                  '(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex']);
+                const ifIndex = validateInt(ifOut.trim());
+                this._endpointRoute = { endpointIP, gateway, ifIndex };
+                await netsh('interface', 'ip', 'add', 'route', `${endpointIP}/32`, `interface=${ifIndex}`, `nexthop=${gateway}`, 'metric=1');
+                this.log.info(`Endpoint route: ${endpointIP} via ${gateway} (if=${ifIndex})`);
+              }
+            } catch (err) {
+              this.log.warn(`Endpoint route failed: ${err.message}`);
+            }
           }
         }
       }

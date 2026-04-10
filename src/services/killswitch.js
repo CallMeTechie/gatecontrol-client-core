@@ -19,6 +19,7 @@ const os = require('os');
 
 const execFileAsync = promisify(execFile);
 
+const dns = require('dns').promises;
 const { validateIp, validateCidr, validatePort, IPV4_RE } = require('../utils/validation');
 
 function netsh(...args) {
@@ -62,6 +63,19 @@ class KillSwitch {
     if (!endpoint) {
       this.log.error('Kill-switch aborted: WireGuard endpoint could not be determined');
       throw new Error('Kill-Switch: WireGuard-Endpoint nicht gefunden');
+    }
+
+    // Resolve hostname endpoints to IP before creating firewall rules
+    if (endpoint.needsResolve) {
+      try {
+        const { address } = await dns.lookup(endpoint.host, { family: 4 });
+        this.log.info(`Kill-switch endpoint resolved: ${endpoint.host} -> ${address}`);
+        endpoint.host = address;
+        endpoint.needsResolve = false;
+      } catch (err) {
+        this.log.error(`Kill-switch DNS resolution failed for ${endpoint.host}: ${err.message}`);
+        throw new Error(`Kill-Switch: DNS-Auflösung für Endpoint ${endpoint.host} fehlgeschlagen`);
+      }
     }
 
     try {
@@ -425,8 +439,10 @@ class KillSwitch {
       if (epMatch) {
         const host = epMatch[1].trim();
         const port = epMatch[2].trim();
-        if (IPV4_RE.test(host) && PORT_RE.test(port)) {
-          endpoint = { host, port };
+        if (PORT_RE.test(port)) {
+          // Accept both IP literals and hostnames — hostname resolution
+          // happens in enable() before the endpoint is used for firewall rules.
+          endpoint = { host, port, needsResolve: !IPV4_RE.test(host) };
         }
       }
 
