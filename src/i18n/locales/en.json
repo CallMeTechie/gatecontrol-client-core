@@ -56,6 +56,10 @@
     "label": "Kill Switch",
     "desc": "Block internet connection when VPN disconnects"
   },
+  "rdpAllow": {
+    "label": "Allow Remote Desktop",
+    "desc": "Allow RDP access (port 3389) via VPN"
+  },
   "services": {
     "title": "Reachable Services"
   },

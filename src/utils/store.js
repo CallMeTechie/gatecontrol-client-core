@@ -65,6 +65,7 @@ function createStores({ userDataPath, log }) {
           interfaceName: { type: 'string', default: 'gatecontrol0' },
           autoConnect:   { type: 'boolean', default: true },
           killSwitch:    { type: 'boolean', default: false },
+          rdpAllow:      { type: 'boolean', default: false },
           splitTunnel:   { type: 'boolean', default: false },
           splitRoutes:   { type: 'string', default: '' },
           configPath:    { type: 'string', default: '' },

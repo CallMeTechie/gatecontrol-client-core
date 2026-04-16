@@ -56,6 +56,10 @@
     "label": "Kill-Switch",
     "desc": "Internetverbindung bei VPN-Trennung blockieren"
   },
+  "rdpAllow": {
+    "label": "Remote Desktop erlauben",
+    "desc": "RDP-Zugriff (Port 3389) über VPN freigeben"
+  },
   "services": {
     "title": "Erreichbare Dienste"
   },

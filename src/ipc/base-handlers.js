@@ -16,7 +16,7 @@ const { t } = require('../i18n');
 const CONFIG_WRITABLE_KEYS = new Set([
   'app.startMinimized', 'app.startWithWindows', 'app.theme',
   'app.checkInterval', 'app.configPollInterval',
-  'tunnel.autoConnect', 'tunnel.killSwitch',
+  'tunnel.autoConnect', 'tunnel.killSwitch', 'tunnel.rdpAllow',
   'tunnel.splitTunnel', 'tunnel.splitRoutes',
 ]);
 
@@ -37,6 +37,7 @@ const CONFIG_WRITABLE_KEYS = new Set([
  * @param {Function} ctx.connectTunnel - async () => void
  * @param {Function} ctx.disconnectTunnel - async () => void
  * @param {Function} ctx.toggleKillSwitch - async (enabled) => void
+ * @param {Function} [ctx.toggleRdpAllow] - async (enabled) => void
  * @param {Function} ctx.installUpdate - async () => boolean
  * @param {Function} ctx.getTunnelState - () => tunnelState object
  * @param {string} ctx.wgConfigFile - Path to the WireGuard config file
@@ -60,6 +61,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       ...tunnelState,
       endpoint: store.get('server.url', '') || tunnelState.endpoint,
       killSwitch: store.get('tunnel.killSwitch', false),
+      rdpAllow: store.get('tunnel.rdpAllow', false),
     };
   });
 
@@ -187,6 +189,11 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Kill-Switch ─────────────────────────────────────────
   ipcMain.handle('killswitch:toggle', (_, enabled) => toggleKillSwitch(enabled));
+
+  // ── RDP Allow ──────────────────────────────────────────
+  if (ctx.toggleRdpAllow) {
+    ipcMain.handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
+  }
 
   // ── Window Controls ─────────────────────────────────────
   ipcMain.on('window:minimize', () => getMainWindow()?.minimize());
