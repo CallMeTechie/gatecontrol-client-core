@@ -32,6 +32,7 @@
     "splitTunnelDesc": "Route only specific traffic through VPN",
     "splitRoutesLabel": "Routes (one per line)",
     "splitRoutesExamples": "e.g. 10.0.0.0/8 or 192.168.1.0/24",
+    "security": "Security",
     "app": "Application",
     "autostart": "Autostart",
     "minimized": "Start minimized",
