@@ -183,6 +183,58 @@ class ApiClient {
   }
 
   /**
+   * Sanitize a raw OS hostname into a DNS-label-safe form matching the
+   * server's strict validator (RFC-1123: a-z0-9 and hyphen, max 63,
+   * no leading/trailing hyphen). Lowercases, strips any dotted suffix
+   * (Mac's "Marc's-MBP.local" -> "marcs-mbp"), replaces invalid chars
+   * with hyphens, collapses repeats, and truncates. Returns null if
+   * nothing usable remains.
+   */
+  static sanitizeHostnameForDns(raw) {
+    if (raw == null) return null;
+    let s = String(raw).trim().toLowerCase();
+    if (!s) return null;
+    s = s.split('.')[0];
+    s = s.replace(/[^a-z0-9-]/g, '-');
+    s = s.replace(/-+/g, '-');
+    s = s.replace(/^-+|-+$/g, '');
+    if (s.length > 63) s = s.slice(0, 63).replace(/-+$/, '');
+    return s || null;
+  }
+
+  /**
+   * Report the OS hostname for internal DNS resolution.
+   *
+   * Server-side: rate-limited (3/min/token), license-gated
+   * (internal_dns), respects sticky admin source. Best-effort — a
+   * failure here never blocks connection flow.
+   *
+   * Returns { ok, assigned, changed } on success, or null on failure /
+   * when the feature isn't licensed on the server (403). Caller may
+   * stop re-reporting after a non-changed response to save bandwidth.
+   */
+  async reportHostname(hostname) {
+    if (!this.client || !this.peerId) return null;
+    if (typeof hostname !== 'string' || !hostname.trim()) return null;
+
+    try {
+      const { data } = await this.client.post('/api/v1/client/peer/hostname', {
+        hostname: hostname.trim(),
+      });
+      return data || null;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 403 || status === 429 || status === 400) {
+        // Feature-gated, rate-limited, or rejected — silent (debug only).
+        this.log.debug('Hostname report not accepted:', status, err.response?.data?.error);
+      } else {
+        this.log.warn('Hostname report failed:', err.message);
+      }
+      return null;
+    }
+  }
+
+  /**
    * Status-Update an Server melden
    */
   async reportStatus(status, details = {}) {
