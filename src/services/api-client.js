@@ -164,10 +164,10 @@ class ApiClient {
    * Heartbeat an Server senden
    */
   async sendHeartbeat(stats) {
-    if (!this.client || !this.peerId) return;
+    if (!this.client || !this.peerId) return null;
 
     try {
-      await this.client.post('/api/v1/client/heartbeat', {
+      const { data } = await this.client.post('/api/v1/client/heartbeat', {
         peerId: this.peerId,
         connected: stats?.connected || false,
         rxBytes: stats?.rxBytes || 0,
@@ -175,8 +175,10 @@ class ApiClient {
         uptime: stats?.uptime || 0,
         hostname: os.hostname(),
       });
+      return data || null;
     } catch (err) {
       this.log.debug('Heartbeat failed:', err.message);
+      return null;
     }
   }
 

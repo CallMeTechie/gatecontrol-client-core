@@ -9,11 +9,13 @@
  */
 
 class ConnectionMonitor {
-  constructor({ interval, onDisconnect, onStats, wgService, log }) {
+  constructor({ interval, onDisconnect, onPeerDisabled, onStats, wgService, apiClient, log }) {
     this.interval = interval || 30000;
     this.onDisconnect = onDisconnect;
+    this.onPeerDisabled = onPeerDisabled;
     this.onStats = onStats;
     this.wgService = wgService;
+    this.apiClient = apiClient || null;
     this.log = log;
 
     this.timer = null;
@@ -22,6 +24,8 @@ class ConnectionMonitor {
     this.maxFailures = 3;
     this.lastHandshake = null;
     this.handshakeTimeout = 180; // Sekunden
+    this._peerCheckCounter = 0;
+    this._peerCheckEveryN = 2; // Check peer status every Nth cycle
   }
 
   /**
@@ -99,8 +103,35 @@ class ConnectionMonitor {
         });
       }
 
+      // Periodischer Peer-Status-Check via API
+      await this._checkPeerStatus();
+
     } catch (err) {
       this._handleFailure(`Check error: ${err.message}`);
+    }
+  }
+
+  /**
+   * Peer-Status beim Server prüfen (alle N Zyklen).
+   * Löst onPeerDisabled aus wenn Peer deaktiviert wurde.
+   */
+  async _checkPeerStatus() {
+    if (!this.apiClient || !this.onPeerDisabled) return;
+
+    this._peerCheckCounter++;
+    if (this._peerCheckCounter < this._peerCheckEveryN) return;
+    this._peerCheckCounter = 0;
+
+    try {
+      const peerInfo = await this.apiClient.getPeerInfo();
+      if (peerInfo && peerInfo.enabled === false) {
+        this.log.warn('Peer is disabled on server — triggering disconnect');
+        this.stop();
+        this.onPeerDisabled(peerInfo);
+        return;
+      }
+    } catch (err) {
+      this.log.debug('Peer status check failed:', err.message);
     }
   }
 

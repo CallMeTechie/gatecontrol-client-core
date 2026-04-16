@@ -116,7 +116,8 @@
     "peerExpiresTodayBody": "Ihr Peer-Zertifikat läuft heute ab. Bitte erneuern Sie es.",
     "peerExpiresSoonTitle": "Peer-Zertifikat läuft bald ab",
     "peerExpiresSoonBody": "Ihr Peer-Zertifikat läuft in {{ days }} Tagen ab.",
-    "peerExpiryNotice": "Peer-Ablaufbenachrichtigung"
+    "peerExpiryNotice": "Peer-Ablaufbenachrichtigung",
+    "peerDisabled": "VPN-Zugang wurde vom Server deaktiviert. Verbindung getrennt."
   },
   "server": {
     "testInProgress": "Verbindungstest läuft...",

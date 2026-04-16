@@ -116,7 +116,8 @@
     "peerExpiresTodayBody": "Your peer certificate expires today. Please renew it.",
     "peerExpiresSoonTitle": "Peer certificate expiring soon",
     "peerExpiresSoonBody": "Your peer certificate expires in {{ days }} days.",
-    "peerExpiryNotice": "Peer expiry notice"
+    "peerExpiryNotice": "Peer expiry notice",
+    "peerDisabled": "VPN access has been disabled by the server. Disconnected."
   },
   "server": {
     "testInProgress": "Testing connection...",
