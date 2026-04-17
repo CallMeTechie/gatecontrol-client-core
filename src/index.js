@@ -14,6 +14,7 @@ const KillSwitch = require('./services/killswitch');
 const RdpAllow = require('./services/rdp-allow');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
+const DnsPolicy = require('./services/dns-policy');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -39,6 +40,7 @@ module.exports = {
   RdpAllow,
   ConnectionMonitor,
   Updater,
+  DnsPolicy,
 
   // Utils
   validation,
