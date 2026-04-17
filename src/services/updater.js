@@ -130,11 +130,40 @@ class Updater {
 
     const filePath = path.join(tmpDir, fileName || `GateControl-Setup-${version}.exe`);
 
+    // Re-use a cached file ONLY if it matches the expected size. Without
+    // this check, a previously interrupted download or an AV-quarantine-
+    // modified EXE would be handed to the installer untouched, producing
+    // a cryptic "NSIS installer integrity check has failed" dialog on
+    // next launch. Delete and re-download on mismatch.
     if (fs.existsSync(filePath)) {
-      this.log.info(`Update bereits heruntergeladen: ${filePath}`);
-      this.downloadPath = filePath;
-      this._notifyReady();
-      return;
+      const expected = this.latestRelease.fileSize;
+      let accept = false;
+      try {
+        const actualSize = fs.statSync(filePath).size;
+        if (!expected) {
+          // No size reference from the server — we can't verify, so
+          // play it safe and redownload rather than trust a possibly
+          // stale/corrupt cache file.
+          this.log.warn(`Cache file ${filePath} exists but server did not send fileSize — discarding`);
+        } else if (actualSize === expected) {
+          accept = true;
+        } else {
+          this.log.warn(`Cache file size mismatch (expected ${expected}, actual ${actualSize}) — discarding ${filePath}`);
+        }
+      } catch (err) {
+        this.log.warn(`Could not stat cache file ${filePath}: ${err.message}`);
+      }
+
+      if (accept) {
+        this.log.info(`Update bereits heruntergeladen: ${filePath}`);
+        this.downloadPath = filePath;
+        this._notifyReady();
+        return;
+      }
+      // Mismatch or stat failure: drop the cached file and fall through
+      // to a fresh download. unlink best-effort — if it fails, the
+      // createWriteStream below will overwrite anyway.
+      try { fs.unlinkSync(filePath); } catch { /* best effort */ }
     }
 
     this.log.info(`Lade Update herunter: ${downloadUrl}`);
