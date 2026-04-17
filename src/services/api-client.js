@@ -173,7 +173,11 @@ class ApiClient {
         rxBytes: stats?.rxBytes || 0,
         txBytes: stats?.txBytes || 0,
         uptime: stats?.uptime || 0,
-        hostname: os.hostname(),
+        // Pre-sanitize so the server's strict RFC-1123 validator accepts
+        // it on the opportunistic internal_dns capture path (heartbeat
+        // handler). Raw os.hostname() on macOS / domain-joined Windows
+        // often contains '.' or uppercase that would fail validation.
+        hostname: ApiClient.sanitizeHostnameForDns(os.hostname()) || os.hostname(),
       });
       return data || null;
     } catch (err) {
