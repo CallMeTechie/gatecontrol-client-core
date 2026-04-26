@@ -55,9 +55,14 @@ class DnsPolicy {
     const ns = namespace.startsWith('.') ? namespace : '.' + namespace;
     const comment = 'GateControl:' + ns;
 
-    // Remove any prior rule for this namespace/comment (idempotent).
+    // Remove any prior rule for this namespace, including:
+    //  - exact match on the current comment (re-installs after restart)
+    //  - same-namespace rules with any GateControl* comment (catches the
+    //    legacy 'GateControl'-without-suffix tag from <=1.16, which
+    //    otherwise piles up — one extra row in Get-DnsClientNrptRule per
+    //    install)
     await this._runPs(
-      "Get-DnsClientNrptRule | Where-Object { $_.Comment -eq '" + comment + "' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
+      "Get-DnsClientNrptRule | Where-Object { $_.Namespace -contains '" + ns + "' -and $_.Comment -like 'GateControl*' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
     );
 
     const addScript = "Add-DnsClientNrptRule -Namespace '" + ns + "' -NameServers '" + nameServer + "' -Comment '" + comment + "'";
@@ -95,8 +100,11 @@ class DnsPolicy {
    * don't silently reroute DNS on the user's next session.
    */
   async removeAll() {
+    // Match both 'GateControl:*' (current) and bare 'GateControl' (legacy
+    // <=1.16) — the bare tag wouldn't match a 'GateControl:*' wildcard
+    // and would survive uninstall/quit otherwise.
     const res = await this._runPs(
-      "Get-DnsClientNrptRule | Where-Object { $_.Comment -like 'GateControl:*' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
+      "Get-DnsClientNrptRule | Where-Object { $_.Comment -like 'GateControl*' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
     );
     if (!res.err) this.applied.clear();
   }
