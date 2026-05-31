@@ -9,8 +9,8 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Auth for the private @callmetechie GitHub Packages registry (see .npmrc).
-  # Repo secret GC_CLIENT_CORE = classic PAT with read:packages.
-  NODE_AUTH_TOKEN: ${{ secrets.GC_CLIENT_CORE }}
+  # Repo secret GC_PAT = classic PAT with read:packages.
+  NODE_AUTH_TOKEN: ${{ secrets.GC_PAT }}
 
 jobs:
   audit:
