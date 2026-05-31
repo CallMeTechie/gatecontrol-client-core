@@ -11,6 +11,7 @@
 'use strict';
 
 const { t } = require('../i18n');
+const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 
 // Config keys the renderer is allowed to write
 const CONFIG_WRITABLE_KEYS = new Set([
@@ -160,6 +161,14 @@ function registerBaseHandlers(ipcMain, ctx) {
     try {
       const fs = require('fs').promises;
       const content = await fs.readFile(result.filePaths[0], 'utf-8');
+      // Fail-closed: validate untrusted imported config before writing.
+      const validation = validateWgConfig(content);
+      if (!validation.ok) {
+        return { success: false, error: 'Invalid WireGuard config: ' + validation.errors.join(', ') };
+      }
+      if (validation.warnings && validation.warnings.length > 0) {
+        log.warn('Imported config warnings: ' + validation.warnings.join(', '));
+      }
       await wgService.writeConfig(wgConfigFile, content);
       return { success: true, path: result.filePaths[0] };
     } catch (err) {
@@ -175,6 +184,14 @@ function registerBaseHandlers(ipcMain, ctx) {
 
       if (!code) return { success: false, error: t('server.qrTimeout') };
 
+      // Fail-closed: validate untrusted scanned config before writing.
+      const validation = validateWgConfig(code.data);
+      if (!validation.ok) {
+        return { success: false, error: 'Invalid WireGuard config: ' + validation.errors.join(', ') };
+      }
+      if (validation.warnings && validation.warnings.length > 0) {
+        log.warn('Imported QR config warnings: ' + validation.warnings.join(', '));
+      }
       await wgService.writeConfig(wgConfigFile, code.data);
       return { success: true, config: code.data };
     } catch (err) {
