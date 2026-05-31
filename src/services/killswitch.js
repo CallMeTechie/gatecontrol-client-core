@@ -21,6 +21,7 @@ const execFileAsync = promisify(execFile);
 
 const dns = require('dns').promises;
 const { validateIp, validateCidr, validatePort, IPV4_RE } = require('../utils/validation');
+const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 
 function netsh(...args) {
   return execFileAsync('netsh', args);
@@ -50,8 +51,21 @@ class KillSwitch {
     let vpnSubnet = null;
     let vpnLocalIp = null;
 
+    const config = await fs.readFile(configPath, 'utf-8');
+
+    // Fail-closed: validate raw config text BEFORE the parse try/catch so the
+    // throw propagates to the outer catch (which restores policy / removes
+    // rules), instead of being swallowed by the parse catch below.
+    const validation = validateWgConfig(config);
+    if (!validation.ok) {
+      this.log.error('Kill-switch aborted — invalid WireGuard config: ' + validation.errors.join(', '));
+      throw new Error('Invalid WireGuard config: ' + validation.errors.join(', '));
+    }
+    if (validation.warnings && validation.warnings.length > 0) {
+      this.log.warn(`WireGuard config warnings: ${validation.warnings.join(', ')}`);
+    }
+
     try {
-      const config = await fs.readFile(configPath, 'utf-8');
       const parsed = this._parseConfig(config);
       endpoint = parsed.endpoint;
       vpnSubnet = parsed.vpnSubnet;
