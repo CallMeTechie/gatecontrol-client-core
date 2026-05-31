@@ -23,6 +23,9 @@ const { createLogger } = require('./utils/logger');
 const { createStores } = require('./utils/store');
 const E2EEHandler = require('./utils/e2ee');
 
+// ── Shared validators ───────────────────────────────────────
+const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
+
 // ── i18n ──────────────────────────────────────────────────
 const i18n = require('./i18n');
 
@@ -44,6 +47,7 @@ module.exports = {
 
   // Utils
   validation,
+  validateWgConfig,
   getMachineFingerprint,
   createLogger,
   createStores,
