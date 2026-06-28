@@ -28,6 +28,8 @@ class ApiClient {
     this.apiKey = apiKey;
     this.peerId = peerId;
     this.configHash = null;
+    this.portalUrl = null;
+    this.autoOpenPortal = false;
     this.client = null;
     this.clientVersion = options.clientVersion || require('../../package.json').version;
     this.clientPlatform = options.clientPlatform || 'windows';
@@ -294,6 +296,8 @@ class ApiClient {
 
     try {
       const res = await this.client.get('/api/v1/client/permissions');
+      this.portalUrl = res.data?.portalUrl || null;
+      this.autoOpenPortal = res.data?.autoOpenPortal === true;
       return res.data?.permissions || null;
     } catch (err) {
       this.log.debug('Permissions query failed:', err.message);
