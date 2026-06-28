@@ -151,5 +151,8 @@
   "locale": {
     "de": "Deutsch",
     "en": "English"
+  },
+  "portal": {
+    "open": "Portal öffnen"
   }
 }
