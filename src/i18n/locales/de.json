@@ -25,7 +25,7 @@
     "title": "Einstellungen",
     "server": "Server",
     "serverUrl": "Server-URL",
-    "apiKey": "API-Schlüssel",
+    "apiKey": "API-Schlüssel oder Einrichtungscode",
     "showApiKey": "API-Schlüssel anzeigen",
     "importConfig": "Konfiguration importieren",
     "splitTunnel": "Split-Tunnel",
@@ -40,7 +40,9 @@
     "checkInterval": "Prüfintervall (s)",
     "pollInterval": "Abfrageintervall (s)",
     "theme": "Design",
-    "language": "Sprache"
+    "language": "Sprache",
+    "apiKeyPlaceholder": "XXXX-XXXX-XXXX-XXXX oder gc_…",
+    "apiKeyHint": "In GateControl unter Peers → QR → „App einrichten“ bzw. beim Benutzer einen Einrichtungscode erzeugen – oder dessen QR-Code importieren."
   },
   "stats": {
     "endpoint": "Endpunkt",
@@ -123,14 +125,22 @@
     "testInProgress": "Verbindungstest läuft...",
     "testSuccess": "Verbindung erfolgreich",
     "testError": "Verbindungsfehler: {{ error }}",
-    "urlAndKeyRequired": "Server-URL und API-Schlüssel erforderlich",
+    "urlAndKeyRequired": "Server-URL und API-Schlüssel oder Einrichtungscode erforderlich",
     "registering": "Registriere Gerät...",
     "registered": "Gerät registriert (Peer-ID: {{ peerId }})",
     "configImported": "Konfiguration importiert: {{ path }}",
     "importError": "Import fehlgeschlagen: {{ error }}",
     "qrSuccess": "QR-Code erfolgreich gescannt",
     "qrTimeout": "QR-Code-Scan abgelaufen",
-    "cameraError": "Kamerafehler: {{ error }}"
+    "cameraError": "Kamerafehler: {{ error }}",
+    "enrollHttps": "Für einen Einrichtungscode ist eine https-Server-URL nötig.",
+    "enrollInvalid": "Der Einrichtungscode ist ungültig, abgelaufen oder wurde schon benutzt. Bitte in GateControl einen neuen Code erzeugen.",
+    "enrollForbidden": "Der Server hat die Einrichtung abgelehnt (Benutzer deaktiviert oder ohne Client-Berechtigung).",
+    "enrollLimit": "Die Peer-Grenze der Server-Lizenz ist erreicht.",
+    "enrollFingerprint": "Der Server verlangt eine Gerätebindung, aber das Gerät konnte nicht erkannt werden.",
+    "enrollRateLimited": "Zu viele Versuche. Bitte in ein paar Minuten erneut versuchen.",
+    "enrollFailed": "Einrichtung fehlgeschlagen: {{ error }}",
+    "enrolled": "Gerät eingerichtet (Peer-ID: {{ peerId }})"
   },
   "split": {
     "activateOnReconnect": "Split-Tunnel wird beim Neuverbinden aktiviert",
@@ -154,5 +164,11 @@
   },
   "portal": {
     "open": "Portal öffnen"
+  },
+  "enroll": {
+    "confirmTitle": "Mit Server verbinden?",
+    "confirmBody": "Dieser Client wird mit {{ host }} verbunden und erhält dort VPN und alle freigegebenen Funktionen. Bestätige nur, wenn du diesem Server vertraust.",
+    "connect": "Verbinden",
+    "cancel": "Abbrechen"
   }
 }

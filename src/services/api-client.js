@@ -189,6 +189,42 @@ class ApiClient {
   }
 
   /**
+   * Setup-Code einlösen (öffentlicher Endpunkt, noch kein Token nötig).
+   * Liefert { kind, token, peerId, peerName, config, hash, scopes } —
+   * peerId/config sind null, wenn der Code an keinen Peer gebunden ist;
+   * dann registriert sich der Client danach mit dem neuen Token.
+   *
+   * @param {string} serverUrl - https://host[:port]
+   * @param {string} code - XXXX-XXXX-XXXX-XXXX
+   * @param {object} [options] - { clientVersion, clientPlatform, timeout }
+   */
+  static async redeemSetupCode(serverUrl, code, options = {}) {
+    const { data } = await axios.post(
+      `${serverUrl.replace(/\/+$/, '')}/api/v1/client/enroll`,
+      {
+        code,
+        hostname: os.hostname(),
+        platform: `${os.platform()} ${os.release()}`,
+        clientVersion: options.clientVersion || require('../../package.json').version,
+      },
+      {
+        timeout: options.timeout || 15000,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Platform': options.clientPlatform || 'windows',
+          'X-Machine-Fingerprint': getMachineFingerprint(),
+        },
+      },
+    );
+    if (!data || data.ok !== true || !data.token) {
+      const err = new Error((data && data.error) || 'enroll_failed');
+      err.code = (data && data.error) || 'enroll_failed';
+      throw err;
+    }
+    return data;
+  }
+
+  /**
    * Sanitize a raw OS hostname into a DNS-label-safe form matching the
    * server's strict validator (RFC-1123: a-z0-9 and hyphen, max 63,
    * no leading/trailing hyphen). Lowercases, strips any dotted suffix

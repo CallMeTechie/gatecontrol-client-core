@@ -12,6 +12,26 @@
 
 const { t } = require('../i18n');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
+const ApiClient = require('../services/api-client');
+const { normalizeCode, normalizeServerUrl, parseEnrollmentLink } = require('../utils/enrollment');
+
+// Server error codes of POST /api/v1/client/enroll → i18n keys
+const ENROLL_ERRORS = {
+  invalid_or_expired: 'server.enrollInvalid',
+  user_disabled: 'server.enrollForbidden',
+  user_not_found: 'server.enrollForbidden',
+  no_valid_scopes: 'server.enrollForbidden',
+  limit_reached: 'server.enrollLimit',
+  fingerprint_required: 'server.enrollFingerprint',
+};
+
+function enrollErrorMessage(err) {
+  const status = err && err.response && err.response.status;
+  if (status === 429) return t('server.enrollRateLimited');
+  const code = (err && err.response && err.response.data && err.response.data.error) || (err && err.code);
+  const key = ENROLL_ERRORS[code];
+  return key ? t(key) : t('server.enrollFailed', { error: (err && err.message) || String(code) });
+}
 
 // Config keys the renderer is allowed to write
 const CONFIG_WRITABLE_KEYS = new Set([
@@ -109,7 +129,60 @@ function registerBaseHandlers(ipcMain, ctx) {
   ipcMain.handle('config:getAll', () => store.store);
 
   // ── Server Setup ────────────────────────────────────────
+  /**
+   * Redeem a one-shot setup code: store the minted token, adopt the peer (or
+   * register a new one when the code is not bound to a peer) and write the
+   * WireGuard config when the server sent one. The existing setup stays
+   * untouched until the redeem succeeded.
+   */
+  async function enrollWithCode(rawUrl, code) {
+    const serverUrl = normalizeServerUrl(/^https?:\/\//i.test(rawUrl || '') ? rawUrl : `https://${rawUrl || ''}`);
+    if (!serverUrl) return { success: false, error: t('server.enrollHttps') };
+    let data;
+    try {
+      data = await ApiClient.redeemSetupCode(serverUrl, code, {
+        clientVersion: apiClient.clientVersion,
+        clientPlatform: apiClient.clientPlatform,
+      });
+    } catch (err) {
+      log.warn(`Setup code redeem failed: ${err.message}`);
+      return { success: false, error: enrollErrorMessage(err) };
+    }
+
+    store.set('server.url', serverUrl);
+    store.set('server.apiKey', data.token);
+    apiClient.configure(serverUrl, data.token);
+    updater?.configure(serverUrl, data.token);
+
+    try {
+      let peerId = data.peerId;
+      if (!peerId) {
+        const info = await apiClient.register();
+        peerId = info.peerId;
+      }
+      store.set('server.peerId', String(peerId));
+      apiClient.setPeerId(peerId);
+
+      if (data.config) {
+        const validation = validateWgConfig(data.config);
+        if (validation.ok) {
+          await wgService.writeConfig(wgConfigFile, data.config);
+        } else {
+          log.warn('Setup code config rejected: ' + validation.errors.join(', '));
+        }
+      }
+      log.info(`Set up via setup code (peer ${peerId})`);
+      return { success: true, peerId, enrolled: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
   ipcMain.handle('server:setup', async (_, { url, apiKey }) => {
+    // The API key field also takes a setup code (XXXX-XXXX-XXXX-XXXX).
+    const code = normalizeCode(apiKey);
+    if (code) return enrollWithCode(url, code);
+
     store.set('server.url', url);
     store.set('server.apiKey', apiKey);
     apiClient.configure(url, apiKey);
@@ -129,6 +202,17 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   ipcMain.handle('server:test', async (_, { url, apiKey } = {}) => {
     try {
+      if (url && normalizeCode(apiKey)) {
+        // A setup code cannot be tested without spending it — only check
+        // that the server answers (401 without a token is the expected reply).
+        const axios = require('axios');
+        try {
+          await axios.get(`${url.replace(/\/+$/, '')}/api/v1/client/ping`, { timeout: 10000 });
+        } catch (err) {
+          if (!err.response) throw err;
+        }
+        return { success: true };
+      }
       if (url && apiKey) {
         const axios = require('axios');
         const res = await axios.get(`${url.replace(/\/+$/, '')}/api/v1/client/ping`, {
@@ -183,6 +267,24 @@ function registerBaseHandlers(ipcMain, ctx) {
       const code = jsQR(new Uint8ClampedArray(data), width, height);
 
       if (!code) return { success: false, error: t('server.qrTimeout') };
+
+      // Setup QR from the server ("App einrichten"): redeem after the user
+      // confirmed the server — a foreign QR must not repoint the client.
+      const link = parseEnrollmentLink(code.data);
+      if (link) {
+        const { response } = await dialog.showMessageBox(getMainWindow(), {
+          type: 'question',
+          buttons: [t('enroll.connect'), t('enroll.cancel')],
+          defaultId: 0,
+          cancelId: 1,
+          message: t('enroll.confirmTitle'),
+          detail: t('enroll.confirmBody', { host: new URL(link.serverUrl).host }),
+        });
+        // enrollment:true tells the renderer's scan loop to stop — otherwise
+        // the next camera frame would detect the same QR and ask again.
+        if (response !== 0) return { success: false, cancelled: true, enrollment: true };
+        return { ...(await enrollWithCode(link.serverUrl, link.code)), enrollment: true };
+      }
 
       // Fail-closed: validate untrusted scanned config before writing.
       const validation = validateWgConfig(code.data);
