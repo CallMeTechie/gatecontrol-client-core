@@ -25,7 +25,7 @@
     "title": "Settings",
     "server": "Server",
     "serverUrl": "Server URL",
-    "apiKey": "API Key",
+    "apiKey": "API key or setup code",
     "showApiKey": "Show API Key",
     "importConfig": "Import Configuration",
     "splitTunnel": "Split Tunnel",
@@ -40,7 +40,9 @@
     "checkInterval": "Check interval (s)",
     "pollInterval": "Poll interval (s)",
     "theme": "Theme",
-    "language": "Language"
+    "language": "Language",
+    "apiKeyPlaceholder": "XXXX-XXXX-XXXX-XXXX or gc_…",
+    "apiKeyHint": "Create a setup code in GateControl (Peers → QR → “Set up app”, or at the user) — or import its QR code."
   },
   "stats": {
     "endpoint": "Endpoint",
@@ -123,14 +125,22 @@
     "testInProgress": "Testing connection...",
     "testSuccess": "Connection successful",
     "testError": "Connection error: {{ error }}",
-    "urlAndKeyRequired": "Server URL and API key are required",
+    "urlAndKeyRequired": "Server URL and API key or setup code required",
     "registering": "Registering device...",
     "registered": "Device registered (Peer ID: {{ peerId }})",
     "configImported": "Configuration imported: {{ path }}",
     "importError": "Import failed: {{ error }}",
     "qrSuccess": "QR code scanned successfully",
     "qrTimeout": "QR code scan timed out",
-    "cameraError": "Camera error: {{ error }}"
+    "cameraError": "Camera error: {{ error }}",
+    "enrollHttps": "A setup code needs an https server URL.",
+    "enrollInvalid": "The setup code is invalid, expired or already used. Create a new code in GateControl.",
+    "enrollForbidden": "The server refused the setup (user disabled or without client permission).",
+    "enrollLimit": "The server license peer limit has been reached.",
+    "enrollFingerprint": "The server requires device binding, but this device could not be identified.",
+    "enrollRateLimited": "Too many attempts. Please try again in a few minutes.",
+    "enrollFailed": "Setup failed: {{ error }}",
+    "enrolled": "Device set up (peer ID: {{ peerId }})"
   },
   "split": {
     "activateOnReconnect": "Split tunnel will be activated on reconnect",
@@ -154,5 +164,11 @@
   },
   "portal": {
     "open": "Open portal"
+  },
+  "enroll": {
+    "confirmTitle": "Connect to server?",
+    "confirmBody": "This client will be connected to {{ host }} and get VPN plus every feature granted there. Only confirm if you trust this server.",
+    "connect": "Connect",
+    "cancel": "Cancel"
   }
 }
