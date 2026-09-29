@@ -13,7 +13,8 @@
 const { t } = require('../i18n');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
-const { normalizeCode, normalizeServerUrl, parseEnrollmentLink } = require('../utils/enrollment');
+const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
+const { isSafeExternalUrl } = require('../utils/external-url');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -53,7 +54,11 @@ const CONFIG_WRITABLE_KEYS = new Set([
  * @param {object} ctx.wgService - WireGuardNative instance
  * @param {object} ctx.apiClient - ApiClient instance
  * @param {object} ctx.killSwitch - KillSwitch instance
- * @param {object} ctx.updater - Updater instance (or null)
+ * @param {object} [ctx.updater] - Updater instance (or null)
+ * @param {Function} [ctx.getUpdater] - () => Updater|null; preferred over
+ *   ctx.updater when the updater is created after the handlers are registered
+ * @param {Function} [ctx.ApiClientClass] - class whose static
+ *   redeemSetupCode() is used (default: core ApiClient; subclasses inherit it)
  * @param {object} ctx.log - electron-log instance
  * @param {Function} ctx.connectTunnel - async () => void
  * @param {Function} ctx.disconnectTunnel - async () => void
@@ -62,21 +67,51 @@ const CONFIG_WRITABLE_KEYS = new Set([
  * @param {Function} ctx.installUpdate - async () => boolean
  * @param {Function} ctx.getTunnelState - () => tunnelState object
  * @param {string} ctx.wgConfigFile - Path to the WireGuard config file
+ * @param {Iterable<string>} [ctx.extraWritableKeys] - additional config keys
+ *   the renderer may write via config:set
+ * @param {Object<string, Function>} [ctx.overrides] - ipcMain.handle handlers
+ *   that replace the core handler of the same channel (e.g. a client-specific
+ *   autostart implementation) or add client-only channels. Each channel is
+ *   registered exactly once.
+ * @param {Iterable<string>} [ctx.skip] - core channels not to register at all
+ * @param {object} [ctx.shell] - Electron shell (injectable for tests)
+ * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
   const {
     app, dialog, getMainWindow, store, wgService, apiClient,
-    killSwitch, updater, log, connectTunnel, disconnectTunnel,
+    log, connectTunnel, disconnectTunnel,
     toggleKillSwitch, installUpdate, getTunnelState, wgConfigFile,
   } = ctx;
+  const getUpdater = typeof ctx.getUpdater === 'function' ? ctx.getUpdater : () => ctx.updater || null;
+  const ApiClientClass = ctx.ApiClientClass || ApiClient;
+  const getShell = () => ctx.shell || require('electron').shell;
+  const writableKeys = new Set([...CONFIG_WRITABLE_KEYS, ...(ctx.extraWritableKeys || [])]);
+  const overrides = ctx.overrides || {};
+  const skip = new Set(ctx.skip || []);
+  const registered = [];
+
+  // Registers a core handler unless the client skips or overrides the channel.
+  function handle(channel, fn) {
+    if (skip.has(channel)) return;
+    const impl = Object.prototype.hasOwnProperty.call(overrides, channel) ? overrides[channel] : fn;
+    ipcMain.handle(channel, impl);
+    registered.push(channel);
+  }
+
+  // Writes a (validated) WireGuard config and remembers where it lives.
+  async function writeTunnelConfig(content) {
+    await wgService.writeConfig(wgConfigFile, content);
+    try { store.set('tunnel.configPath', wgConfigFile); } catch { /* schema without configPath */ }
+  }
 
   // ── App ─────────────────────────────────────────────────
-  ipcMain.handle('app:version', () => app.getVersion());
+  handle('app:version', () => app.getVersion());
 
   // ── Tunnel ──────────────────────────────────────────────
-  ipcMain.handle('tunnel:connect', () => connectTunnel());
-  ipcMain.handle('tunnel:disconnect', () => disconnectTunnel());
-  ipcMain.handle('tunnel:status', () => {
+  handle('tunnel:connect', () => connectTunnel());
+  handle('tunnel:disconnect', () => disconnectTunnel());
+  handle('tunnel:status', () => {
     const tunnelState = getTunnelState();
     return {
       ...tunnelState,
@@ -87,14 +122,14 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Update ──────────────────────────────────────────────
-  ipcMain.handle('update:check', () => updater?.getUpdateInfo());
-  ipcMain.handle('update:install', () => installUpdate());
+  handle('update:check', () => getUpdater()?.getUpdateInfo() ?? null);
+  handle('update:install', () => installUpdate());
 
   // ── Services & DNS ──────────────────────────────────────
-  ipcMain.handle('permissions:get', () => apiClient?.getPermissions());
-  ipcMain.handle('services:list', () => apiClient?.getServices());
-  ipcMain.handle('traffic:stats', () => apiClient?.getTraffic());
-  ipcMain.handle('dns:leak-test', async () => {
+  handle('permissions:get', () => apiClient?.getPermissions());
+  handle('services:list', () => apiClient?.getServices());
+  handle('traffic:stats', () => apiClient?.getTraffic());
+  handle('dns:leak-test', async () => {
     const dns = require('dns').promises;
     const results = { passed: false, dnsServers: [], vpnCheck: null };
 
@@ -118,15 +153,15 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Config ──────────────────────────────────────────────
-  ipcMain.handle('config:get', (_, key) => store.get(key));
-  ipcMain.handle('config:set', (_, key, value) => {
-    if (!CONFIG_WRITABLE_KEYS.has(key)) {
+  handle('config:get', (_, key) => store.get(key));
+  handle('config:set', (_, key, value) => {
+    if (!writableKeys.has(key)) {
       log.warn(`config:set rejected for key: ${key}`);
       return;
     }
     store.set(key, value);
   });
-  ipcMain.handle('config:getAll', () => store.store);
+  handle('config:getAll', () => store.store);
 
   // ── Server Setup ────────────────────────────────────────
   /**
@@ -136,11 +171,11 @@ function registerBaseHandlers(ipcMain, ctx) {
    * untouched until the redeem succeeded.
    */
   async function enrollWithCode(rawUrl, code) {
-    const serverUrl = normalizeServerUrl(/^https?:\/\//i.test(rawUrl || '') ? rawUrl : `https://${rawUrl || ''}`);
+    const serverUrl = toServerOrigin(rawUrl);
     if (!serverUrl) return { success: false, error: t('server.enrollHttps') };
     let data;
     try {
-      data = await ApiClient.redeemSetupCode(serverUrl, code, {
+      data = await ApiClientClass.redeemSetupCode(serverUrl, code, {
         clientVersion: apiClient.clientVersion,
         clientPlatform: apiClient.clientPlatform,
       });
@@ -152,7 +187,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     store.set('server.url', serverUrl);
     store.set('server.apiKey', data.token);
     apiClient.configure(serverUrl, data.token);
-    updater?.configure(serverUrl, data.token);
+    getUpdater()?.configure(serverUrl, data.token);
 
     try {
       let peerId = data.peerId;
@@ -166,7 +201,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       if (data.config) {
         const validation = validateWgConfig(data.config);
         if (validation.ok) {
-          await wgService.writeConfig(wgConfigFile, data.config);
+          await writeTunnelConfig(data.config);
         } else {
           log.warn('Setup code config rejected: ' + validation.errors.join(', '));
         }
@@ -178,15 +213,21 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   }
 
-  ipcMain.handle('server:setup', async (_, { url, apiKey }) => {
+  handle('server:setup', async (_, { url, apiKey } = {}) => {
     // The API key field also takes a setup code (XXXX-XXXX-XXXX-XXXX).
     const code = normalizeCode(apiKey);
     if (code) return enrollWithCode(url, code);
 
-    store.set('server.url', url);
+    // The API token travels in a header — never over plain http.
+    const serverUrl = toServerOrigin(url);
+    if (!serverUrl) return { success: false, error: t('server.httpsRequired') };
+    if (typeof apiKey !== 'string' || !apiKey.trim()) return { success: false, error: t('server.urlAndKeyRequired') };
+    apiKey = apiKey.trim();
+
+    store.set('server.url', serverUrl);
     store.set('server.apiKey', apiKey);
-    apiClient.configure(url, apiKey);
-    updater?.configure(url, apiKey);
+    apiClient.configure(serverUrl, apiKey);
+    getUpdater()?.configure(serverUrl, apiKey);
 
     try {
       await apiClient.ping();
@@ -200,14 +241,18 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
-  ipcMain.handle('server:test', async (_, { url, apiKey } = {}) => {
+  handle('server:test', async (_, { url, apiKey } = {}) => {
     try {
+      if (url) {
+        url = toServerOrigin(url);
+        if (!url) return { success: false, error: t('server.httpsRequired') };
+      }
       if (url && normalizeCode(apiKey)) {
         // A setup code cannot be tested without spending it — only check
         // that the server answers (401 without a token is the expected reply).
         const axios = require('axios');
         try {
-          await axios.get(`${url.replace(/\/+$/, '')}/api/v1/client/ping`, { timeout: 10000 });
+          await axios.get(`${url}/api/v1/client/ping`, { timeout: 10000 });
         } catch (err) {
           if (!err.response) throw err;
         }
@@ -215,7 +260,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       }
       if (url && apiKey) {
         const axios = require('axios');
-        const res = await axios.get(`${url.replace(/\/+$/, '')}/api/v1/client/ping`, {
+        const res = await axios.get(`${url}/api/v1/client/ping`, {
           headers: { 'X-API-Token': apiKey },
           timeout: 10000,
         });
@@ -229,7 +274,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Config Import ───────────────────────────────────────
-  ipcMain.handle('config:import-file', async () => {
+  handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
     const result = await dialog.showOpenDialog(mainWindow, {
       title: t('dialog.importTitle'),
@@ -253,14 +298,14 @@ function registerBaseHandlers(ipcMain, ctx) {
       if (validation.warnings && validation.warnings.length > 0) {
         log.warn('Imported config warnings: ' + validation.warnings.join(', '));
       }
-      await wgService.writeConfig(wgConfigFile, content);
+      await writeTunnelConfig(content);
       return { success: true, path: result.filePaths[0] };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle('config:import-qr', async (_, imageData) => {
+  handle('config:import-qr', async (_, imageData) => {
     try {
       const jsQR = require('jsqr');
       const { data, width, height } = imageData;
@@ -294,24 +339,24 @@ function registerBaseHandlers(ipcMain, ctx) {
       if (validation.warnings && validation.warnings.length > 0) {
         log.warn('Imported QR config warnings: ' + validation.warnings.join(', '));
       }
-      await wgService.writeConfig(wgConfigFile, code.data);
-      return { success: true, config: code.data };
+      await writeTunnelConfig(code.data);
+      return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
   // ── WireGuard Check ─────────────────────────────────────
-  ipcMain.handle('wireguard:check', async () => {
+  handle('wireguard:check', async () => {
     return { installed: true, version: 'wireguard-nt (embedded)' };
   });
 
   // ── Kill-Switch ─────────────────────────────────────────
-  ipcMain.handle('killswitch:toggle', (_, enabled) => toggleKillSwitch(enabled));
+  handle('killswitch:toggle', (_, enabled) => toggleKillSwitch(enabled));
 
   // ── RDP Allow ──────────────────────────────────────────
   if (ctx.toggleRdpAllow) {
-    ipcMain.handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
+    handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
   }
 
   // ── Window Controls ─────────────────────────────────────
@@ -319,7 +364,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   ipcMain.on('window:close', () => getMainWindow()?.hide());
 
   // ── Autostart ───────────────────────────────────────────
-  ipcMain.handle('autostart:set', (_, enabled) => {
+  handle('autostart:set', (_, enabled) => {
     store.set('app.startWithWindows', enabled);
     app.setLoginItemSettings({
       openAtLogin: enabled,
@@ -330,15 +375,22 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Shell ───────────────────────────────────────────────
-  ipcMain.handle('shell:open-external', (_, url) => {
-    const { shell } = require('electron');
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      shell.openExternal(url);
+  handle('shell:open-external', async (_, url) => {
+    if (!isSafeExternalUrl(url)) {
+      log.warn('shell:open-external rejected a non-http(s) URL');
+      return false;
+    }
+    try {
+      await getShell().openExternal(url.trim());
+      return true;
+    } catch (err) {
+      log.warn('shell:open-external failed:', err.message);
+      return false;
     }
   });
 
   // ── Logs ────────────────────────────────────────────────
-  ipcMain.handle('logs:get', async (_, opts = {}) => {
+  handle('logs:get', async (_, opts = {}) => {
     const fs = require('fs').promises;
     try {
       const logPath = log.transports.file.getFile().path;
@@ -385,8 +437,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
-  ipcMain.handle('logs:export', async () => {
-    const fs = require('fs').promises;
+  handle('logs:export', async () => {
     try {
       const logPath = log.transports.file.getFile().path;
       return logPath;
@@ -394,6 +445,30 @@ function registerBaseHandlers(ipcMain, ctx) {
       return null;
     }
   });
+
+  // Shows the log file in Explorer. Takes no path from the renderer, so it
+  // cannot be used to reveal (or, via openExternal, open) arbitrary files.
+  handle('logs:show', async () => {
+    try {
+      const logPath = log.transports.file.getFile().path;
+      if (!logPath) return false;
+      getShell().showItemInFolder(logPath);
+      return true;
+    } catch (err) {
+      log.warn('logs:show failed:', err && err.message);
+      return false;
+    }
+  });
+
+  // Client handlers for channels core does not know
+  for (const [channel, fn] of Object.entries(overrides)) {
+    if (!registered.includes(channel) && !skip.has(channel)) {
+      ipcMain.handle(channel, fn);
+      registered.push(channel);
+    }
+  }
+
+  return registered;
 }
 
 module.exports = { registerBaseHandlers };

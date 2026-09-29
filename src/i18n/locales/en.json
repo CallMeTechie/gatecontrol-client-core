@@ -133,6 +133,7 @@
     "qrSuccess": "QR code scanned successfully",
     "qrTimeout": "QR code scan timed out",
     "cameraError": "Camera error: {{ error }}",
+    "httpsRequired": "The server URL must use https (e.g. https://gate.example.com).",
     "enrollHttps": "A setup code needs an https server URL.",
     "enrollInvalid": "The setup code is invalid, expired or already used. Create a new code in GateControl.",
     "enrollForbidden": "The server refused the setup (user disabled or without client permission).",

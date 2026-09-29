@@ -40,6 +40,19 @@ function normalizeServerUrl(raw) {
   return url.origin;
 }
 
+/**
+ * Server URL as typed by the user ("gate.example.com", "https://gate…/"):
+ * a missing scheme defaults to https, anything but https is refused.
+ * Returns the https origin or null.
+ */
+function toServerOrigin(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const trimmed = raw.trim();
+  // "host:port" or "host" without scheme → https; an explicit other scheme stays and is refused
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return normalizeServerUrl(withScheme);
+}
+
 /** Parses a scanned setup link; null if it is anything else (e.g. a WG config). */
 function parseEnrollmentLink(raw) {
   if (typeof raw !== 'string') return null;
@@ -56,4 +69,4 @@ function parseEnrollmentLink(raw) {
   return { serverUrl, code };
 }
 
-module.exports = { normalizeCode, normalizeServerUrl, parseEnrollmentLink };
+module.exports = { normalizeCode, normalizeServerUrl, toServerOrigin, parseEnrollmentLink };
