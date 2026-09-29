@@ -22,6 +22,8 @@ const { getMachineFingerprint } = require('./utils/machine-id');
 const { createLogger } = require('./utils/logger');
 const { createStores } = require('./utils/store');
 const E2EEHandler = require('./utils/e2ee');
+const enrollment = require('./utils/enrollment');
+const { isSafeExternalUrl } = require('./utils/external-url');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -52,6 +54,8 @@ module.exports = {
   createLogger,
   createStores,
   E2EEHandler,
+  enrollment,
+  isSafeExternalUrl,
 
   // IPC
   registerBaseHandlers,
