@@ -1,13 +1,27 @@
 /**
  * GateControl – Auto-Update Service (Core)
  *
- * Prüft den GateControl-Server auf neue Versionen,
- * lädt Updates im Hintergrund herunter und bietet
- * Installation per Dialog an.
+ * Prüft den GateControl-Server auf neue Versionen, lädt Updates im
+ * Hintergrund herunter und bietet Installation per Dialog an.
+ *
+ * Signierte Updates: Die Clients haben kein Authenticode-Zertifikat. Jedes
+ * Release trägt deshalb ein Manifest (update-manifest.json) mit Produkt,
+ * Version, Dateiname, SHA-256 und Größe des Installers, signiert mit einem
+ * Ed25519-Schlüssel, der nur als GitHub-Actions-Secret existiert. Der Server
+ * reicht Manifest und Signatur unverändert durch. Dieser Updater
+ *   - läuft nur mit einem gültigen Ed25519-Public-Key (sonst deaktiviert),
+ *   - prüft die Signatur über die exakten Manifest-Bytes,
+ *   - akzeptiert nur Produkt, Version, Dateiname, Hash und Größe aus dem
+ *     signierten Manifest (nie aus den unsignierten Feldern der Antwort),
+ *   - lädt nur über https und schickt den API-Token nur an den eigenen Server,
+ *   - verwirft Downloads mit falscher Größe oder falschem Hash und
+ *   - hasht den Installer direkt vor dem Start erneut.
+ * Einen Rückfall auf unsignierte Updates gibt es nicht.
  */
 
 const { app, shell } = require('electron');
 const axios = require('axios');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -15,20 +29,163 @@ const os = require('os');
 const CHECK_DELAY = 10000;       // 10s nach App-Start
 const CHECK_INTERVAL = 21600000; // 6 Stunden
 
+const MANIFEST_SCHEMA = 1;
+const MAX_MANIFEST_LENGTH = 16 * 1024;
+const FILE_NAME_RE = /^[A-Za-z0-9._ -]{1,200}\.exe$/;
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const PUBLIC_KEY_PLACEHOLDER = 'REPLACE_WITH_UPDATE_PUBLIC_KEY';
+const REJECT_MSG = 'Update nicht signiert/ungültig – abgelehnt';
+
+/**
+ * PEM → Ed25519-KeyObject, sonst null (Platzhalter, leer, anderer Typ, kaputt).
+ */
+function parsePublicKey(pem) {
+  if (typeof pem !== 'string' || !pem.trim() || pem.includes(PUBLIC_KEY_PLACEHOLDER)) return null;
+  try {
+    const key = crypto.createPublicKey(pem);
+    return key.asymmetricKeyType === 'ed25519' ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseVersion(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || ''));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** true, wenn a strikt neuer als b ist; bei unlesbaren Versionen false. */
+function isNewerVersion(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  if (!pa || !pb) return false;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return true;
+    if (pa[i] < pb[i]) return false;
+  }
+  return false;
+}
+
+/**
+ * Prüft Signatur und Inhalt eines Update-Manifests.
+ * @returns {{ok: true, manifest: object} | {ok: false, reason: string}}
+ */
+function verifyUpdateManifest({ manifest, signature, publicKey, product, offeredVersion, currentVersion }) {
+  const fail = (reason) => ({ ok: false, reason });
+  const key = publicKey && typeof publicKey === 'object' ? publicKey : parsePublicKey(publicKey);
+  if (!key) return fail('kein gültiger Public Key');
+  if (typeof manifest !== 'string' || !manifest || manifest.length > MAX_MANIFEST_LENGTH) return fail('Manifest fehlt');
+  if (typeof signature !== 'string' || !signature.trim()) return fail('Signatur fehlt');
+
+  const sig = Buffer.from(signature.trim(), 'base64');
+  if (sig.length !== 64) return fail('Signatur hat falsche Länge');
+
+  let valid = false;
+  try {
+    valid = crypto.verify(null, Buffer.from(manifest, 'utf8'), key, sig);
+  } catch {
+    valid = false;
+  }
+  if (!valid) return fail('Signatur ungültig');
+
+  let m;
+  try {
+    m = JSON.parse(manifest);
+  } catch {
+    return fail('Manifest kein JSON');
+  }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return fail('Manifest kein Objekt');
+  if (m.schema !== MANIFEST_SCHEMA) return fail(`unbekanntes Schema ${m.schema}`);
+  if (m.product !== product) return fail(`falsches Produkt ${m.product}`);
+  if (typeof m.version !== 'string' || !VERSION_RE.test(m.version)) return fail('Version ungültig');
+  if (m.version !== offeredVersion) return fail(`Version ${m.version} passt nicht zum Angebot ${offeredVersion}`);
+  if (!isNewerVersion(m.version, currentVersion)) return fail(`Version ${m.version} ist nicht neuer als ${currentVersion}`);
+  if (typeof m.fileName !== 'string' || !FILE_NAME_RE.test(m.fileName)
+      || m.fileName !== path.basename(m.fileName) || m.fileName !== path.win32.basename(m.fileName)
+      || m.fileName.startsWith('.')) {
+    return fail('Dateiname ungültig');
+  }
+  if (typeof m.sha256 !== 'string' || !SHA256_RE.test(m.sha256)) return fail('SHA-256 ungültig');
+  if (!Number.isSafeInteger(m.size) || m.size <= 0) return fail('Größe ungültig');
+
+  return {
+    ok: true,
+    manifest: { schema: m.schema, product: m.product, version: m.version, fileName: m.fileName, sha256: m.sha256, size: m.size },
+  };
+}
+
+/** SHA-256 + Größe einer Datei (synchron, in Blöcken). */
+function hashFileSync(filePath) {
+  const hash = crypto.createHash('sha256');
+  const buf = Buffer.alloc(1024 * 1024);
+  let size = 0;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let n;
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+      hash.update(buf.subarray(0, n));
+      size += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { sha256: hash.digest('hex'), size };
+}
+
+/** SHA-256 + Größe einer Datei (asynchron). */
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    fs.createReadStream(filePath)
+      .on('data', (chunk) => { hash.update(chunk); size += chunk.length; })
+      .on('error', reject)
+      .on('end', () => resolve({ sha256: hash.digest('hex'), size }));
+  });
+}
+
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 class Updater {
-  constructor({ serverUrl, apiKey, log, clientType }) {
+  /**
+   * @param {object} opts
+   * @param {string} opts.serverUrl
+   * @param {string} opts.apiKey
+   * @param {object} opts.log
+   * @param {'pro'|'community'} [opts.product] - Produkt im signierten Manifest
+   * @param {'pro'|'community'} [opts.clientType] - Alias für product (Altbestand)
+   * @param {string} opts.publicKey - Ed25519-Public-Key (SPKI-PEM). Ohne gültigen
+   *   Schlüssel bleibt der Updater deaktiviert.
+   * @param {string} [opts.downloadDir] - Zielverzeichnis (Standard: tmp/gatecontrol-update)
+   */
+  constructor({ serverUrl, apiKey, log, clientType, product, publicKey, downloadDir }) {
     this.log = log;
     this.serverUrl = serverUrl;
     this.apiKey = apiKey;
     // Auto-detect aus app.name falls nicht explizit gesetzt
     const appName = (app.getName() || '').toLowerCase();
-    this.clientType = clientType || (appName.includes('pro') ? 'pro' : 'community');
+    this.clientType = product || clientType || (appName.includes('pro') ? 'pro' : 'community');
     this.appName = app.getName() || '';
     this.currentVersion = app.getVersion();
+    this.downloadDir = path.resolve(downloadDir || path.join(os.tmpdir(), 'gatecontrol-update'));
     this.downloadPath = null;
     this.latestRelease = null;
     this.checkTimer = null;
+    this.startTimer = null;
     this.onUpdateReady = null;
+
+    this.publicKey = parsePublicKey(publicKey);
+    this.disabled = !this.publicKey;
+    if (this.disabled) {
+      this.log.warn('Auto-Update deaktiviert: kein gültiger Update-Signaturschlüssel (Ed25519) konfiguriert');
+    }
   }
 
   /**
@@ -44,9 +201,12 @@ class Updater {
    */
   start(onUpdateReady) {
     this.onUpdateReady = onUpdateReady;
+    if (this.disabled) {
+      this.log.warn('Auto-Update nicht gestartet: kein gültiger Update-Signaturschlüssel');
+      return;
+    }
 
-    setTimeout(() => this._check(), CHECK_DELAY);
-
+    this.startTimer = setTimeout(() => this._check(), CHECK_DELAY);
     this.checkTimer = setInterval(() => this._check(), CHECK_INTERVAL);
 
     this.log.info('Auto-Update gestartet');
@@ -64,16 +224,28 @@ class Updater {
    * Timer stoppen
    */
   stop() {
+    if (this.startTimer) {
+      clearTimeout(this.startTimer);
+      this.startTimer = null;
+    }
     if (this.checkTimer) {
       clearInterval(this.checkTimer);
       this.checkTimer = null;
     }
   }
 
+  _reject(reason) {
+    this.log.error(`${REJECT_MSG}: ${reason}`);
+  }
+
   /**
    * Update-Check durchführen
    */
   async _check() {
+    if (this.disabled) {
+      this.log.debug('Update-Check übersprungen: Auto-Update deaktiviert (kein Signaturschlüssel)');
+      return;
+    }
     if (!this.serverUrl || !this.apiKey) {
       this.log.debug('Update-Check übersprungen: Server oder API-Key nicht konfiguriert');
       return;
@@ -94,17 +266,54 @@ class Updater {
         timeout: 15000,
       });
 
-      this.log.info(`Update-Check Antwort: ${JSON.stringify(res.data)}`);
-
-      if (!res.data?.ok || !res.data?.available) {
+      const data = res.data || {};
+      if (!data.ok || !data.available) {
         this.log.info(`Kein Update verfügbar (aktuell: ${this.currentVersion})`);
         return;
       }
+      this.log.info(`Update-Check Antwort: Version ${data.version}, signiert: ${!!(data.manifest && data.signature)}`);
 
-      const { version, downloadUrl, fileName, fileSize, releaseNotes } = res.data;
-      this.log.info(`Update verfügbar: ${this.currentVersion} -> ${version}`);
+      const result = verifyUpdateManifest({
+        manifest: data.manifest,
+        signature: data.signature,
+        publicKey: this.publicKey,
+        product: this.clientType,
+        offeredVersion: data.version,
+        currentVersion: this.currentVersion,
+      });
+      if (!result.ok) {
+        this._reject(result.reason);
+        return;
+      }
+      const m = result.manifest;
 
-      this.latestRelease = { version, downloadUrl, fileName, fileSize, releaseNotes };
+      let dl;
+      try {
+        dl = new URL(data.downloadUrl);
+      } catch {
+        this._reject('Download-URL fehlt oder ungültig');
+        return;
+      }
+      if (dl.protocol !== 'https:') {
+        this._reject(`Download-URL ist nicht https (${dl.protocol})`);
+        return;
+      }
+
+      this.log.info(`Signiertes Update verfügbar: ${this.currentVersion} -> ${m.version}`);
+
+      // Ein neues Angebot verwirft ein früher geprüftes Download-Ergebnis,
+      // außer es ist exakt dieselbe Datei.
+      if (!this.latestRelease || this.latestRelease.sha256 !== m.sha256) {
+        this.downloadPath = null;
+      }
+      this.latestRelease = {
+        version: m.version,
+        downloadUrl: dl.toString(),
+        fileName: m.fileName,
+        fileSize: m.size,
+        sha256: m.sha256,
+        releaseNotes: typeof data.releaseNotes === 'string' ? data.releaseNotes : '',
+      };
 
       await this._download();
     } catch (err) {
@@ -113,95 +322,120 @@ class Updater {
   }
 
   /**
-   * Installer herunterladen
+   * Installer herunterladen (nur mit geprüftem Manifest)
    */
   async _download() {
-    if (!this.latestRelease?.downloadUrl) {
-      this.log.warn('Kein Download-URL vorhanden');
+    const rel = this.latestRelease;
+    if (!rel?.downloadUrl || !rel.sha256 || !rel.fileSize || !FILE_NAME_RE.test(rel.fileName || '')) {
+      this.log.warn('Kein geprüftes Update zum Herunterladen');
       return;
     }
 
-    const { downloadUrl, fileName, version } = this.latestRelease;
-    const tmpDir = path.join(os.tmpdir(), 'gatecontrol-update');
-
     try {
-      fs.mkdirSync(tmpDir, { recursive: true });
-    } catch {}
+      fs.mkdirSync(this.downloadDir, { recursive: true });
+    } catch { /* createWriteStream meldet den Fehler */ }
 
-    const filePath = path.join(tmpDir, fileName || `GateControl-Setup-${version}.exe`);
+    const filePath = path.join(this.downloadDir, path.basename(rel.fileName));
+    if (path.dirname(filePath) !== this.downloadDir) {
+      this._reject('Dateiname verlässt das Download-Verzeichnis');
+      return;
+    }
+    const partPath = `${filePath}.part`;
 
-    // Re-use a cached file ONLY if it matches the expected size. Without
-    // this check, a previously interrupted download or an AV-quarantine-
-    // modified EXE would be handed to the installer untouched, producing
-    // a cryptic "NSIS installer integrity check has failed" dialog on
-    // next launch. Delete and re-download on mismatch.
+    // Vorhandene Datei nur nach erneutem Hashen wiederverwenden.
     if (fs.existsSync(filePath)) {
-      const expected = this.latestRelease.fileSize;
       let accept = false;
       try {
-        const actualSize = fs.statSync(filePath).size;
-        if (!expected) {
-          // No size reference from the server — we can't verify, so
-          // play it safe and redownload rather than trust a possibly
-          // stale/corrupt cache file.
-          this.log.warn(`Cache file ${filePath} exists but server did not send fileSize — discarding`);
-        } else if (actualSize === expected) {
-          accept = true;
-        } else {
-          this.log.warn(`Cache file size mismatch (expected ${expected}, actual ${actualSize}) — discarding ${filePath}`);
-        }
+        const actual = await hashFile(filePath);
+        accept = actual.size === rel.fileSize && actual.sha256 === rel.sha256;
+        if (!accept) this.log.warn(`Zwischengespeichertes Update passt nicht zum Manifest – verwerfe ${filePath}`);
       } catch (err) {
-        this.log.warn(`Could not stat cache file ${filePath}: ${err.message}`);
+        this.log.warn(`Zwischengespeichertes Update nicht lesbar (${filePath}): ${err.message}`);
       }
-
       if (accept) {
-        this.log.info(`Update bereits heruntergeladen: ${filePath}`);
+        this.log.info(`Update bereits heruntergeladen und geprüft: ${filePath}`);
         this.downloadPath = filePath;
         this._notifyReady();
         return;
       }
-      // Mismatch or stat failure: drop the cached file and fall through
-      // to a fresh download. unlink best-effort — if it fails, the
-      // createWriteStream below will overwrite anyway.
       try { fs.unlinkSync(filePath); } catch { /* best effort */ }
     }
 
-    this.log.info(`Lade Update herunter: ${downloadUrl}`);
+    // Token nur an den eigenen Server (z. B. Proxy für private Repos), nie an
+    // GitHub oder andere Hosts. Mit Token keine Weiterleitungen folgen, damit
+    // der Header nicht an ein fremdes Ziel wandert.
+    const serverOrigin = originOf(this.serverUrl);
+    const sameOrigin = !!serverOrigin && originOf(rel.downloadUrl) === serverOrigin;
+    const headers = sameOrigin && this.apiKey ? { 'X-API-Token': this.apiKey } : {};
 
+    this.log.info(`Lade Update herunter: ${rel.downloadUrl}`);
+
+    try { fs.unlinkSync(partPath); } catch { /* nicht vorhanden */ }
     try {
-      const res = await axios.get(downloadUrl, {
+      const res = await axios.get(rel.downloadUrl, {
         responseType: 'stream',
-        headers: {
-          'X-API-Token': this.apiKey,
-        },
+        headers,
         timeout: 300000,
+        ...(sameOrigin ? { maxRedirects: 0 } : {}),
       });
 
-      const writer = fs.createWriteStream(filePath);
-      res.data.pipe(writer);
-
-      await new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-
-      if (this.latestRelease.fileSize) {
-        const stat = fs.statSync(filePath);
-        if (stat.size !== this.latestRelease.fileSize) {
-          this.log.error(`Integrity-Check fehlgeschlagen: erwartet ${this.latestRelease.fileSize}, bekam ${stat.size}`);
-          try { fs.unlinkSync(filePath); } catch {}
-          return;
-        }
-        this.log.info(`Integrity-Check bestanden (${stat.size} Bytes)`);
+      const actual = await this._writeAndHash(res.data, partPath, rel.fileSize);
+      if (actual.size !== rel.fileSize || actual.sha256 !== rel.sha256) {
+        this._reject(`Download passt nicht zum Manifest (Größe ${actual.size}/${rel.fileSize}, SHA-256 ${actual.sha256})`);
+        try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+        return;
       }
+      fs.renameSync(partPath, filePath);
+      this.log.info(`Integrity-Check bestanden (${actual.size} Bytes, SHA-256 ${actual.sha256})`);
 
       this.downloadPath = filePath;
       this.log.info(`Update heruntergeladen: ${filePath}`);
       this._notifyReady();
     } catch (err) {
       this.log.warn(`Update-Download fehlgeschlagen: ${err.message}`);
-      try { fs.unlinkSync(filePath); } catch {}
+      try { fs.unlinkSync(partPath); } catch { /* best effort */ }
     }
+  }
+
+  /**
+   * Stream in Datei schreiben und dabei hashen; bricht ab, sobald mehr Bytes
+   * als erwartet kommen.
+   */
+  _writeAndHash(stream, filePath, maxBytes) {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      let size = 0;
+      let done = false;
+      const writer = fs.createWriteStream(filePath, { flags: 'wx' });
+      const finish = (err) => {
+        if (done) return;
+        done = true;
+        if (err) {
+          try { stream.destroy(); } catch { /* ignore */ }
+          if (writer.closed) {
+            reject(err);
+          } else {
+            writer.once('close', () => reject(err));
+            writer.destroy();
+          }
+        } else {
+          resolve({ size, sha256: hash.digest('hex') });
+        }
+      };
+      stream.on('data', (chunk) => {
+        if (done) return;
+        size += chunk.length;
+        if (size > maxBytes) {
+          finish(new Error(`Download größer als erwartet (> ${maxBytes} Bytes)`));
+          return;
+        }
+        hash.update(chunk);
+      });
+      stream.on('error', finish);
+      writer.on('error', finish);
+      writer.on('finish', () => finish());
+      stream.pipe(writer);
+    });
   }
 
   /**
@@ -218,15 +452,30 @@ class Updater {
   }
 
   /**
-   * Update installieren (Installer starten, App beenden)
+   * Update installieren (Installer starten, App beenden). Der Installer wird
+   * unmittelbar vor dem Start erneut gehasht.
    */
   install() {
-    if (!this.downloadPath || !fs.existsSync(this.downloadPath)) {
-      this.log.error('Kein heruntergeladenes Update gefunden');
+    if (this.disabled || !this.latestRelease?.sha256 || !this.downloadPath || !fs.existsSync(this.downloadPath)) {
+      this.log.error('Kein geprüftes Update gefunden');
       return false;
     }
 
-    this.log.info(`Starte Installer: ${this.downloadPath}`);
+    let actual;
+    try {
+      actual = hashFileSync(this.downloadPath);
+    } catch (err) {
+      this._reject(`Installer nicht lesbar: ${err.message}`);
+      return false;
+    }
+    if (actual.size !== this.latestRelease.fileSize || actual.sha256 !== this.latestRelease.sha256) {
+      this._reject('Installer wurde nach dem Download verändert');
+      try { fs.unlinkSync(this.downloadPath); } catch { /* best effort */ }
+      this.downloadPath = null;
+      return false;
+    }
+
+    this.log.info(`Starte Installer: ${this.downloadPath} (SHA-256 ${actual.sha256})`);
     shell.openPath(this.downloadPath);
     return true;
   }
@@ -235,7 +484,7 @@ class Updater {
    * Gibt zurück ob ein Update bereit zur Installation ist
    */
   isUpdateReady() {
-    return !!(this.downloadPath && fs.existsSync(this.downloadPath) && this.latestRelease);
+    return !!(!this.disabled && this.downloadPath && fs.existsSync(this.downloadPath) && this.latestRelease?.sha256);
   }
 
   /**
@@ -249,5 +498,10 @@ class Updater {
     };
   }
 }
+
+Updater.verifyUpdateManifest = verifyUpdateManifest;
+Updater.parsePublicKey = parsePublicKey;
+Updater.isNewerVersion = isNewerVersion;
+Updater.PUBLIC_KEY_PLACEHOLDER = PUBLIC_KEY_PLACEHOLDER;
 
 module.exports = Updater;
