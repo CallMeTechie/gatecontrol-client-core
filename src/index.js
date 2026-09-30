@@ -11,6 +11,7 @@
 const WireGuardService = require('./services/wireguard-native');
 const ApiClient = require('./services/api-client');
 const KillSwitch = require('./services/killswitch');
+const editions = require('./services/editions');
 const RdpAllow = require('./services/rdp-allow');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
@@ -42,6 +43,7 @@ module.exports = {
   WireGuardService,
   ApiClient,
   KillSwitch,
+  editions,
   RdpAllow,
   ConnectionMonitor,
   Updater,

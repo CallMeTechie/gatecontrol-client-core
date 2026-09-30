@@ -19,8 +19,14 @@
  *   userData/killswitch-state.json persistiert, BEVOR die Firewall
  *   verändert wird. Nach einem Absturz räumt recoverStaleState() beim
  *   nächsten Start Regeln und Policy wieder auf.
- * - Alle Regeln tragen das Präfix "GateControl_KS_" und werden beim
- *   Aufräumen per Präfix gefunden und gelöscht.
+ * - Alle Regeln tragen ein Präfix pro Edition ("GateControl_Pro_KS_" bzw.
+ *   "GateControl_Community_KS_", siehe editions.js) und werden beim
+ *   Aufräumen per Präfix gefunden und gelöscht. So löscht eine App nie die
+ *   Regeln der anderen, wenn beide installiert sind.
+ * - Regeln mit dem alten gemeinsamen Präfix "GateControl_KS_" (Versionen
+ *   vor der Trennung) tragen kein program= und lassen sich keiner App
+ *   zuordnen. Sie werden nur entfernt, wenn keine andere Edition
+ *   installiert ist oder läuft (siehe _mayRemoveLegacyRules()).
  * - Alle Werte, die an netsh gehen, werden validiert; netsh-Fehler werden
  *   mit der netsh-Ausgabe weitergereicht statt verschluckt.
  */
@@ -36,10 +42,13 @@ const execFileAsync = promisify(execFile);
 const dns = require('dns').promises;
 const { validateIp, validateCidr, IPV4_RE } = require('../utils/validation');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
+const editions = require('./editions');
 
-const RULE_PREFIX = 'GateControl_KS';
-const RULE_NAME_RE = /^GateControl_KS_[A-Za-z0-9_]+$/;
-const RULE_NAME_SCAN_RE = /GateControl_KS_[A-Za-z0-9_]+/g;
+const LEGACY_RULE_PREFIX = editions.LEGACY_KILLSWITCH_RULE_PREFIX;
+// Alle Kill-Switch-Regeln aller Editionen und der Altversion:
+// GateControl_KS_…, GateControl_Pro_KS_…, GateControl_Community_KS_…
+// Die Lookbehind-Grenze verhindert Treffer mitten in fremden Namen.
+const ANY_KS_RULE_SCAN_RE = /(?<![A-Za-z0-9_])GateControl_(?:[A-Za-z0-9]+_)?KS_[A-Za-z0-9_]+/g;
 const PROFILES = ['domain', 'private', 'public'];
 const INBOUND_POLICIES = ['blockinbound', 'blockinboundalways', 'allowinbound', 'notconfigured'];
 const OUTBOUND_POLICIES = ['allowoutbound', 'blockoutbound', 'notconfigured'];
@@ -98,6 +107,12 @@ function validatePortStrict(val) {
   return String(n);
 }
 
+/** Regex für genau die Regelnamen "<prefix>_<Name>" */
+function ruleNameRe(prefix) {
+  if (!/^[A-Za-z0-9_]+$/.test(prefix)) throw new Error(`Ungültiges Regelpräfix: ${prefix}`);
+  return new RegExp(`^${prefix}_[A-Za-z0-9_]+$`);
+}
+
 function defaultStateFile() {
   try {
     const electron = require('electron');
@@ -111,7 +126,12 @@ function defaultStateFile() {
 class KillSwitch {
   /**
    * @param {object} log - electron-log kompatibler Logger
-   * @param {object} [options]
+   * @param {object} options
+   * @param {'pro'|'community'} options.edition - Edition der App (Pflicht).
+   *   Daraus wird das Regelpräfix abgeleitet (editions.killSwitchRulePrefix).
+   * @param {Function} [options.otherEditionPresent] - async () => boolean;
+   *   Standard: editions.isOtherEditionPresent(edition). Entscheidet, ob
+   *   Altregeln "GateControl_KS_*" entfernt werden dürfen (für Tests).
    * @param {string|null} [options.stateFile] - Pfad der Zustandsdatei.
    *   Standard: <userData>/killswitch-state.json (unter Electron).
    *   null deaktiviert die Persistenz.
@@ -121,7 +141,12 @@ class KillSwitch {
    */
   constructor(log, options = {}) {
     this.log = log;
-    this.rulePrefix = RULE_PREFIX;
+    this.edition = editions.getEdition(options.edition).id;
+    this.rulePrefix = editions.killSwitchRulePrefix(this.edition);
+    this._ruleNameRe = ruleNameRe(this.rulePrefix);
+    this._legacyRuleNameRe = ruleNameRe(LEGACY_RULE_PREFIX);
+    this._otherEditionPresent = options.otherEditionPresent ||
+      (() => editions.isOtherEditionPresent(this.edition));
     this.enabled = false;
     this._savedPolicy = null;
     this._localSubnetRuleNames = [];
@@ -169,7 +194,7 @@ class KillSwitch {
       const state = await this._loadState();
       let leftovers = [];
       try {
-        leftovers = await this._listRuleNames();
+        leftovers = await this._listRemovableRuleNames();
       } catch (err) {
         this.log.error('Kill-switch: firewall rules could not be listed:', err.message);
       }
@@ -405,7 +430,7 @@ class KillSwitch {
       // Nichts von uns aktiv — nur evtl. verwaiste Regeln entfernen,
       // die Policy des Benutzers bleibt unangetastet.
       let leftovers = [];
-      try { leftovers = await this._listRuleNames(); } catch (err) {
+      try { leftovers = await this._listRemovableRuleNames(); } catch (err) {
         this.log.warn('Kill-switch: firewall rules could not be listed:', err.message);
       }
       if (leftovers.length === 0) {
@@ -532,16 +557,21 @@ class KillSwitch {
   }
 
   /**
-   * Wenn noch GateControl-Regeln vorhanden sind (Absturz einer Version
-   * ohne Zustandsdatei), stammt ein "blockoutbound" fast sicher von uns —
-   * dann gilt für das Profil "allowoutbound" als ursprüngliche Policy.
+   * Wenn noch GateControl-Kill-Switch-Regeln vorhanden sind (Absturz einer
+   * Version ohne Zustandsdatei), stammt ein "blockoutbound" fast sicher von
+   * einem GateControl-Kill-Switch — dann gilt für das Profil
+   * "allowoutbound" als ursprüngliche Policy. Als Indiz zählen Regeln
+   * JEDER Edition und die Altregeln: Ist z.B. der Kill-Switch der anderen
+   * Edition aktiv, darf dessen "blockoutbound" nicht als Policy des
+   * Benutzers gesichert werden (sonst bliebe der PC nach dem Deaktivieren
+   * beider Kill-Switches offline).
    */
   async _repairPolicyIfLeftover(policy, { assumeLeftover = false } = {}) {
     if (!PROFILES.some(p => policy[p].endsWith(',blockoutbound'))) return policy;
     let leftover = assumeLeftover;
     if (!leftover) {
       try {
-        leftover = (await this._listRuleNames()).length > 0;
+        leftover = (await this._scanRuleNames()).all.length > 0;
       } catch {
         leftover = false;
       }
@@ -562,7 +592,7 @@ class KillSwitch {
    * Firewall-Regel hinzufügen (alle Werte validiert)
    */
   async _addRule({ name, dir, action, protocol, remoteip, remoteport, localip, localport }) {
-    if (!RULE_NAME_RE.test(name)) throw new Error(`Ungültiger Regelname: ${name}`);
+    if (!this._ruleNameRe.test(name)) throw new Error(`Ungültiger Regelname: ${name}`);
     if (!['in', 'out'].includes(dir)) throw new Error(`Ungültige Richtung: ${dir}`);
     if (action !== 'allow') throw new Error(`Ungültige Aktion: ${action}`);
     const proto = protocol || 'any';
@@ -600,11 +630,58 @@ class KillSwitch {
     if (!this._createdRules.includes(name)) this._createdRules.push(name);
   }
 
-  /** Namen aller vorhandenen GateControl-Kill-Switch-Regeln */
-  async _listRuleNames() {
+  /**
+   * Alle Kill-Switch-Regeln aufgeteilt nach Herkunft:
+   * own = eigenes Präfix, legacy = altes gemeinsames Präfix,
+   * all = zusätzlich die Regeln anderer Editionen.
+   */
+  async _scanRuleNames() {
     const { stdout } = await this._netsh(['advfirewall', 'firewall', 'show', 'rule', 'name=all']);
-    const names = String(stdout || '').match(RULE_NAME_SCAN_RE) || [];
-    return [...new Set(names)];
+    const all = [...new Set(String(stdout || '').match(ANY_KS_RULE_SCAN_RE) || [])];
+    return {
+      all,
+      own: all.filter(n => this._ruleNameRe.test(n)),
+      legacy: all.filter(n => this._legacyRuleNameRe.test(n)),
+    };
+  }
+
+  /** Namen der vorhandenen Regeln dieser Edition */
+  async _listRuleNames() {
+    return (await this._scanRuleNames()).own;
+  }
+
+  /**
+   * Dürfen Altregeln "GateControl_KS_*" gelöscht werden?
+   *
+   * Die Altregeln beider Editionen hießen identisch und tragen kein
+   * program=, sind also keiner App zuzuordnen. Sie werden deshalb nur
+   * gelöscht, wenn keine andere Edition installiert ist oder läuft — dann
+   * können sie nur von dieser App stammen. Ist eine andere Edition
+   * vorhanden (oder lässt sich das nicht feststellen), bleiben sie stehen:
+   * Sie könnten zu deren aktivem Kill-Switch (Altversion) gehören, und
+   * ohne sie würde deren Block-Policy den PC komplett vom Netz trennen.
+   * Die übrig bleibenden Allow-Regeln sind dagegen harmlos.
+   */
+  async _mayRemoveLegacyRules() {
+    let present;
+    try {
+      present = await this._otherEditionPresent();
+    } catch (err) {
+      this.log.warn('Kill-switch: other GateControl edition could not be detected:', err && err.message);
+      present = true;
+    }
+    if (present !== false) {
+      this.log.warn(`Kill-switch: legacy rules "${LEGACY_RULE_PREFIX}_*" left in place — another GateControl edition is installed or running`);
+      return false;
+    }
+    return true;
+  }
+
+  /** Eigene Regeln plus Altregeln, sofern diese gelöscht werden dürfen */
+  async _listRemovableRuleNames() {
+    const { own, legacy } = await this._scanRuleNames();
+    if (legacy.length > 0 && await this._mayRemoveLegacyRules()) return [...own, ...legacy];
+    return own;
   }
 
   _knownRuleNames() {
@@ -624,13 +701,15 @@ class KillSwitch {
   }
 
   /**
-   * Alle GateControl Kill-Switch Regeln entfernen (per Präfix gefunden).
-   * Wirft, wenn danach noch Regeln vorhanden sind.
+   * Alle Kill-Switch-Regeln dieser Edition entfernen (per Präfix gefunden),
+   * dazu Altregeln, sofern _mayRemoveLegacyRules() es erlaubt.
+   * Regeln anderer Editionen werden nie angefasst.
+   * Wirft, wenn danach noch zu löschende Regeln vorhanden sind.
    */
   async _removeAllRules(state = null) {
     let listed = null;
     try {
-      listed = await this._listRuleNames();
+      listed = await this._listRemovableRuleNames();
     } catch (err) {
       this.log.error('Kill-switch: firewall rules could not be listed, deleting known names:', err.message);
     }
@@ -646,7 +725,8 @@ class KillSwitch {
         ...((state && state.rules) || []),
       ])];
     }
-    names = names.filter(n => RULE_NAME_RE.test(n));
+    const removingLegacy = names.some(n => this._legacyRuleNameRe.test(n));
+    names = names.filter(n => this._ruleNameRe.test(n) || (listed && this._legacyRuleNameRe.test(n)));
     if (names.length === 0) return;
 
     const failures = [];
@@ -669,7 +749,8 @@ class KillSwitch {
 
     let remaining;
     try {
-      remaining = await this._listRuleNames();
+      const scan = await this._scanRuleNames();
+      remaining = removingLegacy ? [...scan.own, ...scan.legacy] : scan.own;
     } catch (err) {
       this.log.error('Kill-switch: rule removal could not be verified:', err.message);
       return;
@@ -708,7 +789,7 @@ class KillSwitch {
       return {
         savedPolicy: isValidPolicyMap(data && data.savedPolicy) ? data.savedPolicy : null,
         rules: Array.isArray(data && data.rules)
-          ? data.rules.filter(n => typeof n === 'string' && RULE_NAME_RE.test(n))
+          ? data.rules.filter(n => typeof n === 'string' && this._ruleNameRe.test(n))
           : [],
       };
     } catch (err) {
@@ -864,6 +945,7 @@ class KillSwitch {
 
 KillSwitch.parsePolicyOutput = parsePolicyOutput;
 KillSwitch.STATE_FILE_NAME = STATE_FILE_NAME;
-KillSwitch.RULE_PREFIX = RULE_PREFIX;
+KillSwitch.LEGACY_RULE_PREFIX = LEGACY_RULE_PREFIX;
+KillSwitch.rulePrefixFor = editions.killSwitchRulePrefix;
 
 module.exports = KillSwitch;
