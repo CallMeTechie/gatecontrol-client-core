@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned GitHub Actions in .github/workflows up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "ci"
