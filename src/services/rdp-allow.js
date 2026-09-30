@@ -5,6 +5,15 @@
  * (TCP Port 3389) aus dem VPN-Subnetz erlaubt.
  *
  * Implementiert über Windows Firewall (netsh advfirewall).
+ *
+ * - Die Regel heißt pro Edition anders ("GateControl_Pro_RDP_Allow_In_3389"
+ *   bzw. "GateControl_Community_RDP_Allow_In_3389", siehe editions.js).
+ *   So löscht eine App beim Deaktivieren, Beenden oder Deinstallieren nie
+ *   die Freigabe der anderen, wenn beide installiert sind.
+ * - Die alte gemeinsame Regel "GateControl_RDP_Allow_In_3389" (Versionen
+ *   vor der Trennung) lässt sich keiner App zuordnen. Sie wird nur
+ *   entfernt, wenn keine andere Edition installiert ist oder läuft; im
+ *   Zweifel bleibt sie stehen (siehe removeLegacyRule()).
  */
 
 'use strict';
@@ -16,16 +25,32 @@ const fs = require('fs').promises;
 const execFileAsync = promisify(execFile);
 
 const { validateCidr, IPV4_RE } = require('../utils/validation');
+const editions = require('./editions');
 
-function netsh(...args) {
-  return execFileAsync('netsh', args);
+const LEGACY_RULE_NAME = editions.LEGACY_RDP_ALLOW_RULE_NAME;
+
+function defaultNetsh(args) {
+  return execFileAsync('netsh', args, { windowsHide: true });
 }
 
-const RULE_PREFIX = 'GateControl_RDP';
-
 class RdpAllow {
-  constructor(log) {
+  /**
+   * @param {object} log - electron-log kompatibler Logger
+   * @param {object} options
+   * @param {'pro'|'community'} options.edition - Edition der App (Pflicht).
+   *   Daraus wird der Regelname abgeleitet (editions.rdpAllowRuleName).
+   * @param {Function} [options.otherEditionPresent] - async () => boolean;
+   *   Standard: editions.isOtherEditionPresent(edition). Entscheidet, ob
+   *   die Altregel entfernt werden darf (für Tests).
+   * @param {Function} [options.netsh] - async (args[]) => { stdout } (für Tests)
+   */
+  constructor(log, options = {}) {
     this.log = log;
+    this.edition = editions.getEdition(options.edition).id;
+    this.ruleName = editions.rdpAllowRuleName(this.edition);
+    this._otherEditionPresent = options.otherEditionPresent ||
+      (() => editions.isOtherEditionPresent(this.edition));
+    this._netsh = options.netsh || defaultNetsh;
     this.enabled = false;
   }
 
@@ -63,7 +88,7 @@ class RdpAllow {
 
       // Eingehende RDP-Verbindungen vom VPN-Subnetz erlauben
       await this._addRule({
-        name: `${RULE_PREFIX}_Allow_In_3389`,
+        name: this.ruleName,
         dir: 'in',
         action: 'allow',
         protocol: 'tcp',
@@ -92,14 +117,84 @@ class RdpAllow {
   }
 
   /**
-   * Prüft ob RDP-Allow-Regeln aktiv sind
+   * Prüft ob die RDP-Allow-Regel dieser Edition existiert
+   * (die Altregel und die Regel der anderen Edition zählen nicht).
    */
   async isActive() {
+    return this._ruleExists(this.ruleName);
+  }
+
+  /**
+   * Abgleich beim App-Start mit der gespeicherten Einstellung:
+   * - Regel vorhanden, Einstellung aus  → verwaiste Regel entfernen
+   * - Regel vorhanden, Einstellung an   → als aktiv übernehmen
+   * - Regel fehlt, Einstellung an       → neu anlegen (z.B. nach dem Update
+   *   von einer Version mit der gemeinsamen Altregel)
+   * Zusätzlich wird eine Altregel entfernt, sofern das sicher ist.
+   *
+   * @param {object} opts
+   * @param {boolean} opts.wanted - gespeicherte Einstellung (tunnel.rdpAllow)
+   * @param {string} opts.configPath - Pfad zur WireGuard-Konfigurationsdatei
+   * @returns {Promise<boolean>} true, wenn die Freigabe danach aktiv ist
+   */
+  async reconcile({ wanted, configPath }) {
+    const active = await this.isActive();
+    if (active && !wanted) {
+      this.log.warn('Orphaned RDP Allow rule found — removing');
+      await this.disable();
+    } else if (active) {
+      this.log.info('RDP Allow was active at last exit — rule kept');
+      this.enabled = true;
+    } else if (wanted) {
+      try {
+        await this.enable(configPath);
+      } catch (err) {
+        this.log.warn('RDP Allow could not be restored:', err.message);
+      }
+    }
+    // enable()/disable() haben die Altregel bereits behandelt
+    if (!active && !wanted) await this.removeLegacyRule();
+    return this.enabled;
+  }
+
+  /**
+   * Alte gemeinsame Regel "GateControl_RDP_Allow_In_3389" entfernen, aber
+   * nur, wenn keine andere Edition installiert ist oder läuft — sonst
+   * könnte sie deren aktive RDP-Freigabe (Altversion) sein. Lässt sich das
+   * nicht feststellen, bleibt sie stehen.
+   *
+   * @returns {Promise<boolean>} true, wenn die Altregel gelöscht wurde
+   */
+  async removeLegacyRule() {
+    if (!await this._ruleExists(LEGACY_RULE_NAME)) return false;
+    let present;
     try {
-      const { stdout } = await netsh('advfirewall', 'firewall', 'show', 'rule',
-        `name=${RULE_PREFIX}_Allow_In_3389`);
-      return stdout.includes(RULE_PREFIX);
+      present = await this._otherEditionPresent();
+    } catch (err) {
+      this.log.warn('RDP Allow: other GateControl edition could not be detected:', err && err.message);
+      present = true;
+    }
+    if (present !== false) {
+      this.log.warn(`RDP Allow: legacy rule "${LEGACY_RULE_NAME}" left in place — another GateControl edition is installed or running`);
+      return false;
+    }
+    try {
+      await this._netsh(['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_RULE_NAME}`]);
+      this.log.info(`RDP Allow: legacy rule "${LEGACY_RULE_NAME}" removed`);
+      return true;
+    } catch (err) {
+      this.log.warn(`RDP Allow: legacy rule "${LEGACY_RULE_NAME}" could not be removed:`, err && err.message);
+      return false;
+    }
+  }
+
+  /** true, wenn eine Regel mit genau diesem Anzeigenamen existiert */
+  async _ruleExists(name) {
+    try {
+      const { stdout } = await this._netsh(['advfirewall', 'firewall', 'show', 'rule', `name=${name}`]);
+      return String(stdout || '').includes(name);
     } catch {
+      // netsh liefert Exit-Code 1, wenn keine Regel passt
       return false;
     }
   }
@@ -108,6 +203,7 @@ class RdpAllow {
    * Firewall-Regel hinzufügen (validiert)
    */
   async _addRule({ name, dir, action, protocol, localport, remoteip }) {
+    if (name !== this.ruleName) throw new Error(`Ungültiger Regelname: ${name}`);
     const args = ['advfirewall', 'firewall', 'add', 'rule',
       `name=${name}`,
       `dir=${dir}`,
@@ -125,20 +221,16 @@ class RdpAllow {
     args.push('enable=yes');
 
     this.log.debug(`Firewall rule: netsh ${args.join(' ')}`);
-    await netsh(...args);
+    await this._netsh(args);
   }
 
   /**
-   * Alle GateControl RDP-Regeln entfernen
+   * RDP-Regel dieser Edition entfernen, dazu die Altregel, sofern sicher.
+   * Die Regel der anderen Edition wird nie angefasst.
    */
   async _removeAllRules() {
-    const ruleNames = [
-      `${RULE_PREFIX}_Allow_In_3389`,
-    ];
-
-    await Promise.all(ruleNames.map(name =>
-      netsh('advfirewall', 'firewall', 'delete', 'rule', `name=${name}`).catch(() => {})
-    ));
+    await this._netsh(['advfirewall', 'firewall', 'delete', 'rule', `name=${this.ruleName}`]).catch(() => {});
+    await this.removeLegacyRule().catch(() => false);
   }
 
   /**

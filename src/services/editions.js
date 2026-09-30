@@ -3,7 +3,7 @@
  *
  * Beide Windows-Clients nutzen denselben Core und können gleichzeitig
  * installiert sein. Alles, was systemweit angelegt wird (z.B. Firewall-
- * Regeln des Kill-Switch), muss deshalb pro Edition eindeutig benannt
+ * Regeln des Kill-Switch und der RDP-Freigabe), muss deshalb pro Edition eindeutig benannt
  * sein, sonst räumt eine App die Regeln der anderen mit auf.
  *
  * Jede App übergibt nur ihre Edition-ID ('pro' | 'community'); Präfixe
@@ -45,6 +45,9 @@ const EDITIONS = Object.freeze({
 /** Präfix der Kill-Switch-Regeln vor Einführung der Editions-Präfixe (beide Apps) */
 const LEGACY_KILLSWITCH_RULE_PREFIX = 'GateControl_KS';
 
+/** Name der RDP-Freigaberegel vor Einführung der Editions-Namen (beide Apps) */
+const LEGACY_RDP_ALLOW_RULE_NAME = 'GateControl_RDP_Allow_In_3389';
+
 function getEdition(id) {
   const edition = typeof id === 'string' ? EDITIONS[id.toLowerCase()] : undefined;
   if (!edition) {
@@ -61,6 +64,11 @@ function otherEditions(id) {
 /** z.B. "GateControl_Pro_KS" – Regelnamen sind "<Präfix>_<Name>" */
 function killSwitchRulePrefix(id) {
   return `GateControl_${getEdition(id).name}_KS`;
+}
+
+/** z.B. "GateControl_Pro_RDP_Allow_In_3389" – RDP-Freigabe (rdp-allow.js) */
+function rdpAllowRuleName(id) {
+  return `GateControl_${getEdition(id).name}_RDP_Allow_In_3389`;
 }
 
 /**
@@ -123,9 +131,11 @@ async function isOtherEditionPresent(id, deps) {
 module.exports = {
   EDITIONS,
   LEGACY_KILLSWITCH_RULE_PREFIX,
+  LEGACY_RDP_ALLOW_RULE_NAME,
   getEdition,
   otherEditions,
   killSwitchRulePrefix,
+  rdpAllowRuleName,
   isEditionPresent,
   isOtherEditionPresent,
 };
