@@ -25,6 +25,9 @@ const { createStores } = require('./utils/store');
 const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const { isSafeExternalUrl } = require('./utils/external-url');
+const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
+const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
+const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -37,6 +40,10 @@ const { registerBaseHandlers } = require('./ipc/base-handlers');
 
 // ── Lifecycle ───────────────────────────────────────────────
 const { setupAppLifecycle } = require('./lifecycle/app-events');
+const { recoverKillSwitch } = require('./lifecycle/killswitch-startup');
+
+// ── Preload ─────────────────────────────────────────────────
+const { createBridgeApi, createSubscriber } = require('./preload/bridge');
 
 module.exports = {
   // Services
@@ -58,12 +65,24 @@ module.exports = {
   E2EEHandler,
   enrollment,
   isSafeExternalUrl,
+  reconnectDelay,
+  shouldOpenPortal,
+  loadUpdatePublicKey,
+  updatePublicKeyPaths,
+  renderTrayIcon,
+  createTrayIcon,
+  formatBytesShort,
 
   // IPC
   registerBaseHandlers,
 
   // Lifecycle
   setupAppLifecycle,
+  recoverKillSwitch,
+
+  // Preload
+  createBridgeApi,
+  createSubscriber,
 
   // i18n
   i18n,

@@ -171,5 +171,46 @@
     "confirmBody": "Dieser Client wird mit {{ host }} verbunden und erhält dort VPN und alle freigegebenen Funktionen. Bestätige nur, wenn du diesem Server vertraust.",
     "connect": "Verbinden",
     "cancel": "Abbrechen"
+  },
+  "ui": {
+    "nav": {
+      "overview": "Übersicht",
+      "services": "Dienste"
+    },
+    "conn": {
+      "toggle": "VPN-Verbindung"
+    },
+    "hero": {
+      "subOn": "Dein Verkehr läuft verschlüsselt über {{ host }}",
+      "subOff": "Dein Verkehr läuft ungeschützt über das lokale Netz.",
+      "retry": "Erneut versuchen",
+      "showLog": "Protokoll anzeigen"
+    },
+    "protection": {
+      "title": "Schutz",
+      "routing": "Routing"
+    },
+    "throughput": {
+      "title": "Durchsatz"
+    },
+    "services": {
+      "showAll": "Alle anzeigen",
+      "connectNow": "Jetzt verbinden",
+      "open": "Öffnen",
+      "auth": "Anmeldung"
+    },
+    "logs": {
+      "count": "{{ count }} Einträge · neueste zuerst",
+      "search": "Meldungen durchsuchen",
+      "noMatch": "Keine Einträge für diese Filter."
+    },
+    "settings": {
+      "tabSplit": "Split-Tunneling",
+      "tabAbout": "Über"
+    },
+    "statusbar": {
+      "ksOn": "Kill-Switch an",
+      "ksOff": "Kill-Switch aus"
+    }
   }
 }

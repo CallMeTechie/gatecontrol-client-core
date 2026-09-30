@@ -171,5 +171,46 @@
     "confirmBody": "This client will be connected to {{ host }} and get VPN plus every feature granted there. Only confirm if you trust this server.",
     "connect": "Connect",
     "cancel": "Cancel"
+  },
+  "ui": {
+    "nav": {
+      "overview": "Overview",
+      "services": "Services"
+    },
+    "conn": {
+      "toggle": "VPN connection"
+    },
+    "hero": {
+      "subOn": "Your traffic is encrypted via {{ host }}",
+      "subOff": "Your traffic goes unprotected over the local network.",
+      "retry": "Try again",
+      "showLog": "Show log"
+    },
+    "protection": {
+      "title": "Protection",
+      "routing": "Routing"
+    },
+    "throughput": {
+      "title": "Throughput"
+    },
+    "services": {
+      "showAll": "Show all",
+      "connectNow": "Connect now",
+      "open": "Open",
+      "auth": "Sign-in"
+    },
+    "logs": {
+      "count": "{{ count }} entries · newest first",
+      "search": "Search messages",
+      "noMatch": "No entries for these filters."
+    },
+    "settings": {
+      "tabSplit": "Split tunneling",
+      "tabAbout": "About"
+    },
+    "statusbar": {
+      "ksOn": "Kill switch on",
+      "ksOff": "Kill switch off"
+    }
   }
 }
