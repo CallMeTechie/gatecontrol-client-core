@@ -50,14 +50,14 @@ describe('createBridgeApi', () => {
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set', 'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
-      'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'rdp-allow:toggle',
+      'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'policy:get', 'policy:refresh', 'rdp-allow:toggle',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
-      'tunnel:connect', 'tunnel:disconnect', 'tunnel:status', 'update:check', 'update:install',
+      'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy', 'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
-    assert.deepEqual(events, ['locale:changed', 'navigate', 'peer-expiry', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy']);
+    assert.deepEqual(events, ['locale:changed', 'navigate', 'peer-expiry', 'policy:changed', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy']);
   });
 
   it('subscriptions pass the payload and unsubscribe the same handler', () => {

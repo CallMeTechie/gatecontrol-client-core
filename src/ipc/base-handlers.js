@@ -15,6 +15,7 @@ const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
 const { isSafeExternalUrl } = require('../utils/external-url');
+const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -76,6 +77,11 @@ const CONFIG_WRITABLE_KEYS = new Set([
  *   registered exactly once.
  * @param {Iterable<string>} [ctx.skip] - core channels not to register at all
  * @param {object} [ctx.shell] - Electron shell (injectable for tests)
+ * @param {object} [ctx.clientPolicy] - ClientPolicyService; when given, the
+ *   policy guards below apply to the core handler AND to client overrides of
+ *   the same channel (config:set, killswitch:toggle, autostart:set,
+ *   tunnel:disconnect, server:setup, config:import-file, config:import-qr);
+ *   policy:get / policy:refresh answer with its state (unrestricted without).
  * @param {object} [ctx.supportBundle] - sender from createSupportBundleSender
  *   (shared with the connection monitor for admin requests); created here
  *   when missing
@@ -95,13 +101,25 @@ function registerBaseHandlers(ipcMain, ctx) {
   const overrides = ctx.overrides || {};
   const skip = new Set(ctx.skip || []);
   const registered = [];
+  const clientPolicy = ctx.clientPolicy || null;
+  const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
+  // Policy guards wrap whichever implementation is used.
   function handle(channel, fn) {
     if (skip.has(channel)) return;
-    const impl = Object.prototype.hasOwnProperty.call(overrides, channel) ? overrides[channel] : fn;
+    let impl = Object.prototype.hasOwnProperty.call(overrides, channel) ? overrides[channel] : fn;
+    if (policyGuards[channel]) impl = policyGuards[channel](impl);
     ipcMain.handle(channel, impl);
     registered.push(channel);
+  }
+
+  // A new server / token: the old server's policy must not stick. Drop it and
+  // ask the new server (best-effort, the answer arrives via onChange).
+  function resetPolicyForNewServer() {
+    if (!clientPolicy) return;
+    clientPolicy.reset();
+    Promise.resolve(clientPolicy.refresh()).catch(() => {});
   }
 
   // Writes a (validated) WireGuard config and remembers where it lives.
@@ -116,6 +134,12 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Tunnel ──────────────────────────────────────────────
   handle('tunnel:connect', () => connectTunnel());
   handle('tunnel:disconnect', () => disconnectTunnel());
+  // Re-establish the tunnel (e.g. after a split-tunnel change). Not blocked
+  // by an always-on policy: the tunnel comes straight back up.
+  handle('tunnel:reconnect', async () => {
+    await disconnectTunnel();
+    return connectTunnel();
+  });
   handle('tunnel:status', () => {
     const tunnelState = getTunnelState();
     return {
@@ -214,6 +238,7 @@ function registerBaseHandlers(ipcMain, ctx) {
         }
       }
       log.info(`Set up via setup code (peer ${peerId})`);
+      resetPolicyForNewServer();
       return { success: true, peerId, enrolled: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -242,6 +267,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       const info = await apiClient.register();
       store.set('server.peerId', String(info.peerId));
       apiClient.setPeerId(info.peerId);
+      resetPolicyForNewServer();
       return { success: true, peerId: info.peerId };
     } catch (err) {
       return { success: false, error: err.message };
@@ -366,6 +392,15 @@ function registerBaseHandlers(ipcMain, ctx) {
     handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
   }
 
+  // ── Client-Richtlinie ───────────────────────────────────
+  // Without a ClientPolicyService the client is unmanaged (no restriction).
+  handle('policy:get', () => (clientPolicy ? clientPolicy.getState() : clientPolicyUtil.uiState(null)));
+  handle('policy:refresh', async () => {
+    if (!clientPolicy) return clientPolicyUtil.uiState(null);
+    await clientPolicy.refresh();
+    return clientPolicy.getState();
+  });
+
   // ── Window Controls ─────────────────────────────────────
   ipcMain.on('window:minimize', () => getMainWindow()?.minimize());
   ipcMain.on('window:close', () => getMainWindow()?.hide());
@@ -475,7 +510,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   // Client handlers for channels core does not know
   for (const [channel, fn] of Object.entries(overrides)) {
     if (!registered.includes(channel) && !skip.has(channel)) {
-      ipcMain.handle(channel, fn);
+      ipcMain.handle(channel, policyGuards[channel] ? policyGuards[channel](fn) : fn);
       registered.push(channel);
     }
   }
@@ -483,4 +518,94 @@ function registerBaseHandlers(ipcMain, ctx) {
   return registered;
 }
 
-module.exports = { registerBaseHandlers };
+/**
+ * Wrappers that refuse renderer requests the client policy does not allow.
+ * The main process still decides — a manipulated renderer cannot bypass a
+ * lock through IPC. (Local admins can bypass the client altogether; the
+ * policy is a management convenience, not a security boundary.)
+ */
+function createPolicyGuards({ clientPolicy, store, log }) {
+  const policy = () => clientPolicy.getPolicy();
+  const locks = () => clientPolicyUtil.locks(policy());
+  const refuse = (channel, detail) => {
+    log.warn(`${channel} refused by client policy${detail ? `: ${detail}` : ''}`);
+  };
+  const serverLocked = (channel, impl) => async (...args) => {
+    if (locks().server) {
+      refuse(channel);
+      return { success: false, error: t('policy.serverLocked'), policyLocked: true };
+    }
+    return impl(...args);
+  };
+
+  return {
+    'config:set': (impl) => (event, key, value) => {
+      const ok = clientPolicyUtil.canWriteConfig(policy(), key, value, {
+        splitTunnelEnabled: store.get('tunnel.splitTunnel', false) === true,
+      });
+      if (!ok) {
+        refuse('config:set', key);
+        return false;
+      }
+      return impl(event, key, value);
+    },
+    'killswitch:toggle': (impl) => (event, enabled) => {
+      const l = locks();
+      if (l.killSwitch) {
+        const forcedOn = policy().killSwitch === 'required';
+        if ((enabled === true) !== forcedOn) {
+          refuse('killswitch:toggle');
+          return { blocked: true, policyLocked: true };
+        }
+      }
+      return impl(event, enabled);
+    },
+    'autostart:set': (impl) => (event, enabled) => {
+      const p = policy();
+      if (locks().autostart) {
+        const want = p.autostart === 'required' ? true : p.autostart === 'forbidden' ? false : null;
+        if (want === null || (enabled === true) !== want) {
+          refuse('autostart:set');
+          return store.get('app.startWithWindows', want === true);
+        }
+      }
+      return impl(event, enabled);
+    },
+    'tunnel:disconnect': (impl) => (...args) => {
+      if (locks().disconnect) {
+        refuse('tunnel:disconnect');
+        return { blocked: true, policyLocked: true };
+      }
+      return impl(...args);
+    },
+    'server:setup': (impl) => serverLocked('server:setup', impl),
+    'config:import-file': (impl) => serverLocked('config:import-file', impl),
+    'config:import-qr': (impl) => serverLocked('config:import-qr', impl),
+  };
+}
+
+/**
+ * Apply the forced values of a client policy to the store (kill switch on,
+ * auto-connect on, autostart on/off, allowed split mode). Returns the keys
+ * that changed so the app can act on them (e.g. enable the kill switch,
+ * (un)register autostart). Never throws.
+ */
+function applyPolicyToStore(store, policy, log) {
+  const changed = {};
+  try {
+    const forced = clientPolicyUtil.forcedValues(policy, {
+      splitTunnelEnabled: store.get('tunnel.splitTunnel', false) === true,
+    });
+    for (const [key, value] of Object.entries(forced)) {
+      if (store.get(key) !== value) {
+        store.set(key, value);
+        changed[key] = value;
+      }
+    }
+  } catch (err) {
+    if (log) log.warn(`Applying client policy failed: ${err.message}`);
+  }
+  return changed;
+}
+
+module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore };
