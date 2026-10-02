@@ -10,6 +10,7 @@
 
 const axios = require('axios');
 const os = require('os');
+const zlib = require('zlib');
 const { getMachineFingerprint } = require('../utils/machine-id');
 
 class ApiClient {
@@ -40,6 +41,9 @@ class ApiClient {
     // permissions). onPolicyVersion(version) lets ClientPolicyService refresh.
     this.policyVersion = null;
     this.onPolicyVersion = null;
+    // Admin asked for a support bundle (peer-info / heartbeat answer):
+    // request timestamp, true for servers without a timestamp, or null.
+    this.supportBundleRequest = null;
 
     if (serverUrl) {
       this._createClient();
@@ -190,6 +194,7 @@ class ApiClient {
         hostname: ApiClient.sanitizeHostnameForDns(os.hostname()) || os.hostname(),
       });
       this._notePolicyVersion(data);
+      this._rememberSupportRequest(data);
       return data || null;
     } catch (err) {
       this.log.debug('Heartbeat failed:', err.message);
@@ -410,11 +415,41 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/peer-info', {
         params: { peerId: this.peerId },
       });
+      this._rememberSupportRequest(res.data);
       return res.data?.peer || null;
     } catch (err) {
       this.log.debug('Peer info failed:', err.message);
       return null;
     }
+  }
+
+  _rememberSupportRequest(data) {
+    if (!data || typeof data !== 'object' || !('supportBundleRequested' in data)) return;
+    this.supportBundleRequest = data.supportBundleRequested === true
+      ? (typeof data.supportBundleRequestedAt === 'string' && data.supportBundleRequestedAt) || true
+      : null;
+  }
+
+  /**
+   * Upload a (redacted) support bundle, gzip-compressed.
+   * POST /api/v1/client/support-bundle?peerId=… — see src/support/.
+   * Throws the axios error on failure (caller maps status codes).
+   * @param {object} bundle - result of collectSupportBundle()
+   * @returns {Promise<{ ok: boolean, bundle: { id, created_at, size_bytes } }>}
+   */
+  async uploadSupportBundle(bundle) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    if (!this.peerId) throw new Error('Nicht registriert (keine Peer-ID)');
+    const body = zlib.gzipSync(Buffer.from(JSON.stringify(bundle), 'utf8'));
+    const { data } = await this.client.post('/api/v1/client/support-bundle', body, {
+      params: { peerId: this.peerId },
+      headers: { 'Content-Type': 'application/gzip' },
+      timeout: 60000,
+      maxBodyLength: 6 * 1024 * 1024,
+      transformRequest: [(d) => d],
+    });
+    if (this.supportBundleRequest) this.supportBundleRequest = null;
+    return data;
   }
 }
 

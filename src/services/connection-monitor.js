@@ -9,11 +9,14 @@
  */
 
 class ConnectionMonitor {
-  constructor({ interval, onDisconnect, onPeerDisabled, onStats, wgService, apiClient, log }) {
+  constructor({ interval, onDisconnect, onPeerDisabled, onStats, onSupportBundleRequest, wgService, apiClient, log }) {
     this.interval = interval || 30000;
     this.onDisconnect = onDisconnect;
     this.onPeerDisabled = onPeerDisabled;
     this.onStats = onStats;
+    // (request) => void — the server reported an admin request for a
+    // support bundle (ApiClient.supportBundleRequest, see src/support/).
+    this.onSupportBundleRequest = onSupportBundleRequest;
     this.wgService = wgService;
     this.apiClient = apiClient || null;
     this.log = log;
@@ -116,7 +119,7 @@ class ConnectionMonitor {
    * Löst onPeerDisabled aus wenn Peer deaktiviert wurde.
    */
   async _checkPeerStatus() {
-    if (!this.apiClient || !this.onPeerDisabled) return;
+    if (!this.apiClient || (!this.onPeerDisabled && !this.onSupportBundleRequest)) return;
 
     this._peerCheckCounter++;
     if (this._peerCheckCounter < this._peerCheckEveryN) return;
@@ -124,7 +127,15 @@ class ConnectionMonitor {
 
     try {
       const peerInfo = await this.apiClient.getPeerInfo();
-      if (peerInfo && peerInfo.enabled === false) {
+      if (this.onSupportBundleRequest) {
+        try {
+          Promise.resolve(this.onSupportBundleRequest(this.apiClient.supportBundleRequest || null))
+            .catch((err) => this.log.debug('Support bundle request handling failed:', err.message));
+        } catch (err) {
+          this.log.debug('Support bundle request handling failed:', err.message);
+        }
+      }
+      if (peerInfo && peerInfo.enabled === false && this.onPeerDisabled) {
         this.log.warn('Peer is disabled on server — triggering disconnect');
         this.stop();
         this.onPeerDisabled(peerInfo);

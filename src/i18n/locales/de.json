@@ -232,5 +232,24 @@
     "killSwitchRequired": "Kill-Switch vom Administrator erzwungen",
     "autostartForbidden": "Autostart vom Administrator nicht erlaubt",
     "splitModeLocked": "Split-Tunnel-Modus vom Administrator festgelegt"
+  },
+  "support": {
+    "title": "Support-Paket",
+    "button": "Support-Paket senden",
+    "desc": "Bereinigte Diagnosedaten an den GateControl-Server senden",
+    "sending": "Wird gesendet…",
+    "send": "Senden",
+    "cancel": "Abbrechen",
+    "confirmTitle": "Diagnosedaten an {{ host }} senden?",
+    "confirmIncludes": "Enthalten: App-, Core- und Windows-Version, Tunnelstatus und letzter Handshake, Einstellungen, WireGuard-Konfiguration ohne Schlüssel, Netzwerkadapter, DNS-Server und Routen, die letzten 2000 Logzeilen und aktuelle Fehler.",
+    "confirmExcludes": "Nicht enthalten: private Schlüssel, Preshared Keys, API-Tokens, Passwörter, Einrichtungscodes und Cookies – sie werden vor dem Senden entfernt.",
+    "requestedByAdmin": "Dein Administrator hat ein Support-Paket angefordert.",
+    "success": "Support-Paket gesendet",
+    "failed": "Support-Paket konnte nicht gesendet werden: {{ error }}",
+    "rateLimited": "Zu viele Support-Pakete – bitte später erneut versuchen.",
+    "tooLarge": "Das Support-Paket ist zu groß.",
+    "forbidden": "Der Server hat das Support-Paket abgelehnt (Token/Peer prüfen).",
+    "unsupported": "Der Server unterstützt noch keine Support-Pakete.",
+    "notConfigured": "Erst einen Server einrichten – dann kann ein Support-Paket gesendet werden."
   }
 }

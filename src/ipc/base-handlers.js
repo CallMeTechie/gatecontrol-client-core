@@ -16,6 +16,7 @@ const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
 const { isSafeExternalUrl } = require('../utils/external-url');
 const clientPolicyUtil = require('../utils/client-policy');
+const { createSupportBundleSender } = require('../support/sender');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -81,6 +82,10 @@ const CONFIG_WRITABLE_KEYS = new Set([
  *   the same channel (config:set, killswitch:toggle, autostart:set,
  *   tunnel:disconnect, server:setup, config:import-file, config:import-qr);
  *   policy:get / policy:refresh answer with its state (unrestricted without).
+ * @param {object} [ctx.supportBundle] - sender from createSupportBundleSender
+ *   (shared with the connection monitor for admin requests); created here
+ *   when missing
+ * @param {string} [ctx.edition] - 'pro' | 'community' (support bundle)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -496,6 +501,11 @@ function registerBaseHandlers(ipcMain, ctx) {
       return false;
     }
   });
+
+  // ── Support bundle ("Support-Paket senden") ─────────────
+  // Confirmation dialog → redacted bundle → upload (src/support/).
+  const supportBundle = ctx.supportBundle || createSupportBundleSender(ctx);
+  handle('support:send', () => supportBundle.send({ reason: 'user' }));
 
   // Client handlers for channels core does not know
   for (const [channel, fn] of Object.entries(overrides)) {

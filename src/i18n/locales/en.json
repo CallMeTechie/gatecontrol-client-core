@@ -232,5 +232,24 @@
     "killSwitchRequired": "Kill switch enforced by your administrator",
     "autostartForbidden": "Autostart not allowed by your administrator",
     "splitModeLocked": "Split-tunnel mode set by your administrator"
+  },
+  "support": {
+    "title": "Support bundle",
+    "button": "Send support bundle",
+    "desc": "Send redacted diagnostics to the GateControl server",
+    "sending": "Sending…",
+    "send": "Send",
+    "cancel": "Cancel",
+    "confirmTitle": "Send diagnostics to {{ host }}?",
+    "confirmIncludes": "Included: app, core and Windows version, tunnel state and last handshake, settings, WireGuard config without keys, network adapters, DNS servers and routes, the last 2000 log lines and recent errors.",
+    "confirmExcludes": "Not included: private keys, preshared keys, API tokens, passwords, setup codes and cookies – they are removed before sending.",
+    "requestedByAdmin": "Your administrator requested a support bundle.",
+    "success": "Support bundle sent",
+    "failed": "Support bundle could not be sent: {{ error }}",
+    "rateLimited": "Too many support bundles – please try again later.",
+    "tooLarge": "The support bundle is too large.",
+    "forbidden": "The server rejected the support bundle (check token/peer).",
+    "unsupported": "The server does not support support bundles yet.",
+    "notConfigured": "Set up a server first – then a support bundle can be sent."
   }
 }

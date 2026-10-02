@@ -79,6 +79,12 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       show: () => ipcRenderer.invoke('logs:show'),
     },
 
+    // ── Support bundle ───────────────────────────────────
+    // → { success, id } | { success: false, cancelled } | { success: false, error }
+    support: {
+      send: () => ipcRenderer.invoke('support:send'),
+    },
+
     // ── Peer ─────────────────────────────────────────────
     peer: {
       onExpiry: (cb) => subscribe('peer-expiry', cb),
