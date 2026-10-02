@@ -33,6 +33,11 @@ const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 
+// ── Support bundle ──────────────────────────────────────────
+const { collectSupportBundle } = require('./support/collector');
+const { createSupportBundleSender } = require('./support/sender');
+const supportRedact = require('./support/redact');
+
 // ── i18n ──────────────────────────────────────────────────
 const i18n = require('./i18n');
 
@@ -75,6 +80,11 @@ module.exports = {
   formatBytesShort,
   updateMenuItems,
   mandatoryNotice,
+
+  // Support bundle
+  collectSupportBundle,
+  createSupportBundleSender,
+  supportRedact,
 
   // IPC
   registerBaseHandlers,
