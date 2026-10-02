@@ -94,6 +94,14 @@ describe('redactValue', () => {
     assert.equal(out.emptySecret, '');
   });
 
+  it('drops prototype-related keys and never writes through the prototype', () => {
+    const input = JSON.parse('{"__proto__":{"polluted":"yes"},"a":{"constructor":{"prototype":{"x":1}},"prototype":2,"b":"c"}}');
+    const out = redactValue(input);
+    assert.equal({}.polluted, undefined);
+    assert.ok(!Object.prototype.hasOwnProperty.call(out, '__proto__'));
+    assert.deepEqual(Object.keys(out.a), ['b']);
+  });
+
   it('isSecretKey covers the secret names and nothing harmless', () => {
     for (const k of ['apiKey', 'api_key', 'privateKey', 'PresharedKey', 'password', 'token', 'X-API-Token', 'cookie', 'Authorization', 'enrollmentCode', 'setup_code', 'machineKey', 'clientSecret']) {
       assert.equal(isSecretKey(k), true, k);

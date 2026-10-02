@@ -23,6 +23,7 @@
  */
 
 const MASK = '[REDACTED]';
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const SECRET_KEY_RE = /(pass(word|wd|phrase)?|pwd|secret|token|api[-_]?key|apikey|private[-_]?key|preshared[-_]?key|psk|cookie|authori[sz]ation|credential|enrol(l)?ment[-_]?code|setup[-_]?code|machine[-_]?key|session[-_]?id)/i;
 
@@ -70,15 +71,13 @@ function redactValue(value, depth = 0) {
   if (typeof value === 'string') return redactText(value);
   if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1));
   if (value && typeof value === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (isSecretKey(k) && v !== null && v !== '' && typeof v !== 'boolean') {
-        out[k] = MASK;
-      } else {
-        out[k] = redactValue(v, depth + 1);
-      }
-    }
-    return out;
+    // Built with Object.fromEntries (own data properties, no assignment
+    // through the prototype chain); prototype-related keys are dropped.
+    return Object.fromEntries(Object.entries(value)
+      .filter(([k]) => !UNSAFE_KEYS.has(k))
+      .map(([k, v]) => [k, isSecretKey(k) && v !== null && v !== '' && typeof v !== 'boolean'
+        ? MASK
+        : redactValue(v, depth + 1)]));
   }
   return value;
 }
