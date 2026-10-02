@@ -32,6 +32,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
     tunnel: {
       connect:    () => ipcRenderer.invoke('tunnel:connect'),
       disconnect: () => ipcRenderer.invoke('tunnel:disconnect'),
+      reconnect:  () => ipcRenderer.invoke('tunnel:reconnect'),
       getStatus:  () => ipcRenderer.invoke('tunnel:status'),
       onState:    (cb) => subscribe('tunnel-state', cb),
     },
@@ -111,6 +112,14 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // { channel, minVersion, belowMinimum, mandatory, updateReady, version }
       policy:   () => ipcRenderer.invoke('update:policy'),
       onPolicy: (cb) => subscribe('update:policy', cb),
+    },
+
+    // ── Client-Richtlinie (vom Server) ───────────────────
+    // State: { fetched, version, managed, policy, locks, splitModes }
+    policy: {
+      get:      () => ipcRenderer.invoke('policy:get'),
+      refresh:  () => ipcRenderer.invoke('policy:refresh'),
+      onChange: (cb) => subscribe('policy:changed', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

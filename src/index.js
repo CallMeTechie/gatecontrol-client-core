@@ -16,6 +16,7 @@ const RdpAllow = require('./services/rdp-allow');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
 const DnsPolicy = require('./services/dns-policy');
+const ClientPolicyService = require('./services/client-policy');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -29,6 +30,7 @@ const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
+const clientPolicy = require('./utils/client-policy');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -37,7 +39,7 @@ const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const i18n = require('./i18n');
 
 // ── IPC ─────────────────────────────────────────────────────
-const { registerBaseHandlers } = require('./ipc/base-handlers');
+const { registerBaseHandlers, applyPolicyToStore } = require('./ipc/base-handlers');
 
 // ── Lifecycle ───────────────────────────────────────────────
 const { setupAppLifecycle } = require('./lifecycle/app-events');
@@ -56,6 +58,7 @@ module.exports = {
   ConnectionMonitor,
   Updater,
   DnsPolicy,
+  ClientPolicyService,
 
   // Utils
   validation,
@@ -75,9 +78,11 @@ module.exports = {
   formatBytesShort,
   updateMenuItems,
   mandatoryNotice,
+  clientPolicy,
 
   // IPC
   registerBaseHandlers,
+  applyPolicyToStore,
 
   // Lifecycle
   setupAppLifecycle,

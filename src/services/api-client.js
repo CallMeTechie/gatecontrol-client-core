@@ -36,6 +36,10 @@ class ApiClient {
     this.clientVersion = options.clientVersion || require('../../package.json').version;
     this.clientPlatform = options.clientPlatform || 'windows';
     this.clientType = ['pro', 'community'].includes(options.clientType) ? options.clientType : null;
+    // Client policy version seen in the last server answer (heartbeat /
+    // permissions). onPolicyVersion(version) lets ClientPolicyService refresh.
+    this.policyVersion = null;
+    this.onPolicyVersion = null;
 
     if (serverUrl) {
       this._createClient();
@@ -185,6 +189,7 @@ class ApiClient {
         // often contains '.' or uppercase that would fail validation.
         hostname: ApiClient.sanitizeHostnameForDns(os.hostname()) || os.hostname(),
       });
+      this._notePolicyVersion(data);
       return data || null;
     } catch (err) {
       this.log.debug('Heartbeat failed:', err.message);
@@ -338,11 +343,44 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/permissions');
       this.portalUrl = res.data?.portalUrl || null;
       this.autoOpenPortal = res.data?.autoOpenPortal === true;
+      this._notePolicyVersion(res.data);
       return res.data?.permissions || null;
     } catch (err) {
       this.log.debug('Permissions query failed:', err.message);
       return null;
     }
+  }
+
+  /**
+   * Remember a policyVersion from a server answer and tell the listener.
+   */
+  _notePolicyVersion(data) {
+    const v = data && typeof data.policyVersion === 'string' ? data.policyVersion : null;
+    if (!v) return;
+    this.policyVersion = v;
+    if (typeof this.onPolicyVersion === 'function') {
+      try { this.onPolicyVersion(v); } catch (err) { this.log.debug('onPolicyVersion failed:', err.message); }
+    }
+  }
+
+  /**
+   * Effektive Client-Richtlinie abrufen (GET /api/v1/client/policy).
+   * Mit der bekannten Version als If-None-Match: 304 → { notModified: true }.
+   * Liefert { notModified: false, data } oder wirft bei Netzwerk-/HTTP-Fehlern
+   * (der Aufrufer behält dann die zuletzt bekannte Richtlinie).
+   *
+   * @param {string|null} [knownVersion]
+   */
+  async getClientPolicy(knownVersion = null) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const headers = {};
+    if (knownVersion) headers['If-None-Match'] = `"${knownVersion}"`;
+    const res = await this.client.get('/api/v1/client/policy', {
+      headers,
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 304,
+    });
+    if (res.status === 304) return { notModified: true, data: null };
+    return { notModified: false, data: res.data };
   }
 
   /**

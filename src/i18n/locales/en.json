@@ -222,5 +222,15 @@
       "ksOn": "Kill switch on",
       "ksOff": "Kill switch off"
     }
+  },
+  "policy": {
+    "lockedHint": "Set by your administrator",
+    "lockedError": "This setting is set by your administrator.",
+    "managedBanner": "This device is managed – some settings are set by your administrator.",
+    "serverLocked": "Changing the server and re-setup are locked by your administrator.",
+    "disconnectLocked": "Your administrator set the connection to “always connected”.",
+    "killSwitchRequired": "Kill switch enforced by your administrator",
+    "autostartForbidden": "Autostart not allowed by your administrator",
+    "splitModeLocked": "Split-tunnel mode set by your administrator"
   }
 }
