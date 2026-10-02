@@ -28,6 +28,7 @@ const { isSafeExternalUrl } = require('./utils/external-url');
 const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
+const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -72,6 +73,8 @@ module.exports = {
   renderTrayIcon,
   createTrayIcon,
   formatBytesShort,
+  updateMenuItems,
+  mandatoryNotice,
 
   // IPC
   registerBaseHandlers,
