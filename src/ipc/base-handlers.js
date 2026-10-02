@@ -15,6 +15,7 @@ const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
 const { isSafeExternalUrl } = require('../utils/external-url');
+const { createSupportBundleSender } = require('../support/sender');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -75,6 +76,10 @@ const CONFIG_WRITABLE_KEYS = new Set([
  *   registered exactly once.
  * @param {Iterable<string>} [ctx.skip] - core channels not to register at all
  * @param {object} [ctx.shell] - Electron shell (injectable for tests)
+ * @param {object} [ctx.supportBundle] - sender from createSupportBundleSender
+ *   (shared with the connection monitor for admin requests); created here
+ *   when missing
+ * @param {string} [ctx.edition] - 'pro' | 'community' (support bundle)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -461,6 +466,11 @@ function registerBaseHandlers(ipcMain, ctx) {
       return false;
     }
   });
+
+  // ── Support bundle ("Support-Paket senden") ─────────────
+  // Confirmation dialog → redacted bundle → upload (src/support/).
+  const supportBundle = ctx.supportBundle || createSupportBundleSender(ctx);
+  handle('support:send', () => supportBundle.send({ reason: 'user' }));
 
   // Client handlers for channels core does not know
   for (const [channel, fn] of Object.entries(overrides)) {

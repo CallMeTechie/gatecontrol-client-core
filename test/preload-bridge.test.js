@@ -51,7 +51,7 @@ describe('createBridgeApi', () => {
       'app:version', 'autostart:set', 'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
       'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'rdp-allow:toggle',
-      'server:setup', 'server:test', 'services:list', 'shell:open-external', 'traffic:stats',
+      'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy', 'wireguard:check',
     ]);
