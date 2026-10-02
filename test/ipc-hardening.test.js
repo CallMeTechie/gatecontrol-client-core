@@ -89,6 +89,14 @@ describe('registerBaseHandlers hooks', () => {
     assert.equal(handlers['dns:leak-test'], undefined);
   });
 
+  it('update:policy returns the updater policy (null without updater)', async () => {
+    let updater = null;
+    const { handlers } = makeCtx({ getUpdater: () => updater });
+    assert.equal(await handlers['update:policy'](), null);
+    updater = { getUpdatePolicy: () => ({ channel: 'beta', mandatory: true }), configure() {} };
+    assert.deepEqual(await handlers['update:policy'](), { channel: 'beta', mandatory: true });
+  });
+
   it('getUpdater is read lazily (updater created after registration)', async () => {
     let updater = null;
     const { handlers } = makeCtx({ getUpdater: () => updater });

@@ -108,6 +108,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       check:   () => ipcRenderer.invoke('update:check'),
       install: () => ipcRenderer.invoke('update:install'),
       onReady: (cb) => subscribe(updateReadyChannel, cb),
+      // { channel, minVersion, belowMinimum, mandatory, updateReady, version }
+      policy:   () => ipcRenderer.invoke('update:policy'),
+      onPolicy: (cb) => subscribe('update:policy', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

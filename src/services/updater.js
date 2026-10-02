@@ -17,6 +17,14 @@
  *   - verwirft Downloads mit falscher Größe oder falschem Hash und
  *   - hasht den Installer direkt vor dem Start erneut.
  * Einen Rückfall auf unsignierte Updates gibt es nicht.
+ *
+ * Server-Richtlinie (Update-Kanal stable/beta, Mindestversion, Pflicht-Update):
+ * Die Felder channel, minVersion und mandatory der Check-Antwort sind NICHT
+ * signiert. Sie dienen nur der Anzeige (Kanal im Info-Bereich, nicht
+ * ausblendbarer Hinweis „Update erforderlich“). Sie ändern nichts an der
+ * Prüfung: Signatur, Produkt, Version (strikt neuer), Größe und Hash werden
+ * immer geprüft, ein Pflicht-Update erlaubt kein Downgrade und gilt erst als
+ * Pflicht, wenn ein geprüftes, neueres Update bereitliegt.
  */
 
 const { app, shell } = require('electron');
@@ -36,6 +44,7 @@ const VERSION_RE = /^\d+\.\d+\.\d+$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const PUBLIC_KEY_PLACEHOLDER = 'REPLACE_WITH_UPDATE_PUBLIC_KEY';
 const REJECT_MSG = 'Update nicht signiert/ungültig – abgelehnt';
+const CHANNELS = ['stable', 'beta'];
 
 /**
  * PEM → Ed25519-KeyObject, sonst null (Platzhalter, leer, anderer Typ, kaputt).
@@ -115,6 +124,20 @@ function verifyUpdateManifest({ manifest, signature, publicKey, product, offered
   };
 }
 
+/**
+ * Unsignierte Richtlinien-Felder der Check-Antwort, bereinigt. Unbekannte
+ * Kanäle, unlesbare Versionen und alles außer `mandatory === true` fallen weg.
+ * @returns {{channel: string|null, minVersion: string|null, mandatory: boolean}}
+ */
+function sanitizeUpdatePolicy(data) {
+  const d = data && typeof data === 'object' ? data : {};
+  return {
+    channel: CHANNELS.includes(d.channel) ? d.channel : null,
+    minVersion: typeof d.minVersion === 'string' && VERSION_RE.test(d.minVersion) ? d.minVersion : null,
+    mandatory: d.mandatory === true,
+  };
+}
+
 /** SHA-256 + Größe einer Datei (synchron, in Blöcken). */
 function hashFileSync(filePath) {
   const hash = crypto.createHash('sha256');
@@ -180,6 +203,9 @@ class Updater {
     this.checkTimer = null;
     this.startTimer = null;
     this.onUpdateReady = null;
+    this.onPolicyChange = null;
+    // Letzte vom Server gemeldete Richtlinie (unsigniert, nur Anzeige)
+    this.policy = { channel: null, minVersion: null, mandatory: false };
 
     this.publicKey = parsePublicKey(publicKey);
     this.disabled = !this.publicKey;
@@ -198,9 +224,15 @@ class Updater {
 
   /**
    * Auto-Update starten (Timer)
+   * @param {Function} onUpdateReady - ({version, releaseNotes, installerPath,
+   *   mandatory, channel, minVersion}) sobald ein geprüftes Update bereitliegt
+   * @param {object} [opts]
+   * @param {Function} [opts.onPolicyChange] - (getUpdatePolicy()) wenn sich
+   *   Kanal, Mindestversion oder Pflicht-Status ändern
    */
-  start(onUpdateReady) {
+  start(onUpdateReady, { onPolicyChange } = {}) {
     this.onUpdateReady = onUpdateReady;
+    if (typeof onPolicyChange === 'function') this.onPolicyChange = onPolicyChange;
     if (this.disabled) {
       this.log.warn('Auto-Update nicht gestartet: kein gültiger Update-Signaturschlüssel');
       return;
@@ -267,6 +299,7 @@ class Updater {
       });
 
       const data = res.data || {};
+      if (data.ok) this._applyPolicy(data);
       if (!data.ok || !data.available) {
         this.log.info(`Kein Update verfügbar (aktuell: ${this.currentVersion})`);
         return;
@@ -299,7 +332,8 @@ class Updater {
         return;
       }
 
-      this.log.info(`Signiertes Update verfügbar: ${this.currentVersion} -> ${m.version}`);
+      this.log.info(`Signiertes Update verfügbar: ${this.currentVersion} -> ${m.version}`
+        + `${this.policy.channel ? ` (Kanal ${this.policy.channel})` : ''}${this.policy.mandatory ? ' [Pflicht-Update]' : ''}`);
 
       // Ein neues Angebot verwirft ein früher geprüftes Download-Ergebnis,
       // außer es ist exakt dieselbe Datei.
@@ -316,9 +350,69 @@ class Updater {
       };
 
       await this._download();
+      this._emitPolicy();
     } catch (err) {
       this.log.warn(`Update-Check fehlgeschlagen: ${err.message}`);
     }
+  }
+
+  /**
+   * Richtlinie aus der Check-Antwort übernehmen (nur Anzeige, unsigniert).
+   */
+  _applyPolicy(data) {
+    const next = sanitizeUpdatePolicy(data);
+    const changed = next.channel !== this.policy.channel
+      || next.minVersion !== this.policy.minVersion
+      || next.mandatory !== this.policy.mandatory;
+    this.policy = next;
+    if (changed) {
+      this.log.info(`Update-Richtlinie: Kanal ${next.channel || '-'}, Mindestversion ${next.minVersion || '-'}, Pflicht ${next.mandatory}`);
+      this._emitPolicy();
+    }
+  }
+
+  _emitPolicy() {
+    if (typeof this.onPolicyChange !== 'function') return;
+    const state = JSON.stringify(this.getUpdatePolicy());
+    if (state === this._lastEmittedPolicy) return;
+    this._lastEmittedPolicy = state;
+    try {
+      this.onPolicyChange(this.getUpdatePolicy());
+    } catch (err) {
+      this.log.warn(`onPolicyChange fehlgeschlagen: ${err.message}`);
+    }
+  }
+
+  /**
+   * true, wenn die laufende Version unter der vom Server gemeldeten
+   * Mindestversion liegt.
+   */
+  isBelowMinimum() {
+    return !!this.policy.minVersion && isNewerVersion(this.policy.minVersion, this.currentVersion);
+  }
+
+  /**
+   * Pflicht-Update: Der Server verlangt es (mandatory oder Mindestversion
+   * unterschritten) UND ein geprüftes, strikt neueres Update liegt bereit.
+   * Ohne bereitliegendes Update gibt es nichts zu erzwingen.
+   */
+  isMandatory() {
+    if (!this.policy.mandatory && !this.isBelowMinimum()) return false;
+    return this.isUpdateReady() && isNewerVersion(this.latestRelease.version, this.currentVersion);
+  }
+
+  /**
+   * Anzeige-Zustand für Info-Bereich und Hinweis (alles unsigniert).
+   */
+  getUpdatePolicy() {
+    return {
+      channel: this.policy.channel,
+      minVersion: this.policy.minVersion,
+      belowMinimum: this.isBelowMinimum(),
+      mandatory: this.isMandatory(),
+      updateReady: this.isUpdateReady(),
+      version: this.isUpdateReady() ? this.latestRelease.version : null,
+    };
   }
 
   /**
@@ -447,6 +541,9 @@ class Updater {
         version: this.latestRelease.version,
         releaseNotes: this.latestRelease.releaseNotes,
         installerPath: this.downloadPath,
+        mandatory: this.isMandatory(),
+        channel: this.policy.channel,
+        minVersion: this.policy.minVersion,
       });
     }
   }
@@ -495,6 +592,9 @@ class Updater {
     return {
       version: this.latestRelease.version,
       releaseNotes: this.latestRelease.releaseNotes,
+      mandatory: this.isMandatory(),
+      channel: this.policy.channel,
+      minVersion: this.policy.minVersion,
     };
   }
 }
@@ -502,6 +602,8 @@ class Updater {
 Updater.verifyUpdateManifest = verifyUpdateManifest;
 Updater.parsePublicKey = parsePublicKey;
 Updater.isNewerVersion = isNewerVersion;
+Updater.sanitizeUpdatePolicy = sanitizeUpdatePolicy;
+Updater.CHANNELS = CHANNELS;
 Updater.PUBLIC_KEY_PLACEHOLDER = PUBLIC_KEY_PLACEHOLDER;
 
 module.exports = Updater;
