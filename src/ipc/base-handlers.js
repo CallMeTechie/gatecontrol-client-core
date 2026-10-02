@@ -124,6 +124,8 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Update ──────────────────────────────────────────────
   handle('update:check', () => getUpdater()?.getUpdateInfo() ?? null);
   handle('update:install', () => installUpdate());
+  // Kanal / Mindestversion / Pflicht-Status (vom Server zugewiesen, nur Anzeige)
+  handle('update:policy', () => getUpdater()?.getUpdatePolicy?.() ?? null);
 
   // ── Services & DNS ──────────────────────────────────────
   handle('permissions:get', () => apiClient?.getPermissions());

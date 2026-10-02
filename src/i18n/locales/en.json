@@ -89,7 +89,17 @@
     "install": "Install now",
     "later": "Later",
     "checkBtn": "Check for updates",
-    "noUpdate": "No update available"
+    "noUpdate": "No update available",
+    "required": "Update required",
+    "requiredDesc": "Your administrator requires at least version {{ minVersion }}. Please install version {{ version }}.",
+    "requiredDescNoMin": "Your administrator requires this update. Please install version {{ version }}.",
+    "requiredTunnelHint": "Installing closes the app and briefly disconnects the VPN tunnel.",
+    "channel": "Update channel",
+    "channelStable": "Stable",
+    "channelBeta": "Beta",
+    "channelUnknown": "Unknown",
+    "channelHint": "Assigned by the server",
+    "installRequired": "Update required: install v{{ version }}"
   },
   "peer": {
     "expired": "Peer certificate expired",

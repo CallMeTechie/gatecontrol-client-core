@@ -89,7 +89,17 @@
     "install": "Jetzt installieren",
     "later": "Später",
     "checkBtn": "Nach Updates suchen",
-    "noUpdate": "Kein Update verfügbar"
+    "noUpdate": "Kein Update verfügbar",
+    "required": "Update erforderlich",
+    "requiredDesc": "Ihr Administrator verlangt mindestens Version {{ minVersion }}. Bitte installieren Sie Version {{ version }}.",
+    "requiredDescNoMin": "Ihr Administrator verlangt dieses Update. Bitte installieren Sie Version {{ version }}.",
+    "requiredTunnelHint": "Die Installation beendet die App und trennt den VPN-Tunnel kurzzeitig.",
+    "channel": "Update-Kanal",
+    "channelStable": "Stable",
+    "channelBeta": "Beta",
+    "channelUnknown": "Unbekannt",
+    "channelHint": "Vom Server zugewiesen",
+    "installRequired": "Update erforderlich: v{{ version }} installieren"
   },
   "peer": {
     "expired": "Peer-Zertifikat abgelaufen",

@@ -98,7 +98,7 @@ describe('Updater: signed updates', () => {
     let ready = null;
     u.onUpdateReady = (r) => { ready = r; };
     const info = await u.check();
-    assert.deepEqual(info, { version: '1.1.0', releaseNotes: 'notes' });
+    assert.deepEqual(info, { version: '1.1.0', releaseNotes: 'notes', mandatory: false, channel: null, minVersion: null });
     assert.equal(ready.installerPath, path.join(tmp, FILE));
     assert.deepEqual(fs.readFileSync(path.join(tmp, FILE)), INSTALLER);
     assert.equal(fs.existsSync(path.join(tmp, `${FILE}.part`)), false);
@@ -263,5 +263,93 @@ describe('Updater: signed updates', () => {
     assert.equal(Updater.isNewerVersion('1.9.9', '1.10.0'), false);
     assert.equal(Updater.isNewerVersion('1.0.0', '1.0.0'), false);
     assert.equal(Updater.isNewerVersion('x', '1.0.0'), false);
+  });
+});
+
+describe('Updater: server policy (channel / minVersion / mandatory)', () => {
+  it('passes channel, minVersion and mandatory through for a verified, newer update', async () => {
+    Object.assign(checkResponse, { channel: 'beta', minVersion: '1.0.5', mandatory: true });
+    const { u, log } = makeUpdater();
+    let ready = null;
+    const seen = [];
+    u.start((r) => { ready = r; }, { onPolicyChange: (p) => seen.push(p) });
+    u.stop();
+    const info = await u.check();
+    assert.deepEqual(info, { version: '1.1.0', releaseNotes: 'notes', mandatory: true, channel: 'beta', minVersion: '1.0.5' });
+    assert.equal(ready.mandatory, true);
+    assert.equal(ready.channel, 'beta');
+    assert.equal(u.isMandatory(), true);
+    assert.equal(u.isBelowMinimum(), true);
+    assert.deepEqual(u.getUpdatePolicy(), {
+      channel: 'beta', minVersion: '1.0.5', belowMinimum: true, mandatory: true, updateReady: true, version: '1.1.0',
+    });
+    assert.equal(seen[seen.length - 1].mandatory, true);
+    assert.equal(rejected(log), false);
+  });
+
+  it('mandatory never bypasses the signature check', async () => {
+    Object.assign(checkResponse, { mandatory: true, minVersion: '1.1.0', channel: 'stable' });
+    checkResponse.signature = sign(checkResponse.manifest, other.privateKey);
+    const { u, log } = makeUpdater();
+    assert.equal(await u.check(), null);
+    assert.ok(rejected(log));
+    assert.equal(downloads().length, 0);
+    assert.equal(u.isMandatory(), false);
+    assert.equal(u.install(), false);
+    // the hint itself is kept for display only
+    assert.equal(u.getUpdatePolicy().belowMinimum, true);
+    assert.equal(u.getUpdatePolicy().mandatory, false);
+  });
+
+  it('mandatory never allows a downgrade or a reinstall', async () => {
+    electron.__state.version = '1.2.0';
+    Object.assign(checkResponse, { mandatory: true, minVersion: '1.5.0' });
+    const { u, log } = makeUpdater();
+    assert.equal(await u.check(), null);
+    assert.ok(log.lines.error.some((l) => l.includes('nicht neuer')));
+    assert.equal(downloads().length, 0);
+    assert.equal(u.isMandatory(), false);
+    assert.equal(u.install(), false);
+  });
+
+  it('mandatory never skips the hash check of the download', async () => {
+    Object.assign(checkResponse, { mandatory: true });
+    downloadBody = Buffer.concat([INSTALLER.subarray(0, 10), Buffer.from('X'), INSTALLER.subarray(11)]);
+    const { u, log } = makeUpdater();
+    assert.equal(await u.check(), null);
+    assert.ok(rejected(log));
+    assert.equal(u.isUpdateReady(), false);
+    assert.equal(u.isMandatory(), false);
+  });
+
+  it('minVersion alone makes a ready update mandatory; above it the update stays optional', async () => {
+    Object.assign(checkResponse, { minVersion: '1.0.1' });
+    let { u } = makeUpdater();
+    await u.check();
+    assert.equal(u.isMandatory(), true);
+
+    Object.assign(checkResponse, { minVersion: '1.0.0', mandatory: false });
+    ({ u } = makeUpdater());
+    await u.check();
+    assert.equal(u.isUpdateReady(), true);
+    assert.equal(u.isMandatory(), false);
+  });
+
+  it('sanitizes the unsigned fields', () => {
+    assert.deepEqual(Updater.sanitizeUpdatePolicy({ channel: 'nightly', minVersion: '1.2', mandatory: 'true' }),
+      { channel: null, minVersion: null, mandatory: false });
+    assert.deepEqual(Updater.sanitizeUpdatePolicy({ channel: 'beta', minVersion: '2.0.0', mandatory: true }),
+      { channel: 'beta', minVersion: '2.0.0', mandatory: true });
+    assert.deepEqual(Updater.sanitizeUpdatePolicy(null), { channel: null, minVersion: null, mandatory: false });
+  });
+
+  it('keeps the channel from a check without update (old servers: none)', async () => {
+    checkResponse = { ok: true, available: false, channel: 'beta', minVersion: null, mandatory: false };
+    const { u } = makeUpdater();
+    await u.check();
+    assert.equal(u.getUpdatePolicy().channel, 'beta');
+    checkResponse = { ok: true, available: false };
+    await u.check();
+    assert.equal(u.getUpdatePolicy().channel, null);
   });
 });

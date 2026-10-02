@@ -53,11 +53,11 @@ describe('createBridgeApi', () => {
       'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'rdp-allow:toggle',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:status', 'update:check', 'update:install',
-      'wireguard:check',
+      'update:policy', 'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
-    assert.deepEqual(events, ['locale:changed', 'navigate', 'peer-expiry', 'portal-url', 'tunnel-state', 'update-ready']);
+    assert.deepEqual(events, ['locale:changed', 'navigate', 'peer-expiry', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy']);
   });
 
   it('subscriptions pass the payload and unsubscribe the same handler', () => {

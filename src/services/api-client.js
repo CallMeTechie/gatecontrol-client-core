@@ -21,6 +21,8 @@ class ApiClient {
    * @param {object} [options]
    * @param {string} [options.clientVersion] - Client version string (defaults to core package version)
    * @param {string} [options.clientPlatform] - Client platform (defaults to 'windows')
+   * @param {'pro'|'community'} [options.clientType] - Edition; sent as
+   *   X-Client-Type so the server knows the product of the reported version
    */
   constructor(serverUrl, apiKey, log, peerId = null, options = {}) {
     this.log = log;
@@ -33,6 +35,7 @@ class ApiClient {
     this.client = null;
     this.clientVersion = options.clientVersion || require('../../package.json').version;
     this.clientPlatform = options.clientPlatform || 'windows';
+    this.clientType = ['pro', 'community'].includes(options.clientType) ? options.clientType : null;
 
     if (serverUrl) {
       this._createClient();
@@ -68,6 +71,7 @@ class ApiClient {
         'X-API-Token': this.apiKey,
         'X-Client-Version': this.clientVersion,
         'X-Client-Platform': this.clientPlatform,
+        ...(this.clientType ? { 'X-Client-Type': this.clientType } : {}),
         'X-Machine-Fingerprint': getMachineFingerprint(),
       },
     });
