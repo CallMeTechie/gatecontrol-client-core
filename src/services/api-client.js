@@ -12,6 +12,11 @@ const axios = require('axios');
 const os = require('os');
 const zlib = require('zlib');
 const { getMachineFingerprint } = require('../utils/machine-id');
+const { isSafeExternalUrl } = require('../utils/external-url');
+
+// The one-time portal login link must arrive quickly; otherwise the client
+// opens the plain portal URL instead of keeping the user waiting.
+const PORTAL_LINK_TIMEOUT_MS = 5000;
 
 class ApiClient {
   /**
@@ -44,6 +49,7 @@ class ApiClient {
     // Admin asked for a support bundle (peer-info / heartbeat answer):
     // request timestamp, true for servers without a timestamp, or null.
     this.supportBundleRequest = null;
+    this.portalLinkTimeoutMs = PORTAL_LINK_TIMEOUT_MS;
 
     if (serverUrl) {
       this._createClient();
@@ -354,6 +360,55 @@ class ApiClient {
       this.log.debug('Permissions query failed:', err.message);
       return null;
     }
+  }
+
+  /**
+   * Ask the server for a one-time portal login link
+   * (POST /api/v1/client/portal-link → { ok, url: "<portal>/auto?t=<ticket>", expiresIn }).
+   *
+   * Returns the link only when it is an http(s) URL on the same origin as the
+   * configured portal URL; otherwise (no portal URL, non-2xx, network error,
+   * timeout after 5 s, missing/foreign url) null, and the caller opens the
+   * plain portal URL. The link carries a secret ticket: it is never logged
+   * or stored, and a fresh one is fetched for every open.
+   *
+   * @param {string|null} [portalUrl] - configured portal URL (default: this.portalUrl)
+   * @returns {Promise<string|null>}
+   */
+  async getPortalLink(portalUrl = this.portalUrl) {
+    if (!this.client || !portalUrl) return null;
+
+    let expectedOrigin;
+    try {
+      expectedOrigin = new URL(portalUrl).origin;
+    } catch {
+      return null;
+    }
+
+    const timeout = this.portalLinkTimeoutMs;
+    let data;
+    try {
+      const res = await this.client.post('/api/v1/client/portal-link', {}, {
+        timeout,
+        signal: AbortSignal.timeout(timeout),
+      });
+      data = res.data;
+    } catch (err) {
+      // Only status / error message — never the response body (ticket).
+      this.log.debug('Portal link unavailable:', err.response?.status || err.code || err.message);
+      return null;
+    }
+
+    const url = data && typeof data.url === 'string' ? data.url.trim() : '';
+    if (!url || !isSafeExternalUrl(url)) {
+      this.log.debug('Portal link unavailable: no valid url in answer');
+      return null;
+    }
+    if (new URL(url).origin !== expectedOrigin) {
+      this.log.warn('Portal link rejected: origin differs from the portal URL');
+      return null;
+    }
+    return url;
   }
 
   /**

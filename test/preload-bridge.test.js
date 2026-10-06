@@ -50,7 +50,7 @@ describe('createBridgeApi', () => {
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set', 'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
-      'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'policy:get', 'policy:refresh', 'rdp-allow:toggle',
+      'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy', 'wireguard:check',
@@ -101,6 +101,7 @@ describe('createBridgeApi', () => {
       wgService: {}, apiClient: {}, killSwitch: {},
       log: { info() {}, warn() {}, error() {}, debug() {} },
       connectTunnel() {}, disconnectTunnel() {}, toggleKillSwitch() {}, toggleRdpAllow() {},
+      openPortal() {},
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });

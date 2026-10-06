@@ -66,6 +66,9 @@ const CONFIG_WRITABLE_KEYS = new Set([
  * @param {Function} ctx.disconnectTunnel - async () => void
  * @param {Function} ctx.toggleKillSwitch - async (enabled) => void
  * @param {Function} [ctx.toggleRdpAllow] - async (enabled) => void
+ * @param {Function} [ctx.openPortal] - async () => boolean; opens the portal
+ *   (fresh one-time login link, falling back to the portal URL — see
+ *   utils/portal.js). Registers portal:open when given.
  * @param {Function} ctx.installUpdate - async () => boolean
  * @param {Function} ctx.getTunnelState - () => tunnelState object
  * @param {string} ctx.wgConfigFile - Path to the WireGuard config file
@@ -415,6 +418,19 @@ function registerBaseHandlers(ipcMain, ctx) {
     });
     return enabled;
   });
+
+  // ── Portal ──────────────────────────────────────────────
+  // The renderer never sees the login link: main fetches and opens it.
+  if (ctx.openPortal) {
+    handle('portal:open', async () => {
+      try {
+        return (await ctx.openPortal()) === true;
+      } catch (err) {
+        log.warn('portal:open failed:', err && err.message);
+        return false;
+      }
+    });
+  }
 
   // ── Shell ───────────────────────────────────────────────
   handle('shell:open-external', async (_, url) => {

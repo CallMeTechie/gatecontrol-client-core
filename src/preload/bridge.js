@@ -135,6 +135,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
 
     // ── Portal ───────────────────────────────────────────
     onPortalUrl: (cb) => ipcRenderer.on('portal-url', (_e, url) => cb(url)),
+    // Opens the portal with a fresh one-time login link (fallback: portal URL).
+    portal: {
+      open: () => ipcRenderer.invoke('portal:open'),
+    },
 
     // ── Fenster ──────────────────────────────────────────
     window: {
