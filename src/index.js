@@ -27,6 +27,7 @@ const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const { isSafeExternalUrl } = require('./utils/external-url');
 const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
+const { createPortalOpener, resolvePortalUrl } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
@@ -76,6 +77,8 @@ module.exports = {
   isSafeExternalUrl,
   reconnectDelay,
   shouldOpenPortal,
+  createPortalOpener,
+  resolvePortalUrl,
   loadUpdatePublicKey,
   updatePublicKeyPaths,
   renderTrayIcon,

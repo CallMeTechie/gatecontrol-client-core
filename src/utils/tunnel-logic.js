@@ -26,6 +26,8 @@ function reconnectDelay(attempt, { base = 2000, factor = 1.5, cap = 60000 } = {}
  * connectedSince timestamp we have not already opened for. The reconnect path
  * never reaches this (it does not run the connect sequence), so a reconnect —
  * which mints a fresh connectedSince — cannot re-open the browser.
+ * When it says yes, the caller opens the portal via createPortalOpener()
+ * (utils/portal.js), which fetches a fresh one-time login link first.
  *
  * @param {{portalUrl: ?string, autoOpenPortal: boolean, connectedSince: number, lastOpenedSince: ?number}} s
  * @returns {boolean}
