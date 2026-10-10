@@ -11,7 +11,7 @@
   "dependencies": {
     "@callmetechie/gatecontrol-config-hash": "^1.1.0",
     "axios": "^1.20.0",
-    "electron-log": "^5.1.0",
+    "electron-log": "^5.4.4",
     "electron-store": "^8.2.0",
     "jsqr": "^1.4.0",
     "koffi": "^2.9.0"
