@@ -251,5 +251,53 @@
     "forbidden": "Der Server hat das Support-Paket abgelehnt (Token/Peer prüfen).",
     "unsupported": "Der Server unterstützt noch keine Support-Pakete.",
     "notConfigured": "Erst einen Server einrichten – dann kann ein Support-Paket gesendet werden."
+  },
+  "push": {
+    "priority": {
+      "info": "Info",
+      "normal": "Normal",
+      "high": "Hoch",
+      "critical": "Kritisch"
+    },
+    "state": {
+      "connected": "Empfangsbereit",
+      "connecting": "Verbinde …",
+      "disabled": "Aus",
+      "error": "Gestört",
+      "stopped": "Gestoppt"
+    },
+    "reason": {
+      "off": "Benachrichtigungen sind auf diesem PC ausgeschaltet.",
+      "not_configured": "Noch kein Server eingerichtet.",
+      "vpn_only": "Push läuft nur bei aktiver VPN-Verbindung.",
+      "unsupported": "Der Server unterstützt noch keine Benachrichtigungen. Neuer Versuch stündlich.",
+      "push_disabled": "Benachrichtigungen sind am Server ausgeschaltet. Neuer Versuch stündlich.",
+      "direct_not_allowed": "Der Server erlaubt Push nur durch den Tunnel. Verbindet sich, sobald das VPN steht.",
+      "auth": "Der Server hat den Zugang abgelehnt. Bitte den Server neu einrichten.",
+      "rate_limited": "Zu viele Verbindungsversuche. Neuer Versuch in 15 Minuten.",
+      "too_many_streams": "Der Server ist ausgelastet. Neuer Versuch folgt.",
+      "insecure_url": "Push braucht eine HTTPS-Server-Adresse.",
+      "network": "Server nicht erreichbar. Neuer Versuch folgt.",
+      "timeout": "Server antwortet nicht. Neuer Versuch folgt.",
+      "keepalive_timeout": "Verbindung unterbrochen. Neuer Versuch folgt.",
+      "reconnecting": "Verbindung wird erneuert …"
+    },
+    "via": {
+      "direct": "direkt über HTTPS",
+      "tunnel": "über Tunnel"
+    },
+    "tunnelOnly": "Push nur durch den Tunnel: Der Kill-Switch lässt außerhalb des Tunnels nur HTTPS zum WireGuard-Endpunkt durch, die Server-Adresse zeigt aber auf einen anderen Host oder Port.",
+    "killSwitchOk": "Mit aktivem Kill-Switch läuft der Push-Kanal über dieselbe Ausnahme wie die App selbst (HTTPS zum Server). Es muss nichts zusätzlich freigegeben werden.",
+    "dndUntil": "Nicht stören bis {{ time }}",
+    "test": {
+      "sent": "Testnachricht angefordert.",
+      "failed": "Testnachricht fehlgeschlagen: {{ error }}"
+    },
+    "tray": {
+      "inbox": "Mitteilungen",
+      "inboxUnread": "Mitteilungen · {{ count }} neu",
+      "dnd1h": "Nicht stören für 1 Stunde",
+      "dndOff": "Nicht stören beenden"
+    }
   }
 }

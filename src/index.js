@@ -17,12 +17,18 @@ const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
 const DnsPolicy = require('./services/dns-policy');
 const ClientPolicyService = require('./services/client-policy');
+const PushClient = require('./services/push-client');
+const NotificationCenter = require('./services/notification-center');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
 const { getMachineFingerprint } = require('./utils/machine-id');
 const { createLogger } = require('./utils/logger');
 const { createStores } = require('./utils/store');
+const notifySchema = require('./utils/notify-schema');
+const { checkPushPath, isTunnelOnly } = require('./utils/push-path');
+const { notifyMenuItems } = require('./utils/notify-menu');
+const { SseParser } = require('./utils/sse-parser');
 const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const { isSafeExternalUrl } = require('./utils/external-url');
@@ -65,6 +71,8 @@ module.exports = {
   Updater,
   DnsPolicy,
   ClientPolicyService,
+  PushClient,
+  NotificationCenter,
 
   // Utils
   validation,
@@ -72,6 +80,14 @@ module.exports = {
   getMachineFingerprint,
   createLogger,
   createStores,
+  notificationsSchema: notifySchema.notificationsSchema,
+  NOTIFICATION_DEFAULTS: notifySchema.NOTIFICATION_DEFAULTS,
+  NOTIFICATION_WRITABLE_KEYS: notifySchema.NOTIFICATION_WRITABLE_KEYS,
+  readNotificationSettings: notifySchema.readNotificationSettings,
+  checkPushPath,
+  isTunnelOnly,
+  notifyMenuItems,
+  SseParser,
   E2EEHandler,
   enrollment,
   isSafeExternalUrl,

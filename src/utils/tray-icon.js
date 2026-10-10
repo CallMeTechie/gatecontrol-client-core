@@ -18,11 +18,17 @@ const STATE_COLORS = {
   disconnected: [0xEF, 0x44, 0x44], // red (also every other state)
 };
 
+// Unread push notifications: dot in the top right corner (notification center).
+const BADGE_COLOR = [0x3B, 0x82, 0xF6]; // blue
+const BADGE = { cx: 25, cy: 7, r: 5.5, gap: 1.5 };
+
 /**
  * @param {string} state - 'connected' | 'connecting' | anything else (red)
+ * @param {object} [opts]
+ * @param {boolean} [opts.badge=false] - draw the unread dot (top right)
  * @returns {{ buffer: Buffer, width: number, height: number }} raw RGBA
  */
-function renderTrayIcon(state) {
+function renderTrayIcon(state, { badge = false } = {}) {
   const color = state === 'connected' ? STATE_COLORS.connected
     : state === 'connecting' ? STATE_COLORS.connecting
     : STATE_COLORS.disconnected;
@@ -83,16 +89,37 @@ function renderTrayIcon(state) {
     }
   }
 
+  if (badge) drawBadge(buf, size);
+
   return { buffer: buf, width: size, height: size };
+}
+
+// Filled dot with a transparent ring around it, so it stays visible on top
+// of the rays in every state colour.
+function drawBadge(buf, size) {
+  const { cx, cy, r, gap } = BADGE;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      if (d > r + gap) continue;
+      const i = (y * size + x) * 4;
+      if (d <= r) {
+        buf[i] = BADGE_COLOR[0]; buf[i + 1] = BADGE_COLOR[1]; buf[i + 2] = BADGE_COLOR[2]; buf[i + 3] = 255;
+      } else {
+        buf[i] = 0; buf[i + 1] = 0; buf[i + 2] = 0; buf[i + 3] = 0;
+      }
+    }
+  }
 }
 
 /**
  * @param {Electron.nativeImage} nativeImage - electron's nativeImage module
  * @param {string} state
+ * @param {object} [opts] - { badge } (see renderTrayIcon)
  * @returns {Electron.NativeImage}
  */
-function createTrayIcon(nativeImage, state) {
-  const { buffer, width, height } = renderTrayIcon(state);
+function createTrayIcon(nativeImage, state, opts) {
+  const { buffer, width, height } = renderTrayIcon(state, opts);
   return nativeImage.createFromBuffer(buffer, { width, height });
 }
 

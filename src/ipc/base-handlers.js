@@ -17,6 +17,7 @@ const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils
 const { isSafeExternalUrl } = require('../utils/external-url');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
+const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -42,7 +43,18 @@ const CONFIG_WRITABLE_KEYS = new Set([
   'app.checkInterval', 'app.configPollInterval',
   'tunnel.autoConnect', 'tunnel.killSwitch', 'tunnel.rdpAllow',
   'tunnel.splitTunnel', 'tunnel.splitRoutes',
+  // Notification center (schema-validated; changes reach the push client
+  // through NotificationCenter's store watcher)
+  ...NOTIFICATION_WRITABLE_KEYS,
 ]);
+
+// main → renderer events of the notification center
+const NOTIFY_EVENTS = {
+  new: 'notify:new',
+  update: 'notify:update',
+  status: 'notify:status',
+  navigate: 'notify:navigate',
+};
 
 /**
  * Register base IPC handlers shared by all GateControl clients.
@@ -89,6 +101,13 @@ const CONFIG_WRITABLE_KEYS = new Set([
  *   (shared with the connection monitor for admin requests); created here
  *   when missing
  * @param {string} [ctx.edition] - 'pro' | 'community' (support bundle)
+ * @param {object} [ctx.notificationCenter] - NotificationCenter (opt-in).
+ *   When given: registers notify:list, notify:read, notify:action,
+ *   notify:prefs:get, notify:prefs:set, notify:test, notify:status,
+ *   notify:dnd; forwards its events to the main window as notify:new,
+ *   notify:update, notify:status, notify:navigate; and resets it (cache,
+ *   resume position, reconnect) after a successful server:setup.
+ *   Keep one instance for the app's lifetime.
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -105,6 +124,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const skip = new Set(ctx.skip || []);
   const registered = [];
   const clientPolicy = ctx.clientPolicy || null;
+  const notificationCenter = ctx.notificationCenter || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -117,12 +137,18 @@ function registerBaseHandlers(ipcMain, ctx) {
     registered.push(channel);
   }
 
-  // A new server / token: the old server's policy must not stick. Drop it and
-  // ask the new server (best-effort, the answer arrives via onChange).
-  function resetPolicyForNewServer() {
-    if (!clientPolicy) return;
-    clientPolicy.reset();
-    Promise.resolve(clientPolicy.refresh()).catch(() => {});
+  // A new server / token: the old server's policy and push state must not
+  // stick. Drop them and ask the new server (best-effort, the policy answer
+  // arrives via onChange, push reconnects on its own).
+  function resetForNewServer() {
+    if (clientPolicy) {
+      clientPolicy.reset();
+      Promise.resolve(clientPolicy.refresh()).catch(() => {});
+    }
+    // Push: new server / token → drop the old inbox, reconnect from scratch.
+    if (notificationCenter) {
+      try { notificationCenter.resetForNewServer(); } catch (err) { log.warn(`Notification reset failed: ${err.message}`); }
+    }
   }
 
   // Writes a (validated) WireGuard config and remembers where it lives.
@@ -241,7 +267,7 @@ function registerBaseHandlers(ipcMain, ctx) {
         }
       }
       log.info(`Set up via setup code (peer ${peerId})`);
-      resetPolicyForNewServer();
+      resetForNewServer();
       return { success: true, peerId, enrolled: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -270,7 +296,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       const info = await apiClient.register();
       store.set('server.peerId', String(info.peerId));
       apiClient.setPeerId(info.peerId);
-      resetPolicyForNewServer();
+      resetForNewServer();
       return { success: true, peerId: info.peerId };
     } catch (err) {
       return { success: false, error: err.message };
@@ -518,6 +544,9 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
+  // ── Benachrichtigungen (notification center, opt-in) ────
+  if (notificationCenter) registerNotifyHandlers(handle, { notificationCenter, getMainWindow, log });
+
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).
   const supportBundle = ctx.supportBundle || createSupportBundleSender(ctx);
@@ -532,6 +561,58 @@ function registerBaseHandlers(ipcMain, ctx) {
   }
 
   return registered;
+}
+
+/**
+ * IPC of the notification center. Arguments from the renderer are checked
+ * here and again in NotificationCenter.
+ *
+ *   notify:list        ({ filter?, limit?, before?, refresh? }) → { items, unread, topics }
+ *   notify:read        ({ ids: number[] } | { all: true } | number[]) → { ok, updated, unread }
+ *   notify:action      ({ id, action }) → { ok, error? }
+ *   notify:prefs:get   () → { enabled, direct, toasts, criticalBypass, mutedTopics, dndUntil, topics }
+ *   notify:prefs:set   (partial prefs) → { ok, prefs } | { ok: false, error }
+ *   notify:test        () → { ok, seq } | { ok: false, error }
+ *   notify:status      () → NotificationCenter.status()
+ *   notify:dnd         ({ minutes } | { until } | null = off | undefined = query) → { ok, active, until }
+ */
+function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow, log }) {
+  handle('notify:list', async (_, opts = {}) => {
+    const o = opts && typeof opts === 'object' ? opts : {};
+    if (o.refresh === true) await nc.refresh().catch(() => null);
+    return nc.list({
+      filter: typeof o.filter === 'string' ? o.filter.slice(0, 120) : 'all',
+      limit: Number.isSafeInteger(o.limit) ? o.limit : undefined,
+      before: Number.isSafeInteger(o.before) ? o.before : null,
+    });
+  });
+  handle('notify:read', (_, arg) => {
+    if (arg && typeof arg === 'object' && !Array.isArray(arg) && arg.all === true) return nc.markRead('all');
+    const ids = Array.isArray(arg) ? arg : (arg && Array.isArray(arg.ids) ? arg.ids : null);
+    if (!ids || ids.length > 500 || !ids.every((x) => Number.isSafeInteger(x) && x > 0)) {
+      return { ok: false, error: 'invalid_ids', updated: 0, unread: nc.unreadCount() };
+    }
+    return nc.markRead(ids);
+  });
+  handle('notify:action', (_, arg = {}) => {
+    const id = arg && Number(arg.id);
+    const action = arg && typeof arg.action === 'string' ? arg.action : '';
+    if (!Number.isSafeInteger(id) || id <= 0 || !/^[A-Za-z0-9_.:-]{1,40}$/.test(action)) return { ok: false, error: 'invalid' };
+    return nc.performAction(id, action);
+  });
+  handle('notify:prefs:get', () => nc.getPrefs());
+  handle('notify:prefs:set', (_, patch) => nc.setPrefs(patch));
+  handle('notify:test', () => (nc.pushClient ? nc.pushClient.requestTest() : { ok: false, error: 'not_configured' }));
+  handle('notify:status', () => nc.status());
+  handle('notify:dnd', (_, arg) => (arg === undefined ? { ok: true, ...nc.dndState() } : nc.setDnd(arg)));
+
+  for (const [event, channel] of Object.entries(NOTIFY_EVENTS)) {
+    nc.on(event, (payload) => {
+      const win = getMainWindow && getMainWindow();
+      if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win.webContents) return;
+      try { win.webContents.send(channel, payload); } catch (err) { log.debug(`${channel} not delivered: ${err.message}`); }
+    });
+  }
 }
 
 /**
@@ -624,4 +705,4 @@ function applyPolicyToStore(store, policy, log) {
   return changed;
 }
 
-module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore };
+module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore, CONFIG_WRITABLE_KEYS, NOTIFY_EVENTS };

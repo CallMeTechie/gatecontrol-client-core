@@ -128,6 +128,26 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onChange: (cb) => subscribe('policy:changed', cb),
     },
 
+    // ── Benachrichtigungen (notification center) ─────────
+    // Served when the app passes a NotificationCenter to registerBaseHandlers.
+    notify: {
+      // { filter: 'all'|'unread'|<topic>, limit, before, refresh } → { items, unread, topics }
+      list:     (opts) => ipcRenderer.invoke('notify:list', opts),
+      // ids (notification ids) or 'all' → { ok, updated, unread }
+      read:     (ids) => ipcRenderer.invoke('notify:read', ids === 'all' ? { all: true } : { ids: Array.isArray(ids) ? ids : [ids] }),
+      action:   (id, action) => ipcRenderer.invoke('notify:action', { id, action }),
+      getPrefs: () => ipcRenderer.invoke('notify:prefs:get'),
+      setPrefs: (patch) => ipcRenderer.invoke('notify:prefs:set', patch),
+      test:     () => ipcRenderer.invoke('notify:test'),
+      status:   () => ipcRenderer.invoke('notify:status'),
+      // { minutes } | { until } | null (off); no argument = query
+      dnd:      (...args) => ipcRenderer.invoke('notify:dnd', ...args),
+      onNew:      (cb) => subscribe('notify:new', cb),
+      onUpdate:   (cb) => subscribe('notify:update', cb),
+      onStatus:   (cb) => subscribe('notify:status', cb),
+      onNavigate: (cb) => subscribe('notify:navigate', cb),
+    },
+
     // ── Shell ────────────────────────────────────────────
     shell: {
       openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),

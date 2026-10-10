@@ -80,6 +80,7 @@ function setupAppLifecycle(app, ctx) {
  * @param {object} ctx.updater - Updater instance (or null)
  * @param {Electron.Tray|null} ctx.tray
  * @param {Function} ctx.disconnectTunnel - async () => void
+ * @param {object} [ctx.notificationCenter] - NotificationCenter (stops the push stream)
  */
 async function performCleanShutdown(app, ctx) {
   const { store, tunnelState, killSwitch, updater, tray, disconnectTunnel } = ctx;
@@ -88,6 +89,9 @@ async function performCleanShutdown(app, ctx) {
 
   // Stop updater
   updater?.stop();
+
+  // Close the push stream (flushes pending delivery confirmations)
+  try { ctx.notificationCenter?.stop(); } catch {}
 
   // Disconnect tunnel
   if (tunnelState.connected) {
