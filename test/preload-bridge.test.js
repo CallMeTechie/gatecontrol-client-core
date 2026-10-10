@@ -50,14 +50,19 @@ describe('createBridgeApi', () => {
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set', 'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
-      'locale:set', 'logs:export', 'logs:get', 'logs:show', 'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
+      'locale:set', 'logs:export', 'logs:get', 'logs:show',
+      'notify:action', 'notify:dnd', 'notify:list', 'notify:prefs:get', 'notify:prefs:set', 'notify:read', 'notify:status', 'notify:test',
+      'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy', 'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
-    assert.deepEqual(events, ['locale:changed', 'navigate', 'peer-expiry', 'policy:changed', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy']);
+    assert.deepEqual(events, [
+      'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
+      'peer-expiry', 'policy:changed', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy',
+    ]);
   });
 
   it('subscriptions pass the payload and unsubscribe the same handler', () => {
@@ -71,6 +76,21 @@ describe('createBridgeApi', () => {
     assert.deepEqual(got, { connected: true });
     off();
     assert.deepEqual(ipc.calls.off[0], ['tunnel-state', handler]);
+  });
+
+  it('notify.read sends ids or all', () => {
+    const ipc = fakeIpcRenderer();
+    const api = createBridgeApi(ipc, i18n);
+    api.notify.read([4, 5]);
+    api.notify.read('all');
+    api.notify.read(7);
+    api.notify.action(4, 'details');
+    api.notify.dnd();
+    api.notify.dnd(null);
+    assert.deepEqual(ipc.calls.invoke, [
+      ['notify:read', { ids: [4, 5] }], ['notify:read', { all: true }], ['notify:read', { ids: [7] }],
+      ['notify:action', { id: 4, action: 'details' }], ['notify:dnd'], ['notify:dnd', null],
+    ]);
   });
 
   it('announces updates on the edition-specific channel', () => {
@@ -102,6 +122,7 @@ describe('createBridgeApi', () => {
       log: { info() {}, warn() {}, error() {}, debug() {} },
       connectTunnel() {}, disconnectTunnel() {}, toggleKillSwitch() {}, toggleRdpAllow() {},
       openPortal() {},
+      notificationCenter: { on() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });

@@ -251,5 +251,53 @@
     "forbidden": "The server rejected the support bundle (check token/peer).",
     "unsupported": "The server does not support support bundles yet.",
     "notConfigured": "Set up a server first – then a support bundle can be sent."
+  },
+  "push": {
+    "priority": {
+      "info": "Info",
+      "normal": "Normal",
+      "high": "High",
+      "critical": "Critical"
+    },
+    "state": {
+      "connected": "Ready to receive",
+      "connecting": "Connecting …",
+      "disabled": "Off",
+      "error": "Disrupted",
+      "stopped": "Stopped"
+    },
+    "reason": {
+      "off": "Notifications are switched off on this PC.",
+      "not_configured": "No server set up yet.",
+      "vpn_only": "Push only runs while the VPN is connected.",
+      "unsupported": "The server does not support notifications yet. Retrying hourly.",
+      "push_disabled": "Notifications are switched off on the server. Retrying hourly.",
+      "direct_not_allowed": "The server only allows push through the tunnel. Connects once the VPN is up.",
+      "auth": "The server refused access. Please set up the server again.",
+      "rate_limited": "Too many connection attempts. Retrying in 15 minutes.",
+      "too_many_streams": "The server is busy. Retrying shortly.",
+      "insecure_url": "Push needs an HTTPS server address.",
+      "network": "Server unreachable. Retrying shortly.",
+      "timeout": "Server does not answer. Retrying shortly.",
+      "keepalive_timeout": "Connection interrupted. Retrying shortly.",
+      "reconnecting": "Renewing the connection …"
+    },
+    "via": {
+      "direct": "directly via HTTPS",
+      "tunnel": "through the tunnel"
+    },
+    "tunnelOnly": "Push only through the tunnel: outside the tunnel the kill switch only allows HTTPS to the WireGuard endpoint, but the server address points to another host or port.",
+    "killSwitchOk": "With the kill switch on, the push channel uses the same exception as the app itself (HTTPS to the server). Nothing else needs to be allowed.",
+    "dndUntil": "Do not disturb until {{ time }}",
+    "test": {
+      "sent": "Test message requested.",
+      "failed": "Test message failed: {{ error }}"
+    },
+    "tray": {
+      "inbox": "Notifications",
+      "inboxUnread": "Notifications · {{ count }} new",
+      "dnd1h": "Do not disturb for 1 hour",
+      "dndOff": "End do not disturb"
+    }
   }
 }

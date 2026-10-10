@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fsSync = require('fs');
 const Store = require('electron-store');
+const { notificationsSchema } = require('./notify-schema');
 
 /**
  * Create the two-tier store system.
@@ -83,10 +84,11 @@ function createStores({ userDataPath, log }) {
         },
         default: {},
       },
+      ...notificationsSchema,
     },
   });
 
   return { keyStore, store };
 }
 
-module.exports = { createStores };
+module.exports = { createStores, notificationsSchema };
