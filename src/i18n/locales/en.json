@@ -25,7 +25,7 @@
     "title": "Settings",
     "server": "Server",
     "serverUrl": "Server URL",
-    "apiKey": "API Key",
+    "apiKey": "API key or setup code",
     "showApiKey": "Show API Key",
     "importConfig": "Import Configuration",
     "splitTunnel": "Split Tunnel",
@@ -40,7 +40,9 @@
     "checkInterval": "Check interval (s)",
     "pollInterval": "Poll interval (s)",
     "theme": "Theme",
-    "language": "Language"
+    "language": "Language",
+    "apiKeyPlaceholder": "XXXX-XXXX-XXXX-XXXX or gc_…",
+    "apiKeyHint": "Create a setup code in GateControl (Peers → QR → “Set up app”, or at the user) — or import its QR code."
   },
   "stats": {
     "endpoint": "Endpoint",
@@ -87,7 +89,17 @@
     "install": "Install now",
     "later": "Later",
     "checkBtn": "Check for updates",
-    "noUpdate": "No update available"
+    "noUpdate": "No update available",
+    "required": "Update required",
+    "requiredDesc": "Your administrator requires at least version {{ minVersion }}. Please install version {{ version }}.",
+    "requiredDescNoMin": "Your administrator requires this update. Please install version {{ version }}.",
+    "requiredTunnelHint": "Installing closes the app and briefly disconnects the VPN tunnel.",
+    "channel": "Update channel",
+    "channelStable": "Stable",
+    "channelBeta": "Beta",
+    "channelUnknown": "Unknown",
+    "channelHint": "Assigned by the server",
+    "installRequired": "Update required: install v{{ version }}"
   },
   "peer": {
     "expired": "Peer certificate expired",
@@ -123,14 +135,23 @@
     "testInProgress": "Testing connection...",
     "testSuccess": "Connection successful",
     "testError": "Connection error: {{ error }}",
-    "urlAndKeyRequired": "Server URL and API key are required",
+    "urlAndKeyRequired": "Server URL and API key or setup code required",
     "registering": "Registering device...",
     "registered": "Device registered (Peer ID: {{ peerId }})",
     "configImported": "Configuration imported: {{ path }}",
     "importError": "Import failed: {{ error }}",
     "qrSuccess": "QR code scanned successfully",
     "qrTimeout": "QR code scan timed out",
-    "cameraError": "Camera error: {{ error }}"
+    "cameraError": "Camera error: {{ error }}",
+    "httpsRequired": "The server URL must use https (e.g. https://gate.example.com).",
+    "enrollHttps": "A setup code needs an https server URL.",
+    "enrollInvalid": "The setup code is invalid, expired or already used. Create a new code in GateControl.",
+    "enrollForbidden": "The server refused the setup (user disabled or without client permission).",
+    "enrollLimit": "The server license peer limit has been reached.",
+    "enrollFingerprint": "The server requires device binding, but this device could not be identified.",
+    "enrollRateLimited": "Too many attempts. Please try again in a few minutes.",
+    "enrollFailed": "Setup failed: {{ error }}",
+    "enrolled": "Device set up (peer ID: {{ peerId }})"
   },
   "split": {
     "activateOnReconnect": "Split tunnel will be activated on reconnect",
@@ -151,5 +172,84 @@
   "locale": {
     "de": "Deutsch",
     "en": "English"
+  },
+  "portal": {
+    "open": "Open portal"
+  },
+  "enroll": {
+    "confirmTitle": "Connect to server?",
+    "confirmBody": "This client will be connected to {{ host }} and get VPN plus every feature granted there. Only confirm if you trust this server.",
+    "connect": "Connect",
+    "cancel": "Cancel"
+  },
+  "ui": {
+    "nav": {
+      "overview": "Overview",
+      "services": "Services"
+    },
+    "conn": {
+      "toggle": "VPN connection"
+    },
+    "hero": {
+      "subOn": "Your traffic is encrypted via {{ host }}",
+      "subOff": "Your traffic goes unprotected over the local network.",
+      "retry": "Try again",
+      "showLog": "Show log"
+    },
+    "protection": {
+      "title": "Protection",
+      "routing": "Routing"
+    },
+    "throughput": {
+      "title": "Throughput"
+    },
+    "services": {
+      "showAll": "Show all",
+      "connectNow": "Connect now",
+      "open": "Open",
+      "auth": "Sign-in"
+    },
+    "logs": {
+      "count": "{{ count }} entries · newest first",
+      "search": "Search messages",
+      "noMatch": "No entries for these filters."
+    },
+    "settings": {
+      "tabSplit": "Split tunneling",
+      "tabAbout": "About"
+    },
+    "statusbar": {
+      "ksOn": "Kill switch on",
+      "ksOff": "Kill switch off"
+    }
+  },
+  "policy": {
+    "lockedHint": "Set by your administrator",
+    "lockedError": "This setting is set by your administrator.",
+    "managedBanner": "This device is managed – some settings are set by your administrator.",
+    "serverLocked": "Changing the server and re-setup are locked by your administrator.",
+    "disconnectLocked": "Your administrator set the connection to “always connected”.",
+    "killSwitchRequired": "Kill switch enforced by your administrator",
+    "autostartForbidden": "Autostart not allowed by your administrator",
+    "splitModeLocked": "Split-tunnel mode set by your administrator"
+  },
+  "support": {
+    "title": "Support bundle",
+    "button": "Send support bundle",
+    "desc": "Send redacted diagnostics to the GateControl server",
+    "sending": "Sending…",
+    "send": "Send",
+    "cancel": "Cancel",
+    "confirmTitle": "Send diagnostics to {{ host }}?",
+    "confirmIncludes": "Included: app, core and Windows version, tunnel state and last handshake, settings, WireGuard config without keys, network adapters, DNS servers and routes, the last 2000 log lines and recent errors.",
+    "confirmExcludes": "Not included: private keys, preshared keys, API tokens, passwords, setup codes and cookies – they are removed before sending.",
+    "requestedByAdmin": "Your administrator requested a support bundle.",
+    "success": "Support bundle sent",
+    "failed": "Support bundle could not be sent: {{ error }}",
+    "rateLimited": "Too many support bundles – please try again later.",
+    "tooLarge": "The support bundle is too large.",
+    "forbidden": "The server rejected the support bundle (check token/peer).",
+    "unsupported": "The server does not support support bundles yet.",
+    "notConfigured": "Set up a server first – then a support bundle can be sent."
   }
 }

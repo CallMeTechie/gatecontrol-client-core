@@ -25,7 +25,7 @@
     "title": "Einstellungen",
     "server": "Server",
     "serverUrl": "Server-URL",
-    "apiKey": "API-Schlüssel",
+    "apiKey": "API-Schlüssel oder Einrichtungscode",
     "showApiKey": "API-Schlüssel anzeigen",
     "importConfig": "Konfiguration importieren",
     "splitTunnel": "Split-Tunnel",
@@ -40,7 +40,9 @@
     "checkInterval": "Prüfintervall (s)",
     "pollInterval": "Abfrageintervall (s)",
     "theme": "Design",
-    "language": "Sprache"
+    "language": "Sprache",
+    "apiKeyPlaceholder": "XXXX-XXXX-XXXX-XXXX oder gc_…",
+    "apiKeyHint": "In GateControl unter Peers → QR → „App einrichten“ bzw. beim Benutzer einen Einrichtungscode erzeugen – oder dessen QR-Code importieren."
   },
   "stats": {
     "endpoint": "Endpunkt",
@@ -87,7 +89,17 @@
     "install": "Jetzt installieren",
     "later": "Später",
     "checkBtn": "Nach Updates suchen",
-    "noUpdate": "Kein Update verfügbar"
+    "noUpdate": "Kein Update verfügbar",
+    "required": "Update erforderlich",
+    "requiredDesc": "Ihr Administrator verlangt mindestens Version {{ minVersion }}. Bitte installieren Sie Version {{ version }}.",
+    "requiredDescNoMin": "Ihr Administrator verlangt dieses Update. Bitte installieren Sie Version {{ version }}.",
+    "requiredTunnelHint": "Die Installation beendet die App und trennt den VPN-Tunnel kurzzeitig.",
+    "channel": "Update-Kanal",
+    "channelStable": "Stable",
+    "channelBeta": "Beta",
+    "channelUnknown": "Unbekannt",
+    "channelHint": "Vom Server zugewiesen",
+    "installRequired": "Update erforderlich: v{{ version }} installieren"
   },
   "peer": {
     "expired": "Peer-Zertifikat abgelaufen",
@@ -123,14 +135,23 @@
     "testInProgress": "Verbindungstest läuft...",
     "testSuccess": "Verbindung erfolgreich",
     "testError": "Verbindungsfehler: {{ error }}",
-    "urlAndKeyRequired": "Server-URL und API-Schlüssel erforderlich",
+    "urlAndKeyRequired": "Server-URL und API-Schlüssel oder Einrichtungscode erforderlich",
     "registering": "Registriere Gerät...",
     "registered": "Gerät registriert (Peer-ID: {{ peerId }})",
     "configImported": "Konfiguration importiert: {{ path }}",
     "importError": "Import fehlgeschlagen: {{ error }}",
     "qrSuccess": "QR-Code erfolgreich gescannt",
     "qrTimeout": "QR-Code-Scan abgelaufen",
-    "cameraError": "Kamerafehler: {{ error }}"
+    "cameraError": "Kamerafehler: {{ error }}",
+    "httpsRequired": "Die Server-URL muss https verwenden (z. B. https://gate.example.com).",
+    "enrollHttps": "Für einen Einrichtungscode ist eine https-Server-URL nötig.",
+    "enrollInvalid": "Der Einrichtungscode ist ungültig, abgelaufen oder wurde schon benutzt. Bitte in GateControl einen neuen Code erzeugen.",
+    "enrollForbidden": "Der Server hat die Einrichtung abgelehnt (Benutzer deaktiviert oder ohne Client-Berechtigung).",
+    "enrollLimit": "Die Peer-Grenze der Server-Lizenz ist erreicht.",
+    "enrollFingerprint": "Der Server verlangt eine Gerätebindung, aber das Gerät konnte nicht erkannt werden.",
+    "enrollRateLimited": "Zu viele Versuche. Bitte in ein paar Minuten erneut versuchen.",
+    "enrollFailed": "Einrichtung fehlgeschlagen: {{ error }}",
+    "enrolled": "Gerät eingerichtet (Peer-ID: {{ peerId }})"
   },
   "split": {
     "activateOnReconnect": "Split-Tunnel wird beim Neuverbinden aktiviert",
@@ -151,5 +172,84 @@
   "locale": {
     "de": "Deutsch",
     "en": "English"
+  },
+  "portal": {
+    "open": "Portal öffnen"
+  },
+  "enroll": {
+    "confirmTitle": "Mit Server verbinden?",
+    "confirmBody": "Dieser Client wird mit {{ host }} verbunden und erhält dort VPN und alle freigegebenen Funktionen. Bestätige nur, wenn du diesem Server vertraust.",
+    "connect": "Verbinden",
+    "cancel": "Abbrechen"
+  },
+  "ui": {
+    "nav": {
+      "overview": "Übersicht",
+      "services": "Dienste"
+    },
+    "conn": {
+      "toggle": "VPN-Verbindung"
+    },
+    "hero": {
+      "subOn": "Dein Verkehr läuft verschlüsselt über {{ host }}",
+      "subOff": "Dein Verkehr läuft ungeschützt über das lokale Netz.",
+      "retry": "Erneut versuchen",
+      "showLog": "Protokoll anzeigen"
+    },
+    "protection": {
+      "title": "Schutz",
+      "routing": "Routing"
+    },
+    "throughput": {
+      "title": "Durchsatz"
+    },
+    "services": {
+      "showAll": "Alle anzeigen",
+      "connectNow": "Jetzt verbinden",
+      "open": "Öffnen",
+      "auth": "Anmeldung"
+    },
+    "logs": {
+      "count": "{{ count }} Einträge · neueste zuerst",
+      "search": "Meldungen durchsuchen",
+      "noMatch": "Keine Einträge für diese Filter."
+    },
+    "settings": {
+      "tabSplit": "Split-Tunneling",
+      "tabAbout": "Über"
+    },
+    "statusbar": {
+      "ksOn": "Kill-Switch an",
+      "ksOff": "Kill-Switch aus"
+    }
+  },
+  "policy": {
+    "lockedHint": "Vom Administrator festgelegt",
+    "lockedError": "Diese Einstellung ist vom Administrator festgelegt.",
+    "managedBanner": "Dieses Gerät wird verwaltet – einige Einstellungen sind vom Administrator festgelegt.",
+    "serverLocked": "Serverwechsel und Neueinrichtung sind vom Administrator gesperrt.",
+    "disconnectLocked": "Die Verbindung ist vom Administrator als „immer verbunden“ festgelegt.",
+    "killSwitchRequired": "Kill-Switch vom Administrator erzwungen",
+    "autostartForbidden": "Autostart vom Administrator nicht erlaubt",
+    "splitModeLocked": "Split-Tunnel-Modus vom Administrator festgelegt"
+  },
+  "support": {
+    "title": "Support-Paket",
+    "button": "Support-Paket senden",
+    "desc": "Bereinigte Diagnosedaten an den GateControl-Server senden",
+    "sending": "Wird gesendet…",
+    "send": "Senden",
+    "cancel": "Abbrechen",
+    "confirmTitle": "Diagnosedaten an {{ host }} senden?",
+    "confirmIncludes": "Enthalten: App-, Core- und Windows-Version, Tunnelstatus und letzter Handshake, Einstellungen, WireGuard-Konfiguration ohne Schlüssel, Netzwerkadapter, DNS-Server und Routen, die letzten 2000 Logzeilen und aktuelle Fehler.",
+    "confirmExcludes": "Nicht enthalten: private Schlüssel, Preshared Keys, API-Tokens, Passwörter, Einrichtungscodes und Cookies – sie werden vor dem Senden entfernt.",
+    "requestedByAdmin": "Dein Administrator hat ein Support-Paket angefordert.",
+    "success": "Support-Paket gesendet",
+    "failed": "Support-Paket konnte nicht gesendet werden: {{ error }}",
+    "rateLimited": "Zu viele Support-Pakete – bitte später erneut versuchen.",
+    "tooLarge": "Das Support-Paket ist zu groß.",
+    "forbidden": "Der Server hat das Support-Paket abgelehnt (Token/Peer prüfen).",
+    "unsupported": "Der Server unterstützt noch keine Support-Pakete.",
+    "notConfigured": "Erst einen Server einrichten – dann kann ein Support-Paket gesendet werden."
   }
 }

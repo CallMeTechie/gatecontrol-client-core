@@ -21,6 +21,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
 const { validateIp, validateCidr, validateInt, validateIfaceName, IPV4_RE } = require('../utils/validation');
+const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 
 // Shell-safe netsh execution via execFile (no shell, argument array)
 function netsh(...args) {
@@ -417,6 +418,15 @@ class WireGuardNative {
 
     const content = await this.readConfig(configPath);
     if (!content) throw new Error(`Konfigurationsdatei nicht gefunden: ${configPath}`);
+
+    // Fail-closed: validate raw config text before bringing up the tunnel.
+    const validation = validateWgConfig(content);
+    if (!validation.ok) {
+      throw new Error('Invalid WireGuard config: ' + validation.errors.join(', '));
+    }
+    if (validation.warnings && validation.warnings.length > 0) {
+      this.log.warn(`WireGuard config warnings: ${validation.warnings.join(', ')}`);
+    }
 
     const parsed = this._parseConfig(content);
     if (!parsed.privateKey) throw new Error('PrivateKey fehlt in der Konfiguration');

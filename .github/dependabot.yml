@@ -8,14 +8,16 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-    reviewers:
-      - "CallMeTechie"
+    # No "reviewers" key: GitHub retired it from dependabot.yml; review
+    # requests come from a CODEOWNERS file instead.
     versioning-strategy: increase
     groups:
       npm:
         update-types:
           - "minor"
           - "patch"
+
+  # Keeps the SHA-pinned GitHub Actions in .github/workflows up to date.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

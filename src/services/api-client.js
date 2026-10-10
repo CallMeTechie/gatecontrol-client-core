@@ -10,7 +10,13 @@
 
 const axios = require('axios');
 const os = require('os');
+const zlib = require('zlib');
 const { getMachineFingerprint } = require('../utils/machine-id');
+const { isSafeExternalUrl } = require('../utils/external-url');
+
+// The one-time portal login link must arrive quickly; otherwise the client
+// opens the plain portal URL instead of keeping the user waiting.
+const PORTAL_LINK_TIMEOUT_MS = 5000;
 
 class ApiClient {
   /**
@@ -21,6 +27,8 @@ class ApiClient {
    * @param {object} [options]
    * @param {string} [options.clientVersion] - Client version string (defaults to core package version)
    * @param {string} [options.clientPlatform] - Client platform (defaults to 'windows')
+   * @param {'pro'|'community'} [options.clientType] - Edition; sent as
+   *   X-Client-Type so the server knows the product of the reported version
    */
   constructor(serverUrl, apiKey, log, peerId = null, options = {}) {
     this.log = log;
@@ -28,9 +36,20 @@ class ApiClient {
     this.apiKey = apiKey;
     this.peerId = peerId;
     this.configHash = null;
+    this.portalUrl = null;
+    this.autoOpenPortal = false;
     this.client = null;
     this.clientVersion = options.clientVersion || require('../../package.json').version;
     this.clientPlatform = options.clientPlatform || 'windows';
+    this.clientType = ['pro', 'community'].includes(options.clientType) ? options.clientType : null;
+    // Client policy version seen in the last server answer (heartbeat /
+    // permissions). onPolicyVersion(version) lets ClientPolicyService refresh.
+    this.policyVersion = null;
+    this.onPolicyVersion = null;
+    // Admin asked for a support bundle (peer-info / heartbeat answer):
+    // request timestamp, true for servers without a timestamp, or null.
+    this.supportBundleRequest = null;
+    this.portalLinkTimeoutMs = PORTAL_LINK_TIMEOUT_MS;
 
     if (serverUrl) {
       this._createClient();
@@ -66,6 +85,7 @@ class ApiClient {
         'X-API-Token': this.apiKey,
         'X-Client-Version': this.clientVersion,
         'X-Client-Platform': this.clientPlatform,
+        ...(this.clientType ? { 'X-Client-Type': this.clientType } : {}),
         'X-Machine-Fingerprint': getMachineFingerprint(),
       },
     });
@@ -179,11 +199,49 @@ class ApiClient {
         // often contains '.' or uppercase that would fail validation.
         hostname: ApiClient.sanitizeHostnameForDns(os.hostname()) || os.hostname(),
       });
+      this._notePolicyVersion(data);
+      this._rememberSupportRequest(data);
       return data || null;
     } catch (err) {
       this.log.debug('Heartbeat failed:', err.message);
       return null;
     }
+  }
+
+  /**
+   * Setup-Code einlösen (öffentlicher Endpunkt, noch kein Token nötig).
+   * Liefert { kind, token, peerId, peerName, config, hash, scopes } —
+   * peerId/config sind null, wenn der Code an keinen Peer gebunden ist;
+   * dann registriert sich der Client danach mit dem neuen Token.
+   *
+   * @param {string} serverUrl - https://host[:port]
+   * @param {string} code - XXXX-XXXX-XXXX-XXXX
+   * @param {object} [options] - { clientVersion, clientPlatform, timeout }
+   */
+  static async redeemSetupCode(serverUrl, code, options = {}) {
+    const { data } = await axios.post(
+      `${serverUrl.replace(/\/+$/, '')}/api/v1/client/enroll`,
+      {
+        code,
+        hostname: os.hostname(),
+        platform: `${os.platform()} ${os.release()}`,
+        clientVersion: options.clientVersion || require('../../package.json').version,
+      },
+      {
+        timeout: options.timeout || 15000,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Platform': options.clientPlatform || 'windows',
+          'X-Machine-Fingerprint': getMachineFingerprint(),
+        },
+      },
+    );
+    if (!data || data.ok !== true || !data.token) {
+      const err = new Error((data && data.error) || 'enroll_failed');
+      err.code = (data && data.error) || 'enroll_failed';
+      throw err;
+    }
+    return data;
   }
 
   /**
@@ -294,11 +352,95 @@ class ApiClient {
 
     try {
       const res = await this.client.get('/api/v1/client/permissions');
+      this.portalUrl = res.data?.portalUrl || null;
+      this.autoOpenPortal = res.data?.autoOpenPortal === true;
+      this._notePolicyVersion(res.data);
       return res.data?.permissions || null;
     } catch (err) {
       this.log.debug('Permissions query failed:', err.message);
       return null;
     }
+  }
+
+  /**
+   * Ask the server for a one-time portal login link
+   * (POST /api/v1/client/portal-link → { ok, url: "<portal>/auto?t=<ticket>", expiresIn }).
+   *
+   * Returns the link only when it is an http(s) URL on the same origin as the
+   * configured portal URL; otherwise (no portal URL, non-2xx, network error,
+   * timeout after 5 s, missing/foreign url) null, and the caller opens the
+   * plain portal URL. The link carries a secret ticket: it is never logged
+   * or stored, and a fresh one is fetched for every open.
+   *
+   * @param {string|null} [portalUrl] - configured portal URL (default: this.portalUrl)
+   * @returns {Promise<string|null>}
+   */
+  async getPortalLink(portalUrl = this.portalUrl) {
+    if (!this.client || !portalUrl) return null;
+
+    let expectedOrigin;
+    try {
+      expectedOrigin = new URL(portalUrl).origin;
+    } catch {
+      return null;
+    }
+
+    const timeout = this.portalLinkTimeoutMs;
+    let data;
+    try {
+      const res = await this.client.post('/api/v1/client/portal-link', {}, {
+        timeout,
+        signal: AbortSignal.timeout(timeout),
+      });
+      data = res.data;
+    } catch (err) {
+      // Only status / error message — never the response body (ticket).
+      this.log.debug('Portal link unavailable:', err.response?.status || err.code || err.message);
+      return null;
+    }
+
+    const url = data && typeof data.url === 'string' ? data.url.trim() : '';
+    if (!url || !isSafeExternalUrl(url)) {
+      this.log.debug('Portal link unavailable: no valid url in answer');
+      return null;
+    }
+    if (new URL(url).origin !== expectedOrigin) {
+      this.log.warn('Portal link rejected: origin differs from the portal URL');
+      return null;
+    }
+    return url;
+  }
+
+  /**
+   * Remember a policyVersion from a server answer and tell the listener.
+   */
+  _notePolicyVersion(data) {
+    const v = data && typeof data.policyVersion === 'string' ? data.policyVersion : null;
+    if (!v) return;
+    this.policyVersion = v;
+    if (typeof this.onPolicyVersion === 'function') {
+      try { this.onPolicyVersion(v); } catch (err) { this.log.debug('onPolicyVersion failed:', err.message); }
+    }
+  }
+
+  /**
+   * Effektive Client-Richtlinie abrufen (GET /api/v1/client/policy).
+   * Mit der bekannten Version als If-None-Match: 304 → { notModified: true }.
+   * Liefert { notModified: false, data } oder wirft bei Netzwerk-/HTTP-Fehlern
+   * (der Aufrufer behält dann die zuletzt bekannte Richtlinie).
+   *
+   * @param {string|null} [knownVersion]
+   */
+  async getClientPolicy(knownVersion = null) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const headers = {};
+    if (knownVersion) headers['If-None-Match'] = `"${knownVersion}"`;
+    const res = await this.client.get('/api/v1/client/policy', {
+      headers,
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 304,
+    });
+    if (res.status === 304) return { notModified: true, data: null };
+    return { notModified: false, data: res.data };
   }
 
   /**
@@ -328,11 +470,41 @@ class ApiClient {
       const res = await this.client.get('/api/v1/client/peer-info', {
         params: { peerId: this.peerId },
       });
+      this._rememberSupportRequest(res.data);
       return res.data?.peer || null;
     } catch (err) {
       this.log.debug('Peer info failed:', err.message);
       return null;
     }
+  }
+
+  _rememberSupportRequest(data) {
+    if (!data || typeof data !== 'object' || !('supportBundleRequested' in data)) return;
+    this.supportBundleRequest = data.supportBundleRequested === true
+      ? (typeof data.supportBundleRequestedAt === 'string' && data.supportBundleRequestedAt) || true
+      : null;
+  }
+
+  /**
+   * Upload a (redacted) support bundle, gzip-compressed.
+   * POST /api/v1/client/support-bundle?peerId=… — see src/support/.
+   * Throws the axios error on failure (caller maps status codes).
+   * @param {object} bundle - result of collectSupportBundle()
+   * @returns {Promise<{ ok: boolean, bundle: { id, created_at, size_bytes } }>}
+   */
+  async uploadSupportBundle(bundle) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    if (!this.peerId) throw new Error('Nicht registriert (keine Peer-ID)');
+    const body = zlib.gzipSync(Buffer.from(JSON.stringify(bundle), 'utf8'));
+    const { data } = await this.client.post('/api/v1/client/support-bundle', body, {
+      params: { peerId: this.peerId },
+      headers: { 'Content-Type': 'application/gzip' },
+      timeout: 60000,
+      maxBodyLength: 6 * 1024 * 1024,
+      transformRequest: [(d) => d],
+    });
+    if (this.supportBundleRequest) this.supportBundleRequest = null;
+    return data;
   }
 }
 

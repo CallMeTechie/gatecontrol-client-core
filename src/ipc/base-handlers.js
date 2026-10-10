@@ -11,6 +11,30 @@
 'use strict';
 
 const { t } = require('../i18n');
+const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
+const ApiClient = require('../services/api-client');
+const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
+const { isSafeExternalUrl } = require('../utils/external-url');
+const clientPolicyUtil = require('../utils/client-policy');
+const { createSupportBundleSender } = require('../support/sender');
+
+// Server error codes of POST /api/v1/client/enroll → i18n keys
+const ENROLL_ERRORS = {
+  invalid_or_expired: 'server.enrollInvalid',
+  user_disabled: 'server.enrollForbidden',
+  user_not_found: 'server.enrollForbidden',
+  no_valid_scopes: 'server.enrollForbidden',
+  limit_reached: 'server.enrollLimit',
+  fingerprint_required: 'server.enrollFingerprint',
+};
+
+function enrollErrorMessage(err) {
+  const status = err && err.response && err.response.status;
+  if (status === 429) return t('server.enrollRateLimited');
+  const code = (err && err.response && err.response.data && err.response.data.error) || (err && err.code);
+  const key = ENROLL_ERRORS[code];
+  return key ? t(key) : t('server.enrollFailed', { error: (err && err.message) || String(code) });
+}
 
 // Config keys the renderer is allowed to write
 const CONFIG_WRITABLE_KEYS = new Set([
@@ -32,30 +56,94 @@ const CONFIG_WRITABLE_KEYS = new Set([
  * @param {object} ctx.wgService - WireGuardNative instance
  * @param {object} ctx.apiClient - ApiClient instance
  * @param {object} ctx.killSwitch - KillSwitch instance
- * @param {object} ctx.updater - Updater instance (or null)
+ * @param {object} [ctx.updater] - Updater instance (or null)
+ * @param {Function} [ctx.getUpdater] - () => Updater|null; preferred over
+ *   ctx.updater when the updater is created after the handlers are registered
+ * @param {Function} [ctx.ApiClientClass] - class whose static
+ *   redeemSetupCode() is used (default: core ApiClient; subclasses inherit it)
  * @param {object} ctx.log - electron-log instance
  * @param {Function} ctx.connectTunnel - async () => void
  * @param {Function} ctx.disconnectTunnel - async () => void
  * @param {Function} ctx.toggleKillSwitch - async (enabled) => void
  * @param {Function} [ctx.toggleRdpAllow] - async (enabled) => void
+ * @param {Function} [ctx.openPortal] - async () => boolean; opens the portal
+ *   (fresh one-time login link, falling back to the portal URL — see
+ *   utils/portal.js). Registers portal:open when given.
  * @param {Function} ctx.installUpdate - async () => boolean
  * @param {Function} ctx.getTunnelState - () => tunnelState object
  * @param {string} ctx.wgConfigFile - Path to the WireGuard config file
+ * @param {Iterable<string>} [ctx.extraWritableKeys] - additional config keys
+ *   the renderer may write via config:set
+ * @param {Object<string, Function>} [ctx.overrides] - ipcMain.handle handlers
+ *   that replace the core handler of the same channel (e.g. a client-specific
+ *   autostart implementation) or add client-only channels. Each channel is
+ *   registered exactly once.
+ * @param {Iterable<string>} [ctx.skip] - core channels not to register at all
+ * @param {object} [ctx.shell] - Electron shell (injectable for tests)
+ * @param {object} [ctx.clientPolicy] - ClientPolicyService; when given, the
+ *   policy guards below apply to the core handler AND to client overrides of
+ *   the same channel (config:set, killswitch:toggle, autostart:set,
+ *   tunnel:disconnect, server:setup, config:import-file, config:import-qr);
+ *   policy:get / policy:refresh answer with its state (unrestricted without).
+ * @param {object} [ctx.supportBundle] - sender from createSupportBundleSender
+ *   (shared with the connection monitor for admin requests); created here
+ *   when missing
+ * @param {string} [ctx.edition] - 'pro' | 'community' (support bundle)
+ * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
   const {
     app, dialog, getMainWindow, store, wgService, apiClient,
-    killSwitch, updater, log, connectTunnel, disconnectTunnel,
+    log, connectTunnel, disconnectTunnel,
     toggleKillSwitch, installUpdate, getTunnelState, wgConfigFile,
   } = ctx;
+  const getUpdater = typeof ctx.getUpdater === 'function' ? ctx.getUpdater : () => ctx.updater || null;
+  const ApiClientClass = ctx.ApiClientClass || ApiClient;
+  const getShell = () => ctx.shell || require('electron').shell;
+  const writableKeys = new Set([...CONFIG_WRITABLE_KEYS, ...(ctx.extraWritableKeys || [])]);
+  const overrides = ctx.overrides || {};
+  const skip = new Set(ctx.skip || []);
+  const registered = [];
+  const clientPolicy = ctx.clientPolicy || null;
+  const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
+
+  // Registers a core handler unless the client skips or overrides the channel.
+  // Policy guards wrap whichever implementation is used.
+  function handle(channel, fn) {
+    if (skip.has(channel)) return;
+    let impl = Object.prototype.hasOwnProperty.call(overrides, channel) ? overrides[channel] : fn;
+    if (policyGuards[channel]) impl = policyGuards[channel](impl);
+    ipcMain.handle(channel, impl);
+    registered.push(channel);
+  }
+
+  // A new server / token: the old server's policy must not stick. Drop it and
+  // ask the new server (best-effort, the answer arrives via onChange).
+  function resetPolicyForNewServer() {
+    if (!clientPolicy) return;
+    clientPolicy.reset();
+    Promise.resolve(clientPolicy.refresh()).catch(() => {});
+  }
+
+  // Writes a (validated) WireGuard config and remembers where it lives.
+  async function writeTunnelConfig(content) {
+    await wgService.writeConfig(wgConfigFile, content);
+    try { store.set('tunnel.configPath', wgConfigFile); } catch { /* schema without configPath */ }
+  }
 
   // ── App ─────────────────────────────────────────────────
-  ipcMain.handle('app:version', () => app.getVersion());
+  handle('app:version', () => app.getVersion());
 
   // ── Tunnel ──────────────────────────────────────────────
-  ipcMain.handle('tunnel:connect', () => connectTunnel());
-  ipcMain.handle('tunnel:disconnect', () => disconnectTunnel());
-  ipcMain.handle('tunnel:status', () => {
+  handle('tunnel:connect', () => connectTunnel());
+  handle('tunnel:disconnect', () => disconnectTunnel());
+  // Re-establish the tunnel (e.g. after a split-tunnel change). Not blocked
+  // by an always-on policy: the tunnel comes straight back up.
+  handle('tunnel:reconnect', async () => {
+    await disconnectTunnel();
+    return connectTunnel();
+  });
+  handle('tunnel:status', () => {
     const tunnelState = getTunnelState();
     return {
       ...tunnelState,
@@ -66,14 +154,16 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Update ──────────────────────────────────────────────
-  ipcMain.handle('update:check', () => updater?.getUpdateInfo());
-  ipcMain.handle('update:install', () => installUpdate());
+  handle('update:check', () => getUpdater()?.getUpdateInfo() ?? null);
+  handle('update:install', () => installUpdate());
+  // Kanal / Mindestversion / Pflicht-Status (vom Server zugewiesen, nur Anzeige)
+  handle('update:policy', () => getUpdater()?.getUpdatePolicy?.() ?? null);
 
   // ── Services & DNS ──────────────────────────────────────
-  ipcMain.handle('permissions:get', () => apiClient?.getPermissions());
-  ipcMain.handle('services:list', () => apiClient?.getServices());
-  ipcMain.handle('traffic:stats', () => apiClient?.getTraffic());
-  ipcMain.handle('dns:leak-test', async () => {
+  handle('permissions:get', () => apiClient?.getPermissions());
+  handle('services:list', () => apiClient?.getServices());
+  handle('traffic:stats', () => apiClient?.getTraffic());
+  handle('dns:leak-test', async () => {
     const dns = require('dns').promises;
     const results = { passed: false, dnsServers: [], vpnCheck: null };
 
@@ -97,22 +187,82 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Config ──────────────────────────────────────────────
-  ipcMain.handle('config:get', (_, key) => store.get(key));
-  ipcMain.handle('config:set', (_, key, value) => {
-    if (!CONFIG_WRITABLE_KEYS.has(key)) {
+  handle('config:get', (_, key) => store.get(key));
+  handle('config:set', (_, key, value) => {
+    if (!writableKeys.has(key)) {
       log.warn(`config:set rejected for key: ${key}`);
       return;
     }
     store.set(key, value);
   });
-  ipcMain.handle('config:getAll', () => store.store);
+  handle('config:getAll', () => store.store);
 
   // ── Server Setup ────────────────────────────────────────
-  ipcMain.handle('server:setup', async (_, { url, apiKey }) => {
-    store.set('server.url', url);
+  /**
+   * Redeem a one-shot setup code: store the minted token, adopt the peer (or
+   * register a new one when the code is not bound to a peer) and write the
+   * WireGuard config when the server sent one. The existing setup stays
+   * untouched until the redeem succeeded.
+   */
+  async function enrollWithCode(rawUrl, code) {
+    const serverUrl = toServerOrigin(rawUrl);
+    if (!serverUrl) return { success: false, error: t('server.enrollHttps') };
+    let data;
+    try {
+      data = await ApiClientClass.redeemSetupCode(serverUrl, code, {
+        clientVersion: apiClient.clientVersion,
+        clientPlatform: apiClient.clientPlatform,
+      });
+    } catch (err) {
+      log.warn(`Setup code redeem failed: ${err.message}`);
+      return { success: false, error: enrollErrorMessage(err) };
+    }
+
+    store.set('server.url', serverUrl);
+    store.set('server.apiKey', data.token);
+    apiClient.configure(serverUrl, data.token);
+    getUpdater()?.configure(serverUrl, data.token);
+
+    try {
+      let peerId = data.peerId;
+      if (!peerId) {
+        const info = await apiClient.register();
+        peerId = info.peerId;
+      }
+      store.set('server.peerId', String(peerId));
+      apiClient.setPeerId(peerId);
+
+      if (data.config) {
+        const validation = validateWgConfig(data.config);
+        if (validation.ok) {
+          await writeTunnelConfig(data.config);
+        } else {
+          log.warn('Setup code config rejected: ' + validation.errors.join(', '));
+        }
+      }
+      log.info(`Set up via setup code (peer ${peerId})`);
+      resetPolicyForNewServer();
+      return { success: true, peerId, enrolled: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  handle('server:setup', async (_, { url, apiKey } = {}) => {
+    // The API key field also takes a setup code (XXXX-XXXX-XXXX-XXXX).
+    const code = normalizeCode(apiKey);
+    if (code) return enrollWithCode(url, code);
+
+    // The API token travels in a header — never over plain http.
+    const serverUrl = toServerOrigin(url);
+    if (!serverUrl) return { success: false, error: t('server.httpsRequired') };
+    if (typeof apiKey !== 'string' || !apiKey.trim()) return { success: false, error: t('server.urlAndKeyRequired') };
+    apiKey = apiKey.trim();
+
+    store.set('server.url', serverUrl);
     store.set('server.apiKey', apiKey);
-    apiClient.configure(url, apiKey);
-    updater?.configure(url, apiKey);
+    apiClient.configure(serverUrl, apiKey);
+    getUpdater()?.configure(serverUrl, apiKey);
 
     try {
       await apiClient.ping();
@@ -120,17 +270,33 @@ function registerBaseHandlers(ipcMain, ctx) {
       const info = await apiClient.register();
       store.set('server.peerId', String(info.peerId));
       apiClient.setPeerId(info.peerId);
+      resetPolicyForNewServer();
       return { success: true, peerId: info.peerId };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle('server:test', async (_, { url, apiKey } = {}) => {
+  handle('server:test', async (_, { url, apiKey } = {}) => {
     try {
+      if (url) {
+        url = toServerOrigin(url);
+        if (!url) return { success: false, error: t('server.httpsRequired') };
+      }
+      if (url && normalizeCode(apiKey)) {
+        // A setup code cannot be tested without spending it — only check
+        // that the server answers (401 without a token is the expected reply).
+        const axios = require('axios');
+        try {
+          await axios.get(`${url}/api/v1/client/ping`, { timeout: 10000 });
+        } catch (err) {
+          if (!err.response) throw err;
+        }
+        return { success: true };
+      }
       if (url && apiKey) {
         const axios = require('axios');
-        const res = await axios.get(`${url.replace(/\/+$/, '')}/api/v1/client/ping`, {
+        const res = await axios.get(`${url}/api/v1/client/ping`, {
           headers: { 'X-API-Token': apiKey },
           timeout: 10000,
         });
@@ -144,7 +310,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Config Import ───────────────────────────────────────
-  ipcMain.handle('config:import-file', async () => {
+  handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
     const result = await dialog.showOpenDialog(mainWindow, {
       title: t('dialog.importTitle'),
@@ -160,14 +326,22 @@ function registerBaseHandlers(ipcMain, ctx) {
     try {
       const fs = require('fs').promises;
       const content = await fs.readFile(result.filePaths[0], 'utf-8');
-      await wgService.writeConfig(wgConfigFile, content);
+      // Fail-closed: validate untrusted imported config before writing.
+      const validation = validateWgConfig(content);
+      if (!validation.ok) {
+        return { success: false, error: 'Invalid WireGuard config: ' + validation.errors.join(', ') };
+      }
+      if (validation.warnings && validation.warnings.length > 0) {
+        log.warn('Imported config warnings: ' + validation.warnings.join(', '));
+      }
+      await writeTunnelConfig(content);
       return { success: true, path: result.filePaths[0] };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle('config:import-qr', async (_, imageData) => {
+  handle('config:import-qr', async (_, imageData) => {
     try {
       const jsQR = require('jsqr');
       const { data, width, height } = imageData;
@@ -175,32 +349,67 @@ function registerBaseHandlers(ipcMain, ctx) {
 
       if (!code) return { success: false, error: t('server.qrTimeout') };
 
-      await wgService.writeConfig(wgConfigFile, code.data);
-      return { success: true, config: code.data };
+      // Setup QR from the server ("App einrichten"): redeem after the user
+      // confirmed the server — a foreign QR must not repoint the client.
+      const link = parseEnrollmentLink(code.data);
+      if (link) {
+        const { response } = await dialog.showMessageBox(getMainWindow(), {
+          type: 'question',
+          buttons: [t('enroll.connect'), t('enroll.cancel')],
+          defaultId: 0,
+          cancelId: 1,
+          message: t('enroll.confirmTitle'),
+          detail: t('enroll.confirmBody', { host: new URL(link.serverUrl).host }),
+        });
+        // enrollment:true tells the renderer's scan loop to stop — otherwise
+        // the next camera frame would detect the same QR and ask again.
+        if (response !== 0) return { success: false, cancelled: true, enrollment: true };
+        return { ...(await enrollWithCode(link.serverUrl, link.code)), enrollment: true };
+      }
+
+      // Fail-closed: validate untrusted scanned config before writing.
+      const validation = validateWgConfig(code.data);
+      if (!validation.ok) {
+        return { success: false, error: 'Invalid WireGuard config: ' + validation.errors.join(', ') };
+      }
+      if (validation.warnings && validation.warnings.length > 0) {
+        log.warn('Imported QR config warnings: ' + validation.warnings.join(', '));
+      }
+      await writeTunnelConfig(code.data);
+      return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
   // ── WireGuard Check ─────────────────────────────────────
-  ipcMain.handle('wireguard:check', async () => {
+  handle('wireguard:check', async () => {
     return { installed: true, version: 'wireguard-nt (embedded)' };
   });
 
   // ── Kill-Switch ─────────────────────────────────────────
-  ipcMain.handle('killswitch:toggle', (_, enabled) => toggleKillSwitch(enabled));
+  handle('killswitch:toggle', (_, enabled) => toggleKillSwitch(enabled));
 
   // ── RDP Allow ──────────────────────────────────────────
   if (ctx.toggleRdpAllow) {
-    ipcMain.handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
+    handle('rdp-allow:toggle', (_, enabled) => ctx.toggleRdpAllow(enabled));
   }
+
+  // ── Client-Richtlinie ───────────────────────────────────
+  // Without a ClientPolicyService the client is unmanaged (no restriction).
+  handle('policy:get', () => (clientPolicy ? clientPolicy.getState() : clientPolicyUtil.uiState(null)));
+  handle('policy:refresh', async () => {
+    if (!clientPolicy) return clientPolicyUtil.uiState(null);
+    await clientPolicy.refresh();
+    return clientPolicy.getState();
+  });
 
   // ── Window Controls ─────────────────────────────────────
   ipcMain.on('window:minimize', () => getMainWindow()?.minimize());
   ipcMain.on('window:close', () => getMainWindow()?.hide());
 
   // ── Autostart ───────────────────────────────────────────
-  ipcMain.handle('autostart:set', (_, enabled) => {
+  handle('autostart:set', (_, enabled) => {
     store.set('app.startWithWindows', enabled);
     app.setLoginItemSettings({
       openAtLogin: enabled,
@@ -210,16 +419,36 @@ function registerBaseHandlers(ipcMain, ctx) {
     return enabled;
   });
 
+  // ── Portal ──────────────────────────────────────────────
+  // The renderer never sees the login link: main fetches and opens it.
+  if (ctx.openPortal) {
+    handle('portal:open', async () => {
+      try {
+        return (await ctx.openPortal()) === true;
+      } catch (err) {
+        log.warn('portal:open failed:', err && err.message);
+        return false;
+      }
+    });
+  }
+
   // ── Shell ───────────────────────────────────────────────
-  ipcMain.handle('shell:open-external', (_, url) => {
-    const { shell } = require('electron');
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      shell.openExternal(url);
+  handle('shell:open-external', async (_, url) => {
+    if (!isSafeExternalUrl(url)) {
+      log.warn('shell:open-external rejected a non-http(s) URL');
+      return false;
+    }
+    try {
+      await getShell().openExternal(url.trim());
+      return true;
+    } catch (err) {
+      log.warn('shell:open-external failed:', err.message);
+      return false;
     }
   });
 
   // ── Logs ────────────────────────────────────────────────
-  ipcMain.handle('logs:get', async (_, opts = {}) => {
+  handle('logs:get', async (_, opts = {}) => {
     const fs = require('fs').promises;
     try {
       const logPath = log.transports.file.getFile().path;
@@ -266,8 +495,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
-  ipcMain.handle('logs:export', async () => {
-    const fs = require('fs').promises;
+  handle('logs:export', async () => {
     try {
       const logPath = log.transports.file.getFile().path;
       return logPath;
@@ -275,6 +503,125 @@ function registerBaseHandlers(ipcMain, ctx) {
       return null;
     }
   });
+
+  // Shows the log file in Explorer. Takes no path from the renderer, so it
+  // cannot be used to reveal (or, via openExternal, open) arbitrary files.
+  handle('logs:show', async () => {
+    try {
+      const logPath = log.transports.file.getFile().path;
+      if (!logPath) return false;
+      getShell().showItemInFolder(logPath);
+      return true;
+    } catch (err) {
+      log.warn('logs:show failed:', err && err.message);
+      return false;
+    }
+  });
+
+  // ── Support bundle ("Support-Paket senden") ─────────────
+  // Confirmation dialog → redacted bundle → upload (src/support/).
+  const supportBundle = ctx.supportBundle || createSupportBundleSender(ctx);
+  handle('support:send', () => supportBundle.send({ reason: 'user' }));
+
+  // Client handlers for channels core does not know
+  for (const [channel, fn] of Object.entries(overrides)) {
+    if (!registered.includes(channel) && !skip.has(channel)) {
+      ipcMain.handle(channel, policyGuards[channel] ? policyGuards[channel](fn) : fn);
+      registered.push(channel);
+    }
+  }
+
+  return registered;
 }
 
-module.exports = { registerBaseHandlers };
+/**
+ * Wrappers that refuse renderer requests the client policy does not allow.
+ * The main process still decides — a manipulated renderer cannot bypass a
+ * lock through IPC. (Local admins can bypass the client altogether; the
+ * policy is a management convenience, not a security boundary.)
+ */
+function createPolicyGuards({ clientPolicy, store, log }) {
+  const policy = () => clientPolicy.getPolicy();
+  const locks = () => clientPolicyUtil.locks(policy());
+  const refuse = (channel, detail) => {
+    log.warn(`${channel} refused by client policy${detail ? `: ${detail}` : ''}`);
+  };
+  const serverLocked = (channel, impl) => async (...args) => {
+    if (locks().server) {
+      refuse(channel);
+      return { success: false, error: t('policy.serverLocked'), policyLocked: true };
+    }
+    return impl(...args);
+  };
+
+  return {
+    'config:set': (impl) => (event, key, value) => {
+      const ok = clientPolicyUtil.canWriteConfig(policy(), key, value, {
+        splitTunnelEnabled: store.get('tunnel.splitTunnel', false) === true,
+      });
+      if (!ok) {
+        refuse('config:set', key);
+        return false;
+      }
+      return impl(event, key, value);
+    },
+    'killswitch:toggle': (impl) => (event, enabled) => {
+      const l = locks();
+      if (l.killSwitch) {
+        const forcedOn = policy().killSwitch === 'required';
+        if ((enabled === true) !== forcedOn) {
+          refuse('killswitch:toggle');
+          return { blocked: true, policyLocked: true };
+        }
+      }
+      return impl(event, enabled);
+    },
+    'autostart:set': (impl) => (event, enabled) => {
+      const p = policy();
+      if (locks().autostart) {
+        const want = p.autostart === 'required' ? true : p.autostart === 'forbidden' ? false : null;
+        if (want === null || (enabled === true) !== want) {
+          refuse('autostart:set');
+          return store.get('app.startWithWindows', want === true);
+        }
+      }
+      return impl(event, enabled);
+    },
+    'tunnel:disconnect': (impl) => (...args) => {
+      if (locks().disconnect) {
+        refuse('tunnel:disconnect');
+        return { blocked: true, policyLocked: true };
+      }
+      return impl(...args);
+    },
+    'server:setup': (impl) => serverLocked('server:setup', impl),
+    'config:import-file': (impl) => serverLocked('config:import-file', impl),
+    'config:import-qr': (impl) => serverLocked('config:import-qr', impl),
+  };
+}
+
+/**
+ * Apply the forced values of a client policy to the store (kill switch on,
+ * auto-connect on, autostart on/off, allowed split mode). Returns the keys
+ * that changed so the app can act on them (e.g. enable the kill switch,
+ * (un)register autostart). Never throws.
+ */
+function applyPolicyToStore(store, policy, log) {
+  const changed = {};
+  try {
+    const forced = clientPolicyUtil.forcedValues(policy, {
+      splitTunnelEnabled: store.get('tunnel.splitTunnel', false) === true,
+    });
+    for (const [key, value] of Object.entries(forced)) {
+      if (store.get(key) !== value) {
+        store.set(key, value);
+        changed[key] = value;
+      }
+    }
+  } catch (err) {
+    if (log) log.warn(`Applying client policy failed: ${err.message}`);
+  }
+  return changed;
+}
+
+module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore };
