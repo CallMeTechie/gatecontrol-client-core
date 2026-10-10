@@ -74,6 +74,22 @@ class ApiClient {
   }
 
   /**
+   * Identification headers of every device request (token, version,
+   * platform, edition, machine binding). Shared with the push stream
+   * (services/push-client.js), which talks to the server without axios.
+   * @returns {Object<string, string>}
+   */
+  buildHeaders() {
+    return {
+      'X-API-Token': this.apiKey,
+      'X-Client-Version': this.clientVersion,
+      'X-Client-Platform': this.clientPlatform,
+      ...(this.clientType ? { 'X-Client-Type': this.clientType } : {}),
+      'X-Machine-Fingerprint': getMachineFingerprint(),
+    };
+  }
+
+  /**
    * Axios-Client erstellen
    */
   _createClient() {
@@ -82,11 +98,7 @@ class ApiClient {
       timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Token': this.apiKey,
-        'X-Client-Version': this.clientVersion,
-        'X-Client-Platform': this.clientPlatform,
-        ...(this.clientType ? { 'X-Client-Type': this.clientType } : {}),
-        'X-Machine-Fingerprint': getMachineFingerprint(),
+        ...this.buildHeaders(),
       },
     });
 
@@ -441,6 +453,51 @@ class ApiClient {
     });
     if (res.status === 304) return { notModified: true, data: null };
     return { notModified: false, data: res.data };
+  }
+
+  // ── Push (notification center, see services/push-client.js) ─────────
+  // All four throw the axios error on failure; PushClient maps it.
+
+  /**
+   * Confirm deliveries: POST /api/v1/client/push/ack → { ok }.
+   * @param {{ seqs: number[], state: 'delivered'|'read'|'dismissed', action?: string }} body
+   */
+  async pushAck({ seqs, state, action } = {}) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const body = { seqs, state };
+    if (action) body.action = action;
+    const { data } = await this.client.post('/api/v1/client/push/ack', body);
+    return data;
+  }
+
+  /**
+   * Server inbox of this device: GET /api/v1/client/push/inbox → { ok, items, unread }.
+   * @param {{ limit?: number, before?: number }} [opts]
+   */
+  async pushInbox({ limit, before } = {}) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const params = {};
+    if (Number.isSafeInteger(limit) && limit > 0) params.limit = limit;
+    if (Number.isSafeInteger(before) && before > 0) params.before = before;
+    const { data } = await this.client.get('/api/v1/client/push/inbox', { params });
+    return data;
+  }
+
+  /**
+   * Device push preferences: PUT /api/v1/client/push/prefs → { ok }.
+   * @param {{ enabled?: boolean, mode?: 'always'|'vpn_only', muted_topics?: string[] }} prefs
+   */
+  async pushPrefs(prefs = {}) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const { data } = await this.client.put('/api/v1/client/push/prefs', prefs);
+    return data;
+  }
+
+  /** Test message to this device: POST /api/v1/client/push/test → { ok, seq }. */
+  async pushTest() {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const { data } = await this.client.post('/api/v1/client/push/test', {});
+    return data;
   }
 
   /**
