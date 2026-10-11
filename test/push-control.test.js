@@ -62,7 +62,9 @@ const ev = (event, data, id) => `${id != null ? `id: ${id}\n` : ''}event: ${even
 const HELLO_OLD = { server_time: '2026-10-11T08:00:00.000Z', keepalive_s: 25, retention_h: 72, via: 'direct', unread: 0,
   topics: [{ id: 'devices', label: 'Geräte & Gateways' }] };
 const QUIET = { from: '22:00', to: '07:00', tz: 'Europe/Berlin', critical_bypass: true };
-const STATE = { policy_version: 7, peer_enabled: true, support_bundle_requested: false, support_bundle_requested_at: null, config_hash: 'h1' };
+const V1 = '3f9a0c1d22b4e7a8'; // policy versions: opaque 16-hex strings (server contract)
+const V2 = '0b7e5d2c91a4f360';
+const STATE = { policy_version: V1, peer_enabled: true, support_bundle_requested: false, support_bundle_requested_at: null, config_hash: 'h1' };
 const HELLO_NEW = { ...HELLO_OLD, quiet: QUIET, state: STATE };
 
 function sse(res, chunks = []) {
@@ -73,8 +75,10 @@ function sse(res, chunks = []) {
 /** ApiClient double: push routes, policy (ETag), peer info, config hash. */
 function fakeApi(url) {
   const calls = { acks: [], prefs: [], policy: [], peerInfo: 0 };
-  return {
+  const api = {
     calls,
+    serverPolicyVersion: V1,
+    peerId: 7,
     serverUrl: url,
     apiKey: 'gc_token',
     configHash: 'h1',
@@ -85,10 +89,12 @@ function fakeApi(url) {
     pushInbox: async () => ({ ok: true, items: [], unread: 0 }),
     getClientPolicy: async (known) => {
       calls.policy.push(known);
-      return known === 'b2' ? { notModified: true, data: null } : { notModified: false, data: { ok: true, version: 'b2', policy: {} } };
+      const version = api.serverPolicyVersion;
+      return known === version ? { notModified: true, data: null } : { notModified: false, data: { ok: true, version, policy: {} } };
     },
     getPeerInfo: async () => { calls.peerInfo++; return { id: 7, enabled: true }; },
   };
+  return api;
 }
 
 function setup(url, { monitorRunning = true, interval = 300000, onConfigChanged } = {}) {
@@ -119,8 +125,8 @@ describe('PushClient control events and hello.state', () => {
   it('emits normalized state and control events; controlSupported only with hello.state', async () => {
     const srv = await pushServer((req, res) => sse(res, [
       ev('hello', HELLO_NEW),
-      ev('control', { type: 'policy_changed', policy_version: 8 }),
-      ev('control', { type: 'support_bundle_requested', requested_at: '2026-10-11T08:01:00Z' }),
+      ev('control', { type: 'policy_changed', policy_version: V2 }),
+      ev('control', { type: 'support_bundle_requested', requested_at: '2026-10-11 08:01:00' }),
       ev('control', { type: 'peer_state', enabled: false }),
       ev('control', { type: 'config_changed' }),
       ev('control', { type: 'something_new' }),
@@ -141,12 +147,12 @@ describe('PushClient control events and hello.state', () => {
     assert.equal(client.controlSupported(), true);
     assert.equal(client.status().control, true);
     assert.deepEqual(got.state, [{
-      policyVersion: 7, peerEnabled: true, supportBundleRequested: false, supportBundleRequestedAt: null, configHash: 'h1',
+      policyVersion: V1, peerEnabled: true, supportBundleRequested: false, supportBundleRequestedAt: null, configHash: 'h1',
     }]);
     assert.deepEqual(got.hello[0].quiet, { from: '22:00', to: '07:00', tz: 'Europe/Berlin', criticalBypass: true });
     assert.deepEqual(got.control, [
-      { type: 'policy_changed', policyVersion: 8 },
-      { type: 'support_bundle_requested', requestedAt: '2026-10-11T08:01:00Z' },
+      { type: 'policy_changed', policyVersion: V2 },
+      { type: 'support_bundle_requested', requestedAt: '2026-10-11 08:01:00' },
       { type: 'peer_state', enabled: false },
       { type: 'config_changed' },
     ]);
@@ -188,6 +194,11 @@ describe('PushClient control events and hello.state', () => {
       policyVersion: null, peerEnabled: null, supportBundleRequested: null, supportBundleRequestedAt: null, configHash: null,
     });
     assert.deepEqual(normalizeState({ policy_version: 'a1b2' }).policyVersion, 'a1b2');
+    assert.equal(normalizeState({ policy_version: 7 }).policyVersion, null, 'never a number');
+    assert.equal(normalizeState({ support_bundle_requested_at: '2026-10-11 08:15:02' }).supportBundleRequestedAt, '2026-10-11 08:15:02', 'SQLite format (UTC) kept verbatim');
+    assert.equal(normalizeState({ support_bundle_requested_at: '2026-10-11T08:15:02Z' }).supportBundleRequestedAt, '2026-10-11T08:15:02Z');
+    assert.equal(normalizeControl({ type: 'support_bundle_requested', requested_at: 'yesterday' }).requestedAt, null);
+    assert.equal(normalizeControl({ type: 'policy_changed', policy_version: 8 }).policyVersion, null);
     assert.equal(normalizeControl({ type: 'peer_state', enabled: 'false' }), null);
     assert.equal(normalizeControl({ type: '__proto__' }), null);
     assert.equal(normalizeControl([]), null);
@@ -275,21 +286,27 @@ describe('PushControl: polling as the fallback', () => {
 
 describe('PushControl: reactions', () => {
   it('control events: policy refresh, support bundle, peer disabled, config check', async () => {
-    const srv = await pushServer((req, res) => sse(res, [ev('hello', { ...HELLO_NEW, state: { ...STATE, policy_version: 1 } })]));
+    const srv = await pushServer((req, res) => sse(res, [ev('hello', HELLO_NEW)]));
     const { pushClient, api, seen, monitor, control } = setup(srv.url);
     const handled = [];
     control.on('control', (c) => handled.push(c.type));
     pushClient.start();
     await waitFor(() => control.relaxed, 3000, 'relaxed');
-    await waitFor(() => api.calls.policy.length === 1, 3000, 'policy refresh on first hello');
+    await waitFor(() => api.calls.policy.length === 1, 3000, 'policy refresh on first hello (nothing cached)');
 
-    srv.write(ev('control', { type: 'policy_changed', policy_version: 2 }));
+    // same version as cached → nothing to fetch
+    srv.write(ev('control', { type: 'policy_changed', policy_version: V1 }));
+    await sleep(40);
+    assert.equal(api.calls.policy.length, 1);
+
+    api.serverPolicyVersion = V2;
+    srv.write(ev('control', { type: 'policy_changed', policy_version: V2 }));
     await waitFor(() => api.calls.policy.length === 2, 3000, 'policy refresh on control');
-    assert.deepEqual(api.calls.policy, [null, 'b2'], 'If-None-Match with the cached version');
+    assert.deepEqual(api.calls.policy, [null, V1], 'If-None-Match with the cached version');
 
-    srv.write(ev('control', { type: 'support_bundle_requested', requested_at: '2026-10-11T08:05:00Z' }));
-    await waitFor(() => seen.support.includes('2026-10-11T08:05:00Z'), 3000, 'support request');
-    assert.equal(api.supportBundleRequest, '2026-10-11T08:05:00Z');
+    srv.write(ev('control', { type: 'support_bundle_requested', requested_at: '2026-10-11 08:05:00' }));
+    await waitFor(() => seen.support.includes('2026-10-11 08:05:00'), 3000, 'support request');
+    assert.equal(api.supportBundleRequest, '2026-10-11 08:05:00', 'same value as peer-info supportBundleRequestedAt');
 
     srv.write(ev('control', { type: 'config_changed' }));
     await waitFor(() => seen.config === 1, 3000, 'config check');
@@ -302,14 +319,14 @@ describe('PushControl: reactions', () => {
     srv.write(ev('control', { type: 'peer_state', enabled: false }));
     await sleep(40);
     assert.equal(seen.disabled.length, 1, 'only once while the tunnel is down');
-    assert.deepEqual(handled, ['policy_changed', 'support_bundle_requested', 'config_changed', 'peer_state', 'peer_state', 'peer_state']);
+    assert.deepEqual(handled, ['policy_changed', 'policy_changed', 'support_bundle_requested', 'config_changed', 'peer_state', 'peer_state', 'peer_state']);
     assert.equal(api.calls.peerInfo, 0, 'no peer-info polling needed');
   });
 
   it('hello.state catches up after reconnect: support request, disabled peer, changed config hash', async () => {
     const states = [
-      { ...STATE, policy_version: 3 },
-      { ...STATE, policy_version: 3, support_bundle_requested: true, support_bundle_requested_at: '2026-10-11T09:00:00Z', peer_enabled: false, config_hash: 'h2' },
+      { ...STATE },
+      { ...STATE, support_bundle_requested: true, support_bundle_requested_at: '2026-10-11 09:00:00', peer_enabled: false, config_hash: 'h2' },
     ];
     const srv = await pushServer((req, res, n) => {
       sse(res, [ev('hello', { ...HELLO_NEW, state: states[Math.min(n, 1)] })]);
@@ -319,8 +336,8 @@ describe('PushControl: reactions', () => {
     pushClient.start();
     await waitFor(() => srv.requests.length >= 2 && seen.disabled.length === 1, 3000, 'second hello');
     await waitFor(() => seen.config === 1, 3000, 'config check');
-    assert.deepEqual(seen.support, [null, '2026-10-11T09:00:00Z'], 'first hello clears, second requests (same handler as peer-info)');
-    assert.equal(api.supportBundleRequest, '2026-10-11T09:00:00Z');
+    assert.deepEqual(seen.support, [null, '2026-10-11 09:00:00'], 'first hello clears, second requests (same handler as peer-info)');
+    assert.equal(api.supportBundleRequest, '2026-10-11 09:00:00');
     assert.deepEqual(seen.disabled, [{ enabled: false, source: 'hello' }]);
     assert.equal(api.calls.policy.length, 1, 'same policy_version on reconnect → no second refresh');
   });
@@ -338,6 +355,21 @@ describe('PushControl: reactions', () => {
     control.handleState(PushClient.normalizeState({ policy_version: 'abc123', config_hash: null }));
     assert.deepEqual(policy.noted, ['abc123', 'abc123']);
     control.stop();
+  });
+
+  it('a token without a peer (peer_enabled:false, config_hash null) disables nothing', async () => {
+    const srv = await pushServer((req, res) => sse(res, [ev('hello', { ...HELLO_NEW,
+      state: { policy_version: V1, peer_enabled: false, support_bundle_requested: false, support_bundle_requested_at: null, config_hash: null } })]));
+    const { pushClient, api, seen, monitor, control } = setup(srv.url);
+    api.peerId = null;
+    api.configHash = null;
+    pushClient.start();
+    await waitFor(() => control.relaxed, 3000, 'relaxed');
+    srv.write(ev('control', { type: 'peer_state', enabled: false }));
+    await sleep(40);
+    assert.equal(seen.disabled.length, 0);
+    assert.equal(monitor.running, true);
+    assert.equal(seen.config, 0);
   });
 
   it('peer disabled while the tunnel is down: nothing to disconnect', () => {
