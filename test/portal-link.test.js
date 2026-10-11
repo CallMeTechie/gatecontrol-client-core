@@ -17,7 +17,7 @@ Module._resolveFilename = function (request, ...rest) {
 };
 
 const ApiClient = require('../src/services/api-client');
-const { createPortalOpener, resolvePortalUrl } = require('../src/utils/portal');
+const { createPortalOpener, resolvePortalUrl, portalNext } = require('../src/utils/portal');
 const { registerBaseHandlers } = require('../src/ipc/base-handlers');
 
 const TICKET = 'tkt_SECRET_0123456789abcdef';
@@ -155,6 +155,16 @@ describe('ApiClient.getPortalLink', () => {
     assert.equal(await c.getPortalLink('https://other.example.com'), null);
   });
 
+  it('sends next in the body when given (server ≥ 1.156 puts it into the link)', async () => {
+    const link = `${origin}/auto?t=${TICKET}&next=%2Fportal%23mitteilungen`;
+    reply = json(200, { ok: true, url: link, expiresIn: 60 });
+    const { c } = makeClient();
+    assert.equal(await c.getPortalLink(undefined, { next: '/portal#mitteilungen' }), link);
+    assert.deepEqual(JSON.parse(requests[0].body), { next: '/portal#mitteilungen' });
+    await c.getPortalLink();
+    assert.deepEqual(JSON.parse(requests[1].body), {}, 'no next → empty body as before');
+  });
+
   it('never logs the ticket, whatever happens', async () => {
     const log = recordingLog();
     const { c } = makeClient(log);
@@ -228,6 +238,47 @@ describe('portal opener', () => {
     }
   });
 
+  it('open({ next }) asks for the link with next and lands on the tab', async () => {
+    const calls = [];
+    const opened = [];
+    const opener = createPortalOpener({
+      apiClient: { getPortalLink: async (p, o) => { calls.push(o); return `${LINK}&next=${encodeURIComponent(o.next)}`; } },
+      getPortalUrl: () => PORTAL,
+      getShell: () => ({ openExternal: async (u) => { opened.push(u); } }),
+    });
+    assert.equal(await opener.open({ next: '/portal#benachrichtigungen' }), true);
+    assert.deepEqual(calls, [{ next: '/portal#benachrichtigungen' }]);
+    assert.deepEqual(opened, [`${LINK}&next=%2Fportal%23benachrichtigungen`]);
+  });
+
+  it('open({ path }) of a push action: tab via the login link, /#tab normalized', async () => {
+    const { opener, opened, calls } = setup();
+    assert.equal(await opener.open({ path: '/#mitteilungen' }), true);
+    assert.deepEqual(calls, [PORTAL]);
+    assert.deepEqual(opened, [`${LINK}&next=%2Fportal%23mitteilungen`], 'older server: next appended to the link');
+  });
+
+  it('without a link the tab is opened directly; non-tab paths open directly as before', async () => {
+    const { opener, opened, calls } = setup({ link: null });
+    assert.equal(await opener.open({ next: '/portal#plg-skoda' }), true);
+    assert.equal(await opener.open({ path: '/portal/notify' }), true);
+    assert.equal(await opener.open({ path: '//evil.example' }), false);
+    assert.deepEqual(opened, ['https://home.example.com/portal#plg-skoda', 'https://home.example.com/portal/notify']);
+    assert.equal(calls.length, 1, 'non-tab paths do not use a login link');
+  });
+
+  it('portalNext mirrors the server rule', () => {
+    const ok = {
+      '/portal': '/portal', '/portal/': '/portal', '/portal#start': '/portal#start', '/#dienste': '/portal#dienste',
+      '/portal#benachrichtigungen': '/portal#benachrichtigungen', '/portal#plg-midea-ac': '/portal#plg-midea-ac',
+    };
+    for (const [k, v] of Object.entries(ok)) assert.equal(portalNext(k), v, k);
+    for (const bad of ['/', '', null, 42, '//evil', '/admin', '/portal#unknown', '/portal?x=1#start', '/portal#Start',
+      'https://x/portal', '/portal#plg-', '\\portal', `/portal#plg-${'a'.repeat(100)}`]) {
+      assert.equal(portalNext(bad), null, String(bad));
+    }
+  });
+
   it('resolvePortalUrl works with clients without getPortalLink', async () => {
     assert.equal(await resolvePortalUrl({ apiClient: {}, portalUrl: PORTAL }), PORTAL);
     assert.equal(await resolvePortalUrl({ apiClient: null, portalUrl: null }), null);
@@ -260,6 +311,12 @@ describe('portal:open IPC channel', () => {
     const handlers = register({ openPortal: async () => { n++; return true; } });
     assert.equal(await handlers['portal:open']({}), true);
     assert.equal(n, 1);
+    const seen = [];
+    const withNext = register({ openPortal: async (o) => { seen.push(o); return true; } });
+    await withNext['portal:open']({}, { next: '/portal#mitteilungen' });
+    await withNext['portal:open']({}, { next: 'https://evil.example/' });
+    await withNext['portal:open']({}, 'x');
+    assert.deepEqual(seen, [{ next: '/portal#mitteilungen' }, undefined, undefined], 'only valid portal tabs reach the app');
     const failing = register({ openPortal: async () => { throw new Error('x'); } });
     assert.equal(await failing['portal:open']({}), false);
   });

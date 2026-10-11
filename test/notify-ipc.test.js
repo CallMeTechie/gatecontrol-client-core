@@ -21,7 +21,7 @@ const NotificationCenter = require('../src/services/notification-center');
 const { createMemoryStore } = require('./fixtures/memory-store');
 
 const log = { info() {}, warn() {}, error() {}, debug() {} };
-const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:list', 'notify:prefs:get', 'notify:prefs:set', 'notify:read', 'notify:status', 'notify:test'];
+const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:list', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open', 'notify:read', 'notify:status', 'notify:test'];
 
 function fakePush() {
   const p = new EventEmitter();
@@ -136,6 +136,21 @@ describe('notify IPC', () => {
     const st = await handlers['notify:status']({});
     assert.deepEqual([st.state, st.via, st.unread], ['connected', 'direct', 0]);
     assert.deepEqual(await handlers['notify:test']({}), { ok: true, seq: 130 });
+  });
+
+  it('notify:quiet answers the quiet hours (refresh asks the server); notify:quiet:open opens the portal tab', async () => {
+    const opened = [];
+    const { handlers, center, push } = setup();
+    center.openPortal = async (target) => { opened.push(target); return true; };
+    push.fetchPrefs = async () => ({ ok: true, quiet: { from: '22:00', to: '07:00', tz: 'UTC', criticalBypass: false }, hasQuiet: true });
+    assert.deepEqual(await handlers['notify:quiet']({}), { ok: true, known: false, quiet: null, source: null, at: null });
+    const r = await handlers['notify:quiet']({}, { refresh: true });
+    assert.deepEqual([r.ok, r.known, r.quiet.from, r.source], [true, true, '22:00', 'prefs']);
+    assert.equal((await handlers['notify:status']({})).quiet.to, '07:00');
+    assert.equal(await handlers['notify:quiet:open']({}), true);
+    assert.deepEqual(opened, ['/portal#benachrichtigungen']);
+    center.openPortal = async () => { throw new Error('x'); };
+    assert.equal(await handlers['notify:quiet:open']({}), false);
   });
 
   it('notify:test without push client answers not_configured', async () => {
