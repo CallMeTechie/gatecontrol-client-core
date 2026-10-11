@@ -172,11 +172,15 @@ What arrives and what happens:
 
 | Server sends | Reaction (same path as the poll) |
 |---|---|
-| `control` `policy_changed` | `clientPolicy.refresh()` (If-None-Match → 304 when nothing changed) |
-| `control` `support_bundle_requested` | `apiClient.supportBundleRequest = requested_at` → `connectionMonitor.supportBundleRequest()` → sender `onServerRequest` (asks once per request) |
-| `control` `peer_state` `enabled:false` | `connectionMonitor.peerDisabled()` → the app's `onPeerDisabled` (disconnect + notice); only while the tunnel is monitored |
+| `control` `policy_changed` | `clientPolicy.noteVersion(policy_version)`: fetches `GET /client/policy` only when the version differs from the cached one (without a usable version: `refresh()`, If-None-Match) |
+| `control` `support_bundle_requested` | `apiClient.supportBundleRequest = requested_at` (`YYYY-MM-DD HH:MM:SS` UTC, the same value as peer-info `supportBundleRequestedAt`, so both paths prompt once) → `connectionMonitor.supportBundleRequest()` → sender `onServerRequest` (asks once per request) |
+| `control` `peer_state` `enabled:false` | `connectionMonitor.peerDisabled()` → the app's `onPeerDisabled` (disconnect + notice); only while the tunnel is monitored and the device has a peer (`apiClient.peerId`) |
 | `control` `config_changed` | `onConfigChanged()` (coalesced while one runs) |
-| `hello.state` (every connect) | catches up: policy (hash version → `noteVersion`, counter → refresh when it differs from the last one seen), support request set/cleared, `peer_enabled:false`, `config_hash` ≠ `apiClient.configHash` → `onConfigChanged()` |
+| `hello.state` (every connect) | catches up: policy (`noteVersion`), support request set/cleared, `peer_enabled:false` (ignored for a token without a peer, which always gets `false`), `config_hash` (= the `hash` of `GET /client/config` / `config/check`) ≠ `apiClient.configHash` → `onConfigChanged()` |
+
+`policy_version` is an opaque string (16 hex characters, the same value as
+heartbeat / peer-info `policyVersion` and the policy ETag): compared for
+equality, never parsed. Unknown control types are ignored.
 
 Control events carry no `id`: they are not stored by the server, never acked
 and do not move the resume position. Anything missed while offline comes

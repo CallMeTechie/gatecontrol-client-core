@@ -6,13 +6,19 @@
  * docs/feature-notification-center.md, "Vertrag Gerät ↔ Server"):
  *
  *   event: control  (no id, not stored, not acked)
- *     { type: 'policy_changed', policy_version }      → ClientPolicyService.refresh()
+ *     { type: 'policy_changed', policy_version }      → ClientPolicyService.noteVersion()
+ *       (opaque 16-hex string; refreshes only when it differs from the cached version)
  *     { type: 'support_bundle_requested', requested_at } → the support-bundle handler
+ *       (requested_at 'YYYY-MM-DD HH:MM:SS' UTC, same value as peer-info)
  *     { type: 'peer_state', enabled }                 → peer disabled: same as peer-info
  *     { type: 'config_changed' }                      → the app's config check
  *   hello.state (on every connect; catches up what happened while offline)
  *     { policy_version, peer_enabled, support_bundle_requested,
  *       support_bundle_requested_at, config_hash }
+ *     A token without a peer gets peer_enabled:false (and config_hash null):
+ *     peer_enabled:false is only acted on when this device has a peer
+ *     (apiClient.peerId). config_hash is the `hash` of GET /client/config and
+ *     config/check.
  *
  * The reactions reuse the existing paths: ClientPolicyService.refresh() /
  * noteVersion(), ConnectionMonitor.supportBundleRequest() (→ sender
@@ -77,7 +83,6 @@ class PushControl extends EventEmitter {
     this.intervals = { ...DEFAULTS, ...intervals };
     this._unsub = [];
     this._relaxed = false;
-    this._lastPolicyVersion = undefined;
     this._configRun = null;
     this._configAgain = false;
   }
@@ -119,22 +124,16 @@ class PushControl extends EventEmitter {
     if (!state || typeof state !== 'object') return;
     this._syncMode();
 
-    // Policy: a hash version is compared with the cached one; a counter is
-    // compared with the last one seen (first connect: refresh once, 304 is cheap).
-    const v = state.policyVersion;
-    if (typeof v === 'string' && HEX_VERSION_RE.test(v)) {
-      this._lastPolicyVersion = v;
-      if (this.clientPolicy) this.clientPolicy.noteVersion(v);
-    } else if (v != null && v !== this._lastPolicyVersion) {
-      this._lastPolicyVersion = v;
-      this._refreshPolicy('hello');
-    }
+    // Policy: opaque version string, compared with the cached one (refresh
+    // only when it differs).
+    this._noteOrRefreshPolicy(state.policyVersion, 'hello', false);
 
     if (typeof state.supportBundleRequested === 'boolean') {
       this._supportRequest(state.supportBundleRequested ? (state.supportBundleRequestedAt || true) : null);
     }
 
-    if (state.peerEnabled === false) this._peerDisabled('hello');
+    // A token without a peer gets peer_enabled:false — nothing to disable then.
+    if (state.peerEnabled === false && this._hasPeer()) this._peerDisabled('hello');
 
     const known = this.apiClient && typeof this.apiClient.configHash === 'string' ? this.apiClient.configHash : null;
     if (state.configHash && known && state.configHash !== known) this._configChanged('hello');
@@ -145,14 +144,13 @@ class PushControl extends EventEmitter {
     if (!control || typeof control !== 'object') return;
     switch (control.type) {
       case 'policy_changed':
-        if (control.policyVersion != null) this._lastPolicyVersion = control.policyVersion;
-        this._refreshPolicy('push');
+        this._noteOrRefreshPolicy(control.policyVersion, 'push', true);
         break;
       case 'support_bundle_requested':
         this._supportRequest(control.requestedAt || true);
         break;
       case 'peer_state':
-        if (control.enabled === false) this._peerDisabled('push');
+        if (control.enabled === false && this._hasPeer()) this._peerDisabled('push');
         break;
       case 'config_changed':
         this._configChanged('push');
@@ -164,6 +162,28 @@ class PushControl extends EventEmitter {
   }
 
   // ── Reactions ──────────────────────────────────────────
+
+  /**
+   * A version string → ClientPolicyService.noteVersion (refreshes when it
+   * differs from the cached one). Without a usable version: refresh when
+   * `always` (policy_changed), otherwise nothing.
+   */
+  _noteOrRefreshPolicy(version, source, always) {
+    if (!this.clientPolicy) return;
+    if (typeof version === 'string' && HEX_VERSION_RE.test(version) && typeof this.clientPolicy.noteVersion === 'function') {
+      if (typeof this.clientPolicy.getVersion === 'function' && this.clientPolicy.getVersion() !== version) {
+        this.log.info(`Client policy changed on the server (${source}) — refreshing`);
+      }
+      Promise.resolve(this.clientPolicy.noteVersion(version)).catch(() => {});
+      return;
+    }
+    if (always) this._refreshPolicy(source);
+  }
+
+  /** Device has a peer (no apiClient → assume yes, the monitor decides). */
+  _hasPeer() {
+    return !this.apiClient || !('peerId' in this.apiClient) || !!this.apiClient.peerId;
+  }
 
   _refreshPolicy(source) {
     if (!this.clientPolicy || typeof this.clientPolicy.refresh !== 'function') return;

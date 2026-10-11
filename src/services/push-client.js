@@ -92,13 +92,20 @@ const TZ_RE = /^[A-Za-z0-9_+\-/]{1,64}$/;
 const POLICY_VERSION_RE = /^[0-9a-f]{1,64}$/i;
 const CONTROL_TYPES = new Set(['policy_changed', 'support_bundle_requested', 'peer_state', 'config_changed']);
 
-const isoOrNull = (v) => (typeof v === 'string' && v.length <= 40 && !Number.isNaN(Date.parse(v)) ? v : null);
+// Server timestamps of support-bundle requests: the SQLite format
+// 'YYYY-MM-DD HH:MM:SS' (UTC), the same value as supportBundleRequestedAt in
+// heartbeat / peer-info (so both paths prompt once per request). ISO-8601 is
+// accepted as well. Kept verbatim (it is a key, not parsed into a Date).
+const REQUESTED_AT_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?$/;
+const requestedAtOf = (v) => (typeof v === 'string' && REQUESTED_AT_RE.test(v) ? v : null);
 
-/** Policy version of a control payload: hash string or integer counter (null otherwise). */
+/**
+ * Policy version: an opaque string (16 hex chars, content hash — the same
+ * value as heartbeat / peer-info `policyVersion` and the GET /client/policy
+ * version/ETag). Compared for equality only, never parsed. null otherwise.
+ */
 function policyVersionOf(v) {
-  if (typeof v === 'string' && POLICY_VERSION_RE.test(v)) return v;
-  if (Number.isSafeInteger(v) && v >= 0) return v;
-  return null;
+  return typeof v === 'string' && POLICY_VERSION_RE.test(v) ? v : null;
 }
 
 /**
@@ -127,7 +134,7 @@ function normalizeState(st) {
     policyVersion: policyVersionOf(st.policy_version),
     peerEnabled: typeof st.peer_enabled === 'boolean' ? st.peer_enabled : null,
     supportBundleRequested: typeof st.support_bundle_requested === 'boolean' ? st.support_bundle_requested : null,
-    supportBundleRequestedAt: isoOrNull(st.support_bundle_requested_at),
+    supportBundleRequestedAt: requestedAtOf(st.support_bundle_requested_at),
     configHash: typeof st.config_hash === 'string' && st.config_hash.length <= 128 ? st.config_hash : null,
   };
 }
@@ -137,7 +144,7 @@ function normalizeControl(c) {
   if (!c || typeof c !== 'object' || !CONTROL_TYPES.has(c.type)) return null;
   switch (c.type) {
     case 'policy_changed': return { type: c.type, policyVersion: policyVersionOf(c.policy_version) };
-    case 'support_bundle_requested': return { type: c.type, requestedAt: isoOrNull(c.requested_at) };
+    case 'support_bundle_requested': return { type: c.type, requestedAt: requestedAtOf(c.requested_at) };
     case 'peer_state':
       return typeof c.enabled === 'boolean' ? { type: c.type, enabled: c.enabled } : null;
     default: return { type: c.type };
