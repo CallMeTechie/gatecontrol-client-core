@@ -29,8 +29,18 @@
  *   'read'         ({ ids })          read on another device → hide here
  *   'revoke'       ({ ids })          withdrawn by the server → hide here
  *   'status'       (status())         state changes (see status())
- *   'event'        ({ event, data })  other stream events (policy, support_bundle, …)
+ *   'state'        (state)            hello.state of servers with control events (see normalizeState)
+ *   'control'      (control)          `event: control` (no id, never acked; see normalizeControl):
+ *                                     { type: 'policy_changed', policyVersion }
+ *                                     { type: 'support_bundle_requested', requestedAt }
+ *                                     { type: 'peer_state', enabled }
+ *                                     { type: 'config_changed' }
+ *   'event'        ({ event, data })  other stream events
  *   'reset'        ()                 server/token changed: lastSeq cleared, drop caches
+ *
+ * controlSupported() is true while the stream is open and its hello carried
+ * `state` (servers with control events, see services/push-control.js); the
+ * apps then poll less. Older servers send no `state` → false → unchanged.
  */
 
 'use strict';
@@ -75,6 +85,63 @@ function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
 function parseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
+}
+
+const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const TZ_RE = /^[A-Za-z0-9_+\-/]{1,64}$/;
+const POLICY_VERSION_RE = /^[0-9a-f]{1,64}$/i;
+const CONTROL_TYPES = new Set(['policy_changed', 'support_bundle_requested', 'peer_state', 'config_changed']);
+
+const isoOrNull = (v) => (typeof v === 'string' && v.length <= 40 && !Number.isNaN(Date.parse(v)) ? v : null);
+
+/** Policy version of a control payload: hash string or integer counter (null otherwise). */
+function policyVersionOf(v) {
+  if (typeof v === 'string' && POLICY_VERSION_RE.test(v)) return v;
+  if (Number.isSafeInteger(v) && v >= 0) return v;
+  return null;
+}
+
+/**
+ * Quiet hours (hello.quiet / GET …/push/prefs `quiet`) →
+ * { from: 'HH:MM', to: 'HH:MM', tz, criticalBypass } or null (none / invalid).
+ */
+function normalizeQuiet(q) {
+  if (!q || typeof q !== 'object' || Array.isArray(q)) return null;
+  if (!HHMM_RE.test(q.from) || !HHMM_RE.test(q.to) || q.from === q.to) return null;
+  return {
+    from: q.from,
+    to: q.to,
+    tz: typeof q.tz === 'string' && TZ_RE.test(q.tz) ? q.tz : null,
+    criticalBypass: q.critical_bypass === true || q.criticalBypass === true,
+  };
+}
+
+/**
+ * hello.state → { policyVersion, peerEnabled, supportBundleRequested,
+ * supportBundleRequestedAt, configHash } or null when absent (older server).
+ * Unknown / malformed fields become null (= "no information").
+ */
+function normalizeState(st) {
+  if (!st || typeof st !== 'object' || Array.isArray(st)) return null;
+  return {
+    policyVersion: policyVersionOf(st.policy_version),
+    peerEnabled: typeof st.peer_enabled === 'boolean' ? st.peer_enabled : null,
+    supportBundleRequested: typeof st.support_bundle_requested === 'boolean' ? st.support_bundle_requested : null,
+    supportBundleRequestedAt: isoOrNull(st.support_bundle_requested_at),
+    configHash: typeof st.config_hash === 'string' && st.config_hash.length <= 128 ? st.config_hash : null,
+  };
+}
+
+/** `event: control` payload → normalized control or null (unknown type / malformed). */
+function normalizeControl(c) {
+  if (!c || typeof c !== 'object' || !CONTROL_TYPES.has(c.type)) return null;
+  switch (c.type) {
+    case 'policy_changed': return { type: c.type, policyVersion: policyVersionOf(c.policy_version) };
+    case 'support_bundle_requested': return { type: c.type, requestedAt: isoOrNull(c.requested_at) };
+    case 'peer_state':
+      return typeof c.enabled === 'boolean' ? { type: c.type, enabled: c.enabled } : null;
+    default: return { type: c.type };
+  }
 }
 
 class PushClient extends EventEmitter {
@@ -129,9 +196,11 @@ class PushClient extends EventEmitter {
     this._ackInflight = null;
     this._prefsSynced = false;
     this._path = null;
+    this._control = false; // hello.state seen on the current stream
     this._status = {
       state: STATE.STOPPED, reason: null, code: null, via: null, since: null, retryAt: null,
       attempt: 0, unread: null, topics: [], keepaliveS: null, serverTime: null, lastEventAt: null,
+      control: false,
     };
 
     this._parser = new SseParser({
@@ -221,11 +290,19 @@ class PushClient extends EventEmitter {
   }
 
   /**
+   * True while the stream is open and the server sent hello.state (it pushes
+   * policy / support-bundle / peer / config changes as control events).
+   */
+  controlSupported() {
+    return this._control && this._status.state === STATE.CONNECTED;
+  }
+
+  /**
    * Current state for the UI:
    * { state: 'stopped'|'connecting'|'connected'|'disabled'|'error', reason, code,
    *   via: 'direct'|'tunnel'|null, since (ISO, stream open), retryAt (ISO),
    *   attempt, unread, topics, keepaliveS, serverTime, lastEventAt, lastSeq,
-   *   serverHost, killSwitch: { active, tunnelOnly, path } }
+   *   control (controlSupported()), serverHost, killSwitch: { active, tunnelOnly, path } }
    */
   status() {
     const ks = this._safe(() => this.isKillSwitchActive(), false) === true;
@@ -288,6 +365,22 @@ class PushClient extends EventEmitter {
     try {
       const data = await this.apiClient.pushPrefs(body);
       return { ok: !data || data.ok !== false };
+    } catch (err) {
+      return { ok: false, error: this._errCode(err) };
+    }
+  }
+
+  /**
+   * Device preferences and quiet hours as the server sees them
+   * (GET …/push/prefs): { ok, quiet } or { ok: false, error } (404 on servers
+   * without the route → error 'http_404').
+   */
+  async fetchPrefs() {
+    if (!this.apiClient || typeof this.apiClient.getPushPrefs !== 'function') return { ok: false, error: 'unsupported' };
+    try {
+      const data = await this.apiClient.getPushPrefs();
+      if (!data || typeof data !== 'object' || data.ok === false) return { ok: false, error: 'bad_response' };
+      return { ok: true, quiet: normalizeQuiet(data.quiet), hasQuiet: 'quiet' in data };
     } catch (err) {
       return { ok: false, error: this._errCode(err) };
     }
@@ -511,6 +604,8 @@ class PushClient extends EventEmitter {
   /** Abort the current request/stream (no retry scheduling). */
   _teardown() {
     this._gen++;
+    this._control = false;
+    if (this._status.control) this._status.control = false;
     this._clearTimer('connect');
     this._clearTimer('watchdog');
     const req = this._req;
@@ -530,6 +625,12 @@ class PushClient extends EventEmitter {
     switch (event) {
       case 'hello': return this._onHello(payload || {});
       case 'notification': return this._onNotification(payload, id);
+      case 'control': {
+        const control = normalizeControl(payload);
+        if (control) this.emit('control', control);
+        else this.log.debug(`Push control event ignored: ${String(data).slice(0, 80)}`);
+        return undefined;
+      }
       case 'read':
       case 'revoke': {
         const ids = payload && Array.isArray(payload.ids) ? payload.ids.filter((x) => Number.isSafeInteger(x)) : [];
@@ -550,15 +651,21 @@ class PushClient extends EventEmitter {
     const topics = Array.isArray(hello.topics)
       ? hello.topics.filter((t) => t && typeof t.id === 'string').map((t) => ({ id: t.id, label: typeof t.label === 'string' ? t.label : t.id }))
       : [];
+    const state = normalizeState(hello.state);
+    this._control = !!state;
     this._setStatus({
       state: STATE.CONNECTED, reason: null, code: null, retryAt: null,
       via, since: new Date().toISOString(),
       unread: Number.isFinite(hello.unread) ? hello.unread : null,
       topics, keepaliveS: this._keepaliveS,
       serverTime: typeof hello.server_time === 'string' ? hello.server_time : null,
+      control: this._control,
     });
-    this.log.info(`Push connected (${via || 'unknown path'})`);
-    this.emit('hello', { ...hello, via, topics });
+    this.log.info(`Push connected (${via || 'unknown path'}${state ? ', control events' : ''})`);
+    // quiet: undefined = the server does not send it (older), null = none set.
+    const quiet = 'quiet' in hello ? normalizeQuiet(hello.quiet) : undefined;
+    this.emit('hello', { ...hello, via, topics, quiet, state });
+    if (state) this.emit('state', state);
     this._flushAcks();
     this._syncPrefs();
   }
@@ -694,5 +801,8 @@ class PushClient extends EventEmitter {
 PushClient.ENDPOINT = ENDPOINT;
 PushClient.STATE = STATE;
 PushClient.DEFAULT_TIMING = DEFAULT_TIMING;
+PushClient.normalizeQuiet = normalizeQuiet;
+PushClient.normalizeState = normalizeState;
+PushClient.normalizeControl = normalizeControl;
 
 module.exports = PushClient;

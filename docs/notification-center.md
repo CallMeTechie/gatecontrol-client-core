@@ -8,7 +8,9 @@ build the UI ("Mitteilungen", settings tab "Benachrichtigungen", tray).
 | Module | Purpose |
 |---|---|
 | `PushClient` (`src/services/push-client.js`) | SSE stream `GET /api/v1/client/push` over Node `https`, resume, backoff, acks, prefs, test |
-| `NotificationCenter` (`src/services/notification-center.js`) | Toasts (Electron `Notification`, Windows `toastXml`), inbox cache, unread count, DND, actions |
+| `NotificationCenter` (`src/services/notification-center.js`) | Toasts (Electron `Notification`, Windows `toastXml`), inbox cache, unread count, DND, actions, quiet hours (read-only) |
+| `PushControl` (`src/services/push-control.js`) | Control events + `hello.state` → policy refresh, support bundle, peer disabled, config check; stretches polling while push delivers |
+| `createPortalOpener()` / `portalNext()` (`src/utils/portal.js`) | Portal with one-time login link, optionally on a portal tab (`next`) |
 | `notificationsSchema` (`src/utils/notify-schema.js`) | Store schema fragment `notifications{}` |
 | `registerBaseHandlers(…, { notificationCenter })` | IPC `notify:*` (opt-in) and renderer events |
 | `createBridgeApi()` → `window.gatecontrol.notify` | Renderer API |
@@ -63,7 +65,7 @@ const notificationCenter = new NotificationCenter({
   protocol: 'gatecontrol-pro',                 // Community: 'gatecontrol-community' (see 5.)
   toastImagePath: path.join(__dirname, 'assets', 'icon.png'),
   showWindow: () => showWindow(),
-  openPortal: (portalPath) => portalOpener.open({ path: portalPath }),
+  openPortal: (portalPath) => portalOpener.open({ path: portalPath }),  // target → `next` (see 8.)
 });
 
 notificationCenter.start();                    // opens the stream (no-op when switched off)
@@ -147,6 +149,76 @@ Replace the inline `new Notification({ title, body }).show()` calls with
 same toast code and respects "Nicht stören" and the toast setting
 (`force: true` for messages that must always show).
 
+### 8. Push control (phase 5): control events instead of polling
+
+Create it next to the push client once `ClientPolicyService` and
+`ConnectionMonitor` exist (both apps keep one of each for the app's lifetime):
+
+```js
+const { PushControl } = require('@gatecontrol/client-core');
+
+const pushControl = new PushControl({
+  pushClient,
+  clientPolicy,                   // ClientPolicyService
+  connectionMonitor,              // ConnectionMonitor (its onPeerDisabled / onSupportBundleRequest)
+  apiClient,                      // supportBundleRequest / configHash
+  log,
+  onConfigChanged: () => checkConfigNow(),   // the app's config/check (+ apply / reconnect)
+});
+pushControl.start();
+```
+
+What arrives and what happens:
+
+| Server sends | Reaction (same path as the poll) |
+|---|---|
+| `control` `policy_changed` | `clientPolicy.refresh()` (If-None-Match → 304 when nothing changed) |
+| `control` `support_bundle_requested` | `apiClient.supportBundleRequest = requested_at` → `connectionMonitor.supportBundleRequest()` → sender `onServerRequest` (asks once per request) |
+| `control` `peer_state` `enabled:false` | `connectionMonitor.peerDisabled()` → the app's `onPeerDisabled` (disconnect + notice); only while the tunnel is monitored |
+| `control` `config_changed` | `onConfigChanged()` (coalesced while one runs) |
+| `hello.state` (every connect) | catches up: policy (hash version → `noteVersion`, counter → refresh when it differs from the last one seen), support request set/cleared, `peer_enabled:false`, `config_hash` ≠ `apiClient.configHash` → `onConfigChanged()` |
+
+Control events carry no `id`: they are not stored by the server, never acked
+and do not move the resume position. Anything missed while offline comes
+with the next `hello.state`.
+
+**Polling as the fallback.** While the stream is open and its hello had
+`state` (`pushClient.controlSupported()`):
+
+| Poll | Normal | While push delivers |
+|---|---|---|
+| Client policy (`ClientPolicyService`) | `app.configPollInterval` (300 s) | 30 min (`setPollInterval`) |
+| Peer info (`ConnectionMonitor`, peer disabled + support request) | every 2nd 30-s cycle | every 15 min (`setPeerCheckInterval`) |
+| WireGuard stats / handshake (`ConnectionMonitor`) | 30 s | 30 s (unchanged) |
+| App's own polls, e.g. Community config/check | app setting | `pushControl.relaxedInterval('config', normalMs)` → 30 min |
+
+When the stream drops (any state other than `connected`) the normal intervals
+apply at once and the next monitor cycle asks peer-info right away. Longer
+user intervals are never shortened. Servers without `hello.state` (and
+servers without push): nothing changes. Event `mode` `{ relaxed }` tells the
+app when the mode changes.
+
+### 9. Quiet hours and portal tabs
+
+The person's quiet hours ("Ruhezeiten") are set in the portal and applied by
+the server (`silent:true`); the apps only show them. The center takes them
+from `hello.quiet`, or asks `GET …/push/prefs` when the server's hello has no
+`quiet` (`refreshQuiet()`; the settings page calls `notify:quiet` with
+`refresh: true` when it opens). `status().quiet` →
+`{ from: 'HH:MM', to: 'HH:MM', tz, criticalBypass } | null`, `status().quietKnown`.
+
+"Im Portal ändern" (`notify:quiet:open`) and push actions `open_portal` use the
+portal opener with `next`: a portal tab (`/portal`, `/portal#<tab>`, `/#<tab>`;
+tabs `start`, `dienste`, `zuhause`, `fahrzeug`, `netzwerk`, `geraete`,
+`mitteilungen`, `benachrichtigungen`, `plg-<id>` — `portalNext()`, same rule as
+the server) is requested as `POST /api/v1/client/portal-link {"next": …}` and
+the user lands there signed in. Servers before 1.156 return a link without
+`next`; the opener appends it (they ignore it and open the portal home). A
+target that is no portal tab, or no link at all, opens the page directly on
+the portal origin as before. `portal:open` accepts `{ next }` as well
+(validated with `portalNext`, anything else opens the portal home); apps pass
+it on: `openPortal: (opts) => portalOpener.open(opts)`.
+
 ## API reference
 
 ### PushClient
@@ -163,17 +235,27 @@ same toast code and respects "Nicht stören" and the toast setting
 | `fetchInbox({ limit, before })` | `GET …/push/inbox` → `{ ok, items, unread }` |
 | `setPrefs({ enabled, mode \| direct, muted_topics \| mutedTopics })` | `PUT …/push/prefs` → `{ ok }` |
 | `requestTest()` | `POST …/push/test` → `{ ok, seq }` (server: 5/min) |
+| `fetchPrefs()` | `GET …/push/prefs` → `{ ok, quiet, hasQuiet }` (quiet hours, read-only) |
+| `controlSupported()` | stream open and its hello carried `state` (server with control events) |
 | `refreshPath()` | re-run the kill-switch check |
 | `status()` | see below |
 
-Events: `hello`, `notification` (contract payload + `received_at`, `via`),
-`read` `{ids}`, `revoke` `{ids}`, `status`, `event` (other stream events,
-e.g. Phase 5 `policy`), `reset` (server/token changed).
+Events: `hello` (payload + normalized `quiet` — `undefined` when the server
+does not send it — and `state`), `notification` (contract payload +
+`received_at`, `via`), `read` `{ids}`, `revoke` `{ids}`, `state` (normalized
+`hello.state`: `{ policyVersion, peerEnabled, supportBundleRequested,
+supportBundleRequestedAt, configHash }`, only from servers that send it),
+`control` (`{ type: 'policy_changed', policyVersion }`,
+`{ type: 'support_bundle_requested', requestedAt }`,
+`{ type: 'peer_state', enabled }`, `{ type: 'config_changed' }`; unknown types
+and malformed payloads are dropped), `status`, `event` (other stream events),
+`reset` (server/token changed). Normalizers: `PushClient.normalizeQuiet`,
+`normalizeState`, `normalizeControl`.
 
 `status()` →
 `{ state: 'stopped'|'connecting'|'connected'|'disabled'|'error', reason, code,
 via: 'direct'|'tunnel'|null, since, retryAt, attempt, unread, topics, keepaliveS,
-serverTime, lastEventAt, lastSeq, serverHost, killSwitch: { active, tunnelOnly, path } }`
+serverTime, lastEventAt, lastSeq, control, serverHost, killSwitch: { active, tunnelOnly, path } }`
 
 | Server answer | state / reason | Next attempt |
 |---|---|---|
@@ -201,11 +283,13 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `get(id)` | one entry |
 | `refresh()` | replace the cache with the server inbox (also runs after every `hello`) |
 | `markRead(ids \| 'all')` | local + `ack read`; failed acks are retried after the next `hello` |
-| `performAction(id, actionId)` | `open_app_route` → `navigate`; `open_portal` → `openPortal(path)` (or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; always acks with `action` |
+| `performAction(id, actionId)` | `open_app_route` → `navigate`; `open_portal` → `openPortal(target)` (portal tab via the login link with `next`, or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; always acks with `action` |
 | `getPrefs()` / `setPrefs(patch)` | `{ enabled, direct, toasts, criticalBypass, mutedTopics, dndUntil, topics }` |
 | `setDnd({ minutes } \| { until } \| null)` / `dndState()` | "Nicht stören bis" |
 | `muteTopic(topic, ms)` | local mute |
-| `unreadCount()`, `topics()`, `status()` | status = push status + `unread`, `dnd`, `toasts`, `enabled` |
+| `unreadCount()`, `topics()`, `status()` | status = push status + `unread`, `dnd`, `toasts`, `enabled`, `quiet`, `quietKnown` |
+| `quietState()` / `refreshQuiet()` | `{ known, quiet, source: 'hello'\|'prefs', at }`; refresh asks `GET …/push/prefs` |
+| `openQuietHoursInPortal()` | portal tab `/portal#benachrichtigungen` (auto-login) |
 | `notify({ title, body, priority, collapseKey, force, onClick })` | local app notification through the same wrapper |
 | `handleArgv(argv)` / `handleProtocolUrl(url)` | toast button activation |
 | `openInbox(id?)` | show the window on the inbox (event `navigate`) |
@@ -237,6 +321,9 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | `notify:test` | `test()` | → `{ ok, seq }` / `{ ok:false, error }` |
 | `notify:status` | `status()` | → `NotificationCenter.status()` |
 | `notify:dnd` | `dnd(arg?)` | `{ minutes }` / `{ until }` / `null` (off) / no argument (query) → `{ ok, active, until }` |
+| `notify:quiet` | `quiet(opts)` | `{ refresh }` → `{ ok, known, quiet, source, at }` |
+| `notify:quiet:open` | `openQuietHours()` | → boolean (portal tab "Meine Benachrichtigungen") |
+| `portal:open` | `window.gatecontrol.portal.open(opts)` | `{ next: '/portal#<tab>' }` optional → boolean |
 | event `notify:new` | `onNew(cb)` | entry |
 | event `notify:update` | `onUpdate(cb)` | `{ reason, ids, unread }` |
 | event `notify:status` | `onStatus(cb)` | status |
@@ -255,8 +342,10 @@ in that case, otherwise `push.killSwitchOk`.
 
 ## Known limits
 
-* `open_portal` with a path opens that portal page directly on the portal
-  origin. The one-time login link (`/auto?t=…`) has no target page on the
-  server yet, so auto-login only happens for the plain "Portal öffnen".
-* Portal quiet hours ("Ruhezeiten") are not part of the device API; the
-  settings page links to the portal for them.
+* `open_portal` targets that are not a portal tab open directly on the portal
+  origin without auto-login (the server's `next` only accepts tabs).
+* Quiet hours are read-only on the device; they change in the portal and
+  reach the app with the next hello (reconnect) or when the settings page
+  opens (`notify:quiet` with refresh).
+* Control events need the push stream. With push switched off, `vpn_only`
+  without tunnel, or an older server, the polls run at their normal intervals.

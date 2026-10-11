@@ -9,7 +9,10 @@
  *     while the server is unreachable (fail-safe: last known policy).
  *   - Refresh: on start, every `interval` ms (If-None-Match → 304 is cheap),
  *     and immediately when a heartbeat/permissions answer carries a
- *     policyVersion different from the cached one (noteVersion()).
+ *     policyVersion different from the cached one (noteVersion()) or the
+ *     push stream says it changed (services/push-control.js). While the
+ *     server pushes changes, setPollInterval(30 min) stretches the poll;
+ *     setPollInterval(null) goes back to `interval`.
  *   - Changing the server (new URL/token) should call reset(): the policy of
  *     the old server must not stick to the new setup.
  *
@@ -39,6 +42,8 @@ class ClientPolicyService {
     this.interval = interval;
     this.storeKey = storeKey;
     this.timer = null;
+    this._started = false;
+    this._pollOverride = null;
     this.listeners = new Set();
     this._inflight = null;
     this.cached = this._load();
@@ -165,15 +170,43 @@ class ClientPolicyService {
     this._emit(previous);
   }
 
-  start() {
-    this.refresh();
-    if (this.interval > 0 && !this.timer) {
-      this.timer = setInterval(() => this.refresh(), this.interval);
+  /** Poll interval in force (ms; 0 = no polling). */
+  pollInterval() {
+    if (!(this.interval > 0)) return 0;
+    return this._pollOverride ? Math.max(this.interval, this._pollOverride) : this.interval;
+  }
+
+  /**
+   * Stretch the poll while changes arrive by push (ms), or go back to the
+   * configured interval (null). Never polls more often than `interval`.
+   * Takes effect immediately (the timer is re-armed while running).
+   */
+  setPollInterval(ms) {
+    const next = Number.isFinite(ms) && ms > 0 ? ms : null;
+    if (next === this._pollOverride) return;
+    const before = this.pollInterval();
+    this._pollOverride = next;
+    if (this._started && this.pollInterval() !== before) this._arm();
+  }
+
+  _arm() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    const ms = this.pollInterval();
+    if (ms > 0) {
+      this.timer = setInterval(() => this.refresh(), ms);
       if (typeof this.timer.unref === 'function') this.timer.unref();
     }
   }
 
+  start() {
+    this.refresh();
+    this._started = true;
+    if (!this.timer) this._arm();
+  }
+
   stop() {
+    this._started = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }

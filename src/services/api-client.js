@@ -384,10 +384,15 @@ class ApiClient {
    * plain portal URL. The link carries a secret ticket: it is never logged
    * or stored, and a fresh one is fetched for every open.
    *
+   * With `next` (a portal tab such as '/portal#benachrichtigungen', see
+   * utils/portal.js portalNext) the server puts the checked target into the
+   * link (server ≥ 1.156); older servers ignore it.
+   *
    * @param {string|null} [portalUrl] - configured portal URL (default: this.portalUrl)
+   * @param {{ next?: string }} [opts]
    * @returns {Promise<string|null>}
    */
-  async getPortalLink(portalUrl = this.portalUrl) {
+  async getPortalLink(portalUrl = this.portalUrl, { next } = {}) {
     if (!this.client || !portalUrl) return null;
 
     let expectedOrigin;
@@ -400,7 +405,8 @@ class ApiClient {
     const timeout = this.portalLinkTimeoutMs;
     let data;
     try {
-      const res = await this.client.post('/api/v1/client/portal-link', {}, {
+      const body = typeof next === 'string' && next ? { next } : {};
+      const res = await this.client.post('/api/v1/client/portal-link', body, {
         timeout,
         signal: AbortSignal.timeout(timeout),
       });
@@ -456,7 +462,7 @@ class ApiClient {
   }
 
   // ── Push (notification center, see services/push-client.js) ─────────
-  // All four throw the axios error on failure; PushClient maps it.
+  // All of them throw the axios error on failure; PushClient maps it.
 
   /**
    * Confirm deliveries: POST /api/v1/client/push/ack → { ok }.
@@ -490,6 +496,18 @@ class ApiClient {
   async pushPrefs(prefs = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');
     const { data } = await this.client.put('/api/v1/client/push/prefs', prefs);
+    return data;
+  }
+
+  /**
+   * Device push preferences as the server sees them, plus the person's quiet
+   * hours: GET /api/v1/client/push/prefs → { ok, enabled, mode, muted_topics,
+   * restricted, quiet: { from, to, tz, critical_bypass } | null }.
+   * Read-only (does not register the device for push).
+   */
+  async getPushPrefs() {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const { data } = await this.client.get('/api/v1/client/push/prefs');
     return data;
   }
 

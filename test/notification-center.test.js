@@ -509,3 +509,49 @@ describe('toast XML', () => {
     assert.equal(parseActionUrl(42, 'gc'), null);
   });
 });
+
+describe('NotificationCenter quiet hours (read-only)', () => {
+  const Q = { from: '22:00', to: '07:00', tz: 'Europe/Berlin', criticalBypass: true };
+
+  it('takes hello.quiet and exposes it in status()', async () => {
+    const { center, push, events } = setup();
+    assert.deepEqual([center.status().quiet, center.status().quietKnown], [null, false]);
+    push.emit('hello', { topics: [], quiet: Q });
+    assert.deepEqual(center.status().quiet, Q);
+    assert.equal(center.status().quietKnown, true);
+    assert.deepEqual(center.quietState().source, 'hello');
+    assert.ok(events.status.length >= 1);
+    push.emit('hello', { topics: [], quiet: null });
+    assert.deepEqual([center.status().quiet, center.status().quietKnown], [null, true], 'none set');
+  });
+
+  it('servers without hello.quiet: asks GET prefs; without quiet there it stays unknown', async () => {
+    const push = fakePush();
+    let fetched = 0;
+    let answer = { ok: true, quiet: Q, hasQuiet: true };
+    push.fetchPrefs = async () => { fetched++; return answer; };
+    const { center } = setup({ push });
+    push.emit('hello', { topics: [] });
+    await tick();
+    assert.equal(fetched, 1);
+    assert.deepEqual(center.quietState(), { known: true, quiet: Q, source: 'prefs', at: '2026-10-10T21:45:00.000Z' });
+
+    answer = { ok: false, error: 'http_404' };
+    const r = await center.refreshQuiet();
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.quiet, Q, 'last known value is kept');
+
+    center.clear();
+    answer = { ok: true, quiet: null, hasQuiet: false };
+    assert.deepEqual(await center.refreshQuiet(), { ok: true, known: false, quiet: null, source: null, at: null });
+  });
+
+  it('"Im Portal ändern" opens the portal tab Meine Benachrichtigungen', async () => {
+    const { center, portal } = setup();
+    assert.equal(await center.openQuietHoursInPortal(), true);
+    assert.deepEqual(portal, ['/portal#benachrichtigungen']);
+    const noPortal = setup({ noPortal: true });
+    assert.equal(await noPortal.center.openQuietHoursInPortal(), false);
+    assert.deepEqual(noPortal.events.portal, [{ path: '/portal#benachrichtigungen' }]);
+  });
+});

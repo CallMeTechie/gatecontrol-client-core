@@ -16,7 +16,11 @@
  *     notifications.criticalBypass is on;
  *   - local inbox cache (last 100, encrypted store key `notificationsInbox`),
  *     synchronised with the server inbox on every connect;
- *   - unread counter + change events for the tray badge.
+ *   - unread counter + change events for the tray badge;
+ *   - the person's quiet hours (hello.quiet, or GET …/push/prefs on servers
+ *     without it) for the settings page — read-only, the server applies
+ *     them (`silent:true`) and the portal changes them
+ *     (openQuietHoursInPortal → /portal#benachrichtigungen).
  *
  * Events (EventEmitter):
  *   'new'      (entry)                     a push message arrived (also when no toast was shown)
@@ -46,6 +50,7 @@ const TOPIC_RE = /^(?:security|devices|services|system|admin_notice|plugin:[a-z0
 const MAX_ITEMS = 100;
 const MUTE_MS = 60 * 60 * 1000;
 const MAX_TOASTS = 50; // toast references kept for close() (Action Center)
+const QUIET_PORTAL_TARGET = '/portal#benachrichtigungen'; // portal tab "Meine Benachrichtigungen"
 
 const URGENCY = { info: 'low', normal: 'normal', high: 'normal', critical: 'critical' };
 
@@ -171,6 +176,8 @@ class NotificationCenter extends EventEmitter {
     this._recentToasts = [];
     this._pendingRead = new Map(); // seq → { state, action }
     this._topics = [];
+    this._quiet = { known: false, value: null, source: null, at: null };
+    this._quietFetch = null;
     this._items = this._loadInbox();
     this._lastUnread = this.unreadCount();
     this._dndTimer = null;
@@ -260,9 +267,10 @@ class NotificationCenter extends EventEmitter {
     if (this.pushClient) this.pushClient.restart({ resetSeq: true });
   }
 
-  /** Forget the inbox cache and close all toasts. */
+  /** Forget the inbox cache (and the quiet hours of the old server) and close all toasts. */
   clear() {
     for (const id of [...this._toasts.keys()]) this._closeToast(id);
+    this._quiet = { known: false, value: null, source: null, at: null };
     this._items = [];
     this._pendingRead.clear();
     this._nonces.clear();
@@ -305,7 +313,62 @@ class NotificationCenter extends EventEmitter {
 
   _onHello(hello) {
     if (hello && Array.isArray(hello.topics)) this._topics = hello.topics.slice();
+    // hello.quiet (normalized by PushClient; undefined = server without it).
+    if (hello && hello.quiet !== undefined) this._setQuiet(hello.quiet, 'hello');
+    else this.refreshQuiet().catch(() => {});
     this._flushPendingRead().finally(() => this.refresh());
+  }
+
+  // ── Quiet hours (read-only) ──────────────────────────────
+
+  _setQuiet(value, source) {
+    const q = value && typeof value === 'object' ? { ...value } : null;
+    const before = JSON.stringify(this._quiet.value);
+    const wasKnown = this._quiet.known;
+    this._quiet = { known: true, value: q, source, at: new Date(this.now()).toISOString() };
+    if (!wasKnown || JSON.stringify(q) !== before) this.emit('status', this.status());
+  }
+
+  /**
+   * Quiet hours for the settings page: { known, quiet: { from, to, tz,
+   * criticalBypass } | null, source: 'hello'|'prefs'|null, at }.
+   * known=false: not learned yet (no connection, or a server without them).
+   */
+  quietState() {
+    return { known: this._quiet.known, quiet: this._quiet.value ? { ...this._quiet.value } : null, source: this._quiet.source, at: this._quiet.at };
+  }
+
+  /**
+   * Ask the server (GET …/push/prefs) — on hello from servers that do not
+   * send hello.quiet, and when the settings page opens.
+   * → { ok, known, quiet, … } | { ok: false, error, known, quiet, … } (last known kept)
+   */
+  async refreshQuiet() {
+    if (!this.pushClient || typeof this.pushClient.fetchPrefs !== 'function') return { ok: false, error: 'not_attached', ...this.quietState() };
+    if (!this._quietFetch) {
+      this._quietFetch = this.pushClient.fetchPrefs().finally(() => { this._quietFetch = null; });
+    }
+    const r = await this._quietFetch;
+    if (r.ok && r.hasQuiet !== false) this._setQuiet(r.quiet, 'prefs');
+    return r.ok ? { ok: true, ...this.quietState() } : { ok: false, error: r.error, ...this.quietState() };
+  }
+
+  /** "Im Portal ändern": the portal tab "Meine Benachrichtigungen" (auto-login). */
+  async openQuietHoursInPortal() {
+    return this._openPortal(QUIET_PORTAL_TARGET);
+  }
+
+  async _openPortal(target) {
+    if (!this.openPortal) {
+      this.emit('portal', { path: target });
+      return false;
+    }
+    try {
+      return (await this.openPortal(target)) === true;
+    } catch (err) {
+      this.log.warn(`Opening the portal failed: ${err.message}`);
+      return false;
+    }
   }
 
   /**
@@ -456,11 +519,8 @@ class NotificationCenter extends EventEmitter {
         this.emit('navigate', { route: action.target, id: entry.id });
         break;
       case 'open_portal':
-        if (this.openPortal) {
-          try { await this.openPortal(action.target); } catch (err) { this.log.warn(`Opening the portal failed: ${err.message}`); }
-        } else {
-          this.emit('portal', { path: action.target });
-        }
+        // target goes to the portal as `next` (one-time login link, utils/portal.js).
+        await this._openPortal(action.target);
         break;
       case 'mute_1h':
         if (entry.topic) this.muteTopic(entry.topic, MUTE_MS);
@@ -573,11 +633,14 @@ class NotificationCenter extends EventEmitter {
     if (this._dndTimer.unref) this._dndTimer.unref();
   }
 
-  /** Push status plus unread / DND for the settings page and the tray. */
+  /** Push status plus unread / DND / quiet hours for the settings page and the tray. */
   status() {
     const push = this.pushClient ? this.pushClient.status() : { state: 'stopped', reason: null };
     const s = this._settings();
-    return { ...push, unread: this.unreadCount(), dnd: this.dndState(), toasts: s.toasts, enabled: s.enabled };
+    return {
+      ...push, unread: this.unreadCount(), dnd: this.dndState(), toasts: s.toasts, enabled: s.enabled,
+      quiet: this._quiet.value ? { ...this._quiet.value } : null, quietKnown: this._quiet.known,
+    };
   }
 
   // ── Toasts ───────────────────────────────────────────────

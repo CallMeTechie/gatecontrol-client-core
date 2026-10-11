@@ -19,6 +19,7 @@ const DnsPolicy = require('./services/dns-policy');
 const ClientPolicyService = require('./services/client-policy');
 const PushClient = require('./services/push-client');
 const NotificationCenter = require('./services/notification-center');
+const PushControl = require('./services/push-control');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -33,7 +34,7 @@ const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const { isSafeExternalUrl } = require('./utils/external-url');
 const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
-const { createPortalOpener, resolvePortalUrl } = require('./utils/portal');
+const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
@@ -73,6 +74,7 @@ module.exports = {
   ClientPolicyService,
   PushClient,
   NotificationCenter,
+  PushControl,
 
   // Utils
   validation,
@@ -95,6 +97,7 @@ module.exports = {
   shouldOpenPortal,
   createPortalOpener,
   resolvePortalUrl,
+  portalNext,
   loadUpdatePublicKey,
   updatePublicKeyPaths,
   renderTrayIcon,

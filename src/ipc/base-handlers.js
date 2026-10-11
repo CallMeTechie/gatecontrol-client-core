@@ -15,6 +15,7 @@ const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
 const { isSafeExternalUrl } = require('../utils/external-url');
+const { portalNext } = require('../utils/portal');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
@@ -78,7 +79,8 @@ const NOTIFY_EVENTS = {
  * @param {Function} ctx.disconnectTunnel - async () => void
  * @param {Function} ctx.toggleKillSwitch - async (enabled) => void
  * @param {Function} [ctx.toggleRdpAllow] - async (enabled) => void
- * @param {Function} [ctx.openPortal] - async () => boolean; opens the portal
+ * @param {Function} [ctx.openPortal] - async (opts?: { next }) => boolean; opens the portal
+ *   (with `next`: on that portal tab, already validated by portalNext)
  *   (fresh one-time login link, falling back to the portal URL — see
  *   utils/portal.js). Registers portal:open when given.
  * @param {Function} ctx.installUpdate - async () => boolean
@@ -104,7 +106,7 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notificationCenter] - NotificationCenter (opt-in).
  *   When given: registers notify:list, notify:read, notify:action,
  *   notify:prefs:get, notify:prefs:set, notify:test, notify:status,
- *   notify:dnd; forwards its events to the main window as notify:new,
+ *   notify:dnd, notify:quiet, notify:quiet:open; forwards its events to the main window as notify:new,
  *   notify:update, notify:status, notify:navigate; and resets it (cache,
  *   resume position, reconnect) after a successful server:setup.
  *   Keep one instance for the app's lifetime.
@@ -447,10 +449,13 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Portal ──────────────────────────────────────────────
   // The renderer never sees the login link: main fetches and opens it.
+  // Optional { next }: a portal tab ('/portal#mitteilungen'); anything else
+  // is dropped here (utils/portal.js portalNext) and the portal home opens.
   if (ctx.openPortal) {
-    handle('portal:open', async () => {
+    handle('portal:open', async (_, opts) => {
       try {
-        return (await ctx.openPortal()) === true;
+        const next = opts && typeof opts === 'object' ? portalNext(opts.next) : null;
+        return (await (next ? ctx.openPortal({ next }) : ctx.openPortal())) === true;
       } catch (err) {
         log.warn('portal:open failed:', err && err.message);
         return false;
@@ -575,6 +580,8 @@ function registerBaseHandlers(ipcMain, ctx) {
  *   notify:test        () → { ok, seq } | { ok: false, error }
  *   notify:status      () → NotificationCenter.status()
  *   notify:dnd         ({ minutes } | { until } | null = off | undefined = query) → { ok, active, until }
+ *   notify:quiet       ({ refresh? }) → { ok, known, quiet: { from, to, tz, criticalBypass } | null, source, at }
+ *   notify:quiet:open  () → boolean (portal tab "Meine Benachrichtigungen", auto-login)
  */
 function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow, log }) {
   handle('notify:list', async (_, opts = {}) => {
@@ -605,6 +612,18 @@ function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow,
   handle('notify:test', () => (nc.pushClient ? nc.pushClient.requestTest() : { ok: false, error: 'not_configured' }));
   handle('notify:status', () => nc.status());
   handle('notify:dnd', (_, arg) => (arg === undefined ? { ok: true, ...nc.dndState() } : nc.setDnd(arg)));
+  handle('notify:quiet', async (_, opts) => {
+    if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshQuiet();
+    return { ok: true, ...nc.quietState() };
+  });
+  handle('notify:quiet:open', async () => {
+    try {
+      return (await nc.openQuietHoursInPortal()) === true;
+    } catch (err) {
+      log.warn('notify:quiet:open failed:', err && err.message);
+      return false;
+    }
+  });
 
   for (const [event, channel] of Object.entries(NOTIFY_EVENTS)) {
     nc.on(event, (payload) => {

@@ -142,6 +142,11 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       status:   () => ipcRenderer.invoke('notify:status'),
       // { minutes } | { until } | null (off); no argument = query
       dnd:      (...args) => ipcRenderer.invoke('notify:dnd', ...args),
+      // Quiet hours of the person (read-only; set in the portal):
+      // { refresh } → { ok, known, quiet: { from, to, tz, criticalBypass } | null, source, at }
+      quiet:     (opts) => ipcRenderer.invoke('notify:quiet', opts),
+      // "Im Portal ändern" → portal tab "Meine Benachrichtigungen" (auto-login)
+      openQuietHours: () => ipcRenderer.invoke('notify:quiet:open'),
       onNew:      (cb) => subscribe('notify:new', cb),
       onUpdate:   (cb) => subscribe('notify:update', cb),
       onStatus:   (cb) => subscribe('notify:status', cb),
@@ -157,7 +162,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
     onPortalUrl: (cb) => ipcRenderer.on('portal-url', (_e, url) => cb(url)),
     // Opens the portal with a fresh one-time login link (fallback: portal URL).
     portal: {
-      open: () => ipcRenderer.invoke('portal:open'),
+      // Optional { next: '/portal#<tab>' } → lands on that portal tab.
+      open: (opts) => ipcRenderer.invoke('portal:open', opts && typeof opts === 'object' ? { next: opts.next } : undefined),
     },
 
     // ── Fenster ──────────────────────────────────────────
