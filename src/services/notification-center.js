@@ -169,6 +169,7 @@ class NotificationCenter extends EventEmitter {
     this.now = now;
 
     this.pushClient = null;
+    this._chat = null;
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
     this._byCollapse = new Map(); // collapse_key → notification id
@@ -285,6 +286,16 @@ class NotificationCenter extends EventEmitter {
    * shows a toast when allowed. Returns the entry (or null when invalid).
    */
   handleNotification(n) {
+    // Chat messages (`kind: "message"`, never part of the inbox) go to the
+    // chat handler (services/chat-notifier.js) when the app has one.
+    if (n && n.kind === 'message' && this._chat && typeof this._chat.notification === 'function') {
+      try {
+        if (this._chat.notification(n) !== false) return null;
+      } catch (err) {
+        this.log.warn(`Chat notification failed: ${err.message}`);
+        return null;
+      }
+    }
     const entry = normalizeEntry(n);
     if (!entry) return null;
     const now = this.now();
@@ -643,6 +654,42 @@ class NotificationCenter extends EventEmitter {
     };
   }
 
+  // ── Chat messages ────────────────────────────────────────
+
+  /**
+   * Hand chat notifications (`kind: "message"`) to the messenger's notifier
+   * instead of the inbox: { notification(n) → false to fall back to a
+   * normal entry, protocol(nonce) → true when it was one of its toast
+   * buttons }. null removes it (chat pushes then show as normal entries,
+   * like on apps without chats).
+   */
+  setChatHandler(handler) {
+    this._chat = handler && typeof handler === 'object' ? handler : null;
+  }
+
+  /**
+   * The toast rules for a message the center does not store itself (chat):
+   * toastDecision with the current settings, plus the replay (stale) and
+   * burst caps. A positive answer counts towards the burst limit.
+   * @param {{ priority?, silent?, topic?, expires_at?, created_at? }} entry
+   * @returns {{ show: boolean, silent: boolean, reason: ?string }}
+   */
+  decideToast(entry) {
+    const now = this.now();
+    const e = { priority: 'normal', silent: false, topic: null, ...entry };
+    const d = toastDecision(e, this._settings(), now);
+    if (!d.show) return d;
+    if (e.created_at && now - Date.parse(e.created_at) > this.staleToastMs) return { show: false, silent: true, reason: 'stale' };
+    if (!this._burstAllows(now)) return { show: false, silent: true, reason: 'burst' };
+    this._recentToasts.push(now);
+    return d;
+  }
+
+  /** Electron's Notification class (injected or required lazily), or null. */
+  notificationClass() {
+    return this._NotificationClass();
+  }
+
   // ── Toasts ───────────────────────────────────────────────
 
   /**
@@ -796,6 +843,13 @@ class NotificationCenter extends EventEmitter {
     const nonce = parseActionUrl(url, this.protocol);
     if (!nonce) return false;
     const hit = this._nonces.get(nonce);
+    if (!hit && this._chat && typeof this._chat.protocol === 'function') {
+      try {
+        if (this._chat.protocol(nonce) === true) return true;
+      } catch (err) {
+        this.log.warn(`Chat toast action failed: ${err.message}`);
+      }
+    }
     if (!hit) {
       // Stale button (e.g. from before a restart): just open the inbox.
       this._show();

@@ -20,6 +20,10 @@ const ClientPolicyService = require('./services/client-policy');
 const PushClient = require('./services/push-client');
 const NotificationCenter = require('./services/notification-center');
 const PushControl = require('./services/push-control');
+const MessengerService = require('./services/messenger');
+const MessengerApi = require('./services/messenger-api');
+const MessengerOutbox = require('./services/messenger-outbox');
+const ChatNotifier = require('./services/chat-notifier');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -39,6 +43,7 @@ const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-pu
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
 const clientPolicy = require('./utils/client-policy');
+const messengerUtil = require('./utils/messenger');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -75,6 +80,10 @@ module.exports = {
   PushClient,
   NotificationCenter,
   PushControl,
+  MessengerService,
+  MessengerApi,
+  MessengerOutbox,
+  ChatNotifier,
 
   // Utils
   validation,
@@ -106,6 +115,7 @@ module.exports = {
   updateMenuItems,
   mandatoryNotice,
   clientPolicy,
+  messengerUtil,
 
   // Support bundle
   collectSupportBundle,
