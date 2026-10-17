@@ -153,6 +153,44 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onNavigate: (cb) => subscribe('notify:navigate', cb),
     },
 
+    // ── Chats (messenger) ────────────────────────────────
+    // Served when the app passes a MessengerService to registerBaseHandlers
+    // (ipc/messenger-handlers.js lists arguments and answers).
+    chat: {
+      status:        () => ipcRenderer.invoke('chat:status'),
+      check:         () => ipcRenderer.invoke('chat:check'),
+      conversations: (opts) => ipcRenderer.invoke('chat:conversations', opts),
+      conversation:  (id, opts) => ipcRenderer.invoke('chat:conversation', { ...(opts || {}), id }),
+      messages:      (id, opts) => ipcRenderer.invoke('chat:messages', { ...(opts || {}), id }),
+      send:          (msg) => ipcRenderer.invoke('chat:send', msg),
+      retry:         (clientId) => ipcRenderer.invoke('chat:outbox:retry', { clientId }),
+      discard:       (clientId) => ipcRenderer.invoke('chat:outbox:discard', { clientId }),
+      edit:          (id, text) => ipcRenderer.invoke('chat:edit', { id, text }),
+      remove:        (id, scope) => ipcRenderer.invoke('chat:delete', { id, scope }),
+      react:         (id, emoji) => ipcRenderer.invoke('chat:react', { id, emoji }),
+      read:          (id, upTo) => ipcRenderer.invoke('chat:read', { id, upTo }),
+      typing:        (id, stop) => ipcRenderer.invoke('chat:typing', { id, stop: stop === true }),
+      open:          (id, visible) => ipcRenderer.invoke('chat:open', { id, visible: visible === true }),
+      view:          (open) => ipcRenderer.invoke('chat:view', { open: open === true }),
+      people:        (opts) => ipcRenderer.invoke('chat:people', opts),
+      create:        (opts) => ipcRenderer.invoke('chat:create', opts),
+      update:        (id, patch, avatar) => ipcRenderer.invoke('chat:update', { id, patch, avatar }),
+      prefs:         (patch) => ipcRenderer.invoke('chat:prefs', patch),
+      search:        (id, q) => ipcRenderer.invoke('chat:search', { id, q }),
+      mediaList:     (id, opts) => ipcRenderer.invoke('chat:media:list', { ...(opts || {}), id }),
+      media:         (mediaId) => ipcRenderer.invoke('chat:media', { mediaId }),
+      avatar:        (url) => ipcRenderer.invoke('chat:avatar', { url }),
+      saveMedia:     (mediaId, fileName) => ipcRenderer.invoke('chat:media:save', { mediaId, fileName }),
+      openMedia:     (mediaId, fileName) => ipcRenderer.invoke('chat:media:open', { mediaId, fileName }),
+      onState:         (cb) => subscribe('chat:state', cb),
+      onConversations: (cb) => subscribe('chat:conversations', cb),
+      onMessages:      (cb) => subscribe('chat:messages', cb),
+      onTyping:        (cb) => subscribe('chat:typing', cb),
+      onUnread:        (cb) => subscribe('chat:unread', cb),
+      onOutbox:        (cb) => subscribe('chat:outbox', cb),
+      onNavigate:      (cb) => subscribe('chat:navigate', cb),
+    },
+
     // ── Shell ────────────────────────────────────────────
     shell: {
       openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),

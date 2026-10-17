@@ -19,6 +19,7 @@ const { portalNext } = require('../utils/portal');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
+const { registerMessengerHandlers } = require('./messenger-handlers');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -110,6 +111,11 @@ const NOTIFY_EVENTS = {
  *   notify:update, notify:status, notify:navigate; and resets it (cache,
  *   resume position, reconnect) after a successful server:setup.
  *   Keep one instance for the app's lifetime.
+ * @param {object} [ctx.messenger] - MessengerService (opt-in, "Chats"):
+ *   registers the chat:* channels (ipc/messenger-handlers.js), forwards its
+ *   events to the main window and resets it after a successful server:setup.
+ * @param {object} [ctx.chatNotifier] - ChatNotifier; its 'navigate' (toast
+ *   click) reaches the renderer as chat:navigate
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -127,6 +133,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const registered = [];
   const clientPolicy = ctx.clientPolicy || null;
   const notificationCenter = ctx.notificationCenter || null;
+  const messenger = ctx.messenger || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -150,6 +157,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Push: new server / token → drop the old inbox, reconnect from scratch.
     if (notificationCenter) {
       try { notificationCenter.resetForNewServer(); } catch (err) { log.warn(`Notification reset failed: ${err.message}`); }
+    }
+    // Chats: cache, outbox and availability belong to the old server.
+    if (messenger) {
+      Promise.resolve().then(() => messenger.resetForNewServer()).catch((err) => log.warn(`Messenger reset failed: ${err.message}`));
     }
   }
 
@@ -551,6 +562,21 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Benachrichtigungen (notification center, opt-in) ────
   if (notificationCenter) registerNotifyHandlers(handle, { notificationCenter, getMainWindow, log });
+
+  // ── Chats (messenger, opt-in) ───────────────────────────
+  if (messenger) {
+    registerMessengerHandlers(handle, {
+      messenger,
+      chatNotifier: ctx.chatNotifier || null,
+      getMainWindow,
+      log,
+      dialog,
+      shell: ctx.shell || (() => { try { return require('electron').shell; } catch { return null; } })(),
+      getTempDir: () => {
+        try { return require('path').join(app.getPath('temp'), 'gatecontrol-chat'); } catch { return require('path').join(require('os').tmpdir(), 'gatecontrol-chat'); }
+      },
+    });
+  }
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).
