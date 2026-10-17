@@ -808,7 +808,8 @@ class MessengerService extends EventEmitter {
     if (prev.id && prev.visible && (prev.id !== cid || !vis) && this.available()) this.api.active(prev.id, false).catch(() => {});
     this._clear('active');
     if (cid && vis && this.available()) {
-      const ping = () => { this.api.active(cid).catch(() => {}); };
+      // Only while the window is really shown (tray / minimized → no ping, the push comes).
+      const ping = () => { if (this._safe(() => this.isWindowVisible(), true) !== false) this.api.active(cid).catch(() => {}); };
       ping();
       this._timers.active = setInterval(ping, this.timing.activeEveryMs);
       if (this._timers.active.unref) this._timers.active.unref();
