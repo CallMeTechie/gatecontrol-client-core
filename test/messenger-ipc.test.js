@@ -79,6 +79,7 @@ function setup(extra = {}) {
     connectTunnel() {}, disconnectTunnel() {}, toggleKillSwitch() {}, installUpdate() {}, getTunnelState: () => ({}),
     wgConfigFile: path.join(tmp, 'wg.conf'),
     ...(messenger ? { messenger, chatNotifier: notifier } : {}),
+    ...(extra.maps !== undefined ? { maps: extra.maps } : {}),
   };
   registerBaseHandlers({ handle: (ch, fn) => { handlers[ch] = fn; }, on() {} }, ctx);
   const call = (ch, arg) => handlers[ch]({}, arg);
@@ -155,6 +156,37 @@ describe('messenger IPC', () => {
     assert.equal(opened.length, 1);
     messenger.media = async () => ({ mime: 'text/html', data: Buffer.from('<script>') });
     assert.equal((await call('chat:media:open', { mediaId: MEDIA })).code, 'unsafe');
+  });
+
+  it('map: tiles as bytes, address search and reverse with checked arguments', async () => {
+    const asked = [];
+    const maps = {
+      tile: async (z, x, y) => { asked.push(['tile', z, x, y]); return { mime: 'image/png', data: Buffer.from('PNG') }; },
+      search: async (q, o) => { asked.push(['search', q, o]); return [{ lat: 48.1, lon: 11.5, label: 'Marienplatz, 80331 München' }]; },
+      reverse: async (lat, lon, o) => { asked.push(['reverse', lat, lon, o]); return { label: 'Zuhause' }; },
+    };
+    const { call } = setup({ maps });
+    const tile = await call('chat:map:tile', { z: 3, x: 4, y: 2 });
+    assert.equal(tile.ok, true);
+    assert.equal(tile.mime, 'image/png');
+    assert.ok(tile.data instanceof Uint8Array);
+    assert.equal(Buffer.from(tile.data).toString(), 'PNG');
+    assert.equal((await call('chat:map:tile', { z: '3', x: 4, y: 2 })).code, 'invalid');
+    assert.equal((await call('chat:map:tile', { z: 3, x: -1, y: 2 })).code, 'invalid');
+    assert.deepEqual((await call('chat:map:search', { q: 'Marienplatz', lang: 'en' })).results[0].label, 'Marienplatz, 80331 München');
+    assert.equal((await call('chat:map:search', { q: 5 })).code, 'invalid');
+    assert.deepEqual(await call('chat:map:reverse', { lat: 48.1, lon: 11.5, lang: 'xx' }), { ok: true, label: 'Zuhause' });
+    assert.equal((await call('chat:map:reverse', { lat: 'a', lon: 11.5 })).code, 'invalid');
+    assert.deepEqual(asked.map((a) => a[0]), ['tile', 'search', 'reverse']);
+    assert.deepEqual(asked[1][2], { lang: 'en' });
+    assert.deepEqual(asked[2][3], { lang: undefined });
+    maps.tile = async () => { throw Object.assign(new Error('down'), { code: 'network' }); };
+    assert.equal((await call('chat:map:tile', { z: 1, x: 0, y: 0 })).code, 'network');
+  });
+
+  it('map: a default MapService named after the app', () => {
+    const { handlers } = setup();
+    for (const ch of ['chat:map:tile', 'chat:map:search', 'chat:map:reverse']) assert.equal(typeof handlers[ch], 'function');
   });
 
   it('resets the messenger after a server setup', async () => {

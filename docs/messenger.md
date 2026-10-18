@@ -10,6 +10,7 @@ chat notifications). The apps (Pro, Community) draw the page "Chats".
 | `MessengerApi` (`src/services/messenger-api.js`) | REST of the plugin over the device token (`ApiClient`'s axios), raw media upload / download, `/avatars/…`, availability via `GET /api/v1/client/plugins` |
 | `MessengerOutbox` (`src/services/messenger-outbox.js`) | Offline outbox: persisted, ordered, clientId idempotency, uploads before sending, backoff, failed / retry / discard |
 | `MessengerService` (`src/services/messenger.js`) | Availability, cache (also offline), live plugin events from the push stream, catch-up after reconnects, polling fallback, read marks, "active", typing, groups, search, media cache |
+| `MapService` (`src/services/map-service.js`) | Map of "Standort senden" and the location previews: OpenStreetMap tiles and address search / reverse geocoding (Nominatim) from the main process |
 | `ChatNotifier` (`src/services/chat-notifier.js`) | Chat pushes (`kind: "message"`) as Windows toasts with reply field / "Gelesen", acks, closing on read / revoke |
 | `registerBaseHandlers(…, { messenger, chatNotifier })` | IPC `chat:*` (`src/ipc/messenger-handlers.js`) and renderer events |
 | `createBridgeApi()` → `window.gatecontrol.chat` | Renderer API |
@@ -65,7 +66,8 @@ the chat's toasts are closed and acked.
 Pictures and voice messages arrive as bytes over IPC (`chat.media(id)` →
 `{ mime, data: Uint8Array }`) and are shown as `blob:` URLs: the page needs
 `img-src 'self' data: blob:` and `media-src 'self' blob: mediastream:`
-(recording). The renderer never talks to the server itself.
+(recording). Map tiles come the same way (`chat.mapTile(z, x, y)`). The
+renderer never talks to the server or the internet itself.
 
 ## Availability ("only when the server has the plugin")
 
@@ -108,6 +110,57 @@ refusals → `failed` with the code (`chat.retry(clientId)` /
 `pending`; the server's message replaces them (same `clientId`). The renderer
 scales pictures before sending (long side `imageMaxSide`, WebP, plus a
 320 px preview ≤ 64 KB) — the server converts nothing.
+
+## Locations ("Standort senden")
+
+A location message is `kind: "location"` with `location: { lat, lon,
+label?, accuracy? }` (README "Sending"; `chat.send({ conversationId, kind:
+'location', location, replyTo })`, outbox like every message). The apps show
+a dialog with a map:
+
+* **own position** — `navigator.geolocation` in the renderer, which Electron
+  answers from the Windows location service (the apps start Chromium with
+  `enable-features=WinrtGeolocationImplementation` on Windows; Electron has
+  no key for Google's network location). Denied (Windows Settings ›
+  Privacy & security › Location), unavailable or timed out → a notice, the
+  map and the address search still work; `accuracy` is sent only for an own
+  position that was not moved afterwards;
+* **a point on the map** — click (drag moves, wheel / buttons / `+` `-`
+  zoom, arrow keys move, Enter picks the centre);
+* **an address** — search on Enter / button (`chat.mapSearch(q, lang)`);
+  a picked point gets its address as label (`chat.mapReverse(lat, lon,
+  lang)`), the label can be changed.
+
+Received locations show a small map with a pin (and the accuracy circle),
+label, coordinates and "In OpenStreetMap öffnen".
+
+`MapService` serves the channels `chat:map:tile`, `chat:map:search` and
+`chat:map:reverse` (`registerBaseHandlers` creates it with `app.getName()` /
+`app.getVersion()` as User-Agent unless `ctx.maps` is passed):
+
+| | |
+|---|---|
+| Tiles | `https://tile.openstreetmap.org/{z}/{x}/{y}.png`, at most 2 requests at a time (bounded queue → `busy`), one request per tile, memory LRU 32 MB for 24 h, a stale copy when the tile server fails |
+| Addresses | `https://nominatim.openstreetmap.org/search` / `/reverse` (`jsonv2`, `accept-language`), one request at a time ≥ 1.1 s apart, the last 64 answers cached, labels shortened to "Straße Nr, PLZ Ort" |
+| User-Agent | `<app name>/<version> (+https://github.com/CallMeTechie/gatecontrol)`, e.g. `GateControl-Pro-Client/1.30.0 (+…)` (OSM tile and Nominatim usage policies) |
+
+Why not the server's tile relay (`/plugins/_shared/tiles/<token>/…`): its
+token is minted only for the map frames of `ui.maps` plugins; a device token
+cannot get one. Like the Android app, the client loads the tiles itself
+with its own User-Agent. What leaves the PC: the map area shown and the
+searched address / picked point, to OpenStreetMap — not the message.
+
+## The pinned "GateControl" entry
+
+The notification inbox as a chat (renderer, `window.gatecontrol.notify`):
+it opens at the oldest unread entry (line "Ungelesene Nachrichten"), and
+every entry is marked read once it has been in view (`IntersectionObserver`,
+≥ 60 % of it, or half the list for a tall one) while the window is shown
+and focused — `notify.read(ids)` → `NotificationCenter.markRead(ids)` →
+`POST …/push/ack { seqs, state: "read" }` for just those entries (other
+devices follow through the stream's `read`). Entries scrolled past without
+being seen stay unread; "Alle als gelesen markieren" in the header reads
+the rest.
 
 ## Chat notifications on Windows
 
@@ -168,7 +221,8 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `window.gatecontrol.chat`: `status`, `check`, `conversations`, `conversation`,
 `messages`, `send`, `retry`, `discard`, `edit`, `remove`, `react`, `read`,
 `typing`, `open`, `view`, `people`, `create`, `update`, `prefs`, `search`,
-`mediaList`, `media`, `avatar`, `saveMedia`, `openMedia`; events `onState`,
+`mediaList`, `media`, `avatar`, `saveMedia`, `openMedia`, `mapTile`,
+`mapSearch`, `mapReverse`; events `onState`,
 `onConversations`, `onMessages`, `onTyping`, `onUnread`, `onOutbox`,
 `onNavigate` (`{ conversationId }`, toast click). Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
@@ -176,8 +230,9 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 
 ## Known limits
 
-* Location messages are shown (map link) but not sent from Windows (no
-  position source on the PC).
+* The own position needs the Windows location service (and "Let desktop
+  apps access your location"); without it, a point on the map or an
+  address is sent.
 * Disappearing chats are shown and switchable in the chat info; the server
   deletes the messages and the client drops them on `message.delete`
   (`expired`).

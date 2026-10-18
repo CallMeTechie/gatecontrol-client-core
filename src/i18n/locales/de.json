@@ -403,6 +403,34 @@
       "mapOpen": "In OpenStreetMap öffnen",
       "expires": "Verschwindet {{time}}"
     },
+    "loc": {
+      "button": "Standort senden",
+      "title": "Standort senden",
+      "mine": "Meine Position",
+      "locating": "Position wird ermittelt …",
+      "accuracy": "Deine Position (± {{m}} m)",
+      "denied": "Kein Zugriff auf den Standort. Erlaube ihn unter Windows-Einstellungen › Datenschutz und Sicherheit › Standort – oder klicke auf die Karte bzw. suche eine Adresse.",
+      "unavailable": "Die Position ist auf diesem PC nicht verfügbar. Klicke auf die Karte oder suche eine Adresse.",
+      "timeout": "Die Position konnte nicht rechtzeitig ermittelt werden. Klicke auf die Karte oder suche eine Adresse.",
+      "hint": "Klicke auf die Karte, um den Punkt zu setzen. Ziehen verschiebt die Karte, das Mausrad zoomt.",
+      "picked": "Gewählter Punkt",
+      "search": "Adresse suchen",
+      "searchPh": "Straße, Ort oder Ort von Interesse",
+      "searchBtn": "Suchen",
+      "searching": "Suche …",
+      "noResults": "Keine Adresse gefunden.",
+      "searchFailed": "Die Adresssuche ist gerade nicht erreichbar.",
+      "label": "Bezeichnung (optional)",
+      "labelPh": "z. B. Treffpunkt",
+      "needPoint": "Wähle zuerst einen Punkt auf der Karte.",
+      "send": "Standort senden",
+      "zoomIn": "Vergrößern",
+      "zoomOut": "Verkleinern",
+      "map": "Karte",
+      "attribution": "© OpenStreetMap-Mitwirkende",
+      "source": "Karte und Adresssuche: OpenStreetMap",
+      "accuracyShort": "± {{m}} m"
+    },
     "status": {
       "pending": "Wird gesendet",
       "failed": "Nicht gesendet",
@@ -499,7 +527,8 @@
       "sub": "Mitteilungen deines Servers",
       "empty": "Noch keine Mitteilungen.",
       "openAll": "In „Mitteilungen“ öffnen",
-      "hint": "Mitteilungen von GateControl – Aktionen wie in „Mitteilungen“."
+      "hint": "Mitteilungen von GateControl – Aktionen wie in „Mitteilungen“.",
+      "readAll": "Alle als gelesen markieren"
     },
     "toast": {
       "placeholder": "Antworten …",
