@@ -20,7 +20,7 @@
  */
 
 const {
-  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isApiPath, posInt, baseMime, toBuffer,
+  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
 } = require('../utils/messenger');
 
 const JSON_TIMEOUT_MS = 15000;
@@ -133,10 +133,9 @@ class MessengerApi {
 
   async me() { return this.api('GET', 'me'); }
 
+  /** PUT prefs: readReceipts / typing / preview and (1.4.0) partial privacy / notify / chats. */
   async setPrefs(prefs) {
-    const body = {};
-    for (const k of ['readReceipts', 'typing', 'preview']) if (typeof prefs[k] === 'boolean') body[k] = prefs[k];
-    return this.api('PUT', 'prefs', { body });
+    return this.api('PUT', 'prefs', { body: prefsBody(prefs) });
   }
 
   async people() { return this.api('GET', 'people'); }
@@ -192,6 +191,100 @@ class MessengerApi {
     if (Number.isSafeInteger(limit) && limit > 0) params.limit = Math.min(100, limit);
     return this.api('GET', `conversations/${this._id(id)}/media`, { params });
   }
+
+  // ── Messenger 1.4.0: status and stories ─────────────────
+
+  async myStatus() { return this.api('GET', 'status'); }
+
+  async putStatus(body) { return this.api('PUT', 'status', { body }); }
+
+  async deleteStatus() { return this.api('DELETE', 'status'); }
+
+  async statusFeed() { return this.api('GET', 'status/feed'); }
+
+  async createStory(body) { return this.api('POST', 'status/stories', { body }); }
+
+  async deleteStory(id) { return this.api('DELETE', `status/stories/${this._id(id)}`); }
+
+  async storySeen(id) { return this.api('POST', `status/stories/${this._id(id)}/seen`, { body: {} }); }
+
+  async storyViewers(id) { return this.api('GET', `status/stories/${this._id(id)}/viewers`); }
+
+  async storyReact(id, emoji) { return this.api('POST', `status/stories/${this._id(id)}/react`, { body: { emoji } }); }
+
+  // ── Messenger 1.4.0: blocks, archive, pins, lists, export, reminders, suggest ──
+
+  async blocks() { return this.api('GET', 'blocks'); }
+
+  async block(userId) { return this.api('POST', 'blocks', { body: { userId: this._id(userId) } }); }
+
+  async unblock(userId) { return this.api('DELETE', `blocks/${this._id(userId)}`); }
+
+  async archive(id, archived) { return this.api('POST', `conversations/${this._id(id)}/archive`, { body: { archived: archived === true } }); }
+
+  async pin(id, messageId) { return this.api('POST', `conversations/${this._id(id)}/pins`, { body: { messageId: this._id(messageId) } }); }
+
+  async unpin(id, messageId) { return this.api('DELETE', `conversations/${this._id(id)}/pins/${this._id(messageId)}`); }
+
+  async lists() { return this.api('GET', 'lists'); }
+
+  async putLists(lists) { return this.api('PUT', 'lists', { body: { lists } }); }
+
+  /** One part of the text export (newest first, `before` continues with older ones). */
+  async exportChat(id, { before } = {}) {
+    const params = { format: 'txt' };
+    if (posInt(before)) params.before = posInt(before);
+    return this.api('GET', `conversations/${this._id(id)}/export`, { params, timeout: 60000 });
+  }
+
+  async remind(messageId, at) { return this.api('POST', `messages/${this._id(messageId)}/remind`, { body: { at } }); }
+
+  async reminders() { return this.api('GET', 'reminders'); }
+
+  async deleteReminder(id) { return this.api('DELETE', `reminders/${this._id(id)}`); }
+
+  async suggest(messageId) { return this.api('GET', `messages/${this._id(messageId)}/suggest`); }
+
+  async toList(messageId, body) { return this.api('POST', `messages/${this._id(messageId)}/to-list`, { body }); }
+
+  async toCalendar(messageId, body) { return this.api('POST', `messages/${this._id(messageId)}/to-calendar`, { body }); }
+
+  async familiePlaces() { return this.api('GET', 'familie/places'); }
+
+  // ── Messenger 1.4.0: polls, events, live arrival ─────────
+
+  async vote(messageId, optionIds) { return this.api('POST', `messages/${this._id(messageId)}/vote`, { body: { optionIds } }); }
+
+  async addPollOption(messageId, text) { return this.api('POST', `messages/${this._id(messageId)}/options`, { body: { text } }); }
+
+  async closePoll(messageId) { return this.api('POST', `messages/${this._id(messageId)}/close`, { body: {} }); }
+
+  async nudgePoll(messageId) { return this.api('POST', `messages/${this._id(messageId)}/nudge`, { body: {} }); }
+
+  async rsvp(messageId, body) { return this.api('POST', `messages/${this._id(messageId)}/rsvp`, { body }); }
+
+  async checkItem(messageId, itemId, done) {
+    const item = String(itemId || '');
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(item)) throw new MessengerError('invalid item', { code: 'invalid' });
+    return this.api('POST', `messages/${this._id(messageId)}/checklist/${item}`, { body: { done: done === true } });
+  }
+
+  async patchEvent(messageId, body) { return this.api('PATCH', `messages/${this._id(messageId)}/event`, { body }); }
+
+  async stopArrival(messageId) { return this.api('POST', `messages/${this._id(messageId)}/arrival/stop`, { body: {} }); }
+
+  // ── Messenger 1.4.0: home actions and plugin cards ───────
+
+  async actions() { return this.api('GET', 'actions'); }
+
+  /** op: run | approve | deny → { message, result }. body: { actionId, plugin } for a card button. */
+  async action(messageId, op, body = {}) {
+    if (!['run', 'approve', 'deny'].includes(op)) throw new MessengerError('invalid op', { code: 'invalid' });
+    return this.api('POST', `messages/${this._id(messageId)}/action/${op}`, { body, timeout: 30000 });
+  }
+
+  /** The picture of a plugin card → { mime, bytes, data (base64) }. */
+  async cardImage(messageId) { return this.api('GET', `messages/${this._id(messageId)}/card/image`); }
 
   /**
    * POST to a path of the plugin's client API from a push action

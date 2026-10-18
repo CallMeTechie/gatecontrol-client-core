@@ -7,6 +7,8 @@
 //   const srv = await messengerServer({ me: 7 });   // Messenger 1.1 API (around, serverTime)
 //   messengerServer({ legacy: true })               // 1.0.x: no around, no serverTime in messages
 //   messengerServer({ features: ['video_meta', 'file_thumbs'] })  // 1.3.0 `GET me` features
+//   messengerServer({ features: FEATURES_14, familie: true })     // 1.4.0: status, stories, polls, events,
+//                                                                 // arrival, actions, msg_tools, privacy2 (+ Familie)
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code),
@@ -21,7 +23,12 @@ const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 
 const iso = (ms) => new Date(ms).toISOString();
 
-async function messengerServer({ me = 7, plugin = true, tab = true, people = null, now = () => Date.now(), legacy = false, features = null } = {}) {
+const FEATURES_14 = Object.freeze({
+  direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false,
+  video_meta: true, file_thumbs: true, status: true, stories: true, polls: true, events: true, arrival: true, actions: true, msg_tools: true, privacy2: true,
+});
+
+async function messengerServer({ me = 7, plugin = true, tab = true, people = null, now = () => Date.now(), legacy = false, features = null, familie = false } = {}) {
   const users = people || [
     { id: 7, name: 'Marc', initials: 'MA', colorHex: '#2FBF71', avatarUrl: null },
     { id: 8, name: 'Anna', initials: 'AN', colorHex: '#F97316', avatarUrl: '/avatars/annaAvatarFile0001.webp' },
@@ -44,6 +51,25 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     typings: [],
     prefs: { readReceipts: true, typing: true, preview: true },
     delay: 0,
+    // 1.4.0
+    statuses: new Map(),      // userId → status
+    stories: [],              // { id, userId, kind, text, mediaId, thumbMediaId, createdAt, seen:Set, reactions }
+    nextStory: 300,
+    blocks: [],
+    lists: [],
+    reminders: [],
+    nextReminder: 1,
+    suggest: { items: [], dates: [] },
+    toList: [],
+    toCalendar: [],
+    places: [{ id: 'home', name: 'Zuhause', lat: 50.1, lon: 7.1, radiusM: 150 }],
+    actions: [
+      { id: 'garage.open', plugin: 'gatecontrol-garage', label: 'Garage öffnen', icon: 'M0 0h24v24H0z', kind: 'button', needsConfirm: false, state: null, subtitle: null, pluginName: 'Garage' },
+      { id: 'door.open', plugin: 'gatecontrol-door', label: 'Haustür öffnen', icon: null, kind: 'button', needsConfirm: true, state: null, subtitle: null, pluginName: 'Tür' },
+    ],
+    actionRuns: [],
+    cardImages: new Map(),     // messageId → { mime, data: Buffer }
+    exportCalls: [],
   };
   const streams = new Set();
   const person = (id) => {
@@ -60,8 +86,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     return id;
   }
 
-  function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null, thumbMediaId = null, video = null } = {}) {
-    const m = { id: state.nextMsg++, conversationId: convId, senderId, clientId, kind, text, mediaId, meta, thumbMediaId, video, createdAt: now(), changedAt: now(), editedAt: null, deleted: false, reactions: [] };
+  function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null, thumbMediaId = null, video = null, poll = null, event = null, action = null, arrival = null, card = null, replyStory = null } = {}) {
+    const m = { id: state.nextMsg++, conversationId: convId, senderId, clientId, kind, text, mediaId, meta, thumbMediaId, video, poll, event, action, arrival, card, replyStory, createdAt: now(), changedAt: now(), editedAt: null, deleted: false, reactions: [] };
     state.msgs.get(convId).push(m);
     const c = state.convs.get(convId);
     c.updatedAt = now();
@@ -81,6 +107,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: m.thumbMediaId || null, thumbUrl: null } : null,
       ...(m.video && !m.deleted ? { video: m.video } : {}),
       meta: m.deleted ? null : m.meta, location: null, system: null, reactions: m.deleted ? [] : m.reactions,
+      ...(m.poll ? { poll: m.poll } : {}), ...(m.event ? { event: m.event } : {}), ...(m.action ? { action: m.action } : {}),
+      ...(m.arrival ? { arrival: m.arrival } : {}), ...(m.card ? { card: m.card } : {}), ...(m.replyStory ? { replyStory: m.replyStory } : {}),
       status: m.senderId === viewer ? (m.id <= readUpTo ? 'read' : m.id <= deliveredUpTo ? 'delivered' : 'sent') : null,
     };
   }
@@ -104,9 +132,31 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       readUpTo: others.length ? Math.min(...others.map((x) => x.lastRead)) : null,
       deliveredUpTo: others.length ? Math.min(...others.map((x) => x.lastDelivered)) : null,
       receipts: others.map((x) => ({ userId: x.id, lastReadId: x.lastRead, lastDeliveredId: x.lastDelivered })),
-      can: { send: true, editInfo: c.kind === 'group', manageMembers: c.kind === 'group', leave: c.kind === 'group', setDisappearing: true },
+      can: { send: !(c.kind === 'direct' && peer && state.blocks.some((b) => b.userId === peer.userId)), editInfo: c.kind === 'group', manageMembers: c.kind === 'group', leave: c.kind === 'group', setDisappearing: true, pin: true },
+      archived: !!c.archived,
+      pinned: c.pinned || [],
+      nextEvent: null,
     };
   }
+
+  const userOut = (id) => { const u = users.find((x) => x.id === id) || {}; return { id, name: u.name || null, avatarUrl: u.avatarUrl || null, initials: u.initials || null, colorHex: u.colorHex || null }; };
+  const storyOut = (st, own) => ({
+    id: st.id, kind: st.kind, text: st.text || null, bg: st.bg || null, font: st.font || null, mediaId: st.mediaId || null, thumbMediaId: st.thumbMediaId || null,
+    video: st.video || null, url: null, thumbUrl: null, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + 86400000), seen: own ? true : st.seen.has(me),
+    place: st.place || null, eventMessageId: st.eventMessageId || null, ...(own ? { viewerCount: st.seen.size, reactionCount: st.reactions.size, visibility: st.visibility || 'all' } : {}),
+  });
+  function feed() {
+    const ids = new Set([...state.statuses.keys(), ...state.stories.map((x) => x.userId)]);
+    ids.delete(me);
+    const items = [...ids].filter((id) => !state.blocks.some((b) => b.userId === id)).map((id) => {
+      const stories = state.stories.filter((x) => x.userId === id).map((x) => storyOut(x, false));
+      return { user: userOut(id), status: state.statuses.get(id) || null, stories, unseen: stories.some((x) => !x.seen) };
+    }).sort((x, y) => Number(y.unseen) - Number(x.unseen));
+    const mine = state.stories.filter((x) => x.userId === me).map((x) => storyOut(x, true));
+    return { items, me: { user: userOut(me), status: state.statuses.get(me) || null, stories: mine, unseen: false }, serverTime: iso(now()) };
+  }
+  const findMsg = (id) => { let msg = null; for (const l of state.msgs.values()) msg = l.find((x) => x.id === Number(id)) || msg; return msg; };
+  const changed = (msg, type) => { msg.changedAt = now(); return type; };
 
   const json = (res, status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -118,6 +168,156 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     const chunks = [];
     for await (const c of req) chunks.push(c);
     return Buffer.concat(chunks);
+  }
+
+  /** Messenger 1.4.0 routes → a response, or undefined when not one of them. */
+  async function route14(req, res, seg, q, body) {
+    const m = req.method;
+    const [a, b, c, d] = seg;
+    const bd = body || {};
+    const ev = (type, data) => { for (const st of streams) st.write(`event: plugin\ndata: ${JSON.stringify({ plugin: PLUGIN, type, data })}\n\n`); };
+    if (a === 'status' && !b) {
+      if (m === 'GET') return json(res, 200, { ok: true, status: state.statuses.get(me) || null });
+      if (m === 'PUT') {
+        if (bd.preset === 'none' && !bd.text) return err(res, 400, 'invalid');
+        const st = { preset: bd.preset, text: bd.text || null, place: null, until: bd.until || null, eta: bd.eta || null, destLabel: bd.destLabel || null, updatedAt: iso(now()), ownText: bd.text || null, visibility: bd.visibility || 'all', userIds: bd.userIds || [] };
+        state.statuses.set(me, st);
+        ev('status.update', { userId: me });
+        return json(res, 200, { ok: true, status: st });
+      }
+      if (m === 'DELETE') { state.statuses.delete(me); return json(res, 200, { ok: true, status: null }); }
+    }
+    if (a === 'status' && b === 'feed') return json(res, 200, { ok: true, ...feed() });
+    if (a === 'status' && b === 'stories') {
+      if (!c && m === 'POST') {
+        if (bd.kind === 'text' && !bd.text) return err(res, 400, 'invalid');
+        if (bd.mediaId && !state.media.has(bd.mediaId)) return err(res, 409, 'media_invalid');
+        const st = { id: state.nextStory++, userId: me, ...bd, createdAt: now(), seen: new Set(), reactions: new Map() };
+        state.stories.push(st);
+        return json(res, 200, { ok: true, story: storyOut(st, true) });
+      }
+      const st = state.stories.find((x) => x.id === Number(c));
+      if (!st) return err(res, 404, 'not_found');
+      if (!d && m === 'DELETE') { state.stories = state.stories.filter((x) => x !== st); return json(res, 200, { ok: true, deleted: true }); }
+      if (d === 'seen') { st.seen.add(me); return json(res, 200, { ok: true, seen: true }); }
+      if (d === 'viewers') return json(res, 200, { ok: true, viewers: [...st.seen].map((u) => ({ user: userOut(u), seenAt: iso(now()), reaction: st.reactions.get(u) || null })) });
+      if (d === 'react') {
+        st.reactions.set(me, bd.emoji);
+        const conv = [...state.convs.values()].find((x) => x.kind === 'direct' && x.members.some((y) => y.id === st.userId)) || state.convs.get(addConv({ members: [me, st.userId] }));
+        const msg = addMsg(conv.id, { senderId: me, text: bd.emoji, replyStory: { storyId: st.id, ownerId: st.userId, preview: { kind: st.kind, text: st.text || null, thumbMediaId: null } } });
+        return json(res, 200, { ok: true, message: msgView(msg) });
+      }
+    }
+    if (a === 'blocks') {
+      if (!b && m === 'GET') return json(res, 200, { ok: true, blocks: state.blocks });
+      if (!b && m === 'POST') { if (!state.blocks.some((x) => x.userId === bd.userId)) state.blocks.push({ userId: bd.userId, ...userOut(bd.userId), at: iso(now()), gone: false }); return json(res, 200, { ok: true, blocks: state.blocks }); }
+      if (b && m === 'DELETE') { state.blocks = state.blocks.filter((x) => x.userId !== Number(b)); return json(res, 200, { ok: true, blocks: state.blocks }); }
+    }
+    if (a === 'lists') {
+      if (m === 'GET') return json(res, 200, { ok: true, lists: state.lists });
+      if (m === 'PUT') { state.lists = Array.isArray(bd) ? bd : bd.lists; return json(res, 200, { ok: true, lists: state.lists }); }
+    }
+    if (a === 'reminders') {
+      if (!b && m === 'GET') return json(res, 200, { ok: true, reminders: state.reminders });
+      if (b && m === 'DELETE') { state.reminders = state.reminders.filter((x) => x.id !== Number(b)); return json(res, 200, { ok: true, deleted: true }); }
+    }
+    if (a === 'actions' && !b) return json(res, 200, { ok: true, actions: state.actions });
+    if (a === 'familie' && b === 'places') return familie ? json(res, 200, { ok: true, places: state.places }) : err(res, 409, 'unavailable');
+    if (a === 'conversations' && b && ['archive', 'pins', 'export'].includes(c)) {
+      const conv = state.convs.get(Number(b));
+      if (!conv) return err(res, 404, 'not_found');
+      if (c === 'archive') { conv.archived = bd.archived === true; return json(res, 200, { ok: true, conversation: convView(conv) }); }
+      if (c === 'pins' && m === 'POST') {
+        conv.pinned = conv.pinned || [];
+        if (conv.pinned.length >= 3) return err(res, 409, 'too_many');
+        if (!conv.pinned.includes(bd.messageId)) conv.pinned.push(bd.messageId);
+        return json(res, 200, { ok: true, conversation: convView(conv) });
+      }
+      if (c === 'pins' && m === 'DELETE') { conv.pinned = (conv.pinned || []).filter((x) => x !== Number(d)); return json(res, 200, { ok: true, conversation: convView(conv) }); }
+      if (c === 'export') {
+        state.exportCalls.push(q);
+        // two parts: the newest message, then everything older
+        const list = state.msgs.get(conv.id).filter((x) => !x.hidden);
+        const line = (x) => `01.01.26, 10:00 - ${(users.find((u) => u.id === x.senderId) || {}).name || 'GateControl'}: ${x.text || '<Medien>'}`;
+        if (!q.before) {
+          const last = list.slice(-1);
+          return json(res, 200, { ok: true, format: 'txt', mime: 'text/plain', fileName: 'WhatsApp Chat Anna.txt', text: last.map(line).join('\n') + '\n', count: last.length, truncated: list.length > 1, before: list.length > 1 ? last[0].id : null });
+        }
+        const older = list.filter((x) => x.id < Number(q.before));
+        return json(res, 200, { ok: true, format: 'txt', mime: 'text/plain', fileName: 'x.txt', text: older.map(line).join('\n') + '\n', count: older.length, truncated: false, before: null });
+      }
+    }
+    if (a === 'messages' && b && c) {
+      const msg = findMsg(b);
+      if (!msg) return err(res, 404, 'not_found');
+      const conv = state.convs.get(msg.conversationId);
+      const out = (extra = {}) => json(res, 200, { ok: true, ...extra, message: msgView(msg) });
+      if (c === 'remind' && m === 'POST') {
+        const r = { id: state.nextReminder++, messageId: msg.id, conversationId: msg.conversationId, at: bd.at, createdAt: iso(now()), preview: msg.text };
+        state.reminders.push(r);
+        return json(res, 200, { ok: true, reminder: r });
+      }
+      if (c === 'suggest') return json(res, 200, { ok: true, ...state.suggest });
+      if (c === 'to-list') { if (!familie) return err(res, 409, 'unavailable'); state.toList.push({ messageId: msg.id, ...bd }); return json(res, 200, { ok: true, listId: 'shopping', listName: 'Einkaufsliste', added: bd.items.length, skipped: 0 }); }
+      if (c === 'to-calendar') { if (!familie) return err(res, 409, 'unavailable'); state.toCalendar.push({ messageId: msg.id, ...bd }); return json(res, 200, { ok: true, eventId: 77 }); }
+      if (c === 'vote') {
+        const p = msg.poll;
+        if (p.closed) return err(res, 409, 'closed');
+        for (const o of p.options) { o.voters = (o.voters || []).filter((u) => u !== me); if ((bd.optionIds || []).includes(o.id)) o.voters.push(me); o.count = o.voters.length; }
+        p.myVotes = bd.optionIds || [];
+        p.voterCount = new Set(p.options.flatMap((o) => o.voters)).size;
+        changed(msg);
+        return out();
+      }
+      if (c === 'options') { msg.poll.options.push({ id: `o${msg.poll.options.length + 1}`, text: bd.text, count: 0, voters: [], addedBy: me }); changed(msg); return out(); }
+      if (c === 'close') { msg.poll.closed = true; msg.poll.closedAt = iso(now()); changed(msg); return out(); }
+      if (c === 'nudge') return out({ nudged: 2 });
+      if (c === 'rsvp') {
+        const r = msg.event.rsvp;
+        for (const k of ['yes', 'maybe', 'no']) r[k] = r[k].filter((x) => x.userId !== me);
+        if (bd.answer) r[bd.answer].push({ userId: me, guests: bd.guests || 0 });
+        r.mine = bd.answer || null;
+        r.myGuests = bd.guests || 0;
+        changed(msg);
+        return out();
+      }
+      if (c === 'checklist') {
+        const it = msg.event.checklist.find((x) => x.id === d);
+        if (!it) return err(res, 404, 'not_found');
+        it.doneBy = bd.done ? me : null;
+        changed(msg);
+        return out();
+      }
+      if (c === 'event' && m === 'PATCH') {
+        if (msg.senderId !== me) return err(res, 403, 'not_allowed');
+        const { checklist, rsvp, ...rest } = bd;
+        Object.assign(msg.event, rest);
+        if (rsvp !== undefined) msg.event.rsvpEnabled = rsvp;
+        changed(msg);
+        return out();
+      }
+      if (c === 'arrival' && d === 'stop') { msg.arrival.state = 'stopped'; changed(msg); return out(); }
+      if (c === 'action') {
+        state.actionRuns.push({ messageId: msg.id, op: d, body: bd });
+        if (msg.kind === 'card') { msg.card.lastRun = { by: me, at: iso(now()), ok: true }; changed(msg); return out({ result: { ok: true, message: 'Geöffnet', state: null, error: null } }); }
+        const ac = msg.action;
+        if (ac.state !== 'open' && ac.mode === 'request') return err(res, 409, 'closed');
+        if (d === 'deny') { ac.state = 'denied'; ac.can = { run: false, approve: false, deny: false }; changed(msg); return out({ result: null }); }
+        if (d === 'approve') { ac.state = 'done'; ac.can = { run: false, approve: false, deny: false }; }
+        ac.result = { ok: true, message: 'OK' };
+        changed(msg);
+        return out({ result: { ok: true, message: 'OK', state: null, error: null } });
+      }
+      if (c === 'card' && d === 'image') {
+        const img = state.cardImages.get(msg.id);
+        if (!img) return err(res, 404, 'not_found');
+        return json(res, 200, { ok: true, mime: img.mime, bytes: img.data.length, data: img.data.toString('base64') });
+      }
+    }
+    if (a === 'conversations' && b && c === 'messages' && m === 'POST' && features && features.polls !== true && ['poll', 'event', 'action'].includes(bd.kind)) {
+      return err(res, 400, 'invalid');
+    }
+    return undefined;
   }
 
   async function handle(req, res) {
@@ -178,10 +378,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       return json(res, 200, { ok: true, user: { id: me, name: 'Marc', avatarUrl: null, initials: 'MA', colorHex: '#2FBF71' }, prefs: state.prefs,
         license: { licensed: true, state: 'active', expiresAt: null },
         features: features || { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false },
-        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0 },
+        integrations: { familie: { lists: !!familie, calendar: !!familie, places: !!familie } },
+        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0, statusTextMax: 60, storyTextMax: 700, pollOptionsMax: 12, pinsMax: 3, listsMax: 20 },
         serverTime: iso(now()) });
     }
-    if (a === 'prefs' && m === 'PUT') { Object.assign(state.prefs, body || {}); return json(res, 200, { ok: true, prefs: state.prefs }); }
+    if (a === 'prefs' && m === 'PUT') {
+      for (const [k, v] of Object.entries(body || {})) state.prefs[k] = v && typeof v === 'object' ? { ...(state.prefs[k] || {}), ...v } : v;
+      return json(res, 200, { ok: true, prefs: state.prefs });
+    }
+    const r14 = await route14(req, res, seg, q, body);
+    if (r14 !== undefined) return r14;
     if (a === 'people') return json(res, 200, { ok: true, people: users.filter((x) => x.id !== me).map((x) => ({ id: x.id, name: x.name, avatarUrl: x.avatarUrl, initials: x.initials, colorHex: x.colorHex, color: 'green' })) });
     if (a === 'conversations' && !b && m === 'GET') {
       const since = q.since ? Date.parse(q.since) : null;
@@ -234,7 +440,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         if (dup) return json(res, 200, { ok: true, message: msgView(dup), duplicate: true });
         if (body.mediaId && !state.media.has(body.mediaId)) return err(res, 409, 'media_invalid');
         if (body.thumbMediaId && !state.media.has(body.thumbMediaId)) return err(res, 409, 'media_invalid');
-        const msg = addMsg(conv.id, { senderId: me, text: body.text || null, kind: body.kind || 'text', clientId: body.clientId, mediaId: body.mediaId || null, meta: body.meta || null, thumbMediaId: body.thumbMediaId || null, video: body.video || null });
+        const rich = {};
+        if (body.kind === 'poll') rich.poll = { ...body.poll, options: body.poll.options.map((t, i) => ({ id: `o${i + 1}`, text: t, count: 0, voters: [], addedBy: null })), closed: false, closedAt: null, voterCount: 0, memberCount: conv.members.length, creatorId: me, myVotes: [] };
+        if (body.kind === 'event') {
+          const { rsvp, checklist, ...ev } = body.event;
+          rich.event = { ...ev, checklist: (checklist || []).map((t, i) => ({ id: `c${i + 1}`, text: t, doneBy: null, doneAt: null })), rsvpEnabled: rsvp !== false, rsvp: { yes: [], maybe: [], no: [], mine: null, myGuests: 0 }, cancelled: false, creatorId: me };
+        }
+        if (body.kind === 'action') rich.action = { ...body.action, plugin: body.action.plugin || null, icon: null, needsConfirm: false, state: 'open', result: null, by: null, at: null, can: { run: body.action.mode === 'run', approve: false, deny: false } };
+        if (body.replyStory) rich.replyStory = { storyId: body.replyStory.storyId, ownerId: 8, preview: { kind: 'text', text: 'Story', thumbMediaId: null } };
+        const msg = addMsg(conv.id, { senderId: me, text: body.text || null, kind: body.kind || 'text', clientId: body.clientId, mediaId: body.mediaId || null, meta: body.meta || null, thumbMediaId: body.thumbMediaId || null, video: body.video || null, ...rich });
+        state.lastSendBody = body;
         return json(res, 200, { ok: true, message: msgView(msg), duplicate: false });
       }
       if (c === 'read' && m === 'POST') {
@@ -317,4 +532,4 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
   };
 }
 
-module.exports = { messengerServer, PLUGIN, API, MEDIA };
+module.exports = { messengerServer, PLUGIN, API, MEDIA, FEATURES_14 };

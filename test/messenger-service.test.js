@@ -487,19 +487,19 @@ describe('MessengerService – video files and file previews (Messenger 1.3.0)',
 describe('MessengerService – update hint', () => {
   it('unknown features switched on → status().updateHint until dismissed for that set', async () => {
     const store = createMemoryStore();
-    const { srv, m, events } = await setup({ push: false, store, srvOpts: { features: { files: true, video_meta: true, file_thumbs: true, polls: true, stickers: false } } });
+    const { srv, m, events } = await setup({ push: false, store, srvOpts: { features: { files: true, video_meta: true, file_thumbs: true, polls: true, calls: true, stickers: false } } });
     srv.addConv();
     m.start();
     await waitFor(() => m.available());
-    assert.deepEqual(m.status().updateHint, { features: ['polls'], key: 'polls' });
+    assert.deepEqual(m.status().updateHint, { features: ['calls'], key: 'calls' });
     const n = events.length;
     assert.equal(m.dismissUpdateHint(), true);
     assert.equal(m.status().updateHint, null);
     assert.ok(events.slice(n).some((e) => e.ev === 'state' && e.p.updateHint === null));
-    assert.deepEqual(store.get(MessengerService.HINT_KEY), { dismissed: 'polls' });
+    assert.deepEqual(store.get(MessengerService.HINT_KEY), { dismissed: 'calls' });
     // a new unknown feature: shown again
     m._me.features.stickers = true;
-    assert.deepEqual(m.status().updateHint, { features: ['polls', 'stickers'], key: 'polls,stickers' });
+    assert.deepEqual(m.status().updateHint, { features: ['calls', 'stickers'], key: 'calls,stickers' });
     // nothing unknown: no hint, nothing to dismiss
     m._me.features = { files: true };
     assert.equal(m.status().updateHint, null);

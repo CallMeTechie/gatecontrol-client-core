@@ -22,6 +22,13 @@
  *     chat as `read` (action `mark_read`); read here (chat opened) → ack
  *     `read`; `read`/`revoke` from the stream and the messenger's `read`
  *     event of one's own devices close the toast.
+ *   - Messenger 1.4.0: polls, events, live arrivals, home actions and plugin
+ *     cards come as chat messages with the server's texts ("📊 Umfrage: …",
+ *     "Bittet um: …"); pushes with `data.kind` (reminder, event_reminder,
+ *     event_departure, poll_nudge, arrived, action_approved / _denied,
+ *     reaction) show the server's title and body as they are, in a toast of
+ *     their own per kind (tag `chat-<id>-<kind>`) that a new message of the
+ *     chat does not replace; they are acked with the chat.
  *   - The rules of the other toasts apply (on/off, "Windows-Benachrichtigung
  *     anzeigen", topic muted, "Nicht stören", quiet hours = silent → no
  *     toast, replay/burst caps); no toast for the chat that is open and
@@ -156,9 +163,10 @@ class ChatNotifier extends EventEmitter {
     if (p.expiresAt && Date.parse(p.expiresAt) <= this.now()) return true;
     const cid = p.conversationId;
     let rec = this._convs.get(cid);
-    if (!rec) { rec = { seqs: new Map(), latest: null, toast: null, nonce: null }; this._convs.set(cid, rec); }
+    if (!rec) { rec = { seqs: new Map(), latest: null, toast: null, nonce: null, extras: new Map() }; this._convs.set(cid, rec); }
     rec.seqs.set(p.id, p.seq);
-    rec.latest = p;
+    if (p.pushKind) rec.extras.set(p.pushKind, { latest: p, toast: (rec.extras.get(p.pushKind) || {}).toast || null });
+    else rec.latest = p;
 
     // The chat is on screen: nothing to show, it is read.
     if (this.messenger && typeof this.messenger.isOpenAndVisible === 'function' && this.messenger.isOpenAndVisible(cid)) {
@@ -173,6 +181,8 @@ class ChatNotifier extends EventEmitter {
         .catch((err) => this.log.warn(`Chat toast failed: ${err.message}`))
         .finally(() => this._pending.delete(job));
       this._pending.add(job);
+    } else if (p.pushKind) {
+      this._closeExtra(rec, p.pushKind);
     } else if (rec.toast) {
       // Silent update: the old banner of this chat is outdated.
       this._closeToast(rec);
@@ -185,19 +195,22 @@ class ChatNotifier extends EventEmitter {
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return;
     const cid = p.conversationId;
     const sender = p.sender.name || '';
+    const kind = p.pushKind;
     let title = p.title || sender || 'GateControl';
     let body = p.body || '';
-    if (p.isGroup) {
+    if (p.isGroup && !kind) {
       title = p.conversationTitle || title;
       body = p.body ? (sender ? `${sender}: ${p.body}` : p.body) : p.title;
     }
     const imagePath = (await this._avatarFile(p.sender.avatarUrl)) || this.toastImagePath;
-    // Superseded while the picture loaded (a newer message of this chat).
-    if (rec.latest !== p) return;
+    // Superseded while the picture loaded (a newer message / push of this kind).
+    const slot = kind ? rec.extras.get(kind) : null;
+    if (kind ? (!slot || slot.latest !== p || this._convs.get(cid) !== rec) : rec.latest !== p) return;
 
-    this._closeToast(rec);
+    if (kind) this._closeExtra(rec, kind);
+    else this._closeToast(rec);
     const nonce = crypto.randomBytes(12).toString('base64url');
-    rec.nonce = nonce;
+    if (!kind) rec.nonce = nonce;
     this._nonces.set(nonce, cid);
     const ids = { conversationId: cid, messageId: p.messageId, seq: p.seq, nonce };
     let options;
@@ -224,7 +237,7 @@ class ChatNotifier extends EventEmitter {
             read: (p.markRead && p.markRead.label) || t('chat.toast.read'),
           },
         }),
-        id: `chat-${cid}`,
+        id: kind ? `chat-${cid}-${kind}`.slice(0, 64) : `chat-${cid}`,
         groupId: 'chats',
       };
     } else {
@@ -237,7 +250,8 @@ class ChatNotifier extends EventEmitter {
       this.log.warn(`Chat toast could not be created: ${err.message}`);
       return;
     }
-    rec.toast = n;
+    if (kind) slot.toast = n;
+    else rec.toast = n;
     n.on('click', () => this.open(cid));
     n.on('failed', (_e, error) => this.log.warn(`Chat toast failed: ${error}`));
     try { n.show(); } catch (err) { this.log.warn(`Chat toast could not be shown: ${err.message}`); }
@@ -400,10 +414,22 @@ class ChatNotifier extends EventEmitter {
     const cid = posInt(conversationId);
     const rec = cid ? this._convs.get(cid) : null;
     if (!rec) return;
-    if (close) this._closeToast(rec);
+    if (close) {
+      this._closeToast(rec);
+      for (const k of [...(rec.extras || new Map()).keys()]) this._closeExtra(rec, k);
+    }
     this._convs.delete(cid);
     for (const [nonce, v] of this._nonces) if (v === cid) this._nonces.delete(nonce);
     for (const [nonce, v] of this._protoNonces) if (v.conversationId === cid) this._protoNonces.delete(nonce);
+  }
+
+  /** Close the toast of a 1.4.0 push kind (reminder, event_reminder, …) of a chat. */
+  _closeExtra(rec, kind) {
+    const slot = rec && rec.extras ? rec.extras.get(kind) : null;
+    if (!slot || !slot.toast) return;
+    const n = slot.toast;
+    slot.toast = null;
+    try { n.close(); } catch { /* gone */ }
   }
 
   _closeToast(rec) {
@@ -430,6 +456,13 @@ class ChatNotifier extends EventEmitter {
   /** Chats with a shown / tracked notification (tests, diagnostics). */
   tracked() {
     return [...this._convs.entries()].map(([cid, rec]) => ({ conversationId: cid, seqs: [...rec.seqs.values()], toast: !!rec.toast }));
+  }
+
+  /** Shown toasts of 1.4.0 push kinds per chat (tests, diagnostics) → [{ conversationId, kinds }]. */
+  trackedExtras() {
+    return [...this._convs.entries()]
+      .map(([cid, rec]) => ({ conversationId: cid, kinds: [...(rec.extras || new Map()).entries()].filter(([, v]) => v.toast).map(([k]) => k) }))
+      .filter((x) => x.kinds.length);
   }
 
   emit(event, ...args) {

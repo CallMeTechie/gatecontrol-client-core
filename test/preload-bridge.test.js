@@ -49,11 +49,16 @@ describe('createBridgeApi', () => {
     const invoked = [...new Set(ipc.calls.invoke.map((c) => c[0]))].sort();
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set',
-      'chat:avatar', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create', 'chat:delete', 'chat:edit',
+      'chat:action', 'chat:actions', 'chat:archive', 'chat:arrival:stop', 'chat:avatar', 'chat:block', 'chat:blocks',
+      'chat:cache:clear', 'chat:card:image', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create',
+      'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:lists', 'chat:lists:save',
       'chat:map:reverse', 'chat:map:search', 'chat:map:tile',
       'chat:media', 'chat:media:list', 'chat:media:open', 'chat:media:save', 'chat:messages', 'chat:open',
-      'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:prefs', 'chat:react', 'chat:read', 'chat:search',
-      'chat:send', 'chat:status', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
+      'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:pin', 'chat:places', 'chat:poll', 'chat:prefs',
+      'chat:react', 'chat:read', 'chat:remind', 'chat:reminder:delete', 'chat:reminders', 'chat:search',
+      'chat:send', 'chat:status', 'chat:status:clear', 'chat:status:feed', 'chat:status:set', 'chat:storage',
+      'chat:story:create', 'chat:story:delete', 'chat:story:react', 'chat:story:seen', 'chat:story:viewers',
+      'chat:suggest', 'chat:to-calendar', 'chat:to-list', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
       'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
       'locale:set', 'logs:export', 'logs:get', 'logs:show',
@@ -67,7 +72,8 @@ describe('createBridgeApi', () => {
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
     assert.deepEqual(events, [
-      'chat:conversations', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:state', 'chat:typing', 'chat:unread',
+      'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
+      'chat:state', 'chat:typing', 'chat:unread',
       'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy',
     ]);

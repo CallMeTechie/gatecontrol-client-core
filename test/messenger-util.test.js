@@ -218,12 +218,73 @@ describe('messenger util – update hint (unknown features)', () => {
   it('lists keys switched on that this client does not know', () => {
     const known = { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false, video_meta: true, file_thumbs: true };
     assert.deepEqual(u.unknownFeatures(known), []);
-    assert.deepEqual(u.unknownFeatures({ ...known, stickers: true, polls: true, calls: false }), ['polls', 'stickers']);
+    assert.deepEqual(u.unknownFeatures({ ...known, stickers: true, calls: true, polls: true, video_calls: false }), ['calls', 'stickers']);
     assert.deepEqual(u.unknownFeatures({ bridges: true, e2e: true }), [], 'known keys never count, whatever their value');
     assert.deepEqual(u.unknownFeatures({ weird: 'yes', other: 1 }), [], 'only true counts');
     assert.deepEqual(u.unknownFeatures(['video_meta', 'calls']), ['calls']);
     assert.deepEqual(u.unknownFeatures(null), []);
     assert.deepEqual(u.unknownFeatures({ 'bad key!': true }), []);
     for (const k of Object.keys(known)) assert.ok(u.KNOWN_FEATURES.includes(k), k);
+  });
+});
+
+describe('messenger utils – Messenger 1.4.0', () => {
+  const u = require('../src/utils/messenger');
+
+  it('knows the 1.4.0 feature keys (no update hint for them)', () => {
+    assert.deepEqual(u.unknownFeatures({ status: true, stories: true, polls: true, events: true, arrival: true, actions: true, msg_tools: true, privacy2: true }), []);
+    assert.deepEqual(u.unknownFeatures({ polls: true, calls: true }), ['calls']);
+    assert.equal(u.hasFeature({ polls: true }, 'polls'), true);
+    assert.equal(u.hasFeature({}, 'polls'), false);
+  });
+
+  it('send bodies of polls, events and actions; text / meta dropped; replyStory', () => {
+    const p = u.buildSendBody({ kind: 'poll', text: 'x', meta: { w: 2 }, poll: { question: ' Q ', options: ['a', 'A', 'b'], closesAt: '2030-01-01T10:00:00Z' } });
+    assert.deepEqual(p, { kind: 'poll', poll: { question: 'Q', options: ['a', 'b'], multi: false, anonymous: false, allowAdd: false, closesAt: '2030-01-01T10:00:00.000Z' } });
+    assert.throws(() => u.buildSendBody({ kind: 'poll', poll: { question: 'Q', options: ['a'] } }), { code: 'invalid' });
+    assert.throws(() => u.buildSendBody({ kind: 'poll', poll: { question: '', options: ['a', 'b'] } }), { code: 'invalid' });
+    const e = u.buildSendBody({ kind: 'event', event: { title: 'Grillen', startsAt: '2030-05-01T16:00:00Z', endsAt: '2030-05-01T20:00:00Z', place: 'Garten', rsvp: false, reminderMin: 60, checklist: ['Kohle', { text: 'Salat' }] } });
+    assert.deepEqual(e.event, { title: 'Grillen', startsAt: '2030-05-01T16:00:00.000Z', endsAt: '2030-05-01T20:00:00.000Z', place: { label: 'Garten' }, checklist: ['Kohle', 'Salat'], rsvp: false, reminderMin: 60 });
+    assert.throws(() => u.buildSendBody({ kind: 'event', event: { title: 'x', startsAt: '2030-05-01T16:00:00Z', endsAt: '2030-05-01T10:00:00Z' } }), { code: 'invalid' });
+    assert.deepEqual(u.normalizeEvent({ cancelled: true }, { partial: true }), { cancelled: true });
+    assert.throws(() => u.normalizeEvent({}, { partial: true }), { code: 'invalid' });
+    const a = u.buildSendBody({ kind: 'action', action: { mode: 'grant', actionId: 'light.living', label: 'Licht', grant: { toUserId: 9, until: '2030-01-01T22:00:00Z' }, approverIds: [8] } });
+    assert.deepEqual(a.action, { mode: 'grant', actionId: 'light.living', label: 'Licht', grant: { toUserId: 9, until: '2030-01-01T22:00:00.000Z' } });
+    assert.throws(() => u.buildSendBody({ kind: 'action', action: { mode: 'open', actionId: 'x' } }), { code: 'invalid' });
+    assert.deepEqual(u.buildSendBody({ kind: 'text', text: '👏', replyStory: { storyId: 4 } }).replyStory, { storyId: 4 });
+    assert.throws(() => u.buildSendBody({ kind: 'image', replyStory: { storyId: 4 } }), { code: 'invalid' });
+    assert.throws(() => u.buildSendBody({ kind: 'arrival' }), { code: 'invalid' }, 'Windows sends no live arrival');
+  });
+
+  it('prefs, status, story and list bodies', () => {
+    assert.deepEqual(u.prefsBody({ preview: false, privacy: { lastSeen: 'nobody', groupAdd: 'x', defaultDisappearingS: 86400 }, notify: { reactions: 'yes', statusDigest: true }, chats: {}, junk: 1 }), { preview: false, privacy: { lastSeen: 'nobody', defaultDisappearingS: 86400 }, notify: { statusDigest: true } });
+    const now = Date.parse('2030-01-01T10:00:00Z');
+    assert.deepEqual(u.statusBody({ preset: 'away', text: 'Unterwegs', eta: '2030-01-01T10:40:00Z', destLabel: 'Zuhause', visibility: 'custom', userIds: [8, '9', 8] }, { now }), { preset: 'away', text: 'Unterwegs', visibility: 'custom', userIds: [8, 9], eta: '2030-01-01T10:40:00.000Z', destLabel: 'Zuhause' });
+    assert.deepEqual(u.statusBody({ preset: 'dnd', until: '2030-01-01T11:00:00Z' }, { now }), { preset: 'dnd', until: '2030-01-01T11:00:00.000Z' });
+    assert.throws(() => u.statusBody({ preset: 'none' }, { now }), { code: 'invalid' });
+    assert.throws(() => u.statusBody({ preset: 'dnd', visibility: 'custom' }, { now }), { code: 'invalid' });
+    assert.equal(u.statusBody({ text: 'x'.repeat(100) }, { now }).text.length, 60);
+    assert.deepEqual(u.storyBody({ kind: 'text', text: 'Hi', bg: '#123456', font: 'mono', eventMessageId: '12' }), { kind: 'text', text: 'Hi', bg: '#123456', font: 'mono', eventMessageId: 12 });
+    assert.deepEqual(u.storyBody({ kind: 'image', bg: 'red', font: 'comic' }), { kind: 'image' });
+    assert.throws(() => u.storyBody({ kind: 'text' }), { code: 'invalid' });
+    assert.deepEqual(u.listsBody({ lists: [{ id: 'a', name: 'A', conversationIds: [1, 1, -2] }] }), [{ id: 'a', name: 'A', conversationIds: [1] }]);
+    assert.throws(() => u.listsBody(Array.from({ length: 21 }, (_, i) => ({ id: `l${i}`, name: 'x' }))), { code: 'invalid' });
+  });
+
+  it('Familie integrations and card routes', () => {
+    assert.deepEqual(u.familieOf({ integrations: { familie: { lists: true, calendar: 'yes' } } }), { lists: true, calendar: false, places: false });
+    assert.deepEqual(u.familieOf({}), { lists: false, calendar: false, places: false });
+    assert.equal(u.cardRoute({ route: 'plg-gatecontrol-door' }), 'plg-gatecontrol-door');
+    assert.equal(u.cardRoute({ route: 'https://evil' }), null);
+    assert.equal(u.cardRoute(null), null);
+  });
+
+  it('chat pushes of 1.4.0 carry their kind, deep link and reminder id', () => {
+    const n = u.parseChatNotification({ seq: 3, id: 9, kind: 'message', title: 'Abfahrt?', body: 'Grillen beginnt in 45 Min.', data: { conversationId: 12, messageId: 4711, kind: 'event_departure', deepLink: 'arrival', reminderId: '5' } });
+    assert.equal(n.pushKind, 'event_departure');
+    assert.equal(n.deepLink, 'arrival');
+    assert.equal(n.reminderId, 5);
+    const plain = u.parseChatNotification({ seq: 3, id: 9, kind: 'message', title: 'Anna', body: 'Hi', data: { conversationId: 12, kind: '<script>' } });
+    assert.equal(plain.pushKind, null);
   });
 });
