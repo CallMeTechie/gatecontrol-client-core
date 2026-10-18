@@ -187,6 +187,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       mapTile:       (z, x, y) => ipcRenderer.invoke('chat:map:tile', { z, x, y }),
       mapSearch:     (q, lang) => ipcRenderer.invoke('chat:map:search', { q, lang }),
       mapReverse:    (lat, lon, lang) => ipcRenderer.invoke('chat:map:reverse', { lat, lon, lang }),
+      // status().updateHint: the server has chat functions this version lacks
+      dismissUpdateHint: () => ipcRenderer.invoke('chat:update-hint:dismiss'),
       onState:         (cb) => subscribe('chat:state', cb),
       onConversations: (cb) => subscribe('chat:conversations', cb),
       onMessages:      (cb) => subscribe('chat:messages', cb),

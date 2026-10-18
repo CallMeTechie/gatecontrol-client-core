@@ -342,6 +342,11 @@
     "peerGone": "Dieses Konto gibt es nicht mehr – du kannst keine Nachrichten senden.",
     "offline": "Keine Verbindung zum Server – Nachrichten werden gesendet, sobald sie wieder besteht.",
     "polling": "Live-Aktualisierung aus (Benachrichtigungen auf diesem PC ausgeschaltet oder nicht verbunden) – Chats werden regelmäßig abgeglichen.",
+    "updateHint": {
+      "text": "Für alle Chat-Funktionen gibt es eine neuere Version von GateControl",
+      "check": "Nach Updates suchen",
+      "dismiss": "Hinweis ausblenden"
+    },
     "loading": "Lädt …",
     "loadFailed": "Chats konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
@@ -372,7 +377,8 @@
       "voice": "Sprachnachricht",
       "file": "Datei",
       "location": "Standort",
-      "system": "Hinweis"
+      "system": "Hinweis",
+      "video": "Video"
     },
     "msg": {
       "deleted": "Diese Nachricht wurde gelöscht.",
@@ -401,7 +407,9 @@
       "play": "Abspielen",
       "pause": "Pause",
       "mapOpen": "In OpenStreetMap öffnen",
-      "expires": "Verschwindet {{time}}"
+      "expires": "Verschwindet {{time}}",
+      "openVideo": "Video abspielen",
+      "videoUnsupported": "Dieses Video kann hier nicht abgespielt werden. Speichere es oder öffne es mit einem anderen Programm."
     },
     "loc": {
       "button": "Standort senden",
@@ -452,7 +460,8 @@
       "title": "{{name}} hat den Namen in „{{title}}“ geändert",
       "avatar": "{{name}} hat das Gruppenbild geändert",
       "disOn": "{{name}} hat selbstlöschende Nachrichten eingeschaltet ({{time}})",
-      "disOff": "{{name}} hat selbstlöschende Nachrichten ausgeschaltet"
+      "disOff": "{{name}} hat selbstlöschende Nachrichten ausgeschaltet",
+      "released": "GateControl hat die Gruppe freigegeben – sie ist jetzt eine normale Gruppe"
     },
     "dis": {
       "off": "Aus",
@@ -477,6 +486,10 @@
       "disappearingOff": "Vom Admin ausgeschaltet",
       "media": "Medien & Dateien",
       "recentMedia": "Zuletzt geteilt",
+      "filterImages": "Fotos",
+      "filterVideos": "Videos",
+      "filterFiles": "Dateien",
+      "noMedia": "Noch nichts geteilt",
       "members": "Mitglieder",
       "addMembers": "Mitglieder hinzufügen",
       "add": "Hinzufügen",

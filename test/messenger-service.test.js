@@ -293,3 +293,216 @@ describe('MessengerService – messages and live events', () => {
     await waitFor(() => m.listConversations().length === 1, 3000, 'reloaded from the new setup');
   });
 });
+
+describe('MessengerService – Messenger 1.1 API', () => {
+  it('jumps with around: a window apart from the newest messages, joined once it reaches them', async () => {
+    const { srv, m, events } = await setup({ push: false });
+    const id = srv.addConv();
+    const all = [];
+    for (let i = 0; i < 200; i++) all.push(srv.addMsg(id, { text: `n${i}` }));
+    m.start();
+    await waitFor(() => m.available() && m.listConversations().length === 1);
+    const newest = await m.getMessages(id);
+    assert.equal(newest.messages.length, 50);
+    assert.equal(newest.detached, false);
+
+    // n20 is far older than the cached page: a detached window around it
+    const target = all[20].id;
+    let v = await m.getMessages(id, { around: target });
+    const q = srv.state.requests.filter((r) => r.query.around);
+    assert.equal(q.at(-1).query.around, String(target));
+    assert.equal(v.detached, true);
+    assert.ok(v.messages.some((x) => x.id === target));
+    assert.equal(v.messages.length, 50);
+    assert.equal(v.messages[0].id, all[0].id, '25 older wanted, only 20 exist');
+    assert.equal(v.hasMore, false);
+    assert.equal(v.hasMoreAfter, true);
+    assert.deepEqual(v.pending, []);
+    assert.ok(events.some((e) => e.ev === 'messages' && e.p.reason === 'around'));
+    // the cached view is the window while it is open; the cache itself is unchanged
+    assert.equal(m.messagesView(id).detached, true);
+    assert.equal(m._msgs.get(id).list.length, 50);
+
+    // live changes reach the window as well
+    m._onLive('reaction', { conversationId: id, messageId: target, userId: 8, emoji: '👍', reactions: [{ emoji: '👍', count: 1, userIds: [8] }] });
+    assert.equal(m.messagesView(id).messages.find((x) => x.id === target).reactions.length, 1);
+
+    // newer pages until it meets the cached newest messages → one list again
+    for (let i = 0; i < 5 && v.detached; i++) v = await m.getMessages(id, { after: v.messages.at(-1).id });
+    assert.equal(v.detached, false);
+    assert.equal(v.messages.length, 200);
+    assert.equal(v.hasMore, false);
+    assert.deepEqual(v.messages.map((x) => x.id), all.map((x) => x.id));
+
+    // a jump into the cached range joins at once; no arguments closes a window
+    v = await m.getMessages(id, { around: all[190].id });
+    assert.equal(v.detached, false);
+    v = await m.getMessages(id, { around: all[5].id });
+    assert.equal(v.detached, false, 'everything is cached by now');
+    m._msgs.get(id).window = { list: [all[0]].map((x) => srv.msgView(x)), hasMoreBefore: false, hasMoreAfter: true };
+    assert.equal(m.messagesView(id).detached, true);
+    v = await m.getMessages(id);
+    assert.equal(v.detached, false);
+  });
+
+  it('around on a Messenger 1.0.x answers unsupported (the app falls back to older pages)', async () => {
+    const { srv, m } = await setup({ push: false, srvOpts: { legacy: true } });
+    const id = srv.addConv();
+    const first = srv.addMsg(id, { text: 'alt' });
+    for (let i = 0; i < 60; i++) srv.addMsg(id, { text: `n${i}` });
+    m.start();
+    await waitFor(() => m.available());
+    await m.getMessages(id);
+    await assert.rejects(m.getMessages(id, { around: first.id }), (e) => e.code === 'unsupported');
+    assert.equal(m.messagesView(id).detached, false);
+  });
+
+  it('read events with readUpTo / deliveredUpTo set the ticks without a GET', async () => {
+    const { srv, m, events } = await setup({ push: false });
+    const id = srv.addConv();
+    m.start();
+    await waitFor(() => m.available() && m.listConversations().length === 1);
+    await m.getMessages(id);
+    const p = await m.send({ conversationId: id, text: 'Hallo Anna' });
+    await waitFor(() => m.messagesView(id).messages.some((x) => x.clientId === p.clientId));
+    const mid = m.messagesView(id).messages.find((x) => x.clientId === p.clientId).id;
+    await new Promise((r) => setTimeout(r, 30));
+    const gets = () => srv.state.requests.filter((r) => r.method === 'GET' && r.path === `${API}conversations/${id}`).length;
+    const before = gets();
+    const n = events.length;
+    m._onLive('read', { conversationId: id, userId: 8, lastReadId: null, lastDeliveredId: mid, readUpTo: null, deliveredUpTo: mid });
+    assert.equal(m.getCachedConversation(id).deliveredUpTo, mid);
+    m._onLive('read', { conversationId: id, userId: 8, lastReadId: mid, lastDeliveredId: mid, readUpTo: mid, deliveredUpTo: mid });
+    const c = m.getCachedConversation(id);
+    assert.equal(c.readUpTo, mid);
+    assert.deepEqual(c.receipts.find((x) => x.userId === 8), { userId: 8, lastReadId: mid, lastDeliveredId: mid });
+    assert.ok(events.slice(n).some((e) => e.ev === 'conversations' && e.p.ids.includes(id)));
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(gets(), before, 'no GET conversations/:id for the ticks');
+
+    // an older plugin (no readUpTo in the event): GET as before
+    m._onLive('read', { conversationId: id, userId: 8, lastReadId: mid, lastDeliveredId: mid });
+    await waitFor(() => gets() > before, 2000, 'fallback GET');
+  });
+
+  it('changedSince uses the serverTime of the messages answers', async () => {
+    const { srv, m, pushClient } = await setup();
+    const id = srv.addConv();
+    srv.addMsg(id, { text: 'a' });
+    pushClient.start();
+    m.start();
+    await waitFor(() => m.listConversations().length === 1 && pushClient.status().state === 'connected');
+    await m.getMessages(id);
+    const st = m._msgs.get(id);
+    st.syncedAt = '2026-01-02T03:04:05.000Z';
+    m._open = { id, visible: false };
+    srv.dropStreams();
+    await waitFor(() => srv.state.requests.some((r) => r.query.changedSince === '2026-01-02T03:04:05.000Z'), 4000, 'changedSince after the reconnect');
+    await waitFor(() => st.syncedAt !== '2026-01-02T03:04:05.000Z');
+    const answered = srv.state.requests.filter((r) => r.query.changedSince).length;
+    assert.ok(answered >= 1);
+    // the next changedSince is what the server said, not the client clock or the conversation list
+    assert.ok(Date.parse(st.syncedAt) > Date.parse('2026-01-02T03:04:05.000Z'));
+  });
+
+  it('conversation.update released → the group is fetched again (now a normal group)', async () => {
+    const { srv, m } = await setup({ push: false });
+    const id = srv.addConv({ kind: 'group', members: [7, 8, 9], title: 'Familie' });
+    m.start();
+    await waitFor(() => m.available() && m.listConversations().length === 1);
+    const n = srv.state.requests.filter((r) => r.path === `${API}conversations/${id}`).length;
+    m._onLive('conversation.update', { conversationId: id, reason: 'released' });
+    await waitFor(() => srv.state.requests.filter((r) => r.path === `${API}conversations/${id}`).length > n, 2000, 'GET after released');
+  });
+});
+
+describe('MessengerService – video files and file previews (Messenger 1.3.0)', () => {
+  const clip = () => ({ data: Buffer.from('mp4-bytes'), mime: 'video/mp4', name: 'clip.mp4' });
+  const thumb = () => ({ data: Buffer.from('webp-thumb'), mime: 'image/webp' });
+
+  it('sends video meta and the preview when the server lists video_meta / file_thumbs (preview uploaded first)', async () => {
+    const { srv, m } = await setup({ push: false, srvOpts: { features: ['direct', 'groups', 'files', 'video_meta', 'file_thumbs'] } });
+    const id = srv.addConv();
+    m.start();
+    await waitFor(() => m.available());
+    assert.equal(m.supports('video_meta'), true);
+    await m.getMessages(id);
+    assert.equal(m.status().me.features.file_thumbs, true);
+    const p = await m.send({ conversationId: id, kind: 'file', file: clip(), thumb: thumb(), video: { durationMs: 12345.6, width: 1280, height: 720 } });
+    assert.deepEqual(p.video, { durationMs: 12346, width: 1280, height: 720 });
+    assert.equal(p.thumb, true);
+    await waitFor(() => srv.state.msgs.get(id).length === 1);
+    const uploads = srv.state.requests.filter((r) => r.method === 'PUT');
+    assert.deepEqual(uploads.map((r) => r.headers['content-type']), ['image/webp', 'video/mp4']);
+    const post = srv.state.requests.find((r) => r.method === 'POST' && r.path.endsWith('/messages')).body;
+    assert.equal(post.kind, 'file');
+    assert.match(post.thumbMediaId, /^[0-9a-f]{32}$/);
+    assert.deepEqual(post.video, { durationMs: 12346, width: 1280, height: 720 });
+    assert.equal(post.meta.fileName, 'clip.mp4');
+    const view = m.messagesView(id).messages[0];
+    assert.equal(view.media.thumbId, post.thumbMediaId);
+    assert.deepEqual(view.video, post.video);
+
+    // a document with a preview; video meta on a non-video is dropped
+    await m.send({ conversationId: id, kind: 'file', file: { data: Buffer.from('%PDF'), mime: 'application/pdf', name: 'a.pdf' }, thumb: thumb(), video: { durationMs: 5 } });
+    await waitFor(() => srv.state.msgs.get(id).length === 2);
+    const post2 = srv.state.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/messages')).at(-1).body;
+    assert.match(post2.thumbMediaId, /^[0-9a-f]{32}$/);
+    assert.equal(post2.video, undefined);
+
+    // the media list asks kind=video; counts carry video
+    const list = await m.mediaList(id, { kind: 'video' });
+    assert.equal(srv.state.requests.at(-1).query.kind, 'video');
+    assert.equal(list.items.length, 1);
+    assert.equal(list.counts.video, 1);
+    assert.equal(list.counts.file, 1);
+  });
+
+  it('older servers get neither field nor a preview upload', async () => {
+    const { srv, m } = await setup({ push: false });
+    const id = srv.addConv();
+    m.start();
+    await waitFor(() => m.available());
+    assert.equal(m.supports('video_meta'), false);
+    const p = await m.send({ conversationId: id, kind: 'file', file: clip(), thumb: thumb(), video: { durationMs: 1000, width: 320, height: 240 } });
+    assert.equal(p.video, null);
+    assert.equal(p.thumb, false);
+    await waitFor(() => srv.state.msgs.get(id).length === 1);
+    assert.deepEqual(srv.state.requests.filter((r) => r.method === 'PUT').map((r) => r.headers['content-type']), ['video/mp4']);
+    const post = srv.state.requests.find((r) => r.method === 'POST' && r.path.endsWith('/messages')).body;
+    assert.equal(post.thumbMediaId, undefined);
+    assert.equal(post.video, undefined);
+    // a preview larger than thumbMaxBytes or not a picture is left out even with the feature
+    const b = await setup({ push: false, srvOpts: { features: { files: true, file_thumbs: true } } });
+    const id2 = b.srv.addConv();
+    b.m.start();
+    await waitFor(() => b.m.available());
+    const big = await b.m.send({ conversationId: id2, kind: 'file', file: clip(), thumb: { data: Buffer.alloc(70000), mime: 'image/webp' } });
+    assert.equal(big.thumb, false);
+    const notImage = await b.m.send({ conversationId: id2, kind: 'file', file: clip(), thumb: { data: Buffer.from('x'), mime: 'application/pdf' } });
+    assert.equal(notImage.thumb, false);
+  });
+});
+
+describe('MessengerService – update hint', () => {
+  it('unknown features switched on → status().updateHint until dismissed for that set', async () => {
+    const store = createMemoryStore();
+    const { srv, m, events } = await setup({ push: false, store, srvOpts: { features: { files: true, video_meta: true, file_thumbs: true, polls: true, stickers: false } } });
+    srv.addConv();
+    m.start();
+    await waitFor(() => m.available());
+    assert.deepEqual(m.status().updateHint, { features: ['polls'], key: 'polls' });
+    const n = events.length;
+    assert.equal(m.dismissUpdateHint(), true);
+    assert.equal(m.status().updateHint, null);
+    assert.ok(events.slice(n).some((e) => e.ev === 'state' && e.p.updateHint === null));
+    assert.deepEqual(store.get(MessengerService.HINT_KEY), { dismissed: 'polls' });
+    // a new unknown feature: shown again
+    m._me.features.stickers = true;
+    assert.deepEqual(m.status().updateHint, { features: ['polls', 'stickers'], key: 'polls,stickers' });
+    // nothing unknown: no hint, nothing to dismiss
+    m._me.features = { files: true };
+    assert.equal(m.status().updateHint, null);
+    assert.equal(m.dismissUpdateHint(), false);
+  });
+});

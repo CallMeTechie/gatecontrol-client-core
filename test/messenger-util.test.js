@@ -183,3 +183,47 @@ describe('chat toast XML', () => {
     }
   });
 });
+
+describe('messenger util – Messenger 1.3.0 features and video files', () => {
+  it('features as a list or as flags', () => {
+    assert.deepEqual(u.normalizeFeatures(['video_meta', 'file_thumbs', 7, '']), { video_meta: true, file_thumbs: true });
+    assert.deepEqual(u.normalizeFeatures({ files: true, e2e: false }), { files: true, e2e: false });
+    assert.deepEqual(u.normalizeFeatures(null), {});
+    assert.equal(u.hasFeature(['video_meta'], 'video_meta'), true);
+    assert.equal(u.hasFeature({ video_meta: true }, 'video_meta'), true);
+    assert.equal(u.hasFeature({ video_meta: 'yes' }, 'video_meta'), false);
+    assert.equal(u.hasFeature(undefined, 'file_thumbs'), false);
+    assert.equal(u.FEATURE_VIDEO_META, 'video_meta');
+    assert.equal(u.FEATURE_FILE_THUMBS, 'file_thumbs');
+    assert.ok(u.MEDIA_KINDS.includes('video'));
+  });
+
+  it('video mime types', () => {
+    assert.equal(u.isVideoMime('video/mp4'), true);
+    assert.equal(u.isVideoMime('VIDEO/WebM; codecs=vp9'), true);
+    assert.equal(u.isVideoMime('audio/mp4'), false);
+    assert.equal(u.isVideoMime(''), false);
+    assert.equal(u.extForMime('video/quicktime'), 'mov');
+  });
+
+  it('buildSendBody: video only on file messages, cleaned', () => {
+    assert.deepEqual(u.buildSendBody({ kind: 'file', video: { durationMs: 1500.4, width: 640, height: 360, extra: 1 } }).video, { durationMs: 1500, width: 640, height: 360 });
+    assert.equal(u.buildSendBody({ kind: 'file', video: { width: -1 } }).video, undefined);
+    assert.throws(() => u.buildSendBody({ kind: 'image', video: { durationMs: 1 } }), (e) => e.code === 'invalid');
+    assert.throws(() => u.buildSendBody({ kind: 'file', video: [1] }), (e) => e.code === 'invalid');
+  });
+});
+
+describe('messenger util – update hint (unknown features)', () => {
+  it('lists keys switched on that this client does not know', () => {
+    const known = { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false, video_meta: true, file_thumbs: true };
+    assert.deepEqual(u.unknownFeatures(known), []);
+    assert.deepEqual(u.unknownFeatures({ ...known, stickers: true, polls: true, calls: false }), ['polls', 'stickers']);
+    assert.deepEqual(u.unknownFeatures({ bridges: true, e2e: true }), [], 'known keys never count, whatever their value');
+    assert.deepEqual(u.unknownFeatures({ weird: 'yes', other: 1 }), [], 'only true counts');
+    assert.deepEqual(u.unknownFeatures(['video_meta', 'calls']), ['calls']);
+    assert.deepEqual(u.unknownFeatures(null), []);
+    assert.deepEqual(u.unknownFeatures({ 'bad key!': true }), []);
+    for (const k of Object.keys(known)) assert.ok(u.KNOWN_FEATURES.includes(k), k);
+  });
+});

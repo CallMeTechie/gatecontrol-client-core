@@ -4,7 +4,9 @@
 // (gatecontrol-plugins/plugins/gatecontrol-messenger README "App-API") and
 // the push stream: enough of the contract for the messenger client tests.
 //
-//   const srv = await messengerServer({ me: 7 });
+//   const srv = await messengerServer({ me: 7 });   // Messenger 1.1 API (around, serverTime)
+//   messengerServer({ legacy: true })               // 1.0.x: no around, no serverTime in messages
+//   messengerServer({ features: ['video_meta', 'file_thumbs'] })  // 1.3.0 `GET me` features
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code),
@@ -19,7 +21,7 @@ const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 
 const iso = (ms) => new Date(ms).toISOString();
 
-async function messengerServer({ me = 7, plugin = true, tab = true, people = null, now = () => Date.now() } = {}) {
+async function messengerServer({ me = 7, plugin = true, tab = true, people = null, now = () => Date.now(), legacy = false, features = null } = {}) {
   const users = people || [
     { id: 7, name: 'Marc', initials: 'MA', colorHex: '#2FBF71', avatarUrl: null },
     { id: 8, name: 'Anna', initials: 'AN', colorHex: '#F97316', avatarUrl: '/avatars/annaAvatarFile0001.webp' },
@@ -58,8 +60,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     return id;
   }
 
-  function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null } = {}) {
-    const m = { id: state.nextMsg++, conversationId: convId, senderId, clientId, kind, text, mediaId, meta, createdAt: now(), changedAt: now(), editedAt: null, deleted: false, reactions: [] };
+  function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null, thumbMediaId = null, video = null } = {}) {
+    const m = { id: state.nextMsg++, conversationId: convId, senderId, clientId, kind, text, mediaId, meta, thumbMediaId, video, createdAt: now(), changedAt: now(), editedAt: null, deleted: false, reactions: [] };
     state.msgs.get(convId).push(m);
     const c = state.convs.get(convId);
     c.updatedAt = now();
@@ -76,7 +78,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       id: m.id, conversationId: m.conversationId, senderId: m.senderId, clientId: m.clientId, kind: m.kind, via: null, mine: m.senderId === viewer,
       createdAt: iso(m.createdAt), editedAt: m.editedAt ? iso(m.editedAt) : null, deletedAt: null, expiresAt: null, deleted: m.deleted, undecryptable: false,
       text: m.deleted ? null : m.text, replyTo: null,
-      media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: null, thumbUrl: null } : null,
+      media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: m.thumbMediaId || null, thumbUrl: null } : null,
+      ...(m.video && !m.deleted ? { video: m.video } : {}),
       meta: m.deleted ? null : m.meta, location: null, system: null, reactions: m.deleted ? [] : m.reactions,
       status: m.senderId === viewer ? (m.id <= readUpTo ? 'read' : m.id <= deliveredUpTo ? 'delivered' : 'sent') : null,
     };
@@ -155,7 +158,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     if (p === MEDIA && req.method === 'PUT') {
       if (!req.headers['content-length']) return err(res, 411, 'length_required');
       const mime = String(req.headers['content-type'] || '');
-      if (!/^(image|audio)\/|^application\/pdf$/.test(mime)) return err(res, 415, 'unsupported_type');
+      if (!/^(image|audio|video)\/|^application\/pdf$/.test(mime)) return err(res, 415, 'unsupported_type');
       const mediaId = crypto.randomBytes(16).toString('hex');
       state.media.set(mediaId, { mime, data: raw });
       return json(res, 200, { ok: true, mediaId, mime, bytes: raw.length });
@@ -174,8 +177,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     if (a === 'me' && m === 'GET') {
       return json(res, 200, { ok: true, user: { id: me, name: 'Marc', avatarUrl: null, initials: 'MA', colorHex: '#2FBF71' }, prefs: state.prefs,
         license: { licensed: true, state: 'active', expiresAt: null },
-        features: { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false },
-        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0 },
+        features: features || { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false },
+        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0 },
         serverTime: iso(now()) });
     }
     if (a === 'prefs' && m === 'PUT') { Object.assign(state.prefs, body || {}); return json(res, 200, { ok: true, prefs: state.prefs }); }
@@ -209,15 +212,29 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         let out;
         let hasMore = false;
         const vis = list.filter((x) => !x.hidden);
-        if (q.before) { const older = vis.filter((x) => x.id < Number(q.before)); out = older.slice(-limit); hasMore = older.length > limit; } else if (q.after) { const newer = vis.filter((x) => x.id > Number(q.after)); out = newer.slice(0, limit); hasMore = newer.length > limit; } else if (q.changedSince) { out = vis.filter((x) => x.changedAt > Date.parse(q.changedSince)); } else { out = vis.slice(-limit); hasMore = vis.length > limit; }
+        const extra = {};
+        if (q.before) { const older = vis.filter((x) => x.id < Number(q.before)); out = older.slice(-limit); hasMore = older.length > limit; } else if (q.after) { const newer = vis.filter((x) => x.id > Number(q.after)); out = newer.slice(0, limit); hasMore = newer.length > limit; } else if (q.around && !legacy) {
+          const at = Number(q.around);
+          const older = vis.filter((x) => x.id < at);
+          const half = Math.floor(limit / 2);
+          const before = older.slice(-half);
+          const rest = vis.filter((x) => x.id >= at);
+          const after = rest.slice(0, limit - before.length);
+          out = before.concat(after);
+          extra.hasMoreBefore = older.length > before.length;
+          extra.hasMoreAfter = rest.length > after.length;
+          hasMore = extra.hasMoreBefore || extra.hasMoreAfter;
+        } else if (q.changedSince) { out = vis.filter((x) => x.changedAt > Date.parse(q.changedSince)); } else { out = vis.slice(-limit); hasMore = vis.length > limit; }
         const v = convView(conv);
-        return json(res, 200, { ok: true, messages: out.map((x) => msgView(x)), hasMore, readUpTo: v.readUpTo, deliveredUpTo: v.deliveredUpTo, receipts: v.receipts });
+        if (!legacy) extra.serverTime = iso(now());
+        return json(res, 200, { ok: true, messages: out.map((x) => msgView(x)), hasMore, readUpTo: v.readUpTo, deliveredUpTo: v.deliveredUpTo, receipts: v.receipts, ...extra });
       }
       if (c === 'messages' && m === 'POST') {
         const dup = list.find((x) => x.clientId === body.clientId && x.senderId === me);
         if (dup) return json(res, 200, { ok: true, message: msgView(dup), duplicate: true });
         if (body.mediaId && !state.media.has(body.mediaId)) return err(res, 409, 'media_invalid');
-        const msg = addMsg(conv.id, { senderId: me, text: body.text || null, kind: body.kind || 'text', clientId: body.clientId, mediaId: body.mediaId || null, meta: body.meta || null });
+        if (body.thumbMediaId && !state.media.has(body.thumbMediaId)) return err(res, 409, 'media_invalid');
+        const msg = addMsg(conv.id, { senderId: me, text: body.text || null, kind: body.kind || 'text', clientId: body.clientId, mediaId: body.mediaId || null, meta: body.meta || null, thumbMediaId: body.thumbMediaId || null, video: body.video || null });
         return json(res, 200, { ok: true, message: msgView(msg), duplicate: false });
       }
       if (c === 'read' && m === 'POST') {
@@ -232,7 +249,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         if (!q.q || q.q.length < 2) return err(res, 400, 'invalid');
         return json(res, 200, { ok: true, results: list.filter((x) => (x.text || '').includes(q.q)).reverse().map((x) => msgView(x)), scanned: list.length, truncated: false });
       }
-      if (c === 'media') return json(res, 200, { ok: true, items: list.filter((x) => x.mediaId).map((x) => msgView(x)), counts: { image: 0, voice: 0, file: list.filter((x) => x.mediaId).length }, hasMore: false });
+      if (c === 'media') {
+        const isVideo = (x) => /^video\//.test((state.media.get(x.mediaId) || {}).mime || '');
+        const withMedia = list.filter((x) => x.mediaId && !x.deleted);
+        const kinds = { image: (x) => x.kind === 'image', voice: (x) => x.kind === 'voice', file: (x) => x.kind === 'file' && !isVideo(x), video: (x) => x.kind === 'file' && isVideo(x), all: () => true };
+        const pick = kinds[q.kind] || kinds.all;
+        const counts = { image: 0, voice: 0, file: 0 };
+        for (const k of ['image', 'voice', 'file']) counts[k] = withMedia.filter(kinds[k]).length;
+        if (!legacy) counts.video = withMedia.filter(kinds.video).length;
+        return json(res, 200, { ok: true, items: withMedia.filter(pick).reverse().map((x) => msgView(x)), counts, hasMore: false });
+      }
     }
     if (a === 'messages' && b) {
       let msg = null;

@@ -58,6 +58,7 @@ function fakeMessenger() {
   m.media = async () => ({ mime: 'application/pdf', data: Buffer.from('%PDF') });
   m.avatar = async () => ({ mime: 'image/webp', data: Buffer.from('RIFF') });
   m.resetForNewServer = async () => { m.calls.push(['reset']); };
+  m.dismissUpdateHint = () => { m.calls.push(['dismissHint']); return true; };
   return m;
 }
 
@@ -100,11 +101,25 @@ describe('messenger IPC', () => {
     assert.equal((await call('chat:messages', { id: 12, cached: true })).hasMore, true);
     await call('chat:messages', { id: 12, before: 400 });
     assert.deepEqual(messenger.calls.at(-1), ['messages', 12, { before: 400 }]);
+    await call('chat:messages', { id: 12, around: 4711 });
+    assert.deepEqual(messenger.calls.at(-1), ['messages', 12, { around: 4711 }]);
+    await call('chat:messages', { id: 12, after: 4720, around: 'x' });
+    assert.deepEqual(messenger.calls.at(-1), ['messages', 12, { after: 4720 }]);
+    assert.deepEqual(await call('chat:update-hint:dismiss'), { ok: true });
+    assert.deepEqual(messenger.calls.at(-1), ['dismissHint']);
 
     const file = { name: 'a.pdf', mime: 'application/pdf', data: new Uint8Array([1, 2]) };
     assert.equal((await call('chat:send', { conversationId: 12, kind: 'file', file })).ok, true);
     const req = messenger.calls.find((c) => c[0] === 'send')[1];
     assert.equal(req.file.name, 'a.pdf');
+    const clip = { name: 'clip.mp4', mime: 'video/mp4', data: new Uint8Array([1, 2]) };
+    const thumb = { mime: 'image/webp', data: new Uint8Array([3]) };
+    await call('chat:send', { conversationId: 12, kind: 'file', file: clip, thumb, video: { durationMs: 1400, width: 640, height: 360 } });
+    const vreq = messenger.calls.filter((c) => c[0] === 'send').at(-1)[1];
+    assert.deepEqual(vreq.video, { durationMs: 1400, width: 640, height: 360 });
+    assert.equal(vreq.thumb.mime, 'image/webp');
+    await call('chat:send', { conversationId: 12, kind: 'file', file: clip, video: [1] });
+    assert.equal(messenger.calls.filter((c) => c[0] === 'send').at(-1)[1].video, undefined);
     assert.equal((await call('chat:send', { conversationId: 12, kind: 'file', file: { data: 'not bytes' } })).code, 'invalid');
     assert.equal((await call('chat:send', { conversationId: 0, text: 'x' })).code, 'invalid');
     assert.equal((await call('chat:outbox:retry', { clientId: 'bad id!' })).code, 'invalid');

@@ -9,8 +9,10 @@
  *   chat:check           () → status after asking the server again
  *   chat:conversations   ({ refresh? }) → { ok, conversations, unread }
  *   chat:conversation    ({ id, refresh? }) → { ok, conversation }
- *   chat:messages        ({ id, before?, cached? }) → { ok, conversationId, messages, pending, hasMore, offline }
- *   chat:send            ({ conversationId, clientId?, kind, text?, replyTo?, meta?, location?, file?: { name, mime, data }, thumb?: { mime, data } }) → { ok, message }
+ *   chat:messages        ({ id, before?, after?, around?, cached? }) → { ok, conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }
+ *                        around: the page around a message (Messenger ≥ 1.1.0, else code 'unsupported'); after: newer page of that window
+ *   chat:send            ({ conversationId, clientId?, kind, text?, replyTo?, meta?, location?, video?: { durationMs, width, height }, file?: { name, mime, data }, thumb?: { mime, data } }) → { ok, message }
+ *                        video / file thumb: only sent when the server lists `video_meta` / `file_thumbs`
  *   chat:outbox:retry    ({ clientId }) → { ok }
  *   chat:outbox:discard  ({ clientId }) → { ok }
  *   chat:edit            ({ id, text }) → { ok, message }
@@ -25,7 +27,7 @@
  *   chat:update          ({ id, patch, avatar? }) → { ok, conversation, left }
  *   chat:prefs           ({ readReceipts?, typing?, preview? }) → { ok, prefs }
  *   chat:search          ({ id, q }) → { ok, results, truncated }
- *   chat:media:list      ({ id, kind?, before?, limit? }) → { ok, items, counts, hasMore }
+ *   chat:media:list      ({ id, kind?: 'image'|'voice'|'file'|'video'|'all', before?, limit? }) → { ok, items, counts, hasMore }
  *   chat:media           ({ mediaId }) → { ok, mime, data: Uint8Array }
  *   chat:avatar          ({ url }) → { ok, mime, data }
  *   chat:media:save      ({ mediaId, fileName? }) → { ok, path } | { ok: false, cancelled }
@@ -33,6 +35,7 @@
  *   chat:map:tile        ({ z, x, y }) → { ok, mime, data: Uint8Array }   OpenStreetMap tile (services/map-service.js)
  *   chat:map:search      ({ q, lang? }) → { ok, results: [{ lat, lon, label }] }   address search (Nominatim)
  *   chat:map:reverse     ({ lat, lon, lang? }) → { ok, label|null }       address of a point
+ *   chat:update-hint:dismiss () → { ok }   close the "newer version" banner (status().updateHint) for this set of features
  *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate.
@@ -109,6 +112,7 @@ function registerMessengerHandlers(handle, {
 
   handle('chat:status', () => m.status());
   handle('chat:check', wrap(async () => m.check({ force: true })));
+  handle('chat:update-hint:dismiss', wrap(async () => ({ ok: m.dismissUpdateHint() })));
   handle('chat:conversations', wrap(async (a) => {
     if (a.refresh === true && m.available()) await m.refreshConversations({ full: false }).catch(() => null);
     return { ok: true, conversations: m.listConversations(), unread: m.unreadTotal() };
@@ -122,7 +126,10 @@ function registerMessengerHandlers(handle, {
     const id = posInt(a.id);
     if (!id) return invalid();
     if (a.cached === true) return { ok: true, ...m.messagesView(id) };
-    return { ok: true, ...(await m.getMessages(id, { before: posInt(a.before) })) };
+    const opts = {};
+    for (const k of ['before', 'after', 'around']) if (posInt(a[k])) opts[k] = posInt(a[k]);
+    if (!Object.keys(opts).length) opts.before = null;
+    return { ok: true, ...(await m.getMessages(id, opts)) };
   }));
   handle('chat:send', wrap(async (a) => {
     const conversationId = posInt(a.conversationId);
@@ -135,6 +142,7 @@ function registerMessengerHandlers(handle, {
       replyTo: posInt(a.replyTo) || undefined,
       meta: a.meta && typeof a.meta === 'object' ? a.meta : undefined,
       location: a.location && typeof a.location === 'object' ? a.location : undefined,
+      video: a.video && typeof a.video === 'object' && !Array.isArray(a.video) ? a.video : undefined,
       file: a.file ? fileArg(a.file) : undefined,
       thumb: a.thumb ? fileArg(a.thumb) : undefined,
     };

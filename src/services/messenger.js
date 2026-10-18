@@ -26,6 +26,20 @@
  *     clientId idempotency); pending entries appear in the message list.
  *   - "Active": the open, visible conversation is reported every 20 s (no
  *     push for it) and read up to the newest message.
+ *   - Jumps (Messenger ≥ 1.1.0): `messages?around=` loads the page around a
+ *     search hit or quote that is not loaded; it is kept as a separate
+ *     window (older / newer pages through before / after) until it reaches
+ *     the cached newest messages, then both are joined.
+ *   - Receipts: the `read` event of 1.1.0 carries readUpTo / deliveredUpTo
+ *     → the ticks change without a GET (older plugins: GET conversations/:id).
+ *   - `changedSince` uses the `serverTime` of the messages answers (1.1.0;
+ *     before: the one of the conversation list).
+ *   - Video files and file previews (Messenger 1.3.0): `video` and a
+ *     `thumbMediaId` on file messages are sent only when `GET me` has the
+ *     features `video_meta` / `file_thumbs` set to true.
+ *   - Update hint: features the server switches on that this version does
+ *     not know → status().updateHint (the Chats view shows a dismissible
+ *     banner; dismissed per set of unknown features, never blocking).
  *
  * Events: 'state' (status()), 'conversations' ({ ids, removed }),
  * 'messages' ({ conversationId, reason }), 'typing' ({ conversationId,
@@ -41,11 +55,12 @@ const MessengerApi = require('./messenger-api');
 const MessengerOutbox = require('./messenger-outbox');
 const {
   PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, baseMime, byteLength,
-  KINDS,
+  KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
 } = require('../utils/messenger');
 
 const { MessengerError } = MessengerApi;
 const CACHE_KEY = 'messengerCache';
+const HINT_KEY = 'messengerUpdateHint';
 const CACHE_CONVS = 40;
 const CACHE_MSGS = 50;
 const PAGE = 50;
@@ -124,7 +139,7 @@ class MessengerService extends EventEmitter {
     this._avail = { state: 'unknown', reason: null, version: null, label: null, checkedAt: null, stale: false };
     this._me = null;
     this._convs = new Map();
-    this._msgs = new Map();          // id → { list, hasMore, loaded, syncedAt }
+    this._msgs = new Map();          // id → { list, hasMore, loaded, syncedAt, window }
     this._typing = new Map();        // id → Map(userId → until ms)
     this._typingSent = new Map();    // id → last POST typing (ms)
     this._lastSync = null;           // serverTime of the last conversations answer
@@ -281,7 +296,7 @@ class MessengerService extends EventEmitter {
     return {
       user: { id: posInt(user.id), name: typeof user.name === 'string' ? user.name : null, avatarUrl: isAvatarPath(user.avatarUrl) ? user.avatarUrl : null, initials: user.initials || null, colorHex: user.colorHex || null },
       prefs: { readReceipts: m.prefs ? m.prefs.readReceipts !== false : true, typing: m.prefs ? m.prefs.typing !== false : true, preview: m.prefs ? m.prefs.preview !== false : true },
-      features: m.features && typeof m.features === 'object' ? { ...m.features } : {},
+      features: normalizeFeatures(m.features),
       limits: m.limits && typeof m.limits === 'object' ? { ...m.limits } : {},
       license: m.license && typeof m.license === 'object' ? { ...m.license } : null,
     };
@@ -302,7 +317,7 @@ class MessengerService extends EventEmitter {
   /**
    * { state: 'unknown'|'checking'|'available'|'unavailable'|'error', reason,
    *   stale, version, label, me: { user, prefs, features, limits, license } | null,
-   *   unread, live, outbox }
+   *   unread, live, outbox, updateHint: { features, key } | null }
    */
   status() {
     return {
@@ -316,11 +331,40 @@ class MessengerService extends EventEmitter {
       unread: this.unreadTotal(),
       live: this._pushLive(),
       outbox: this.outbox.size(),
+      updateHint: this._avail.state === 'available' ? this.updateHint() : null,
     };
   }
 
   available() {
     return this._avail.state === 'available';
+  }
+
+  /**
+   * Update hint: the server has chat functions (features set to true) this
+   * version does not know → { features: [keys], key } — null when there are
+   * none or this very set was dismissed.
+   */
+  updateHint() {
+    const list = unknownFeatures(this._me && this._me.features);
+    if (!list.length) return null;
+    const key = list.join(',');
+    let dismissed = null;
+    try { const v = this.store && this.store.get(HINT_KEY); dismissed = v && typeof v.dismissed === 'string' ? v.dismissed : null; } catch { /* store */ }
+    return dismissed === key ? null : { features: list, key };
+  }
+
+  /** The banner was closed: hidden until the set of unknown features changes. */
+  dismissUpdateHint() {
+    const list = unknownFeatures(this._me && this._me.features);
+    if (!list.length) return false;
+    try { this.store.set(HINT_KEY, { dismissed: list.join(',') }); } catch (err) { this.log.warn(`Chat update hint not saved: ${err.message}`); }
+    this._emitState();
+    return true;
+  }
+
+  /** Does the server's messenger offer `feature` (`GET me` features)? */
+  supports(feature) {
+    return hasFeature(this._me && this._me.features, feature);
   }
 
   // ── Conversations ────────────────────────────────────────
@@ -451,41 +495,110 @@ class MessengerService extends EventEmitter {
 
   /**
    * Messages of a conversation (cached + newest from the server), with the
-   * pending outbox entries. `before` loads an older page.
-   * → { conversationId, messages, pending, hasMore, offline }
+   * pending outbox entries. `before` loads an older page; `around` (a message
+   * id, Messenger ≥ 1.1.0) the page around it — kept as a window apart from
+   * the newest messages while there is a gap (`detached: true`, newer pages
+   * with `after`); without arguments the window is closed again.
+   * → { conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }
+   * `around` on a plugin without it → MessengerError `unsupported`.
    */
-  async getMessages(id, { before = null } = {}) {
+  async getMessages(id, { before = null, after = null, around = null } = {}) {
     const cid = posInt(id);
     if (!cid) throw new MessengerError('invalid id', { code: 'invalid' });
     let st = this._msgs.get(cid);
-    if (!st) { st = { list: [], hasMore: true, loaded: false, syncedAt: null }; this._msgs.set(cid, st); }
+    if (!st) { st = { list: [], hasMore: true, loaded: false, syncedAt: null, window: null }; this._msgs.set(cid, st); }
     let offline = false;
     try {
-      if (posInt(before)) {
+      if (posInt(around)) {
+        await this._loadAround(cid, posInt(around));
+      } else if (posInt(before)) {
         const r = await this.api.messages(cid, { before: posInt(before), limit: PAGE });
-        st.list = mergeMessages(st.list, r.messages);
-        st.hasMore = r.hasMore === true;
+        if (st.window) {
+          st.window.list = mergeMessages(st.window.list, r.messages);
+          st.window.hasMoreBefore = r.hasMore === true;
+        } else {
+          st.list = mergeMessages(st.list, r.messages);
+          st.hasMore = r.hasMore === true;
+        }
         this._receipts(cid, r);
+      } else if (posInt(after) && st.window) {
+        const r = await this.api.messages(cid, { after: posInt(after), limit: PAGE });
+        st.window.list = mergeMessages(st.window.list, r.messages);
+        st.window.hasMoreAfter = r.hasMore === true;
+        this._receipts(cid, r);
+        this._joinWindow(cid);
       } else if (!st.loaded) {
+        st.window = null;
         await this._loadNewest(cid);
       } else {
+        st.window = null;
         await this._loadNewer(cid);
       }
     } catch (err) {
       if (err.status === 404) { this._drop(cid); throw err; }
-      if (!st.loaded && !st.list.length) throw err;
+      if (err.code === 'unsupported') throw err;
+      if (!st.loaded && !st.list.length && !st.window) throw err;
       offline = true;
     }
     return this.messagesView(cid, { offline });
   }
 
-  /** Cached view without asking the server. */
+  /** Cached view without asking the server (the jump window while one is open). */
   messagesView(id, { offline = false } = {}) {
     const cid = posInt(id);
-    const st = this._msgs.get(cid) || { list: [], hasMore: true };
+    const st = this._msgs.get(cid) || { list: [], hasMore: true, window: null };
+    if (st.window) {
+      return {
+        conversationId: cid, messages: st.window.list.slice(), pending: [], hasMore: st.window.hasMoreBefore, hasMoreAfter: st.window.hasMoreAfter, detached: true, offline,
+      };
+    }
     const ids = new Set(st.list.map((m) => m.clientId).filter(Boolean));
     const pending = this.outbox.list(cid).filter((e) => !ids.has(e.clientId)).map((e) => this._pendingView(e));
-    return { conversationId: cid, messages: st.list.slice(), pending, hasMore: st.hasMore !== false, offline };
+    return { conversationId: cid, messages: st.list.slice(), pending, hasMore: st.hasMore !== false, hasMoreAfter: false, detached: false, offline };
+  }
+
+  /** GET messages?around= → the jump window (joined with the cache when they meet). */
+  async _loadAround(cid, messageId) {
+    const st = this._msgs.get(cid);
+    const r = await this.api.messages(cid, { around: messageId, limit: PAGE });
+    if (typeof r.hasMoreBefore !== 'boolean' && typeof r.hasMoreAfter !== 'boolean') {
+      // Messenger 1.0.x ignores `around` and answers the newest page.
+      throw new MessengerError('around not supported', { code: 'unsupported' });
+    }
+    this._receipts(cid, r);
+    st.window = { list: mergeMessages([], r.messages), hasMoreBefore: r.hasMoreBefore === true, hasMoreAfter: r.hasMoreAfter === true };
+    if (!this._joinWindow(cid)) this.emit('messages', { conversationId: cid, reason: 'around' });
+  }
+
+  /**
+   * The window reaches the cached messages (overlap, or nothing newer after
+   * it): merge it into them and close it. → joined?
+   */
+  _joinWindow(cid) {
+    const st = this._msgs.get(cid);
+    const w = st && st.window;
+    if (!w || !st.loaded) return false;
+    const oldest = st.list.length ? st.list[0].id : null;
+    const newest = w.list.length ? w.list[w.list.length - 1].id : 0;
+    if (w.hasMoreAfter && (oldest === null || newest < oldest)) return false;
+    const first = w.list.length ? w.list[0].id : null;
+    if (first !== null && (oldest === null || first < oldest)) st.hasMore = w.hasMoreBefore;
+    st.list = mergeMessages(st.list, w.list);
+    st.window = null;
+    this.emit('messages', { conversationId: cid, reason: 'around' });
+    this._persist();
+    return true;
+  }
+
+  /** The cached list and the jump window of a conversation state (those that exist). */
+  _lists(st) {
+    return st.window ? [st.list, st.window.list] : [st.list];
+  }
+
+  /** Apply fn(list) → list to the cached list and the window. */
+  _mapLists(st, fn) {
+    st.list = fn(st.list);
+    if (st.window) st.window.list = fn(st.window.list);
   }
 
   async _loadNewest(cid) {
@@ -494,7 +607,7 @@ class MessengerService extends EventEmitter {
     st.list = Array.isArray(r.messages) ? r.messages.slice() : [];
     st.hasMore = r.hasMore === true;
     st.loaded = true;
-    st.syncedAt = this._lastSync || new Date(this.now() - 5000).toISOString();
+    st.syncedAt = this._syncTime(r);
     this._receipts(cid, r);
     this.emit('messages', { conversationId: cid, reason: 'load' });
     this._persist();
@@ -530,19 +643,42 @@ class MessengerService extends EventEmitter {
     return run;
   }
 
+  /**
+   * The next `changedSince` from a messages answer: its `serverTime`
+   * (Messenger ≥ 1.1.0); older plugins: the conversation list's, else now − 5 s.
+   */
+  _syncTime(r, fallback = null) {
+    if (r && typeof r.serverTime === 'string' && !Number.isNaN(Date.parse(r.serverTime))) return r.serverTime;
+    return fallback || this._lastSync || new Date(this.now() - 5000).toISOString();
+  }
+
   /** Edits, deletions and reactions since the last sync (after a reconnect). */
   async _loadChanged(cid) {
     const st = this._msgs.get(cid);
     if (!st || !st.loaded || !st.syncedAt) return;
     const since = st.syncedAt;
-    st.syncedAt = this._lastSync || new Date(this.now() - 5000).toISOString();
+    const fallback = this._lastSync || new Date(this.now() - 5000).toISOString();
     const r = await this.api.messages(cid, { changedSince: since, limit: 100 });
-    const msgs = Array.isArray(r.messages) ? r.messages : [];
-    if (!msgs.length) return;
-    const known = new Set(st.list.map((m) => m.id));
-    st.list = mergeMessages(st.list, msgs.filter((m) => known.has(m.id)));
+    if (r.hasMore === true) {
+      // More changes than one page: the newest page is cheaper than paging.
+      await this._loadNewest(cid);
+      return;
+    }
+    st.syncedAt = this._syncTime(r, fallback);
+    this._mergeKnown(st, r.messages);
+    if (!(Array.isArray(r.messages) && r.messages.length)) return;
     this.emit('messages', { conversationId: cid, reason: 'changed' });
     this._persist();
+  }
+
+  /** Merge changed messages into the lists that hold them (no new ones). */
+  _mergeKnown(st, incoming) {
+    const msgs = Array.isArray(incoming) ? incoming : [];
+    if (!msgs.length) return;
+    this._mapLists(st, (list) => {
+      const known = new Set(list.map((m) => m.id));
+      return mergeMessages(list, msgs.filter((m) => known.has(m.id)));
+    });
   }
 
   _receipts(cid, r) {
@@ -576,6 +712,8 @@ class MessengerService extends EventEmitter {
     return {
       id: null,
       clientId: e.clientId,
+      video: e.body.video || null,
+      thumb: !!files.thumb,
       conversationId: e.conversationId,
       pending: true,
       failed: e.state === 'failed',
@@ -595,10 +733,15 @@ class MessengerService extends EventEmitter {
     };
   }
 
-  _findMessage(messageId) {
+  /** Set the reactions of a message wherever it is cached → its conversation id, or null. */
+  _setReactions(messageId, reactions) {
     for (const [cid, st] of this._msgs) {
-      const m = st.list.find((x) => x.id === messageId);
-      if (m) return { cid, st, m };
+      let hit = false;
+      for (const list of this._lists(st)) {
+        const m = list.find((x) => x.id === messageId);
+        if (m) { m.reactions = reactions; hit = true; }
+      }
+      if (hit) return cid;
     }
     return null;
   }
@@ -608,6 +751,7 @@ class MessengerService extends EventEmitter {
     const cid = posInt(msg.conversationId);
     const st = this._msgs.get(cid);
     if (st && st.loaded) st.list = mergeMessages(st.list, [msg]);
+    if (st && st.window && st.window.list.some((m) => m.id === msg.id)) st.window.list = mergeMessages(st.window.list, [msg]);
     const c = this._convs.get(cid);
     if (c && c.lastMessage && c.lastMessage.id === msg.id) c.lastMessage = msg;
     this.emit('messages', { conversationId: cid, reason: 'update' });
@@ -633,12 +777,16 @@ class MessengerService extends EventEmitter {
       files.main = this._checkFile(req.file, limits);
       if (body.kind === 'file') {
         body.meta = { ...(body.meta || {}), fileName: (body.meta && body.meta.fileName) || String(files.main.name || 'Datei').slice(0, 200) };
+        // Messenger 1.3.0: only to a server that knows the fields.
+        if (body.video && !(isVideoMime(files.main.mime) && this.supports(FEATURE_VIDEO_META))) delete body.video;
+        if (req.thumb && this.supports(FEATURE_FILE_THUMBS)) {
+          const t = this._thumbFile(req.thumb, limits);
+          if (t) files.thumb = t;
+        }
       }
       if (body.kind === 'image' && req.thumb) {
-        try {
-          const t = this._checkFile(req.thumb, limits);
-          if (byteLength(t.data) <= (limits.thumbMaxBytes || 65536) && /^image\//.test(t.mime)) files.thumb = t;
-        } catch { /* no preview */ }
+        const t = this._thumbFile(req.thumb, limits);
+        if (t) files.thumb = t;
       }
     } else if (req.file) {
       throw new MessengerError('file not allowed', { code: 'invalid' });
@@ -657,6 +805,16 @@ class MessengerService extends EventEmitter {
     if (Number.isFinite(limits.maxBytes) && limits.maxBytes > 0 && size > limits.maxBytes) throw new MessengerError('too large', { code: 'too_large' });
     if (Array.isArray(limits.types) && limits.types.length && !limits.types.includes(mime)) throw new MessengerError('type', { code: 'unsupported_type' });
     return { data: f.data, mime, name: typeof f.name === 'string' ? f.name : null };
+  }
+
+  /** A preview picture (image/*, ≤ thumbMaxBytes) or null. */
+  _thumbFile(f, limits) {
+    try {
+      const t = this._checkFile(f, limits);
+      return byteLength(t.data) <= (limits.thumbMaxBytes || 65536) && /^image\//.test(t.mime) ? t : null;
+    } catch {
+      return null;
+    }
   }
 
   retrySend(clientId) { return this.outbox.retry(clientId); }
@@ -710,10 +868,9 @@ class MessengerService extends EventEmitter {
     const id = posInt(messageId);
     if (!id || (emoji != null && (typeof emoji !== 'string' || !emoji.length || emoji.length > 16))) throw new MessengerError('invalid', { code: 'invalid' });
     const r = await this.api.react(id, emoji);
-    const hit = this._findMessage(id);
-    if (hit && Array.isArray(r.reactions)) {
-      hit.m.reactions = r.reactions;
-      this.emit('messages', { conversationId: hit.cid, reason: 'reaction' });
+    const cid = Array.isArray(r.reactions) ? this._setReactions(id, r.reactions) : null;
+    if (cid) {
+      this.emit('messages', { conversationId: cid, reason: 'reaction' });
       this._persist();
     }
     return r.reactions || [];
@@ -723,9 +880,9 @@ class MessengerService extends EventEmitter {
     const set = new Set(ids);
     for (const [cid, st] of this._msgs) {
       if (conversationId && cid !== conversationId) continue;
-      const before = st.list.length;
-      st.list = st.list.filter((m) => !set.has(m.id));
-      if (st.list.length !== before) this.emit('messages', { conversationId: cid, reason: 'delete' });
+      const before = this._lists(st).reduce((n, l) => n + l.length, 0);
+      this._mapLists(st, (list) => list.filter((m) => !set.has(m.id)));
+      if (this._lists(st).reduce((n, l) => n + l.length, 0) !== before) this.emit('messages', { conversationId: cid, reason: 'delete' });
     }
     this._persist();
   }
@@ -734,9 +891,9 @@ class MessengerService extends EventEmitter {
     const st = this._msgs.get(cid);
     if (!st) return;
     const set = new Set(ids);
-    st.list = st.list.map((m) => (set.has(m.id)
-      ? { ...m, deleted: true, text: null, media: null, meta: null, location: null, replyTo: null, reactions: [] }
-      : m));
+    this._mapLists(st, (list) => list.map((m) => (set.has(m.id)
+      ? { ...m, deleted: true, text: null, media: null, meta: null, location: null, replyTo: null, reactions: [], video: null }
+      : m)));
     this.emit('messages', { conversationId: cid, reason: 'delete' });
     this._persist();
   }
@@ -923,7 +1080,9 @@ class MessengerService extends EventEmitter {
     const cid = posInt(id);
     if (!cid) throw new MessengerError('invalid', { code: 'invalid' });
     const r = await this.api.mediaList(cid, opts);
-    return { items: Array.isArray(r.items) ? r.items : [], counts: r.counts || { image: 0, voice: 0, file: 0 }, hasMore: !!r.hasMore };
+    // counts.video only from a plugin that has it (1.3.0).
+    const counts = { image: 0, voice: 0, file: 0, ...(r.counts && typeof r.counts === 'object' ? r.counts : {}) };
+    return { items: Array.isArray(r.items) ? r.items : [], counts, hasMore: !!r.hasMore };
   }
 
   /** A file of a message → { mime, data } (in-memory LRU, one download at a time per id). */
@@ -979,12 +1138,11 @@ class MessengerService extends EventEmitter {
         if (!cid) return;
         const st = this._msgs.get(cid);
         const mid = posInt(d.messageId);
-        if (st && st.loaded && mid && st.list.some((m) => m.id === mid)) {
+        if (st && st.loaded && mid && this._lists(st).some((l) => l.some((m) => m.id === mid))) {
           const t = Date.parse(d.editedAt);
           const since = Number.isFinite(t) ? new Date(t - 1).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
           this.api.messages(cid, { changedSince: since, limit: 100 }).then((r) => {
-            const known = new Set(st.list.map((m) => m.id));
-            st.list = mergeMessages(st.list, (r.messages || []).filter((m) => known.has(m.id)));
+            this._mergeKnown(st, r.messages);
             this.emit('messages', { conversationId: cid, reason: 'update' });
             this._persist();
           }).catch(() => {});
@@ -1004,10 +1162,9 @@ class MessengerService extends EventEmitter {
       }
       case 'reaction': {
         const mid = posInt(d.messageId);
-        const hit = mid ? this._findMessage(mid) : null;
-        if (hit && Array.isArray(d.reactions)) {
-          hit.m.reactions = d.reactions;
-          this.emit('messages', { conversationId: hit.cid, reason: 'reaction' });
+        const hitCid = mid && Array.isArray(d.reactions) ? this._setReactions(mid, d.reactions) : null;
+        if (hitCid) {
+          this.emit('messages', { conversationId: hitCid, reason: 'reaction' });
           this._persist();
         }
         break;
@@ -1015,6 +1172,9 @@ class MessengerService extends EventEmitter {
       case 'read': {
         if (!cid) return;
         const c = this._convs.get(cid);
+        // Messenger ≥ 1.1.0: readUpTo / deliveredUpTo as GET conversations/:id
+        // would give them to this device's account → the ticks without a GET.
+        const direct = !!c && this._applyReadEvent(c, d);
         if (d.self === true) {
           if (c) {
             if (c.me && Number.isSafeInteger(d.lastReadId)) c.me.lastReadId = Math.max(c.me.lastReadId || 0, d.lastReadId);
@@ -1024,8 +1184,12 @@ class MessengerService extends EventEmitter {
             this._persist();
           }
           this.emit('read-self', { conversationId: cid, lastReadId: posInt(d.lastReadId) });
-          // An answer in flight from before the event may carry the old count.
-          this._refreshConvSoon(cid);
+          // Older plugins (or no unread count): an answer in flight from before
+          // the event may carry the old count — ask once more.
+          if (!direct || !Number.isFinite(d.unread)) this._refreshConvSoon(cid);
+        } else if (direct) {
+          this.emit('conversations', { ids: [cid], removed: [] });
+          this._persist();
         } else {
           this._refreshConvSoon(cid);
         }
@@ -1039,6 +1203,9 @@ class MessengerService extends EventEmitter {
         break;
       }
       case 'conversation.update':
+        // Every reason (and unknown ones) → GET conversations/:id. `released`
+        // (1.1.0): the managed group became a normal one — managedBy, can.*
+        // and the info pane change; the system message comes as message.new.
         this._refreshConvSoon(cid);
         break;
       case 'conversation.remove':
@@ -1047,6 +1214,31 @@ class MessengerService extends EventEmitter {
       default:
         break;
     }
+  }
+
+  /**
+   * readUpTo / deliveredUpTo (and the reader's receipt) from a `read` event
+   * of Messenger ≥ 1.1.0. → false when the event has neither (older plugin).
+   */
+  _applyReadEvent(c, d) {
+    if (!('readUpTo' in d) && !('deliveredUpTo' in d)) return false;
+    const val = (v) => (v === null ? null : posInt(v));
+    for (const k of ['readUpTo', 'deliveredUpTo']) {
+      if (!(k in d)) continue;
+      const v = val(d[k]);
+      if (v !== null || d[k] === null) c[k] = v;
+    }
+    const uid = posInt(d.userId);
+    const meId = this._me && this._me.user ? this._me.user.id : null;
+    if (uid && uid !== meId && d.self !== true) {
+      const list = Array.isArray(c.receipts) ? c.receipts.slice() : [];
+      const i = list.findIndex((x) => x && x.userId === uid);
+      const entry = { ...(i >= 0 ? list[i] : { userId: uid }), lastReadId: val(d.lastReadId) };
+      if ('lastDeliveredId' in d) entry.lastDeliveredId = val(d.lastDeliveredId);
+      if (i >= 0) list[i] = entry; else list.push(entry);
+      c.receipts = list;
+    }
+    return true;
   }
 
   _setTyping(cid, uid, until) {
@@ -1219,6 +1411,7 @@ class MessengerService extends EventEmitter {
 
 MessengerService.DEFAULT_TIMING = DEFAULT_TIMING;
 MessengerService.CACHE_KEY = CACHE_KEY;
+MessengerService.HINT_KEY = HINT_KEY;
 MessengerService.KINDS = KINDS;
 
 module.exports = MessengerService;
