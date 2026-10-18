@@ -342,6 +342,11 @@
     "peerGone": "This account no longer exists – you cannot send messages.",
     "offline": "No connection to the server – messages are sent as soon as it is back.",
     "polling": "Live updates are off (notifications switched off on this PC or not connected) – chats are synced regularly.",
+    "updateHint": {
+      "text": "A newer version of GateControl is available for all chat features",
+      "check": "Check for updates",
+      "dismiss": "Hide notice"
+    },
     "loading": "Loading …",
     "loadFailed": "Chats could not be loaded.",
     "retry": "Try again",
@@ -372,7 +377,8 @@
       "voice": "Voice message",
       "file": "File",
       "location": "Location",
-      "system": "Notice"
+      "system": "Notice",
+      "video": "Video"
     },
     "msg": {
       "deleted": "This message was deleted.",
@@ -401,7 +407,9 @@
       "play": "Play",
       "pause": "Pause",
       "mapOpen": "Open in OpenStreetMap",
-      "expires": "Disappears {{time}}"
+      "expires": "Disappears {{time}}",
+      "openVideo": "Play video",
+      "videoUnsupported": "This video cannot be played here. Save it or open it with another program."
     },
     "loc": {
       "button": "Send location",
@@ -452,7 +460,8 @@
       "title": "{{name}} changed the name to “{{title}}”",
       "avatar": "{{name}} changed the group picture",
       "disOn": "{{name}} turned on disappearing messages ({{time}})",
-      "disOff": "{{name}} turned off disappearing messages"
+      "disOff": "{{name}} turned off disappearing messages",
+      "released": "GateControl released the group – it is a normal group now"
     },
     "dis": {
       "off": "Off",
@@ -477,6 +486,10 @@
       "disappearingOff": "Switched off by the administrator",
       "media": "Media & files",
       "recentMedia": "Recently shared",
+      "filterImages": "Photos",
+      "filterVideos": "Videos",
+      "filterFiles": "Files",
+      "noMedia": "Nothing shared yet",
       "members": "Members",
       "addMembers": "Add members",
       "add": "Add",

@@ -13,7 +13,8 @@
  *   - Persisted in the (encrypted) store under `messengerOutbox`, scoped to
  *     server + token; files to upload (pictures, voice, documents) are kept
  *     next to it in `<dataDir>/messenger-outbox/` until they are sent.
- *   - One send at a time, oldest first. Files are uploaded first (raw PUT);
+ *   - One send at a time, oldest first. Files are uploaded first (raw PUT;
+ *     the preview before the file);
  *     the media id is kept, so a retry does not upload again. An upload that
  *     the server no longer knows (`media_invalid`, e.g. after 24 h) is
  *     uploaded once more.
@@ -242,7 +243,9 @@ class MessengerOutbox extends EventEmitter {
   }
 
   async _uploadFiles(e) {
-    for (const role of ['main', 'thumb']) {
+    // The preview first (small), then the file: a video or document whose
+    // upload takes long already has its preview on the server.
+    for (const role of ['thumb', 'main']) {
       const f = e.files[role];
       const key = role === 'main' ? 'mediaId' : 'thumbMediaId';
       if (!f || e[key]) continue;

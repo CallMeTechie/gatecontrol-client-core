@@ -90,11 +90,29 @@ Plugin events arrive on the existing push stream as `event: plugin`
 (`PushClient` 'event'). The service handles every type of the README:
 `message.new` (→ `messages?after=`), `message.update` (→ `changedSince=`),
 `message.delete` (tombstone for `deleted`, removed otherwise), `reaction`,
-`read` (others → `GET conversations/:id` for the ticks; `self` → unread,
-event `read-self`), `typing` ("schreibt …" until `until`),
-`conversation.update`, `conversation.remove`. There is no replay: after every
+`read` (Messenger ≥ 1.1.0: `readUpTo` / `deliveredUpTo` of the event set the
+chat's values and the reader's receipt → the ticks, no GET; older plugins:
+`GET conversations/:id`; `self` → unread, event `read-self`), `typing`
+("schreibt …" until `until`), `conversation.update` (every reason, also
+`released` — a managed group became a normal group — → `GET
+conversations/:id`), `conversation.remove`. There is no replay: after every
 `hello` it asks `conversations?since=<serverTime>`, the newer messages of the
-loaded chats and `changedSince` for the open one. Without a connected stream
+loaded chats and `changedSince` for the open one — `changedSince` is the
+`serverTime` of the chat's last messages answer (1.1.0; older plugins: the
+one of the conversation list).
+
+### Jumping to a message (`around`)
+
+A search hit or a quoted message that is not loaded: `chat.messages(id, {
+around: messageId })` → `messages?around=` (Messenger ≥ 1.1.0, half older,
+the message, the newer ones). While there is a gap to the cached newest
+messages the answer is a window of its own (`detached: true`, `hasMore` =
+older ones exist, `hasMoreAfter` = newer ones exist); `chat.messages(id, {
+before })` / `{ after }` page it, and once it reaches the cached messages
+both are joined (`detached: false`). `chat.messages(id)` closes the window
+("Zur neuesten Nachricht"). A 1.0.x plugin answers `{ ok: false, code:
+'unsupported' }` — the view then loads older pages until it finds the
+message. Without a connected stream
 (notifications off on this PC, `vpn_only` without tunnel, old server) it
 polls: 30 s while the page is open, 2 min otherwise.
 
@@ -110,6 +128,36 @@ refusals → `failed` with the code (`chat.retry(clientId)` /
 `pending`; the server's message replaces them (same `clientId`). The renderer
 scales pictures before sending (long side `imageMaxSide`, WebP, plus a
 320 px preview ≤ 64 KB) — the server converts nothing.
+
+### Videos and file previews (Messenger 1.3.0)
+
+Videos stay `kind: "file"`. Picking a `video/*` file, the renderer loads it
+into a `<video>` element, grabs a frame at ~1 s (canvas, WebP — JPEG when
+the engine has no WebP encoder — long side ≤ `limits.thumbMaxSide` (640),
+≤ `limits.thumbMaxBytes` (64 KB)) and reads duration and size: `chat.send({
+kind: 'file', file, thumb, video: { durationMs, width, height } })`. The core
+sends `video` only when `GET me` has `features.video_meta === true` and the
+file is `video/*`, and the preview (`thumbMediaId`, uploaded before the file)
+only with `features.file_thumbs === true` — older plugins get the plain file
+message. Video bubbles show the preview with a play button and the
+duration and play in an overlay (`<video>` with the file as `blob:` URL);
+files with a preview show it above the file card. The chat info's media list
+has "Fotos / Videos / Dateien" (`mediaList(id, { kind: 'video' })` when the
+server supports it; `counts.video`). PDF previews are not made (no PDF
+renderer in the apps; Chromium's viewer cannot render off-screen).
+
+## Update hint ("newer version of GateControl")
+
+The core knows the `GET me` feature keys of its version
+(`messengerUtil.KNOWN_FEATURES`: `direct`, `groups`, `voice`, `files`,
+`location`, `reactions`, `edit`, `search`, `disappearing`, `bridges`, `e2e`,
+`video_meta`, `file_thumbs`). When the server sets any other key to `true`,
+`status().updateHint` is `{ features: [keys], key }` and the Chats view shows
+a small banner on top: „Für alle Chat-Funktionen gibt es eine neuere Version
+von GateControl“ with "Nach Updates suchen" (the app's update check in
+Settings › About) and a close button — `chat.dismissUpdateHint()` hides it
+until the set of unknown keys changes (store key `messengerUpdateHint`).
+Nothing is blocked; everything this version knows keeps working.
 
 ## Locations ("Standort senden")
 
@@ -202,7 +250,9 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | `start()` / `stop()` | check + live / timers off, cache saved |
 | `check({ force })` / `status()` / `available()` | availability (above); status: `{ state, reason, stale, version, label, me: { user, prefs, features, limits, license }, unread, live, outbox }` |
 | `listConversations()` / `getConversation(id)` / `refreshConversations({ full })` | conversations with `typing` (user ids) and `outbox` (pending count) |
-| `getMessages(id, { before })` / `messagesView(id)` | `{ conversationId, messages, pending, hasMore, offline }` |
+| `getMessages(id, { before, after, around })` / `messagesView(id)` | `{ conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }` |
+| `supports(feature)` | `GET me` `features[feature] === true`, e.g. `video_meta`, `file_thumbs` |
+| `updateHint()` / `dismissUpdateHint()` | unknown features switched on → `{ features, key }` / hide the banner for that set |
 | `send(req)` / `retrySend(clientId)` / `discardSend(clientId)` | outbox |
 | `edit(id, text)`, `remove(id, 'me'\|'all')`, `react(id, emoji\|null)` | |
 | `markRead(id, upTo?)`, `typing(id, { stop })`, `setOpen({ id, visible })`, `setViewOpen(open)` | |
@@ -222,7 +272,7 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `messages`, `send`, `retry`, `discard`, `edit`, `remove`, `react`, `read`,
 `typing`, `open`, `view`, `people`, `create`, `update`, `prefs`, `search`,
 `mediaList`, `media`, `avatar`, `saveMedia`, `openMedia`, `mapTile`,
-`mapSearch`, `mapReverse`; events `onState`,
+`mapSearch`, `mapReverse`, `dismissUpdateHint`; events `onState`,
 `onConversations`, `onMessages`, `onTyping`, `onUnread`, `onOutbox`,
 `onNavigate` (`{ conversationId }`, toast click). Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are

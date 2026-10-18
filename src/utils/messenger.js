@@ -25,6 +25,17 @@ const AVATAR_PATH_RE = /^\/avatars\/[A-Za-z0-9_-]{16,128}\.(?:png|jpe?g|webp)$/;
 // (`conversations/12/read`): no scheme, no `..`, no query.
 const API_PATH_RE = /^(?!.*\.\.)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+){0,5}$/;
 const KINDS = ['text', 'image', 'voice', 'file', 'location'];
+// GET conversations/:id/media?kind= (`video` since Messenger 1.3.0).
+const MEDIA_KINDS = ['image', 'voice', 'file', 'video', 'all'];
+// `GET me` feature keys this client knows. A server that sets another key to
+// `true` has chat functions this version does not offer → update hint.
+const KNOWN_FEATURES = Object.freeze([
+  'direct', 'groups', 'voice', 'files', 'location', 'reactions', 'edit', 'search', 'disappearing', 'bridges', 'e2e',
+  'video_meta', 'file_thumbs',
+]);
+// Messenger 1.3.0 `GET me` features that unlock optional send fields.
+const FEATURE_VIDEO_META = 'video_meta';   // `video: { durationMs, width, height }` on video files
+const FEATURE_FILE_THUMBS = 'file_thumbs'; // `thumbMediaId` on file messages
 const DELETE_SCOPES = ['me', 'all'];
 const EMOJI_MAX = 16;
 const TEXT_MAX = 4000;
@@ -55,6 +66,38 @@ const posInt = (v) => {
   const n = typeof v === 'string' && /^\d{1,15}$/.test(v) ? Number(v) : v;
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 };
+
+/**
+ * `GET me` features as an object { name: true|false } (the plugin's form
+ * since 1.0); a list of names is accepted as well.
+ */
+function normalizeFeatures(f) {
+  const out = {};
+  if (Array.isArray(f)) {
+    for (const k of f) if (typeof k === 'string' && k && k.length <= 64) out[k] = true;
+  } else if (f && typeof f === 'object') {
+    for (const [k, v] of Object.entries(f)) out[k] = v;
+  }
+  return out;
+}
+
+/** Does the server offer `name` (features as list or object)? */
+function hasFeature(features, name) {
+  if (Array.isArray(features)) return features.includes(name);
+  return !!features && typeof features === 'object' && features[name] === true;
+}
+
+/**
+ * Feature keys the server switches on (`true`) that this client does not
+ * know (KNOWN_FEATURES), sorted — empty when it knows them all.
+ */
+function unknownFeatures(features, known = KNOWN_FEATURES) {
+  const f = normalizeFeatures(features);
+  return Object.keys(f).filter((k) => f[k] === true && !known.includes(k) && /^[A-Za-z0-9_.-]{1,64}$/.test(k)).sort();
+}
+
+/** `video/*` without parameters. */
+const isVideoMime = (m) => /^video\/[a-z0-9.+-]+$/.test(String(m || '').toLowerCase().split(';')[0].trim());
 
 /** Lower-case extension of a file name ('' when none). */
 function extOf(name) {
@@ -91,6 +134,7 @@ function extForMime(mime) {
   const map = {
     'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'audio/ogg': 'ogg',
     'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/webm': 'webm', 'video/mp4': 'mp4',
+    'video/webm': 'webm', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv',
     'application/pdf': 'pdf', 'text/plain': 'txt', 'application/zip': 'zip',
   };
   return map[String(mime || '').toLowerCase().split(';')[0]] || 'bin';
@@ -172,6 +216,16 @@ function buildSendBody(req, { textMax = TEXT_MAX } = {}) {
     if (Number.isSafeInteger(r.meta.h) && r.meta.h > 0) meta.h = r.meta.h;
     if (typeof r.meta.fileName === 'string' && r.meta.fileName.trim()) meta.fileName = r.meta.fileName.trim().slice(0, 200);
     if (Object.keys(meta).length) body.meta = meta;
+  }
+  if (r.video != null) {
+    // Video files (Messenger 1.3.0, feature `video_meta`): kind stays 'file'.
+    const v = r.video;
+    if (kind !== 'file' || typeof v !== 'object' || Array.isArray(v)) throw invalid('video');
+    const video = {};
+    if (Number.isFinite(v.durationMs) && v.durationMs >= 0) video.durationMs = Math.round(v.durationMs);
+    if (Number.isSafeInteger(v.width) && v.width > 0 && v.width <= 65535) video.width = v.width;
+    if (Number.isSafeInteger(v.height) && v.height > 0 && v.height <= 65535) video.height = v.height;
+    if (Object.keys(video).length) body.video = video;
   }
   if (kind === 'location') {
     const l = r.location;
@@ -267,6 +321,10 @@ module.exports = {
   MEDIA_BASE,
   PLUGINS_PATH,
   KINDS,
+  MEDIA_KINDS,
+  FEATURE_VIDEO_META,
+  FEATURE_FILE_THUMBS,
+  KNOWN_FEATURES,
   DELETE_SCOPES,
   EMOJI_MAX,
   TEXT_MAX,
@@ -279,6 +337,10 @@ module.exports = {
   isAvatarPath,
   isApiPath,
   posInt,
+  normalizeFeatures,
+  hasFeature,
+  unknownFeatures,
+  isVideoMime,
   extOf,
   unsafeToOpen,
   safeFileName,

@@ -53,7 +53,7 @@ describe('createBridgeApi', () => {
       'chat:map:reverse', 'chat:map:search', 'chat:map:tile',
       'chat:media', 'chat:media:list', 'chat:media:open', 'chat:media:save', 'chat:messages', 'chat:open',
       'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:prefs', 'chat:react', 'chat:read', 'chat:search',
-      'chat:send', 'chat:status', 'chat:typing', 'chat:update', 'chat:view',
+      'chat:send', 'chat:status', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
       'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
       'locale:set', 'logs:export', 'logs:get', 'logs:show',

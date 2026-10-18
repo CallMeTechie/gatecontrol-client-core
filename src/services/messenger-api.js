@@ -20,7 +20,7 @@
  */
 
 const {
-  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, isMediaId, isAvatarPath, isApiPath, posInt, baseMime, toBuffer,
+  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isApiPath, posInt, baseMime, toBuffer,
 } = require('../utils/messenger');
 
 const JSON_TIMEOUT_MS = 15000;
@@ -151,12 +151,17 @@ class MessengerApi {
 
   async patchConversation(id, body) { return this.api('PATCH', `conversations/${this._id(id)}`, { body }); }
 
-  /** { limit, before | after | changedSince } */
-  async messages(id, { limit, before, after, changedSince } = {}) {
+  /**
+   * { limit, before | after | changedSince | around } — `around` (Messenger
+   * ≥ 1.1.0) answers the page around a message with hasMoreBefore /
+   * hasMoreAfter; every answer of 1.1.0 carries `serverTime`.
+   */
+  async messages(id, { limit, before, after, changedSince, around } = {}) {
     const params = {};
     if (Number.isSafeInteger(limit) && limit > 0) params.limit = Math.min(100, limit);
     if (posInt(before)) params.before = posInt(before);
     else if (posInt(after)) params.after = posInt(after);
+    else if (posInt(around)) params.around = posInt(around);
     else if (typeof changedSince === 'string' && changedSince) params.changedSince = changedSince;
     return this.api('GET', `conversations/${this._id(id)}/messages`, { params });
   }
@@ -182,7 +187,7 @@ class MessengerApi {
   async search(id, q) { return this.api('GET', `conversations/${this._id(id)}/search`, { params: { q } }); }
 
   async mediaList(id, { kind = 'all', before, limit } = {}) {
-    const params = { kind: ['image', 'voice', 'file', 'all'].includes(kind) ? kind : 'all' };
+    const params = { kind: MEDIA_KINDS.includes(kind) ? kind : 'all' };
     if (posInt(before)) params.before = posInt(before);
     if (Number.isSafeInteger(limit) && limit > 0) params.limit = Math.min(100, limit);
     return this.api('GET', `conversations/${this._id(id)}/media`, { params });
