@@ -403,6 +403,34 @@
       "mapOpen": "Open in OpenStreetMap",
       "expires": "Disappears {{time}}"
     },
+    "loc": {
+      "button": "Send location",
+      "title": "Send location",
+      "mine": "My position",
+      "locating": "Finding your position …",
+      "accuracy": "Your position (± {{m}} m)",
+      "denied": "No access to your location. Allow it in Windows Settings › Privacy & security › Location – or click the map or search for an address.",
+      "unavailable": "Your position is not available on this PC. Click the map or search for an address.",
+      "timeout": "Your position could not be found in time. Click the map or search for an address.",
+      "hint": "Click the map to set the point. Drag to move the map, use the mouse wheel to zoom.",
+      "picked": "Selected point",
+      "search": "Search address",
+      "searchPh": "Street, town or place",
+      "searchBtn": "Search",
+      "searching": "Searching …",
+      "noResults": "No address found.",
+      "searchFailed": "Address search is not reachable right now.",
+      "label": "Label (optional)",
+      "labelPh": "e.g. meeting point",
+      "needPoint": "Pick a point on the map first.",
+      "send": "Send location",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "map": "Map",
+      "attribution": "© OpenStreetMap contributors",
+      "source": "Map and address search: OpenStreetMap",
+      "accuracyShort": "± {{m}} m"
+    },
     "status": {
       "pending": "Sending",
       "failed": "Not sent",
@@ -499,7 +527,8 @@
       "sub": "Messages from your server",
       "empty": "No messages yet.",
       "openAll": "Open in “Messages”",
-      "hint": "Messages from GateControl – actions as in “Messages”."
+      "hint": "Messages from GateControl – actions as in “Messages”.",
+      "readAll": "Mark all as read"
     },
     "toast": {
       "placeholder": "Reply …",

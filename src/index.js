@@ -24,6 +24,7 @@ const MessengerService = require('./services/messenger');
 const MessengerApi = require('./services/messenger-api');
 const MessengerOutbox = require('./services/messenger-outbox');
 const ChatNotifier = require('./services/chat-notifier');
+const MapService = require('./services/map-service');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -84,6 +85,7 @@ module.exports = {
   MessengerApi,
   MessengerOutbox,
   ChatNotifier,
+  MapService,
 
   // Utils
   validation,

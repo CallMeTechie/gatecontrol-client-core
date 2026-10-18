@@ -10,7 +10,7 @@
 
 'use strict';
 
-const { t } = require('../i18n');
+const { t, getLocale } = require('../i18n');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
@@ -20,6 +20,7 @@ const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { registerMessengerHandlers } = require('./messenger-handlers');
+const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -116,6 +117,8 @@ const NOTIFY_EVENTS = {
  *   events to the main window and resets it after a successful server:setup.
  * @param {object} [ctx.chatNotifier] - ChatNotifier; its 'navigate' (toast
  *   click) reaches the renderer as chat:navigate
+ * @param {object} [ctx.maps] - MapService for chat:map:* (default: one with
+ *   the app's name and version as User-Agent, OpenStreetMap / Nominatim)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -568,6 +571,11 @@ function registerBaseHandlers(ipcMain, ctx) {
     registerMessengerHandlers(handle, {
       messenger,
       chatNotifier: ctx.chatNotifier || null,
+      maps: ctx.maps || new MapService({
+        log,
+        userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
+        getLang: () => getLocale(),
+      }),
       getMainWindow,
       log,
       dialog,

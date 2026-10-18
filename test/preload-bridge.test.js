@@ -50,6 +50,7 @@ describe('createBridgeApi', () => {
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set',
       'chat:avatar', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create', 'chat:delete', 'chat:edit',
+      'chat:map:reverse', 'chat:map:search', 'chat:map:tile',
       'chat:media', 'chat:media:list', 'chat:media:open', 'chat:media:save', 'chat:messages', 'chat:open',
       'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:prefs', 'chat:react', 'chat:read', 'chat:search',
       'chat:send', 'chat:status', 'chat:typing', 'chat:update', 'chat:view',

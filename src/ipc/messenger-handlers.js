@@ -30,6 +30,9 @@
  *   chat:avatar          ({ url }) → { ok, mime, data }
  *   chat:media:save      ({ mediaId, fileName? }) → { ok, path } | { ok: false, cancelled }
  *   chat:media:open      ({ mediaId, fileName? }) → { ok } | { ok: false, code: 'unsafe' }
+ *   chat:map:tile        ({ z, x, y }) → { ok, mime, data: Uint8Array }   OpenStreetMap tile (services/map-service.js)
+ *   chat:map:search      ({ q, lang? }) → { ok, results: [{ lat, lon, label }] }   address search (Nominatim)
+ *   chat:map:reverse     ({ lat, lon, lang? }) → { ok, label|null }       address of a point
  *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate.
@@ -82,6 +85,7 @@ async function markOfTheWeb(file, platform, fsp) {
  * @param {object} deps
  * @param {object} deps.messenger - MessengerService
  * @param {object} [deps.chatNotifier] - ChatNotifier (its 'navigate' becomes chat:navigate)
+ * @param {object} [deps.maps] - MapService (chat:map:*); without it those channels answer 'unsupported'
  * @param {Function} deps.getMainWindow
  * @param {object} deps.log
  * @param {object} [deps.dialog] - Electron dialog (save as)
@@ -91,7 +95,7 @@ async function markOfTheWeb(file, platform, fsp) {
  * @param {object} [deps.fsp]
  */
 function registerMessengerHandlers(handle, {
-  messenger: m, chatNotifier = null, getMainWindow, log, dialog = null, shell = null,
+  messenger: m, chatNotifier = null, maps = null, getMainWindow, log, dialog = null, shell = null,
   getTempDir = () => path.join(os.tmpdir(), 'gatecontrol-chat'), platform = process.platform, fsp = fs.promises,
 }) {
   const wrap = (fn) => async (_e, arg) => {
@@ -234,6 +238,26 @@ function registerMessengerHandlers(handle, {
       return { ok: false, code: 'open_failed', error: String(err) };
     }
     return { ok: true };
+  }));
+
+  // ── Map (location dialog, location previews) ─────────────
+  const noMaps = () => ({ ok: false, code: 'unsupported', error: 'no map service' });
+  const lang = (v) => (v === 'en' || v === 'de' ? v : undefined);
+  handle('chat:map:tile', wrap(async (a) => {
+    if (!maps) return noMaps();
+    if (![a.z, a.x, a.y].every((v) => Number.isSafeInteger(v) && v >= 0)) return invalid();
+    const r = await maps.tile(a.z, a.x, a.y);
+    return { ok: true, mime: r.mime, data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength) };
+  }));
+  handle('chat:map:search', wrap(async (a) => {
+    if (!maps) return noMaps();
+    if (typeof a.q !== 'string' || a.q.length > 500) return invalid();
+    return { ok: true, results: await maps.search(a.q, { lang: lang(a.lang) }) };
+  }));
+  handle('chat:map:reverse', wrap(async (a) => {
+    if (!maps) return noMaps();
+    if (!Number.isFinite(a.lat) || !Number.isFinite(a.lon)) return invalid();
+    return { ok: true, ...(await maps.reverse(a.lat, a.lon, { lang: lang(a.lang) })) };
   }));
 
   const send = (channel, payload) => {

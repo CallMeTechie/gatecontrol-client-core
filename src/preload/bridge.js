@@ -182,6 +182,11 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       avatar:        (url) => ipcRenderer.invoke('chat:avatar', { url }),
       saveMedia:     (mediaId, fileName) => ipcRenderer.invoke('chat:media:save', { mediaId, fileName }),
       openMedia:     (mediaId, fileName) => ipcRenderer.invoke('chat:media:open', { mediaId, fileName }),
+      // Map of the location dialog / previews: OpenStreetMap tile bytes,
+      // address search and the address of a point (main process, Nominatim).
+      mapTile:       (z, x, y) => ipcRenderer.invoke('chat:map:tile', { z, x, y }),
+      mapSearch:     (q, lang) => ipcRenderer.invoke('chat:map:search', { q, lang }),
+      mapReverse:    (lat, lon, lang) => ipcRenderer.invoke('chat:map:reverse', { lat, lon, lang }),
       onState:         (cb) => subscribe('chat:state', cb),
       onConversations: (cb) => subscribe('chat:conversations', cb),
       onMessages:      (cb) => subscribe('chat:messages', cb),
