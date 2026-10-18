@@ -48,6 +48,8 @@
  *     blocks, export, reminders, suggestions → Familie), the prefs privacy /
  *     notify / chats. Windows sends no live arrival; it shows them and can
  *     stop an own one.
+ *   - Messenger 1.4.1: a story's duration (`durationH`, feature
+ *     `story_duration`); without the key it is left out (24 h).
  *
  * Events: 'state' (status()), 'conversations' ({ ids, removed }),
  * 'messages' ({ conversationId, reason }), 'typing' ({ conversationId,
@@ -66,7 +68,7 @@ const MessengerOutbox = require('./messenger-outbox');
 const {
   PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, baseMime, byteLength,
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
-  KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, listsBody, familieOf, normalizeEvent, safeFileName,
+  KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
 } = require('../utils/messenger');
 
 const { MessengerError } = MessengerApi;
@@ -1225,12 +1227,15 @@ class MessengerService extends EventEmitter {
   /**
    * POST status/stories. Text stories: { kind: 'text', text, bg, font };
    * picture / video: { kind, file: { data, mime }, thumb?, video?, text? }
-   * — the files are uploaded first (preview before the file). → story
+   * — the files are uploaded first (preview before the file). `durationH`
+   * (1/3/6/12/24) is sent only when the server offers `story_duration`
+   * (Messenger 1.4.1), otherwise left out (24 h). → story
    */
   async createStory(req = {}) {
     this._need(FEATURES_14.stories);
     const limits = (this._me && this._me.limits) || {};
-    const body = storyBody(req, { textMax: limits.storyTextMax || 700 });
+    const durations = this.supports(FEATURES_14.storyDuration) ? storyDurationsOf(limits) : null;
+    const body = storyBody(req, { textMax: limits.storyTextMax || 700, durations });
     if (body.kind !== 'text') {
       const f = this._checkFile(req.file, limits);
       if (body.kind === 'image' ? !/^image\//.test(f.mime) : !isVideoMime(f.mime)) throw new MessengerError('type', { code: 'unsupported_type' });

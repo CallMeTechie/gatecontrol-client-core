@@ -39,11 +39,18 @@ const KNOWN_FEATURES = Object.freeze([
   'video_meta', 'file_thumbs',
   // Messenger 1.4.0 (only true keys are present)
   'status', 'stories', 'polls', 'events', 'arrival', 'actions', 'msg_tools', 'privacy2',
+  // Messenger 1.4.1
+  'story_duration',
 ]);
 // Messenger 1.4.0 `GET me` features (README "Since 1.4.0").
 const FEATURES_14 = Object.freeze({
   status: 'status', stories: 'stories', polls: 'polls', events: 'events', arrival: 'arrival', actions: 'actions', tools: 'msg_tools', privacy: 'privacy2',
+  // since 1.4.1: `POST status/stories` takes `durationH` (present together with `stories`)
+  storyDuration: 'story_duration',
 });
+// Story durations in hours (Messenger 1.4.1 `durationH`, `limits.storyDurationsH`); the server's default is 24.
+const STORY_DURATIONS_H = Object.freeze([1, 3, 6, 12, 24]);
+const STORY_DURATION_DEFAULT_H = 24;
 // Feature a send kind needs (absent → refused with code `unsupported`).
 const KIND_FEATURE = Object.freeze({ poll: 'polls', event: 'events', action: 'actions' });
 // prefs of Messenger 1.4.0 (PUT prefs takes partial objects; README "Preferences").
@@ -449,11 +456,23 @@ function audienceOf(r) {
 }
 
 /**
+ * The story durations a server takes (Messenger 1.4.1): `limits.storyDurationsH`
+ * limited to the known values, or all known values when it sends none.
+ */
+function storyDurationsOf(limits) {
+  const src = limits && Array.isArray(limits.storyDurationsH) ? limits.storyDurationsH : null;
+  const list = src ? STORY_DURATIONS_H.filter((h) => src.includes(h)) : [];
+  return list.length ? list : STORY_DURATIONS_H.slice();
+}
+
+/**
  * `POST status/stories` body without the media ids (the service uploads the
  * files first): kind text (text required) / image / video, bg, font,
- * visibility, eventMessageId, place, video meta.
+ * visibility, eventMessageId, place, video meta, and `durationH` — only when
+ * `durations` (the allowed hours, Messenger 1.4.1) is given; another value
+ * is refused, without `durations` it is left out (the server's 24 h).
  */
-function storyBody(s, { textMax = 700 } = {}) {
+function storyBody(s, { textMax = 700, durations = null } = {}) {
   const r = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
   if (!['text', 'image', 'video'].includes(r.kind)) throw invalidErr('story kind');
   const body = { kind: r.kind };
@@ -472,6 +491,11 @@ function storyBody(s, { textMax = 700 } = {}) {
     if (Number.isSafeInteger(r.video.width) && r.video.width > 0) v.width = r.video.width;
     if (Number.isSafeInteger(r.video.height) && r.video.height > 0) v.height = r.video.height;
     if (Object.keys(v).length) body.video = v;
+  }
+  if (r.durationH != null && Array.isArray(durations)) {
+    const h = Number(r.durationH);
+    if (!durations.includes(h)) throw invalidErr('durationH');
+    body.durationH = h;
   }
   return body;
 }
@@ -602,6 +626,9 @@ module.exports = {
   prefsBody,
   statusBody,
   storyBody,
+  storyDurationsOf,
+  STORY_DURATIONS_H,
+  STORY_DURATION_DEFAULT_H,
   listsBody,
   familieOf,
   cardRoute,

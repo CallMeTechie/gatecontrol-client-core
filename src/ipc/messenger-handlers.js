@@ -43,7 +43,8 @@
  *   chat:status:feed     ({ refresh? }) → { ok, items, me, serverTime }        status strip / stories
  *   chat:status:set      ({ preset, text?, until?, visibility?, userIds?, eta?, destLabel? }) → { ok, status }
  *   chat:status:clear    () → { ok }
- *   chat:story:create    ({ kind, text?, bg?, font?, visibility?, userIds?, eventMessageId?, place?, video?, file?, thumb? }) → { ok, story }
+ *   chat:story:create    ({ kind, text?, bg?, font?, visibility?, userIds?, eventMessageId?, place?, video?, file?, thumb?, durationH? }) → { ok, story }
+ *                          durationH (1/3/6/12/24) only with `story_duration` (Messenger 1.4.1)
  *   chat:story:delete    ({ id }) → { ok }
  *   chat:story:seen      ({ id }) → { ok }
  *   chat:story:viewers   ({ id }) → { ok, viewers }
@@ -310,6 +311,7 @@ function registerMessengerHandlers(handle, {
     const story = await m.createStory({
       kind: str(a.kind, 10), text: str(a.text, 2000), bg: str(a.bg, 10), font: str(a.font, 10), visibility: str(a.visibility, 20), userIds: ids(a.userIds),
       eventMessageId: posInt(a.eventMessageId) || undefined, place: str(a.place, 200), video: obj(a.video), file, thumb: a.thumb ? fileArg(a.thumb) : null,
+      durationH: posInt(a.durationH) || undefined,
     });
     return { ok: true, story };
   }));

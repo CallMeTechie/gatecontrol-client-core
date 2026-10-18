@@ -151,8 +151,9 @@ renderer in the apps; Chromium's viewer cannot render off-screen).
 The core knows the `GET me` feature keys of its version
 (`messengerUtil.KNOWN_FEATURES`: `direct`, `groups`, `voice`, `files`,
 `location`, `reactions`, `edit`, `search`, `disappearing`, `bridges`, `e2e`,
-`video_meta`, `file_thumbs` and the 1.4.0 keys `status`, `stories`, `polls`,
-`events`, `arrival`, `actions`, `msg_tools`, `privacy2`). When the server sets any other key to `true`,
+`video_meta`, `file_thumbs`, the 1.4.0 keys `status`, `stories`, `polls`,
+`events`, `arrival`, `actions`, `msg_tools`, `privacy2` and the 1.4.1 key
+`story_duration`). When the server sets any other key to `true`,
 `status().updateHint` is `{ features: [keys], key }` and the Chats view shows
 a small banner on top: „Für alle Chat-Funktionen gibt es eine neuere Version
 von GateControl“ with "Nach Updates suchen" (the app's update check in
@@ -172,7 +173,8 @@ is there, every 1.4.0 call of a server without it answers `{ ok: false, code:
 | Key | Core | Apps (Chats page) |
 |---|---|---|
 | `status` | `statusFeed()`, `setStatus()`, `clearStatus()`; the feed is cached (60 s) and fetched again on `status.update`, `story.new`, `story.remove` and after a reconnect → event `feed` | own avatar in the list head ("Dein Status": text ≤ 60, presets, "Löschen nach", "Sichtbar für"), the status strip under "Angeheftet" (glowing ring while a person has unseen stories) |
-| `stories` | `createStory()` (picture / video uploaded first, the preview before the file), `deleteStory()`, `storySeen()` (the cached feed marks it seen), `storyViewers()`, `storyReact()` | story viewer (text, picture, video; progress, ←/→, reply → a direct message with `replyStory`, reactions, viewers of one's own), "Status erstellen" (text with colour / font, picture or video) |
+| `stories` | `createStory()` (picture / video uploaded first, the preview before the file), `deleteStory()`, `storySeen()` (the cached feed marks it seen), `storyViewers()`, `storyReact()` | story viewer (text, picture, video; progress, ←/→, reply → a direct message with `replyStory`, reactions, viewers of one's own), "Status erstellen" (text with colour / font, picture or video; readable in the light and the dark theme; a failed post stays as an error in the dialog); own active stories: the glowing ring around "Mein Status" and the own avatar in the list head, a click on the avatar shows them (with "Gesehen von"), "+" adds one, the card "Meine Storys" in "Dein Status"; a posted story is shown at once (before the feed is fetched again) |
+| `story_duration` (1.4.1, with `stories`) | `createStory({ durationH })` sends `durationH` (1, 3, 6, 12 or 24 — `limits.storyDurationsH`, `messengerUtil.storyDurationsOf()`); another value → `invalid` without asking the server; without the key `durationH` is left out (the server's 24 h) | "Dauer" in "Status erstellen": 1 / 3 / 6 / 12 / 24 Std. (default 24); without the key "24 Std." as plain text |
 | `polls` | `send({ kind: 'poll', poll })`, `vote()`, `addPollOption()`, `closePoll()`, `nudgePoll()` | "Abstimmung erstellen" in the attach menu, poll bubble (vote, add an answer, votes, remind, close) |
 | `events` | `send({ kind: 'event', event })`, `rsvp()`, `checkItem()`, `editEvent()` (PATCH, also `cancelled: true`) | "Ereignis erstellen" (Familie places when `integrations.familie.places`), event bubble (RSVP with guests, checklist, edit / cancel), the bar of `conversation.nextEvent` |
 | `arrival` | `stopArrival()` — **Windows sends no arrivals** (no GPS) | arrival bubble (live / arrived / stopped, ETA, distance, progress, map preview and "Auf Karte"; an own live one can be stopped) |
@@ -325,7 +327,7 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | `people()`, `createConversation(…)`, `updateConversation(id, patch, { avatar })`, `setPrefs(patch)`, `search(id, q)`, `mediaList(id, opts)` | |
 | `media(mediaId)`, `avatar(path)` | `{ mime, data }` (memory LRU 48 MB / 8 MB) |
 | `unreadTotal()` | unread messages of the chats that are neither muted nor archived (nav badge, tray) |
-| 1.4.0: `statusFeed({ refresh })`, `setStatus(s)`, `clearStatus()`, `createStory(s)`, `deleteStory(id)`, `storySeen(id)`, `storyViewers(id)`, `storyReact(id, emoji)` | status and stories |
+| 1.4.0: `statusFeed({ refresh })`, `setStatus(s)`, `clearStatus()`, `createStory(s)` (1.4.1: `durationH`), `deleteStory(id)`, `storySeen(id)`, `storyViewers(id)`, `storyReact(id, emoji)` | status and stories |
 | 1.4.0: `archive(id, archived)`, `pin(id, messageId, pinned)`, `lists()`, `saveLists(lists)`, `blocks()`, `setBlocked(userId, blocked)`, `exportChat(id)`, `remind(messageId, at)`, `reminders()`, `deleteReminder(id)`, `suggest(messageId)`, `toList(messageId, { items, list })`, `toCalendar(messageId, ev)`, `places()` | chat tools, Familie |
 | 1.4.0: `vote(id, optionIds)`, `addPollOption(id, text)`, `closePoll(id)`, `nudgePoll(id)`, `rsvp(id, answer, guests)`, `checkItem(id, itemId, done)`, `editEvent(id, patch)`, `stopArrival(id)` | → the changed message (cached one replaced) |
 | 1.4.0: `actions({ refresh })`, `actionOp(id, op, { actionId, plugin })`, `cardImage(id)` | home actions, plugin cards |

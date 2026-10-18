@@ -9,6 +9,7 @@
 //   messengerServer({ features: ['video_meta', 'file_thumbs'] })  // 1.3.0 `GET me` features
 //   messengerServer({ features: FEATURES_14, familie: true })     // 1.4.0: status, stories, polls, events,
 //                                                                 // arrival, actions, msg_tools, privacy2 (+ Familie)
+//   messengerServer({ features: { ...FEATURES_14, story_duration: true } })  // 1.4.1: story durationH
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code),
@@ -22,6 +23,7 @@ const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
 const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 
 const iso = (ms) => new Date(ms).toISOString();
+const STORY_DURATIONS_H = [1, 3, 6, 12, 24];
 
 const FEATURES_14 = Object.freeze({
   direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false,
@@ -142,7 +144,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
   const userOut = (id) => { const u = users.find((x) => x.id === id) || {}; return { id, name: u.name || null, avatarUrl: u.avatarUrl || null, initials: u.initials || null, colorHex: u.colorHex || null }; };
   const storyOut = (st, own) => ({
     id: st.id, kind: st.kind, text: st.text || null, bg: st.bg || null, font: st.font || null, mediaId: st.mediaId || null, thumbMediaId: st.thumbMediaId || null,
-    video: st.video || null, url: null, thumbUrl: null, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + 86400000), seen: own ? true : st.seen.has(me),
+    video: st.video || null, url: null, thumbUrl: null, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + (st.durationH || 24) * 3600000), seen: own ? true : st.seen.has(me),
     place: st.place || null, eventMessageId: st.eventMessageId || null, ...(own ? { viewerCount: st.seen.size, reactionCount: st.reactions.size, visibility: st.visibility || 'all' } : {}),
   });
   function feed() {
@@ -192,7 +194,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (!c && m === 'POST') {
         if (bd.kind === 'text' && !bd.text) return err(res, 400, 'invalid');
         if (bd.mediaId && !state.media.has(bd.mediaId)) return err(res, 409, 'media_invalid');
-        const st = { id: state.nextStory++, userId: me, ...bd, createdAt: now(), seen: new Set(), reactions: new Map() };
+        // 1.4.1: durationH only with the feature `story_duration`, one of limits.storyDurationsH
+        if (bd.durationH !== undefined && !(features && features.story_duration === true && STORY_DURATIONS_H.includes(bd.durationH))) return err(res, 400, 'invalid');
+        // known fields only (no request keys written into the stored story)
+        const st = {
+          id: state.nextStory++, userId: me, kind: bd.kind, text: bd.text, bg: bd.bg, font: bd.font, mediaId: bd.mediaId, thumbMediaId: bd.thumbMediaId,
+          video: bd.video, visibility: bd.visibility, userIds: bd.userIds, eventMessageId: bd.eventMessageId, place: bd.place,
+          durationH: bd.durationH || 24, createdAt: now(), seen: new Set(), reactions: new Map(),
+        };
         state.stories.push(st);
         return json(res, 200, { ok: true, story: storyOut(st, true) });
       }
@@ -379,7 +388,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         license: { licensed: true, state: 'active', expiresAt: null },
         features: features || { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false },
         integrations: { familie: { lists: !!familie, calendar: !!familie, places: !!familie } },
-        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0, statusTextMax: 60, storyTextMax: 700, pollOptionsMax: 12, pinsMax: 3, listsMax: 20 },
+        limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0, statusTextMax: 60, storyTextMax: 700, ...(features && features.story_duration === true ? { storyDurationsH: STORY_DURATIONS_H } : {}), pollOptionsMax: 12, pinsMax: 3, listsMax: 20 },
         serverTime: iso(now()) });
     }
     if (a === 'prefs' && m === 'PUT') {
