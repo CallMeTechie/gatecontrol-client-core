@@ -251,6 +251,37 @@ describe('ChatNotifier', () => {
     assert.deepEqual(nc.list().items.map((e) => e.id).sort(), [60, 61]);
   });
 
+  it('Messenger 1.4.0 push kinds: the server texts as they are, a toast of their own, acked with the chat', async () => {
+    const { N, push, messenger, notifier } = setup();
+    push.emit('notification', chatPush(1, { title: 'Lena', body: '📊 Umfrage: Pizza oder Pasta?' }));
+    await tick();
+    assert.match(N.created[0].opts.toastXml, /<text>Anna: 📊 Umfrage: Pizza oder Pasta\?<\/text>/);
+    // a reminder (data.kind) — no "Sender: …", no reply field, own tag
+    push.emit('notification', chatPush(2, {
+      title: 'Erinnerung', body: 'Erinnerung: Milch kaufen', collapse_key: 'reminder:12:4701',
+      data: { messageId: 4701, conversationId: 12, kind: 'reminder', reminderId: 5, conversation: { id: '12', title: 'Familie', isGroup: true }, sender: { id: 'gatecontrol', name: 'GateControl', avatarUrl: null } },
+    }));
+    await tick();
+    assert.equal(N.created.length, 2);
+    const xml = N.created[1].opts.toastXml;
+    assert.match(xml, /<text hint-maxLines="1">Erinnerung<\/text>/);
+    assert.match(xml, /<text>Erinnerung: Milch kaufen<\/text>/);
+    assert.doesNotMatch(xml, /<input id="reply"/);
+    assert.equal(N.created[1].opts.id, 'chat-12-reminder');
+    assert.equal(N.created[0].closed, false, 'the chat toast stays');
+    assert.deepEqual(notifier.trackedExtras(), [{ conversationId: 12, kinds: ['reminder'] }]);
+    // a new message replaces only the chat toast
+    push.emit('notification', chatPush(3));
+    await tick();
+    assert.equal(N.created[0].closed, true);
+    assert.equal(N.created[1].closed, false);
+    // reading the chat closes both and acks every seq
+    messenger.emit('read-local', { conversationId: 12 });
+    assert.equal(N.created[1].closed, true);
+    assert.deepEqual(push.acks, [{ seqs: [1, 2, 3], state: 'read', action: null }]);
+    assert.deepEqual(notifier.trackedExtras(), []);
+  });
+
   it('stop() hands chat pushes back to the inbox', async () => {
     const { push, nc, notifier } = setup();
     notifier.stop();

@@ -40,13 +40,23 @@
  *   - Update hint: features the server switches on that this version does
  *     not know → status().updateHint (the Chats view shows a dismissible
  *     banner; dismissed per set of unknown features, never blocking).
+ *   - Messenger 1.4.0 (each part only when `GET me` features has its key):
+ *     status and stories (feed cached, refreshed on status.update /
+ *     story.new / story.remove), polls, events, home actions and plugin
+ *     cards (message kinds; poll.update / event.update / action.update /
+ *     arrival.update → `changedSince`), chat tools (archive, pins, lists,
+ *     blocks, export, reminders, suggestions → Familie), the prefs privacy /
+ *     notify / chats. Windows sends no live arrival; it shows them and can
+ *     stop an own one.
  *
  * Events: 'state' (status()), 'conversations' ({ ids, removed }),
  * 'messages' ({ conversationId, reason }), 'typing' ({ conversationId,
  * userIds }), 'unread' (total), 'outbox' ({ conversationId }),
  * 'read-local' ({ conversationId, upTo }) read on this device,
  * 'read-self' ({ conversationId, lastReadId }) read on another device,
- * 'send-failed' ({ conversationId, clientId, error, source }).
+ * 'send-failed' ({ conversationId, clientId, error, source }),
+ * 'feed' (status feed of 1.4.0), 'lists' (custom chat filters),
+ * 'reminders' (own "remind me" list changed).
  */
 
 const EventEmitter = require('events');
@@ -56,6 +66,7 @@ const MessengerOutbox = require('./messenger-outbox');
 const {
   PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, baseMime, byteLength,
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
+  KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, listsBody, familieOf, normalizeEvent, safeFileName,
 } = require('../utils/messenger');
 
 const { MessengerError } = MessengerApi;
@@ -76,6 +87,9 @@ const DEFAULT_TIMING = Object.freeze({
   typingEveryMs: 3000,            // plugin limits.typingEveryS
   typingValidMs: 6000,            // plugin limits.typingS
   peopleTtlMs: 5 * 60 * 1000,
+  feedTtlMs: 60 * 1000,           // status feed (1.4.0) without events
+  feedDebounceMs: 300,            // status.update / story.* → GET status/feed
+  actionsTtlMs: 60 * 1000,        // GET actions (attach menu)
   mediaCacheBytes: 48 * 1024 * 1024,
   avatarCacheBytes: 8 * 1024 * 1024,
 });
@@ -160,6 +174,10 @@ class MessengerService extends EventEmitter {
     this._unsub = [];
     this._lastUnread = 0;
     this._scope = '';
+    // Messenger 1.4.0
+    this._feed = { at: 0, data: null };
+    this._chatLists = null;
+    this._actions = { at: 0, list: null };
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
@@ -188,6 +206,7 @@ class MessengerService extends EventEmitter {
     this._running = false;
     for (const off of this._unsub.splice(0)) off();
     for (const k of Object.keys(this._timers)) this._clear(k);
+    if (this._feedTimer) { clearTimeout(this._feedTimer); this._feedTimer = null; }
     for (const t of this._convTimers.values()) clearTimeout(t);
     this._convTimers.clear();
     if (this._open.id && this._open.visible && this._avail.state === 'available') this.api.active(this._open.id, false).catch(() => {});
@@ -204,6 +223,9 @@ class MessengerService extends EventEmitter {
     this._media.clear();
     this._avatars.clear();
     this._people = { at: 0, list: null };
+    this._feed = { at: 0, data: null };
+    this._chatLists = null;
+    this._actions = { at: 0, list: null };
     this._me = null;
     this._lastSync = null;
     this._open = { id: null, visible: false };
@@ -295,11 +317,21 @@ class MessengerService extends EventEmitter {
     const user = m.user && typeof m.user === 'object' ? m.user : {};
     return {
       user: { id: posInt(user.id), name: typeof user.name === 'string' ? user.name : null, avatarUrl: isAvatarPath(user.avatarUrl) ? user.avatarUrl : null, initials: user.initials || null, colorHex: user.colorHex || null },
-      prefs: { readReceipts: m.prefs ? m.prefs.readReceipts !== false : true, typing: m.prefs ? m.prefs.typing !== false : true, preview: m.prefs ? m.prefs.preview !== false : true },
+      prefs: this._normalizePrefs(m.prefs),
       features: normalizeFeatures(m.features),
+      // 1.4.0: what the Familie plugin offers right now (to-list, to-calendar, places)
+      integrations: { familie: familieOf(m) },
       limits: m.limits && typeof m.limits === 'object' ? { ...m.limits } : {},
       license: m.license && typeof m.license === 'object' ? { ...m.license } : null,
     };
+  }
+
+  /** prefs of `GET me` / `PUT prefs`: the 1.0 booleans plus (1.4.0) privacy / notify / chats when sent. */
+  _normalizePrefs(p) {
+    const src = p && typeof p === 'object' ? p : null;
+    const out = { readReceipts: src ? src.readReceipts !== false : true, typing: src ? src.typing !== false : true, preview: src ? src.preview !== false : true };
+    for (const k of ['privacy', 'notify', 'chats']) if (src && src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) out[k] = { ...src[k] };
+    return out;
   }
 
   _setAvail(patch) {
@@ -384,10 +416,10 @@ class MessengerService extends EventEmitter {
     return c ? { ...c, typing: this._typingIds(c.id, this.now()) } : null;
   }
 
-  /** Sum of unread messages of the chats that are not muted. */
+  /** Sum of unread messages of the chats that are neither muted nor archived (1.4.0). */
   unreadTotal() {
     let n = 0;
-    for (const c of this._convs.values()) if (!c.muted && Number.isFinite(c.unread)) n += c.unread;
+    for (const c of this._convs.values()) if (!c.muted && !c.archived && Number.isFinite(c.unread)) n += c.unread;
     return n;
   }
 
@@ -724,12 +756,33 @@ class MessengerService extends EventEmitter {
       replyTo,
       meta: e.body.meta || null,
       location: e.body.location || null,
+      poll: e.body.poll ? this._pendingPoll(e.body.poll) : null,
+      event: e.body.event ? this._pendingEvent(e.body.event) : null,
+      action: e.body.action ? { ...e.body.action, state: 'open', can: { run: false, approve: false, deny: false } } : null,
       media: main ? { id: null, mime: main.mime, bytes: main.bytes, local: true } : null,
       senderId: this._me && this._me.user ? this._me.user.id : null,
       mine: true,
       createdAt: e.createdAt,
       reactions: [],
       deleted: false,
+    };
+  }
+
+  /** A poll as the server would show it before anyone voted (pending outbox entry). */
+  _pendingPoll(p) {
+    return {
+      question: p.question, options: (p.options || []).map((text, i) => ({ id: `p${i}`, text, count: 0, voters: [], addedBy: null })),
+      multi: !!p.multi, anonymous: !!p.anonymous, allowAdd: !!p.allowAdd, closesAt: p.closesAt || null, closed: false, closedAt: null,
+      voterCount: 0, memberCount: 0, creatorId: this._me && this._me.user ? this._me.user.id : null, myVotes: [],
+    };
+  }
+
+  /** An event as the server would show it before any answer (pending outbox entry). */
+  _pendingEvent(e) {
+    return {
+      ...e, checklist: (e.checklist || []).map((text, i) => ({ id: `p${i}`, text, doneBy: null, doneAt: null })),
+      rsvpEnabled: e.rsvp !== false, guests: !!e.guests, rsvp: { yes: [], maybe: [], no: [], mine: null, myGuests: 0 },
+      cancelled: false, creatorId: this._me && this._me.user ? this._me.user.id : null,
     };
   }
 
@@ -772,6 +825,9 @@ class MessengerService extends EventEmitter {
     if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
     const limits = (this._me && this._me.limits) || {};
     const body = buildSendBody(req, { textMax: limits.textMax || 4000 });
+    // 1.4.0 kinds only to a server that offers them.
+    if (KIND_FEATURE[body.kind] && !this.supports(KIND_FEATURE[body.kind])) throw new MessengerError('not supported by the server', { code: 'unsupported' });
+    if (body.replyStory && !this.supports(FEATURES_14.stories)) delete body.replyStory;
     const files = {};
     if (body.kind === 'image' || body.kind === 'voice' || body.kind === 'file') {
       files.main = this._checkFile(req.file, limits);
@@ -1060,8 +1116,10 @@ class MessengerService extends EventEmitter {
   }
 
   async setPrefs(patch = {}) {
-    const r = await this.api.setPrefs(patch);
-    if (this._me && r.prefs) this._me.prefs = { ...this._me.prefs, ...r.prefs };
+    const body = prefsBody(patch);
+    if (!Object.keys(body).length) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.setPrefs(body);
+    if (this._me && r.prefs) this._me.prefs = this._normalizePrefs({ ...this._me.prefs, ...r.prefs });
     this._emitState();
     // Receipts / typing visibility change what the server sends for every chat.
     this.refreshConversations({ full: true }).catch(() => {});
@@ -1115,6 +1173,390 @@ class MessengerService extends EventEmitter {
     return run;
   }
 
+  // ── Messenger 1.4.0: status and stories ─────────────────
+
+  _need(feature) {
+    if (!this.supports(feature)) throw new MessengerError('not supported by the server', { code: 'unsupported' });
+  }
+
+  /**
+   * GET status/feed → { items, me, serverTime } (cached for feedTtlMs;
+   * refreshed by status.update / story.new / story.remove).
+   */
+  async statusFeed({ refresh = false } = {}) {
+    this._need(FEATURES_14.status);
+    if (!refresh && this._feed.data && this.now() - this._feed.at < this.timing.feedTtlMs) return this._copy(this._feed.data);
+    const key = 'feed';
+    if (this._inflight.has(key)) return this._inflight.get(key).then((d) => this._copy(d));
+    const run = this.api.statusFeed().then((r) => {
+      const data = { items: Array.isArray(r.items) ? r.items : [], me: r.me && typeof r.me === 'object' ? r.me : null, serverTime: r.serverTime || null };
+      this._feed = { at: this.now(), data };
+      this.emit('feed', this._copy(data));
+      return data;
+    }).finally(() => this._inflight.delete(key));
+    this._inflight.set(key, run);
+    return run.then((d) => this._copy(d));
+  }
+
+  /** The feed changed on the server: fetch it once after a short pause. */
+  _refreshFeedSoon() {
+    if (!this.supports(FEATURES_14.status)) return;
+    this._feed.at = 0;
+    if (this._feedTimer) clearTimeout(this._feedTimer);
+    this._feedTimer = this._timer(() => { this._feedTimer = null; this.statusFeed({ refresh: true }).catch(() => {}); }, this.timing.feedDebounceMs);
+  }
+
+  /** PUT status ({ preset, text, until, visibility, userIds, eta, destLabel }) → status. */
+  async setStatus(req = {}) {
+    this._need(FEATURES_14.status);
+    const limits = (this._me && this._me.limits) || {};
+    const r = await this.api.putStatus(statusBody(req, { textMax: limits.statusTextMax || 60, now: this.now() }));
+    this._refreshFeedSoon();
+    return r.status || null;
+  }
+
+  async clearStatus() {
+    this._need(FEATURES_14.status);
+    await this.api.deleteStatus();
+    this._refreshFeedSoon();
+    return null;
+  }
+
+  /**
+   * POST status/stories. Text stories: { kind: 'text', text, bg, font };
+   * picture / video: { kind, file: { data, mime }, thumb?, video?, text? }
+   * — the files are uploaded first (preview before the file). → story
+   */
+  async createStory(req = {}) {
+    this._need(FEATURES_14.stories);
+    const limits = (this._me && this._me.limits) || {};
+    const body = storyBody(req, { textMax: limits.storyTextMax || 700 });
+    if (body.kind !== 'text') {
+      const f = this._checkFile(req.file, limits);
+      if (body.kind === 'image' ? !/^image\//.test(f.mime) : !isVideoMime(f.mime)) throw new MessengerError('type', { code: 'unsupported_type' });
+      const t = req.thumb ? this._thumbFile(req.thumb, limits) : null;
+      if (t) body.thumbMediaId = (await this.api.upload({ data: t.data, mime: t.mime })).mediaId;
+      body.mediaId = (await this.api.upload({ data: f.data, mime: f.mime })).mediaId;
+    } else if (req.file) {
+      throw new MessengerError('file not allowed', { code: 'invalid' });
+    }
+    const r = await this.api.createStory(body);
+    this._refreshFeedSoon();
+    return r.story || null;
+  }
+
+  async deleteStory(id) {
+    this._need(FEATURES_14.stories);
+    await this.api.deleteStory(id);
+    this._refreshFeedSoon();
+    return true;
+  }
+
+  /** A story was shown: POST …/seen, and the cached feed marks it seen (ring off once all are). */
+  async storySeen(id) {
+    this._need(FEATURES_14.stories);
+    const sid = posInt(id);
+    await this.api.storySeen(sid);
+    const d = this._feed.data;
+    if (d) {
+      let hit = false;
+      for (const it of d.items) {
+        for (const st of Array.isArray(it.stories) ? it.stories : []) if (st && st.id === sid && !st.seen) { st.seen = true; hit = true; }
+        if (hit) it.unseen = (it.stories || []).some((st) => st && !st.seen);
+      }
+      if (hit) this.emit('feed', this._copy(d));
+    }
+    return true;
+  }
+
+  async storyViewers(id) {
+    this._need(FEATURES_14.stories);
+    const r = await this.api.storyViewers(id);
+    return Array.isArray(r.viewers) ? r.viewers : [];
+  }
+
+  /** A reaction to a story → the direct message it became. */
+  async storyReact(id, emoji) {
+    this._need(FEATURES_14.stories);
+    if (typeof emoji !== 'string' || !emoji || emoji.length > 16) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.storyReact(id, emoji);
+    if (r.message && posInt(r.message.conversationId)) {
+      if (!this._convs.has(r.message.conversationId)) this._refreshConvSoon(r.message.conversationId);
+      this._replaceMessage(r.message);
+    }
+    return r.message || null;
+  }
+
+  // ── Messenger 1.4.0: chat tools ──────────────────────────
+
+  async blocks() {
+    this._need(FEATURES_14.tools);
+    const r = await this.api.blocks();
+    return Array.isArray(r.blocks) ? r.blocks : [];
+  }
+
+  /** Block (true) or unblock (false) a person → the block list; people, chats and the feed change. */
+  async setBlocked(userId, blocked) {
+    this._need(FEATURES_14.tools);
+    const uid = posInt(userId);
+    if (!uid) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = blocked ? await this.api.block(uid) : await this.api.unblock(uid);
+    this._people = { at: 0, list: null };
+    this._refreshFeedSoon();
+    this.refreshConversations({ full: true }).catch(() => {});
+    return Array.isArray(r.blocks) ? r.blocks : [];
+  }
+
+  async archive(id, archived) {
+    this._need(FEATURES_14.tools);
+    const r = await this.api.archive(id, archived === true);
+    if (r.conversation) this._upsert(r.conversation);
+    return r.conversation ? this.getCachedConversation(r.conversation.id) : null;
+  }
+
+  /** Pin (true) / unpin (false) a message in its chat → the conversation (pinned ids). */
+  async pin(id, messageId, pinned) {
+    this._need(FEATURES_14.tools);
+    const r = pinned ? await this.api.pin(id, messageId) : await this.api.unpin(id, messageId);
+    if (r.conversation) this._upsert(r.conversation);
+    return r.conversation ? this.getCachedConversation(r.conversation.id) : null;
+  }
+
+  /** Custom chat filters (cached until lists.update). */
+  async lists({ refresh = false } = {}) {
+    this._need(FEATURES_14.tools);
+    if (!refresh && this._chatLists) return this._copy(this._chatLists);
+    const r = await this.api.lists();
+    this._chatLists = Array.isArray(r.lists) ? r.lists : [];
+    return this._copy(this._chatLists);
+  }
+
+  async saveLists(lists) {
+    this._need(FEATURES_14.tools);
+    const r = await this.api.putLists(listsBody(lists));
+    this._chatLists = Array.isArray(r.lists) ? r.lists : [];
+    this.emit('lists', this._copy(this._chatLists));
+    return this._copy(this._chatLists);
+  }
+
+  /**
+   * The whole chat as text (README "Export"): parts of ~800 KB, newest first,
+   * each `truncated` part continued with `before` and put in front.
+   * → { text, fileName, count, truncated (more than maxParts) }
+   */
+  async exportChat(id, { maxParts = 40 } = {}) {
+    this._need(FEATURES_14.tools);
+    const cid = posInt(id);
+    if (!cid) throw new MessengerError('invalid', { code: 'invalid' });
+    const parts = [];
+    let before = null;
+    let fileName = null;
+    let count = 0;
+    let more = false;
+    for (let i = 0; i < maxParts; i++) {
+      const r = await this.api.exportChat(cid, { before });
+      if (!fileName && typeof r.fileName === 'string') fileName = r.fileName;
+      parts.unshift(typeof r.text === 'string' ? r.text : '');
+      count += Number(r.count) || 0;
+      more = r.truncated === true && posInt(r.before) && posInt(r.before) !== before;
+      if (!more) break;
+      before = posInt(r.before);
+    }
+    return { text: parts.join(''), fileName: safeFileName(fileName || 'Chat.txt', 'Chat.txt'), count, truncated: !!more };
+  }
+
+  async remind(messageId, at) {
+    this._need(FEATURES_14.tools);
+    const t = Date.parse(at);
+    if (!Number.isFinite(t) || t <= this.now()) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.remind(messageId, new Date(t).toISOString());
+    return r.reminder || null;
+  }
+
+  async reminders() {
+    this._need(FEATURES_14.tools);
+    const r = await this.api.reminders();
+    return Array.isArray(r.reminders) ? r.reminders : [];
+  }
+
+  async deleteReminder(id) {
+    this._need(FEATURES_14.tools);
+    await this.api.deleteReminder(id);
+    return true;
+  }
+
+  /** Shopping items and dates found in a message (server-side parser) → { items, dates }. */
+  async suggest(messageId) {
+    this._need(FEATURES_14.tools);
+    const r = await this.api.suggest(messageId);
+    return { items: Array.isArray(r.items) ? r.items.filter((x) => typeof x === 'string') : [], dates: Array.isArray(r.dates) ? r.dates : [] };
+  }
+
+  /** "Auf Einkaufsliste" (Familie) → { listId, listName, added, skipped }. */
+  async toList(messageId, { items, list } = {}) {
+    this._need(FEATURES_14.tools);
+    const clean = (Array.isArray(items) ? items : []).map((x) => (typeof x === 'string' ? x.trim().slice(0, 120) : '')).filter(Boolean).slice(0, 50);
+    if (!clean.length) throw new MessengerError('invalid', { code: 'invalid' });
+    const body = { items: clean };
+    if (typeof list === 'string' && list) body.list = list.slice(0, 64);
+    const r = await this.api.toList(messageId, body);
+    return { listId: r.listId == null ? null : r.listId, listName: r.listName || null, added: Number(r.added) || 0, skipped: Number(r.skipped) || 0 };
+  }
+
+  /** "Termin anlegen" (Familie calendar) → { eventId }. */
+  async toCalendar(messageId, { title, startsAt, endsAt, allDay, place } = {}) {
+    this._need(FEATURES_14.tools);
+    const tt = typeof title === 'string' ? title.trim().slice(0, 80) : '';
+    if (!tt || !Number.isFinite(Date.parse(startsAt))) throw new MessengerError('invalid', { code: 'invalid' });
+    const body = { title: tt, startsAt: new Date(startsAt).toISOString(), allDay: allDay === true };
+    if (endsAt && Number.isFinite(Date.parse(endsAt))) body.endsAt = new Date(endsAt).toISOString();
+    if (typeof place === 'string' && place.trim()) body.place = place.trim().slice(0, 120);
+    const r = await this.api.toCalendar(messageId, body);
+    return { eventId: r.eventId == null ? null : r.eventId };
+  }
+
+  /** Familie places (event place, arrival destination) → [{ id, name, lat, lon, radiusM }]. */
+  async places() {
+    const r = await this.api.familiePlaces();
+    return Array.isArray(r.places) ? r.places : [];
+  }
+
+  // ── Messenger 1.4.0: polls, events, arrival ──────────────
+
+  /** A route answering { message }: the message replaces the cached one. */
+  async _messageOp(feature, call) {
+    this._need(feature);
+    const r = await call();
+    if (r.message) this._replaceMessage(r.message);
+    return r;
+  }
+
+  async vote(messageId, optionIds) {
+    const ids = (Array.isArray(optionIds) ? optionIds : []).filter((x) => typeof x === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(x)).slice(0, 12);
+    return (await this._messageOp(FEATURES_14.polls, () => this.api.vote(messageId, ids))).message || null;
+  }
+
+  async addPollOption(messageId, text) {
+    const v = typeof text === 'string' ? text.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    if (!v) throw new MessengerError('invalid', { code: 'invalid' });
+    return (await this._messageOp(FEATURES_14.polls, () => this.api.addPollOption(messageId, v))).message || null;
+  }
+
+  async closePoll(messageId) {
+    return (await this._messageOp(FEATURES_14.polls, () => this.api.closePoll(messageId))).message || null;
+  }
+
+  /** → { message, nudged } */
+  async nudgePoll(messageId) {
+    const r = await this._messageOp(FEATURES_14.polls, () => this.api.nudgePoll(messageId));
+    return { message: r.message || null, nudged: Number(r.nudged) || 0 };
+  }
+
+  /** answer: yes | maybe | no | null (withdraw); guests 0…20 with yes. */
+  async rsvp(messageId, answer, guests) {
+    if (![null, 'yes', 'maybe', 'no'].includes(answer)) throw new MessengerError('invalid', { code: 'invalid' });
+    const body = { answer };
+    if (answer === 'yes' && Number.isSafeInteger(guests) && guests >= 0 && guests <= 20) body.guests = guests;
+    return (await this._messageOp(FEATURES_14.events, () => this.api.rsvp(messageId, body))).message || null;
+  }
+
+  async checkItem(messageId, itemId, done) {
+    return (await this._messageOp(FEATURES_14.events, () => this.api.checkItem(messageId, itemId, done === true))).message || null;
+  }
+
+  /** PATCH messages/:id/event (the creator or a group admin): any send field, `cancelled: true`. */
+  async editEvent(messageId, patch) {
+    const body = normalizeEvent(patch, { partial: true });
+    return (await this._messageOp(FEATURES_14.events, () => this.api.patchEvent(messageId, body))).message || null;
+  }
+
+  /** Stop an own live arrival (started on a phone). */
+  async stopArrival(messageId) {
+    return (await this._messageOp(FEATURES_14.arrival, () => this.api.stopArrival(messageId))).message || null;
+  }
+
+  // ── Messenger 1.4.0: home actions, plugin cards ──────────
+
+  /** The quick actions the person may run (attach menu), cached for actionsTtlMs. */
+  async actions({ refresh = false } = {}) {
+    this._need(FEATURES_14.actions);
+    if (!refresh && this._actions.list && this.now() - this._actions.at < this.timing.actionsTtlMs) return this._copy(this._actions.list);
+    const r = await this.api.actions();
+    const list = (Array.isArray(r.actions) ? r.actions : []).filter((a) => a && typeof a.id === 'string');
+    this._actions = { at: this.now(), list };
+    return this._copy(list);
+  }
+
+  /**
+   * Run (op 'run', a card button with { actionId, plugin }), approve or deny
+   * an action message → { message, result: { ok, message, state, error } | null }.
+   */
+  async actionOp(messageId, op, { actionId, plugin } = {}) {
+    if (!['run', 'approve', 'deny'].includes(op)) throw new MessengerError('invalid', { code: 'invalid' });
+    const body = {};
+    if (op === 'run' && typeof actionId === 'string' && actionId) body.actionId = actionId.slice(0, 200);
+    if (op === 'run' && typeof plugin === 'string' && /^[a-z0-9][a-z0-9-]{0,80}$/.test(plugin)) body.plugin = plugin;
+    const r = await this._messageOp(FEATURES_14.actions, () => this.api.action(messageId, op, body));
+    const res = r.result && typeof r.result === 'object' ? r.result : null;
+    return { message: r.message || null, result: res ? { ok: res.ok === true, message: typeof res.message === 'string' ? res.message : null, state: res.state == null ? null : res.state, error: res.error || null } : null };
+  }
+
+  /** The picture of a plugin card (base64 from the server) → { mime, data: Buffer } (cached). */
+  async cardImage(messageId) {
+    const id = posInt(messageId);
+    if (!id) throw new MessengerError('invalid', { code: 'invalid' });
+    const key = `card:${id}`;
+    const hit = this._media.get(key);
+    if (hit) return hit;
+    if (this._inflight.has(key)) return this._inflight.get(key);
+    const run = this.api.cardImage(id).then((r) => {
+      const mime = baseMime(r.mime);
+      if (!/^image\/(png|jpeg|webp)$/.test(mime) || typeof r.data !== 'string' || !/^[A-Za-z0-9+/=\s]+$/.test(r.data)) throw new MessengerError('bad picture', { code: 'bad_response' });
+      const data = Buffer.from(r.data, 'base64');
+      if (!data.length) throw new MessengerError('bad picture', { code: 'bad_response' });
+      const out = { mime, data };
+      this._media.set(key, out);
+      return out;
+    }).finally(() => this._inflight.delete(key));
+    this._inflight.set(key, run);
+    return run;
+  }
+
+  // ── Storage ──────────────────────────────────────────────
+
+  /**
+   * What the chats use: the in-memory caches of this PC, the outbox and the
+   * server's limits (`GET me`: maxBytes, quotaFull, retentionDays).
+   */
+  storage() {
+    const limits = (this._me && this._me.limits) || {};
+    let cachedMessages = 0;
+    for (const st of this._msgs.values()) cachedMessages += st.list.length;
+    return {
+      mediaCacheBytes: this._media.bytes,
+      avatarCacheBytes: this._avatars.bytes,
+      cachedChats: this._convs.size,
+      cachedMessages,
+      outbox: this.outbox.size(),
+      server: {
+        maxBytes: Number.isFinite(limits.maxBytes) ? limits.maxBytes : null,
+        quotaFull: limits.quotaFull === true,
+        retentionDays: Number.isFinite(limits.retentionDays) ? limits.retentionDays : null,
+      },
+    };
+  }
+
+  /** Forget downloaded pictures and files of this session (they are loaded again when shown). */
+  clearMediaCache() {
+    this._media.clear();
+    this._avatars.clear();
+    return this.storage();
+  }
+
+  _copy(v) {
+    return v == null ? v : JSON.parse(JSON.stringify(v));
+  }
+
   // ── Live events ──────────────────────────────────────────
 
   _onLive(type, d) {
@@ -1136,20 +1578,34 @@ class MessengerService extends EventEmitter {
       }
       case 'message.update': {
         if (!cid) return;
-        const st = this._msgs.get(cid);
-        const mid = posInt(d.messageId);
-        if (st && st.loaded && mid && this._lists(st).some((l) => l.some((m) => m.id === mid))) {
-          const t = Date.parse(d.editedAt);
-          const since = Number.isFinite(t) ? new Date(t - 1).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
-          this.api.messages(cid, { changedSince: since, limit: 100 }).then((r) => {
-            this._mergeKnown(st, r.messages);
-            this.emit('messages', { conversationId: cid, reason: 'update' });
-            this._persist();
-          }).catch(() => {});
-        }
+        this._fetchChanged(cid, posInt(d.messageId), d.editedAt);
         this._refreshConvSoon(cid);
         break;
       }
+      // 1.4.0: a poll, event, action or live arrival changed → changedSince.
+      case 'poll.update':
+      case 'event.update':
+      case 'action.update':
+      case 'arrival.update': {
+        if (!cid) return;
+        this._fetchChanged(cid, posInt(d.messageId), d.updatedAt);
+        // nextEvent of the conversation (events) and the list preview
+        if (type === 'event.update' || this._isLast(cid, posInt(d.messageId))) this._refreshConvSoon(cid);
+        break;
+      }
+      case 'status.update':
+      case 'story.new':
+      case 'story.remove':
+        this._refreshFeedSoon();
+        break;
+      case 'lists.update':
+        if (this.supports(FEATURES_14.tools)) {
+          this.lists({ refresh: true }).then((l) => this.emit('lists', l)).catch(() => {});
+        }
+        break;
+      case 'reminders.update':
+        this.emit('reminders', {});
+        break;
       case 'message.delete': {
         if (!cid) return;
         const ids = (Array.isArray(d.messageIds) ? d.messageIds : []).map(posInt).filter(Boolean);
@@ -1206,7 +1662,12 @@ class MessengerService extends EventEmitter {
         // Every reason (and unknown ones) → GET conversations/:id. `released`
         // (1.1.0): the managed group became a normal one — managedBy, can.*
         // and the info pane change; the system message comes as message.new.
+        // 1.4.0: archive, pins, blocks (blocks: people and the feed as well).
         this._refreshConvSoon(cid);
+        if (String(d.reason || '').split(',').includes('blocks')) {
+          this._people = { at: 0, list: null };
+          this._refreshFeedSoon();
+        }
         break;
       case 'conversation.remove':
         if (cid) this._drop(cid);
@@ -1214,6 +1675,30 @@ class MessengerService extends EventEmitter {
       default:
         break;
     }
+  }
+
+  /**
+   * A cached message changed (edit, reactions, 1.4.0 polls / events / actions /
+   * arrivals): GET messages?changedSince=<at − 1 ms> and merge what is cached.
+   */
+  _fetchChanged(cid, mid, at) {
+    const st = this._msgs.get(cid);
+    if (!st || !st.loaded || !mid || !this._lists(st).some((l) => l.some((m) => m.id === mid))) return;
+    const t = Date.parse(at);
+    const since = Number.isFinite(t) ? new Date(t - 1).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
+    this.api.messages(cid, { changedSince: since, limit: 100 }).then((r) => {
+      this._mergeKnown(st, r.messages);
+      const c = this._convs.get(cid);
+      const fresh = Array.isArray(r.messages) && c && c.lastMessage ? r.messages.find((m) => m && m.id === c.lastMessage.id) : null;
+      if (fresh) c.lastMessage = fresh;
+      this.emit('messages', { conversationId: cid, reason: 'update' });
+      this._persist();
+    }).catch(() => {});
+  }
+
+  _isLast(cid, mid) {
+    const c = this._convs.get(cid);
+    return !!(c && c.lastMessage && c.lastMessage.id === mid);
   }
 
   /**
@@ -1291,6 +1776,8 @@ class MessengerService extends EventEmitter {
 
   async _resync() {
     await this.refreshConversations({ full: !this._lastSync });
+    // 1.4.0: status / story events of the gap are lost as well.
+    if (this._feed.data) this._refreshFeedSoon();
     const ids = [...this._msgs.keys()].filter((id) => this._msgs.get(id).loaded);
     for (const id of ids) {
       if (id === this._open.id || ids.length <= 5) await this._loadChanged(id).catch(() => {});

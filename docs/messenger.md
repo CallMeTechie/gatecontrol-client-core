@@ -151,13 +151,79 @@ renderer in the apps; Chromium's viewer cannot render off-screen).
 The core knows the `GET me` feature keys of its version
 (`messengerUtil.KNOWN_FEATURES`: `direct`, `groups`, `voice`, `files`,
 `location`, `reactions`, `edit`, `search`, `disappearing`, `bridges`, `e2e`,
-`video_meta`, `file_thumbs`). When the server sets any other key to `true`,
+`video_meta`, `file_thumbs` and the 1.4.0 keys `status`, `stories`, `polls`,
+`events`, `arrival`, `actions`, `msg_tools`, `privacy2`). When the server sets any other key to `true`,
 `status().updateHint` is `{ features: [keys], key }` and the Chats view shows
 a small banner on top: „Für alle Chat-Funktionen gibt es eine neuere Version
 von GateControl“ with "Nach Updates suchen" (the app's update check in
 Settings › About) and a close button — `chat.dismissUpdateHint()` hides it
 until the set of unknown keys changes (store key `messengerUpdateHint`).
 Nothing is blocked; everything this version knows keeps working.
+
+## Messenger 1.4.0
+
+Status and stories, privacy, chat tools, polls, events, live arrival and
+home actions (plugin README "App-API → Since 1.4.0"; server GateControl ≥
+1.180.0). `GET me` → `features` is an object of the keys that are `true`
+(absent = not offered — never `false`); every part is used only when its key
+is there, every 1.4.0 call of a server without it answers `{ ok: false, code:
+'unsupported' }` without asking the server:
+
+| Key | Core | Apps (Chats page) |
+|---|---|---|
+| `status` | `statusFeed()`, `setStatus()`, `clearStatus()`; the feed is cached (60 s) and fetched again on `status.update`, `story.new`, `story.remove` and after a reconnect → event `feed` | own avatar in the list head ("Dein Status": text ≤ 60, presets, "Löschen nach", "Sichtbar für"), the status strip under "Angeheftet" (glowing ring while a person has unseen stories) |
+| `stories` | `createStory()` (picture / video uploaded first, the preview before the file), `deleteStory()`, `storySeen()` (the cached feed marks it seen), `storyViewers()`, `storyReact()` | story viewer (text, picture, video; progress, ←/→, reply → a direct message with `replyStory`, reactions, viewers of one's own), "Status erstellen" (text with colour / font, picture or video) |
+| `polls` | `send({ kind: 'poll', poll })`, `vote()`, `addPollOption()`, `closePoll()`, `nudgePoll()` | "Abstimmung erstellen" in the attach menu, poll bubble (vote, add an answer, votes, remind, close) |
+| `events` | `send({ kind: 'event', event })`, `rsvp()`, `checkItem()`, `editEvent()` (PATCH, also `cancelled: true`) | "Ereignis erstellen" (Familie places when `integrations.familie.places`), event bubble (RSVP with guests, checklist, edit / cancel), the bar of `conversation.nextEvent` |
+| `arrival` | `stopArrival()` — **Windows sends no arrivals** (no GPS) | arrival bubble (live / arrived / stopped, ETA, distance, progress, map preview and "Auf Karte"; an own live one can be stopped) |
+| `actions` | `actions()` (cached 60 s), `send({ kind: 'action', action })`, `actionOp(id, 'run'\|'approve'\|'deny', { actionId, plugin })`, `cardImage(id)` (base64 → bytes, checked image type, cached) | "Aus deinem Zuhause" in the attach menu (run / request / grant), action bubbles (state `done` only after an approved request), plugin cards (picture, buttons, the `link` route — e.g. the doorbell's "Live-Bild" `plg-gatecontrol-door` — opened as that portal tab) |
+| `msg_tools` | `archive()`, `pin()`, `lists()` / `saveLists()` (event `lists`), `setBlocked()`, `blocks()`, `exportChat()` (all parts, oldest first), `remind()`, `reminders()`, `deleteReminder()` (event `reminders`), `suggest()`, `toList()`, `toCalendar()`, `places()` | "Archiviert", pinned messages bar, chips (Alle, Ungelesen, Gruppen, own lists), block / unblock, export (save dialog, UTF-8 text), "Erinnere mich", "Auf Einkaufsliste" / "Termin anlegen" when Familie offers them |
+| `privacy2` | `setPrefs({ privacy, notify, chats })` (partial, only known keys and values — `messengerUtil.prefsBody`) | the settings page (below), "online" / "zuletzt online" in direct chats |
+
+`status().me` keeps the whole `prefs` (with `privacy`, `notify`, `chats` when
+the server sends them) and `integrations: { familie: { lists, calendar,
+places } }`. Archived chats do not count in `unreadTotal()` (nav badge,
+tray). Sending checks the bodies like the server (`messengerUtil.buildSendBody`:
+poll 2…12 distinct options, event times / reminder minutes, action modes, a
+grant needs `toUserId` and `until`) — `poll`, `event` and `action` carry no
+text, no meta.
+
+**Live events.** `poll.update`, `event.update`, `action.update`,
+`arrival.update` → `messages?changedSince=<updatedAt − 1 ms>` for a cached
+message (event `messages`); `event.update` and a changed newest message also
+refresh the conversation (`nextEvent`, list preview). `conversation.update`
+with `archive` / `pins` / `blocks` → `GET conversations/:id` (blocks: the
+people and the feed as well).
+
+**Messages of unknown kinds** (a newer server) are drawn as a neutral bubble
+„Diese Nachricht braucht eine neuere App-Version“; the update hint above
+covers unknown feature keys.
+
+**Pushes.** Poll, event, arrival and action messages come as chat pushes with
+the server's texts ("📊 Umfrage: …", "Bittet um: …" — only to approvers).
+Pushes with `data.kind` (`reminder`, `event_reminder`, `event_departure`,
+`poll_nudge`, `arrived`, `action_approved`, `action_denied`, `reaction`) are
+shown with the server's title and body as they are, in a toast of their own
+per kind (`chat-<id>-<kind>`) that a new message of the chat does not
+replace; they are acked with the chat (`parseChatNotification` → `pushKind`,
+`deepLink`, `reminderId`). The server already respects `dnd`, `notify.*` and
+mutes.
+
+### The settings page (apps)
+
+"Chat-Einstellungen" is a page over the chat view (gear in the list head),
+sections on the left: **Konto** (profile, status, "Im Portal ändern"),
+**Datenschutz** (last seen, picture, status default, place in status, groups,
+default disappearing timer, read receipts, "schreibt …", blocked people),
+**Benachrichtigungen** (preview, mentions only, reactions, status digest,
+event reminder; the sound of this PC), **Chats** (Enter sends, font size,
+archived chats stay archived, export), **Listen**, **Erinnerungen**,
+**Speicher** (`storage()`: server quota full or not, largest file, retention;
+caches of this PC, `clearMediaCache()`), **Haus-Aktionen** (which actions the
+attach menu shows — this PC). Without `privacy2` / `msg_tools` / `actions`
+the page keeps the 1.0 settings (read receipts, typing, preview). Settings of
+this PC are in `localStorage` (`gc.chat.enterSends`, `gc.chat.fontSize`,
+`gc.chat.sound`, `gc.chat.hiddenActions`).
 
 ## Locations ("Standort senden")
 
@@ -258,13 +324,19 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | `markRead(id, upTo?)`, `typing(id, { stop })`, `setOpen({ id, visible })`, `setViewOpen(open)` | |
 | `people()`, `createConversation(…)`, `updateConversation(id, patch, { avatar })`, `setPrefs(patch)`, `search(id, q)`, `mediaList(id, opts)` | |
 | `media(mediaId)`, `avatar(path)` | `{ mime, data }` (memory LRU 48 MB / 8 MB) |
-| `unreadTotal()` | unread messages of the chats that are not muted (nav badge, tray) |
+| `unreadTotal()` | unread messages of the chats that are neither muted nor archived (nav badge, tray) |
+| 1.4.0: `statusFeed({ refresh })`, `setStatus(s)`, `clearStatus()`, `createStory(s)`, `deleteStory(id)`, `storySeen(id)`, `storyViewers(id)`, `storyReact(id, emoji)` | status and stories |
+| 1.4.0: `archive(id, archived)`, `pin(id, messageId, pinned)`, `lists()`, `saveLists(lists)`, `blocks()`, `setBlocked(userId, blocked)`, `exportChat(id)`, `remind(messageId, at)`, `reminders()`, `deleteReminder(id)`, `suggest(messageId)`, `toList(messageId, { items, list })`, `toCalendar(messageId, ev)`, `places()` | chat tools, Familie |
+| 1.4.0: `vote(id, optionIds)`, `addPollOption(id, text)`, `closePoll(id)`, `nudgePoll(id)`, `rsvp(id, answer, guests)`, `checkItem(id, itemId, done)`, `editEvent(id, patch)`, `stopArrival(id)` | → the changed message (cached one replaced) |
+| 1.4.0: `actions({ refresh })`, `actionOp(id, op, { actionId, plugin })`, `cardImage(id)` | home actions, plugin cards |
+| `storage()` / `clearMediaCache()` | caches of this PC and the server's limits |
 | `resetForNewServer()` | |
 
 Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `{ conversationId, reason }`, `typing` `{ conversationId, userIds }`,
 `unread` (total), `outbox` `{ conversationId }`, `read-local`, `read-self`,
-`send-failed` `{ conversationId, clientId, error, source }`.
+`send-failed` `{ conversationId, clientId, error, source }`; 1.4.0: `feed`
+(the status feed), `lists`, `reminders`.
 
 ### IPC / bridge
 
@@ -272,9 +344,16 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `messages`, `send`, `retry`, `discard`, `edit`, `remove`, `react`, `read`,
 `typing`, `open`, `view`, `people`, `create`, `update`, `prefs`, `search`,
 `mediaList`, `media`, `avatar`, `saveMedia`, `openMedia`, `mapTile`,
-`mapSearch`, `mapReverse`, `dismissUpdateHint`; events `onState`,
-`onConversations`, `onMessages`, `onTyping`, `onUnread`, `onOutbox`,
-`onNavigate` (`{ conversationId }`, toast click). Arguments and answers:
+`mapSearch`, `mapReverse`, `dismissUpdateHint`; 1.4.0: `statusFeed`,
+`setStatus`, `clearStatus`, `createStory`, `deleteStory`, `storySeen`,
+`storyViewers`, `storyReact`, `blocks`, `block`, `archive`, `pin`, `lists`,
+`saveLists`, `exportChat` (save dialog), `remind`, `reminders`,
+`deleteReminder`, `suggest`, `toList`, `toCalendar`, `places`, `poll(id, op,
+args)`, `event(id, op, args)`, `stopArrival`, `actions`, `action(id, op,
+args)`, `cardImage` (`{ mime, data: Uint8Array }`), `storage`,
+`clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+`onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
+`onFeed`, `onLists`, `onReminders`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
 `{ ok: false, code, error }` — `chat.error.<code>` has the text.
 
@@ -290,3 +369,8 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
   (Electron 44 in both apps) and the app's start-menu shortcut (AUMID), like
   every Windows toast; the portable build shows no toasts.
 * Bridges (WhatsApp, Signal, …) and end-to-end encryption are not part of V1.
+* Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
+  departure hint push of an event opens the chat.
+* Server storage: the server reports only whether the chat file quota is
+  full and the largest file (`limits.quotaFull`, `maxBytes`), not the bytes
+  used.
