@@ -910,7 +910,13 @@
       "cleared": "Status cleared",
       "saved": "Status saved",
       "needText": "Please enter a text or pick a preset.",
-      "needPeople": "Please select at least one person."
+      "needPeople": "Please select at least one person.",
+      "addStory": "Add status",
+      "viewMine": "View my stories",
+      "myStoriesTitle": "My stories",
+      "storiesOne": "1 story active",
+      "storiesN": "{{n}} stories active",
+      "open": "View"
     },
     "story": {
       "title": "Status",
@@ -946,7 +952,12 @@
       "replyHint": "The reply goes to your chat with {{name}}, with a preview of this status",
       "replied": "Reply to {{name}} sent",
       "place": "Place: {{place}}",
-      "quote": "Status of {{name}}"
+      "quote": "Status of {{name}}",
+      "duration": "Duration",
+      "hours": "{{n}} h",
+      "hintTime": "Your status disappears after {{time}}. Replies come to you as chat messages.",
+      "sharing": "Sharing …",
+      "failed": "Not shared: {{error}}"
     },
     "set": {
       "title": "Chat settings",

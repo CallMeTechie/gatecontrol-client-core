@@ -910,7 +910,13 @@
       "cleared": "Status gelöscht",
       "saved": "Status gespeichert",
       "needText": "Bitte einen Text eingeben oder eine Vorlage wählen.",
-      "needPeople": "Bitte mindestens eine Person auswählen."
+      "needPeople": "Bitte mindestens eine Person auswählen.",
+      "addStory": "Status hinzufügen",
+      "viewMine": "Meine Storys ansehen",
+      "myStoriesTitle": "Meine Storys",
+      "storiesOne": "1 Story aktiv",
+      "storiesN": "{{n}} Storys aktiv",
+      "open": "Ansehen"
     },
     "story": {
       "title": "Status",
@@ -946,7 +952,12 @@
       "replyHint": "Antwort landet im Chat mit {{name}}, mit Vorschau dieses Status",
       "replied": "Antwort an {{name}} gesendet",
       "place": "Ort: {{place}}",
-      "quote": "Status von {{name}}"
+      "quote": "Status von {{name}}",
+      "duration": "Dauer",
+      "hours": "{{n}} Std.",
+      "hintTime": "Dein Status verschwindet nach {{time}}. Antworten kommen als Chat-Nachricht zu dir.",
+      "sharing": "Wird geteilt …",
+      "failed": "Nicht geteilt: {{error}}"
     },
     "set": {
       "title": "Chat-Einstellungen",

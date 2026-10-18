@@ -234,6 +234,8 @@ describe('messenger utils – Messenger 1.4.0', () => {
   it('knows the 1.4.0 feature keys (no update hint for them)', () => {
     assert.deepEqual(u.unknownFeatures({ status: true, stories: true, polls: true, events: true, arrival: true, actions: true, msg_tools: true, privacy2: true }), []);
     assert.deepEqual(u.unknownFeatures({ polls: true, calls: true }), ['calls']);
+    assert.deepEqual(u.unknownFeatures({ stories: true, story_duration: true }), [], '1.4.1 story_duration is known');
+    assert.equal(u.FEATURES_14.storyDuration, 'story_duration');
     assert.equal(u.hasFeature({ polls: true }, 'polls'), true);
     assert.equal(u.hasFeature({}, 'polls'), false);
   });
@@ -267,8 +269,24 @@ describe('messenger utils – Messenger 1.4.0', () => {
     assert.deepEqual(u.storyBody({ kind: 'text', text: 'Hi', bg: '#123456', font: 'mono', eventMessageId: '12' }), { kind: 'text', text: 'Hi', bg: '#123456', font: 'mono', eventMessageId: 12 });
     assert.deepEqual(u.storyBody({ kind: 'image', bg: 'red', font: 'comic' }), { kind: 'image' });
     assert.throws(() => u.storyBody({ kind: 'text' }), { code: 'invalid' });
+    // 1.4.1 durationH: only with the allowed durations, another value is refused
+    assert.deepEqual(u.storyBody({ kind: 'text', text: 'Hi', durationH: 3 }), { kind: 'text', text: 'Hi' }, 'without durations: left out (24 h)');
+    assert.deepEqual(u.storyBody({ kind: 'text', text: 'Hi', durationH: '6' }, { durations: u.STORY_DURATIONS_H }), { kind: 'text', text: 'Hi', durationH: 6 });
+    assert.deepEqual(u.storyBody({ kind: 'text', text: 'Hi' }, { durations: u.STORY_DURATIONS_H }), { kind: 'text', text: 'Hi' });
+    assert.throws(() => u.storyBody({ kind: 'text', text: 'Hi', durationH: 5 }, { durations: u.STORY_DURATIONS_H }), { code: 'invalid' });
+    assert.throws(() => u.storyBody({ kind: 'text', text: 'Hi', durationH: 24 }, { durations: [1, 3] }), { code: 'invalid' });
     assert.deepEqual(u.listsBody({ lists: [{ id: 'a', name: 'A', conversationIds: [1, 1, -2] }] }), [{ id: 'a', name: 'A', conversationIds: [1] }]);
     assert.throws(() => u.listsBody(Array.from({ length: 21 }, (_, i) => ({ id: `l${i}`, name: 'x' }))), { code: 'invalid' });
+  });
+
+  it('story durations of the server limits (Messenger 1.4.1)', () => {
+    assert.deepEqual(u.STORY_DURATIONS_H, [1, 3, 6, 12, 24]);
+    assert.equal(u.STORY_DURATION_DEFAULT_H, 24);
+    assert.deepEqual(u.storyDurationsOf({ storyDurationsH: [24, 1, 3, 6, 12] }), [1, 3, 6, 12, 24]);
+    assert.deepEqual(u.storyDurationsOf({ storyDurationsH: [3, 24, 48] }), [3, 24], 'unknown values dropped');
+    assert.deepEqual(u.storyDurationsOf({}), [1, 3, 6, 12, 24]);
+    assert.deepEqual(u.storyDurationsOf(null), [1, 3, 6, 12, 24]);
+    assert.deepEqual(u.storyDurationsOf({ storyDurationsH: [48] }), [1, 3, 6, 12, 24]);
   });
 
   it('Familie integrations and card routes', () => {

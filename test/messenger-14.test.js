@@ -139,6 +139,33 @@ describe('Messenger 1.4.0 – status and stories', () => {
     assert.equal(srv.state.stories.length, 1);
   });
 
+  it('story duration (1.4.1): durationH sent only with story_duration, one of limits.storyDurationsH', async () => {
+    const { srv, ipc } = await setup({ features: { ...FEATURES_14, story_duration: true } });
+    const lastBody = () => srv.state.requests.filter((x) => x.method === 'POST' && x.path.endsWith('/status/stories')).at(-1).body;
+    const r = await ipc('chat:story:create', { kind: 'text', text: 'Kurz', durationH: 3 });
+    assert.equal(r.ok, true);
+    assert.deepEqual(lastBody(), { kind: 'text', text: 'Kurz', durationH: 3 });
+    const left = Date.parse(r.story.expiresAt) - Date.parse(r.story.createdAt);
+    assert.equal(left, 3 * 3600000);
+    const img = await ipc('chat:story:create', { kind: 'image', durationH: 12, file: { mime: 'image/webp', data: new Uint8Array([1, 2]) } });
+    assert.equal(img.ok, true);
+    assert.equal(lastBody().durationH, 12);
+    const n = srv.state.requests.length;
+    assert.equal((await ipc('chat:story:create', { kind: 'text', text: 'Zu lang', durationH: 48 })).code, 'invalid');
+    assert.equal((await ipc('chat:story:create', { kind: 'text', text: 'Krumm', durationH: 2 })).code, 'invalid');
+    assert.equal(srv.state.requests.length, n, 'refused without asking the server');
+    assert.equal((await ipc('chat:story:create', { kind: 'text', text: 'Standard' })).ok, true);
+    assert.equal(lastBody().durationH, undefined, 'no choice → the server default (24 h)');
+  });
+
+  it('story duration: a 1.4.0 server (no story_duration) gets no durationH', async () => {
+    const { srv, ipc } = await setup();
+    const r = await ipc('chat:story:create', { kind: 'text', text: 'Alt', durationH: 3 });
+    assert.equal(r.ok, true);
+    assert.deepEqual(srv.state.requests.filter((x) => x.path.endsWith('/status/stories')).at(-1).body, { kind: 'text', text: 'Alt' });
+    assert.equal(Date.parse(r.story.expiresAt) - Date.parse(r.story.createdAt), 24 * 3600000);
+  });
+
   it('status.update / story.new on the stream → the feed is fetched again (event chat:feed)', async () => {
     const { srv, sent, ipc } = await setup({ push: true });
     await ipc('chat:status:feed', {});
