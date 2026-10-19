@@ -9,7 +9,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const Conf = require('conf');
+// conf (under electron-store 11) is ESM-only: require() gives its namespace.
+const ConfModule = require('conf');
+const Conf = ConfModule.default || ConfModule;
 const {
   notificationsSchema, NOTIFICATION_DEFAULTS, NOTIFICATION_WRITABLE_KEYS, readNotificationSettings,
 } = require('../src/utils/notify-schema');
