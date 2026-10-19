@@ -14,7 +14,10 @@
 const crypto = require('crypto');
 const path = require('path');
 const fsSync = require('fs');
-const Store = require('electron-store');
+// electron-store 9+ is ESM-only; Electron's Node loads it through require() and
+// hands back the module namespace, the class is its default export.
+const ElectronStore = require('electron-store');
+const Store = ElectronStore.default || ElectronStore;
 const { notificationsSchema } = require('./notify-schema');
 
 /**
