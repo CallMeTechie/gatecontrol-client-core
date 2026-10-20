@@ -25,6 +25,7 @@ const MessengerApi = require('./services/messenger-api');
 const MessengerOutbox = require('./services/messenger-outbox');
 const ChatNotifier = require('./services/chat-notifier');
 const MapService = require('./services/map-service');
+const SchoolService = require('./services/school');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -45,6 +46,7 @@ const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tr
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
+const schoolUtil = require('./utils/school');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -86,6 +88,7 @@ module.exports = {
   MessengerOutbox,
   ChatNotifier,
   MapService,
+  SchoolService,
 
   // Utils
   validation,
@@ -118,6 +121,7 @@ module.exports = {
   mandatoryNotice,
   clientPolicy,
   messengerUtil,
+  schoolUtil,
 
   // Support bundle
   collectSupportBundle,

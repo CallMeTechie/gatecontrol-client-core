@@ -1050,5 +1050,92 @@
       "noActions": "There are no home actions for you.",
       "needsConfirm": "with confirmation"
     }
+  },
+  "school": {
+    "title": "School",
+    "refresh": "Refresh",
+    "children": "Children",
+    "klasse": "Class {{name}}",
+    "updated": "Updated {{time}}",
+    "updatedNever": "Not fetched from WebUntis yet",
+    "todayAt": "today {{time}}",
+    "stale": "No connection – you are seeing the last loaded state.",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "today": "Today",
+    "noLessons": "No lessons",
+    "period": "Lesson {{n}}",
+    "periods": "Lessons {{from}}–{{to}}",
+    "exam": "Exam",
+    "homework": "Homework",
+    "homeworkDone": "Done",
+    "homeworkGiven": "set on {{date}}",
+    "inboxOpen": "Open in the timetable",
+    "tab": {
+      "week": "Week",
+      "changes": "Changes",
+      "messages": "Messages",
+      "absences": "Absences"
+    },
+    "week": {
+      "label": "Choose week",
+      "this": "This week",
+      "next": "Next week",
+      "range": "{{from}} – {{to}}"
+    },
+    "state": {
+      "cancelled": "Cancelled",
+      "changed": "Substitution",
+      "extra": "Extra"
+    },
+    "change": {
+      "cancelled": "Cancelled",
+      "changed": "Substitution",
+      "extra": "Extra lesson",
+      "restored": "Takes place",
+      "detected": "detected {{time}}"
+    },
+    "changes": {
+      "empty": "No changes in the last {{days}} days"
+    },
+    "messages": {
+      "empty": "No messages from the school in the last {{days}} days",
+      "new": "New",
+      "noSubject": "(no subject)",
+      "noBody": "Only the preview is available.",
+      "attachments": "With attachment",
+      "attachmentsHint": "You can open attachments in WebUntis."
+    },
+    "absences": {
+      "empty": "No absences in the last {{days}} days"
+    },
+    "abs": {
+      "excused": "Excused",
+      "unexcused": "Not excused",
+      "open": "Open",
+      "allDay": "All day",
+      "from": "from {{time}}",
+      "range": "{{from}} – {{to}}"
+    },
+    "noStudents": {
+      "title": "No timetable",
+      "hint": "No student is shared with you in GateControl. An administrator sets this up in the portal under “School”."
+    },
+    "unavailable": {
+      "title": "School is not available",
+      "hint": "The server does not offer the School plugin to this device right now."
+    },
+    "err": {
+      "title": "Timetable not reachable",
+      "network": "No connection to the server.",
+      "timeout": "The server does not answer.",
+      "server": "The server reports an error.",
+      "forbidden": "No access to the timetable.",
+      "auth": "This device's sign-in is no longer valid.",
+      "invalid": "The request was invalid.",
+      "unsupported": "This needs a newer version of the School plugin.",
+      "not_configured": "This device is not connected to a server yet.",
+      "failed": "That did not work ({{code}})."
+    }
   }
 }

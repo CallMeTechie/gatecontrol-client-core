@@ -65,6 +65,7 @@ describe('createBridgeApi', () => {
       'notify:action', 'notify:dnd', 'notify:list', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open',
       'notify:read', 'notify:status', 'notify:test',
       'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
+      'school:absences', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy', 'wireguard:check',
@@ -75,7 +76,7 @@ describe('createBridgeApi', () => {
       'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:typing', 'chat:unread',
       'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
-      'peer-expiry', 'policy:changed', 'portal-url', 'tunnel-state', 'update-ready', 'update:policy',
+      'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
     ]);
   });
 
@@ -138,6 +139,7 @@ describe('createBridgeApi', () => {
       openPortal() {},
       notificationCenter: { on() {} },
       messenger: { on() {} },
+      school: { on() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });
