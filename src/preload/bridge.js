@@ -232,6 +232,21 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onNavigate:      (cb) => subscribe('chat:navigate', cb),
     },
 
+    // ── Schule (plugin gatecontrol-schule, WebUntis) ─────
+    // Served when the app passes a SchoolService to registerBaseHandlers.
+    school: {
+      status:    () => ipcRenderer.invoke('school:status'),
+      check:     () => ipcRenderer.invoke('school:check'),
+      // from / to: 'YYYY-MM-DD' (≤ 14 days); opts: { refresh }
+      timetable: (from, to, opts) => ipcRenderer.invoke('school:timetable', { from, to, refresh: !!(opts && opts.refresh) }),
+      changes:   (days, opts) => ipcRenderer.invoke('school:changes', { days, refresh: !!(opts && opts.refresh) }),
+      messages:  (days, opts) => ipcRenderer.invoke('school:messages', { days, refresh: !!(opts && opts.refresh) }),
+      absences:  (days, opts) => ipcRenderer.invoke('school:absences', { days, refresh: !!(opts && opts.refresh) }),
+      avatar:    (url) => ipcRenderer.invoke('school:avatar', { url }),
+      onState:   (cb) => subscribe('school:state', cb),
+      onPush:    (cb) => subscribe('school:push', cb),
+    },
+
     // ── Shell ────────────────────────────────────────────
     shell: {
       openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),

@@ -11,7 +11,8 @@
  *   - Windows toasts via `toastXml`, action buttons via protocol activation
  *     (see utils/toast-xml.js) → ack with action, open an app route, open the
  *     portal (one-time login link) or mute the topic for 1 h;
- *   - click → show the app window on the inbox entry (event 'navigate');
+ *   - click → show the app window on the inbox entry (event 'navigate'),
+ *     or on an app page that claimed the entry (addClickRoute, e.g. Schule);
  *   - "Nicht stören bis" (notifications.dndUntil); critical still shows when
  *     notifications.criticalBypass is on;
  *   - local inbox cache (last 100, encrypted store key `notificationsInbox`),
@@ -27,7 +28,8 @@
  *   'update'   ({ reason, ids, unread })   inbox changed: read | revoke | sync | clear | action
  *   'unread'   (count)                     unread count changed (tray badge)
  *   'status'   (status())                  push / DND state changed
- *   'navigate' ({ route, id })             show this app route ('inbox' + id = entry)
+ *   'navigate' ({ route, id, context? })   show this app route ('inbox' + id = entry;
+ *                                          context: what addClickRoute's resolver returned)
  *   'portal'   ({ path })                  portal path requested (when no openPortal is given)
  *   'action'   ({ id, seq, action, type }) an action was performed
  *
@@ -170,6 +172,7 @@ class NotificationCenter extends EventEmitter {
 
     this.pushClient = null;
     this._chat = null;
+    this._clickRoutes = new Map(); // app route → resolver(entry) (addClickRoute)
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
     this._byCollapse = new Map(); // collapse_key → notification id
@@ -798,8 +801,43 @@ class NotificationCenter extends EventEmitter {
 
   _onToastClick(id) {
     this._show();
-    this.emit('navigate', { route: 'inbox', id });
+    const entry = this._items.find((e) => e.id === id);
+    const target = entry ? this.clickTarget(entry) : null;
+    this.emit('navigate', target ? { route: target.route, id, context: target.context } : { route: 'inbox', id });
     this.markRead([id]).catch(() => {});
+  }
+
+  // ── App pages that open their own entries ────────────────
+
+  /**
+   * A click on the toast of an entry normally opens it in the inbox. An app
+   * page with its own view of a plugin (e.g. Schule) can claim its entries:
+   * `resolve(entry)` → a context object (or true) when the page should open
+   * — navigate { route, id, context } — and null / false otherwise (the
+   * page is not available, the entry is not one of its own; the inbox opens
+   * as before). The route must be an app route (`plg-<id>`, …).
+   * @returns {() => void} removes the resolver again
+   */
+  addClickRoute(route, resolve) {
+    if (!APP_ROUTE_RE.test(String(route)) || route === 'inbox' || typeof resolve !== 'function') {
+      throw new TypeError('addClickRoute: app route and resolver required');
+    }
+    this._clickRoutes.set(route, resolve);
+    return () => { if (this._clickRoutes.get(route) === resolve) this._clickRoutes.delete(route); };
+  }
+
+  /**
+   * Where a click on this entry leads: { route, context } of the first
+   * resolver that claims it, or null (inbox). Resolver errors count as null.
+   */
+  clickTarget(entry) {
+    if (!entry || !this._clickRoutes.size) return null;
+    for (const [route, resolve] of this._clickRoutes) {
+      let ctx = null;
+      try { ctx = resolve(entry); } catch (err) { this.log.warn(`Click route ${route} failed: ${err.message}`); }
+      if (ctx) return { route, context: ctx && typeof ctx === 'object' ? ctx : null };
+    }
+    return null;
   }
 
   _show() {

@@ -297,6 +297,7 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `notify({ title, body, priority, collapseKey, force, onClick })` | local app notification through the same wrapper |
 | `handleArgv(argv)` / `handleProtocolUrl(url)` | toast button activation |
 | `openInbox(id?)` | show the window on the inbox (event `navigate`) |
+| `addClickRoute(route, resolve)` / `clickTarget(entry)` | an app page claims its entries: a toast click opens `route` (event `navigate` `{ route, id, context }`, context = `resolve(entry)`) instead of the inbox while `resolve` answers; used by `SchoolService` (`plg-gatecontrol-schule`) |
 | `resetForNewServer()` / `clear()` | drop cache (+ reconnect without seq) |
 
 Events: `new` (entry + `toast`, `updated`), `update` `{ reason, ids, unread }`
@@ -331,7 +332,7 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | event `notify:new` | `onNew(cb)` | entry |
 | event `notify:update` | `onUpdate(cb)` | `{ reason, ids, unread }` |
 | event `notify:status` | `onStatus(cb)` | status |
-| event `notify:navigate` | `onNavigate(cb)` | `{ route, id }` — `route` is `inbox` (+ `id`) or an app route of the contract (`vpn`, `services`, `gateways`, `plg-<id>`) |
+| event `notify:navigate` | `onNavigate(cb)` | `{ route, id, context? }` — `route` is `inbox` (+ `id`) or an app route of the contract (`vpn`, `services`, `gateways`, `plg-<id>`); `context` from `addClickRoute` |
 
 i18n: `push.*` in `src/i18n/locales/{de,en}.json` (states, reasons per
 `status().reason`, `via`, `tunnelOnly` warning, priorities, tray entries).

@@ -1050,5 +1050,92 @@
       "noActions": "Für dich gibt es keine Haus-Aktionen.",
       "needsConfirm": "mit Bestätigung"
     }
+  },
+  "school": {
+    "title": "Schule",
+    "refresh": "Aktualisieren",
+    "children": "Kinder",
+    "klasse": "Klasse {{name}}",
+    "updated": "Stand {{time}}",
+    "updatedNever": "Noch nicht aus WebUntis abgerufen",
+    "todayAt": "heute {{time}}",
+    "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "today": "Heute",
+    "noLessons": "Kein Unterricht",
+    "period": "{{n}}. Std.",
+    "periods": "{{from}}.–{{to}}. Std.",
+    "exam": "Arbeit",
+    "homework": "Hausaufgaben",
+    "homeworkDone": "Erledigt",
+    "homeworkGiven": "aufgegeben am {{date}}",
+    "inboxOpen": "Im Stundenplan öffnen",
+    "tab": {
+      "week": "Woche",
+      "changes": "Änderungen",
+      "messages": "Nachrichten",
+      "absences": "Fehlzeiten"
+    },
+    "week": {
+      "label": "Woche wählen",
+      "this": "Diese Woche",
+      "next": "Nächste Woche",
+      "range": "{{from}} – {{to}}"
+    },
+    "state": {
+      "cancelled": "Entfällt",
+      "changed": "Vertretung",
+      "extra": "Zusatz"
+    },
+    "change": {
+      "cancelled": "Entfällt",
+      "changed": "Vertretung",
+      "extra": "Zusatzstunde",
+      "restored": "Findet statt",
+      "detected": "erkannt {{time}}"
+    },
+    "changes": {
+      "empty": "Keine Änderungen in den letzten {{days}} Tagen"
+    },
+    "messages": {
+      "empty": "Keine Nachrichten der Schule in den letzten {{days}} Tagen",
+      "new": "Neu",
+      "noSubject": "(ohne Betreff)",
+      "noBody": "Nur die Vorschau ist verfügbar.",
+      "attachments": "Mit Anhang",
+      "attachmentsHint": "Anhänge kannst du in WebUntis öffnen."
+    },
+    "absences": {
+      "empty": "Keine Fehlzeiten in den letzten {{days}} Tagen"
+    },
+    "abs": {
+      "excused": "Entschuldigt",
+      "unexcused": "Unentschuldigt",
+      "open": "Offen",
+      "allDay": "Ganztägig",
+      "from": "ab {{time}}",
+      "range": "{{from}} – {{to}}"
+    },
+    "noStudents": {
+      "title": "Kein Stundenplan",
+      "hint": "Für dich ist in GateControl kein Schüler freigegeben. Das richtet die Verwaltung im Portal unter „Schule“ ein."
+    },
+    "unavailable": {
+      "title": "Schule ist nicht verfügbar",
+      "hint": "Der Server bietet das Schule-Plugin für dieses Gerät gerade nicht an."
+    },
+    "err": {
+      "title": "Stundenplan nicht erreichbar",
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "server": "Der Server meldet einen Fehler.",
+      "forbidden": "Kein Zugriff auf den Stundenplan.",
+      "auth": "Die Anmeldung dieses Geräts ist nicht mehr gültig.",
+      "invalid": "Die Anfrage war ungültig.",
+      "unsupported": "Das braucht eine neuere Version des Schule-Plugins.",
+      "not_configured": "Dieses Gerät ist noch mit keinem Server verbunden.",
+      "failed": "Das hat nicht geklappt ({{code}})."
+    }
   }
 }

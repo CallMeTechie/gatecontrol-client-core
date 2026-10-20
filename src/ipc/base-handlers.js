@@ -20,6 +20,7 @@ const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { registerMessengerHandlers } = require('./messenger-handlers');
+const { registerSchoolHandlers } = require('./school-handlers');
 const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -119,6 +120,9 @@ const NOTIFY_EVENTS = {
  *   click) reaches the renderer as chat:navigate
  * @param {object} [ctx.maps] - MapService for chat:map:* (default: one with
  *   the app's name and version as User-Agent, OpenStreetMap / Nominatim)
+ * @param {object} [ctx.school] - SchoolService (opt-in, "Schule"): registers
+ *   the school:* channels (ipc/school-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -137,6 +141,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const clientPolicy = ctx.clientPolicy || null;
   const notificationCenter = ctx.notificationCenter || null;
   const messenger = ctx.messenger || null;
+  const schoolSvc = ctx.school || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -164,6 +169,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Chats: cache, outbox and availability belong to the old server.
     if (messenger) {
       Promise.resolve().then(() => messenger.resetForNewServer()).catch((err) => log.warn(`Messenger reset failed: ${err.message}`));
+    }
+    // Schule: availability and answers belong to the old server.
+    if (schoolSvc) {
+      Promise.resolve().then(() => schoolSvc.resetForNewServer()).catch((err) => log.warn(`Schule reset failed: ${err.message}`));
     }
   }
 
@@ -585,6 +594,9 @@ function registerBaseHandlers(ipcMain, ctx) {
       },
     });
   }
+
+  // ── Schule (WebUntis timetable, opt-in) ────────────────
+  if (schoolSvc) registerSchoolHandlers(handle, { school: schoolSvc, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).
