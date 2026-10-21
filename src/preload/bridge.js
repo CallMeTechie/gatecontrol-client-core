@@ -16,9 +16,10 @@
  * @param {object} [opts]
  * @param {string} [opts.updateReadyChannel='update-ready'] - event channel the
  *   main process uses to announce a downloaded update (Pro: 'update:ready')
+ * @param {object} [opts.webUtils] - Electron webUtils (paths of dropped files, GateDrop)
  * @returns {object} bridge API
  */
-function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready' } = {}) {
+function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready', webUtils = null } = {}) {
   const { t, setLocale, getLocale, onLocaleChange, getSupportedLocales } = i18n;
 
   // Subscribe to a main → renderer event; returns an unsubscribe function.
@@ -255,6 +256,47 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       avatar:    (url) => ipcRenderer.invoke('school:avatar', { url }),
       onState:   (cb) => subscribe('school:state', cb),
       onPush:    (cb) => subscribe('school:push', cb),
+    },
+
+    // ── GateDrop (plugin gatecontrol-gatedrop) ───────────
+    // Served when the app passes a GateDropService to registerBaseHandlers
+    // (ipc/gatedrop-handlers.js lists arguments and answers).
+    gatedrop: {
+      status:      () => ipcRenderer.invoke('gatedrop:status'),
+      check:       () => ipcRenderer.invoke('gatedrop:check'),
+      targets:     (opts) => ipcRenderer.invoke('gatedrop:targets', { refresh: !!(opts && opts.refresh) }),
+      // file dialog → { ok, files: [{ id, name, size, mime }], rejected }
+      pick:        () => ipcRenderer.invoke('gatedrop:pick'),
+      // dropped File objects (drag & drop) → { ok, files, rejected }
+      prepareDropped: (fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
+          if (p) paths.push(p);
+        }
+        return ipcRenderer.invoke('gatedrop:prepare', { paths });
+      },
+      takeCompose: () => ipcRenderer.invoke('gatedrop:compose:take'),
+      // { files: [ids], text?, link?, note?, to: { people, devices, nas, link: { expires, pin } } }
+      send:        (msg) => ipcRenderer.invoke('gatedrop:send', msg),
+      inbox:       (kind, opts) => ipcRenderer.invoke('gatedrop:inbox', { kind, refresh: !!(opts && opts.refresh) }),
+      sendDetails: (id) => ipcRenderer.invoke('gatedrop:send:get', { id }),
+      saveSend:    (id) => ipcRenderer.invoke('gatedrop:send:save', { id }),
+      endLink:     (token) => ipcRenderer.invoke('gatedrop:link:end', { token }),
+      openFolder:  () => ipcRenderer.invoke('gatedrop:folder'),
+      showItem:    (path) => ipcRenderer.invoke('gatedrop:show', { path }),
+      openItem:    (path) => ipcRenderer.invoke('gatedrop:open', { path }),
+      copy:        (text) => ipcRenderer.invoke('gatedrop:copy', { text }),
+      openLink:    (url) => ipcRenderer.invoke('gatedrop:open-link', { url }),
+      // "Senden an → GateDrop" in the Explorer: () → state, (true|false) → set
+      explorer:    (enabled) => ipcRenderer.invoke('gatedrop:explorer', typeof enabled === 'boolean' ? { enabled } : {}),
+      onState:     (cb) => subscribe('gatedrop:state', cb),
+      onCompose:   (cb) => subscribe('gatedrop:compose', cb),
+      onProgress:  (cb) => subscribe('gatedrop:progress', cb),
+      onReceived:  (cb) => subscribe('gatedrop:received', cb),
+      onChanged:   (cb) => subscribe('gatedrop:changed', cb),
+      onNavigate:  (cb) => subscribe('gatedrop:navigate', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

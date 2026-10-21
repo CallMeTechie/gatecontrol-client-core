@@ -21,6 +21,7 @@ const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
+const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -124,6 +125,11 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.school] - SchoolService (opt-in, "Schule"): registers
  *   the school:* channels (ipc/school-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.gatedrop] - GateDropService (opt-in, "GateDrop"): registers
+ *   the gatedrop:* channels (ipc/gatedrop-handlers.js), forwards its events to
+ *   the main window and resets it after a successful server:setup.
+ * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
+ *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -143,6 +149,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const notificationCenter = ctx.notificationCenter || null;
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
+  const gatedropSvc = ctx.gatedrop || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -174,6 +181,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Schule: availability and answers belong to the old server.
     if (schoolSvc) {
       Promise.resolve().then(() => schoolSvc.resetForNewServer()).catch((err) => log.warn(`Schule reset failed: ${err.message}`));
+    }
+    // GateDrop: availability, targets and lists belong to the old server.
+    if (gatedropSvc) {
+      Promise.resolve().then(() => gatedropSvc.resetForNewServer()).catch((err) => log.warn(`GateDrop reset failed: ${err.message}`));
     }
   }
 
@@ -598,6 +609,11 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Schule (WebUntis timetable, opt-in) ────────────────
   if (schoolSvc) registerSchoolHandlers(handle, { school: schoolSvc, getMainWindow, log });
+
+  // ── GateDrop (plugin gatecontrol-gatedrop, opt-in) ──────
+  if (gatedropSvc) {
+    registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null });
+  }
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

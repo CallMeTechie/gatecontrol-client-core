@@ -26,6 +26,9 @@ const MessengerOutbox = require('./services/messenger-outbox');
 const ChatNotifier = require('./services/chat-notifier');
 const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
+const GateDropService = require('./services/gatedrop');
+const GateDropApi = require('./services/gatedrop-api');
+const GateDropListener = require('./services/gatedrop-listener');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -48,6 +51,8 @@ const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
 const notifyRoutes = require('./utils/notify-routes');
+const gatedropUtil = require('./utils/gatedrop');
+const gatedropShell = require('./utils/gatedrop-shell');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -90,6 +95,9 @@ module.exports = {
   ChatNotifier,
   MapService,
   SchoolService,
+  GateDropService,
+  GateDropApi,
+  GateDropListener,
 
   // Utils
   validation,
@@ -124,6 +132,8 @@ module.exports = {
   messengerUtil,
   schoolUtil,
   notifyRoutes,
+  gatedropUtil,
+  gatedropShell,
 
   // Support bundle
   collectSupportBundle,
