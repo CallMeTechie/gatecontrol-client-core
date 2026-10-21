@@ -109,7 +109,8 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notificationCenter] - NotificationCenter (opt-in).
  *   When given: registers notify:list, notify:read, notify:action,
  *   notify:prefs:get, notify:prefs:set, notify:test, notify:status,
- *   notify:dnd, notify:quiet, notify:quiet:open; forwards its events to the main window as notify:new,
+ *   notify:dnd, notify:quiet, notify:quiet:open, notify:routes, notify:routes:set,
+ *   notify:open; forwards its events to the main window as notify:new,
  *   notify:update, notify:status, notify:navigate; and resets it (cache,
  *   resume position, reconnect) after a successful server:setup.
  *   Keep one instance for the app's lifetime.
@@ -628,6 +629,11 @@ function registerBaseHandlers(ipcMain, ctx) {
  *   notify:dnd         ({ minutes } | { until } | null = off | undefined = query) → { ok, active, until }
  *   notify:quiet       ({ refresh? }) → { ok, known, quiet: { from, to, tz, criticalBypass } | null, source, at }
  *   notify:quiet:open  () → boolean (portal tab "Meine Benachrichtigungen", auto-login)
+ *   notify:routes      () → { ok, routes: { sink, canFamily, groups } } | { ok: false, error }
+ *                      (where each kind of notification appears, core 1.191; 'unsupported' = older server)
+ *   notify:routes:set  ({ topic, dest: 'inbox'|'own'|'family' }) → { ok, routes } | { ok: false, error }
+ *   notify:open        ({ route, topic?, data? }) → { ok, route? } — a notice card's link opens what a
+ *                      click on that notification would (notify:navigate); ok false: nothing claimed it
  */
 function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow, log }) {
   handle('notify:list', async (_, opts = {}) => {
@@ -661,6 +667,23 @@ function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow,
   handle('notify:quiet', async (_, opts) => {
     if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshQuiet();
     return { ok: true, ...nc.quietState() };
+  });
+  handle('notify:routes', () => nc.routes());
+  handle('notify:routes:set', (_, arg) => {
+    const a = arg && typeof arg === 'object' && !Array.isArray(arg) ? arg : {};
+    if (typeof a.topic !== 'string' || a.topic.length > 120 || typeof a.dest !== 'string' || a.dest.length > 20) return { ok: false, error: 'invalid' };
+    return nc.setRoute(a.topic, a.dest);
+  });
+  handle('notify:open', (_, arg) => {
+    const a = arg && typeof arg === 'object' && !Array.isArray(arg) ? arg : {};
+    const route = typeof a.route === 'string' && a.route.length <= 200 ? a.route : null;
+    const topic = typeof a.topic === 'string' && a.topic.length <= 120 ? a.topic : null;
+    let data = null;
+    if (a.data && typeof a.data === 'object' && !Array.isArray(a.data)) {
+      // Untrusted (from a chat message): only a small plain object is passed on.
+      try { if (JSON.stringify(a.data).length <= 16384) data = a.data; } catch { data = null; }
+    }
+    return nc.openTarget({ route, topic, data });
   });
   handle('notify:quiet:open', async () => {
     try {

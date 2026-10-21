@@ -227,6 +227,34 @@ the page keeps the 1.0 settings (read receipts, typing, preview). Settings of
 this PC are in `localStorage` (`gc.chat.enterSends`, `gc.chat.fontSize`,
 `gc.chat.sound`, `gc.chat.hiddenActions`).
 
+## Messenger 1.6: the chat as the place for all notifications
+
+With `GET me` features `notices` / `notice_routes` (both known, no update
+hint) GateControl's notifications can arrive in chats (core 1.191 push
+routes, see notification-center.md § 10):
+
+- the chat list: "Mein Status" (status strip) above "Angeheftet"; under it
+  the "GateControl" entry, then the chats the server pins to the list
+  (`listPinned: true`, the family group the Familie plugin keeps), then
+  "Chats" with the rest. Filters apply to both; while searching pinned chats
+  appear among the results.
+- notice channels (`notice: { source, label }`, read only, every `can` flag
+  false, `managedBy: 'gatecontrol-messenger'`): tag "Mitteilungen" in the
+  list and the chat info (no "kept by a plugin" hint).
+- notice cards (`kind: 'card'`, `card.kind: 'notice'`, `card.notice {
+  source, sourceLabel, topic, topicLabel, priority, data }`): head line
+  "<sourceLabel> · <topicLabel>", the title, the whole text (≤ 4000, line
+  breaks kept), the core picture `card.imageUrl` (`/notify-media/…`, loaded
+  over the device token: `noticeImage(path)`, memory cache only), actions as
+  on other cards and the link (`link.route` may name a plugin screen after a
+  `/`, e.g. `plg-gatecontrol-schule/messages/<id>`) that opens what a click on
+  the notification would (`notify:open`, see notification-center.md).
+- "Wo Mitteilungen erscheinen" in the chat settings (and in Einstellungen ›
+  Benachrichtigungen): per source each kind with GateControl / Familien-Chat
+  (only with `canFamily`, "Für alle in Familie sichtbar") / Eigener Chat
+  „<Quelle>“; locked kinds with a lock ("immer GateControl"), without a sink
+  the hint that the Messenger plugin is needed.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -331,6 +359,7 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | 1.4.0: `archive(id, archived)`, `pin(id, messageId, pinned)`, `lists()`, `saveLists(lists)`, `blocks()`, `setBlocked(userId, blocked)`, `exportChat(id)`, `remind(messageId, at)`, `reminders()`, `deleteReminder(id)`, `suggest(messageId)`, `toList(messageId, { items, list })`, `toCalendar(messageId, ev)`, `places()` | chat tools, Familie |
 | 1.4.0: `vote(id, optionIds)`, `addPollOption(id, text)`, `closePoll(id)`, `nudgePoll(id)`, `rsvp(id, answer, guests)`, `checkItem(id, itemId, done)`, `editEvent(id, patch)`, `stopArrival(id)` | → the changed message (cached one replaced) |
 | 1.4.0: `actions({ refresh })`, `actionOp(id, op, { actionId, plugin })`, `cardImage(id)` | home actions, plugin cards |
+| 1.6: `noticeImage(path)` | picture of a notice card (`/notify-media/…`, ≤ 1 MiB, image types only) → `{ mime, data }` |
 | `storage()` / `clearMediaCache()` | caches of this PC and the server's limits |
 | `resetForNewServer()` | |
 
@@ -352,7 +381,8 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `saveLists`, `exportChat` (save dialog), `remind`, `reminders`,
 `deleteReminder`, `suggest`, `toList`, `toCalendar`, `places`, `poll(id, op,
 args)`, `event(id, op, args)`, `stopArrival`, `actions`, `action(id, op,
-args)`, `cardImage` (`{ mime, data: Uint8Array }`), `storage`,
+args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
+(`{ mime, data: Uint8Array }`), `storage`,
 `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`. Arguments and answers:

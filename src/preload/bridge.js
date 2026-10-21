@@ -147,6 +147,13 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       quiet:     (opts) => ipcRenderer.invoke('notify:quiet', opts),
       // "Im Portal ändern" → portal tab "Meine Benachrichtigungen" (auto-login)
       openQuietHours: () => ipcRenderer.invoke('notify:quiet:open'),
+      // Where each kind of notification appears (core 1.191): GateControl,
+      // the family chat or an own chat → { ok, routes } | { ok: false, error }
+      routes:   () => ipcRenderer.invoke('notify:routes'),
+      setRoute: (topic, dest) => ipcRenderer.invoke('notify:routes:set', { topic, dest }),
+      // A notice card's link (Messenger 1.6): open what a click on that
+      // notification would ({ route, topic, data }) → { ok } (ok false: open the route yourself)
+      open:     (target) => ipcRenderer.invoke('notify:open', target || {}),
       onNew:      (cb) => subscribe('notify:new', cb),
       onUpdate:   (cb) => subscribe('notify:update', cb),
       onStatus:   (cb) => subscribe('notify:status', cb),
@@ -218,6 +225,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       actions:       (opts) => ipcRenderer.invoke('chat:actions', opts),
       action:        (id, op, args) => ipcRenderer.invoke('chat:action', { ...(args || {}), id, op }),
       cardImage:     (id) => ipcRenderer.invoke('chat:card:image', { id }),
+      // Messenger 1.6 notice cards: the notification's picture (/notify-media/… of the own server)
+      noticeImage:   (path) => ipcRenderer.invoke('chat:notice:image', { path }),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),

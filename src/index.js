@@ -47,6 +47,7 @@ const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
+const notifyRoutes = require('./utils/notify-routes');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -122,6 +123,7 @@ module.exports = {
   clientPolicy,
   messengerUtil,
   schoolUtil,
+  notifyRoutes,
 
   // Support bundle
   collectSupportBundle,

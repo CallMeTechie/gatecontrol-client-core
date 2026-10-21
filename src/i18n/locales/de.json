@@ -298,6 +298,51 @@
       "inboxUnread": "Mitteilungen · {{ count }} neu",
       "dnd1h": "Nicht stören für 1 Stunde",
       "dndOff": "Nicht stören beenden"
+    },
+    "routes": {
+      "title": "Wo Mitteilungen erscheinen",
+      "entryDesc": "GateControl, Familien-Chat oder ein eigener Chat je Art",
+      "open": "Einstellen",
+      "intro": "Für jede Art von Mitteilung wählst du den Chat. Im Familien-Chat sehen sie alle in der Familie.",
+      "introFamily": "Den Familien-Chat stellen nur Erwachsene ein – er gilt dann für alle in der Familie.",
+      "dest": {
+        "inbox": "GateControl",
+        "family": "Familien-Chat",
+        "own": "Eigener Chat „{{label}}“"
+      },
+      "option": {
+        "inbox": "GateControl",
+        "family": "Familien-Chat – für alle in Familie sichtbar",
+        "own": "Eigener Chat „{{label}}“"
+      },
+      "hint": {
+        "inbox": "Im angehefteten Chat „GateControl“ – nur für dich",
+        "family": "Für alle in Familie sichtbar",
+        "own": "Ein eigener Chat für alles von {{label}} – nur für dich"
+      },
+      "familySetBy": "Von {{name}} für die ganze Familie festgelegt",
+      "familySet": "Für die ganze Familie festgelegt",
+      "familyOnlyAdults": "Ändern können das nur Erwachsene in der Familie.",
+      "locked": "immer GateControl",
+      "lockedA11y": "Gesperrt, erscheint immer in GateControl",
+      "noSink": "Braucht das Messenger-Plugin – bis dahin erscheint alles in GateControl.",
+      "footer": "Neue Plugins erscheinen hier von selbst. Ausschalten kannst du jede Art weiterhin unter „Benachrichtigungen“.",
+      "loading": "Wird geladen …",
+      "loadFailed": "Konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "unsupported": "Dein GateControl-Server kennt diese Einstellung noch nicht.",
+      "empty": "Noch keine Arten von Mitteilungen.",
+      "saved": "Gespeichert: {{topic}} → {{dest}}",
+      "err": {
+        "family": "Den Familien-Chat dürfen nur Erwachsene in der Familie wählen.",
+        "locked": "Diese Mitteilungen erscheinen immer in GateControl.",
+        "noSink": "Dafür braucht der Server das Messenger-Plugin.",
+        "forbidden": "Das darfst du hier nicht ändern.",
+        "unknownTopic": "Diese Art von Mitteilung gibt es nicht mehr.",
+        "pushDisabled": "Benachrichtigungen sind am Server ausgeschaltet.",
+        "network": "Nicht gespeichert – keine Verbindung zum Server.",
+        "failed": "Nicht gespeichert. Versuch es gleich noch einmal."
+      }
     }
   },
   "chat": {
@@ -1048,7 +1093,13 @@
       "actionsShown": "Im Anhang-Menü zeigen",
       "actionsLocal": "Diese Auswahl gilt nur auf diesem PC.",
       "noActions": "Für dich gibt es keine Haus-Aktionen.",
-      "needsConfirm": "mit Bestätigung"
+      "needsConfirm": "mit Bestätigung",
+      "routes": "Wo Mitteilungen erscheinen",
+      "routesSub": "GateControl, Familien-Chat oder eigener Chat"
+    },
+    "notice": {
+      "tag": "Mitteilungen",
+      "infoSub": "Mitteilungen von {{source}} – nur für dich"
     }
   },
   "school": {

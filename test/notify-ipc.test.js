@@ -21,7 +21,7 @@ const NotificationCenter = require('../src/services/notification-center');
 const { createMemoryStore } = require('./fixtures/memory-store');
 
 const log = { info() {}, warn() {}, error() {}, debug() {} };
-const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:list', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open', 'notify:read', 'notify:status', 'notify:test'];
+const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open', 'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test'];
 
 function fakePush() {
   const p = new EventEmitter();

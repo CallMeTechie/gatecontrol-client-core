@@ -12,6 +12,7 @@
  *   PUT  /api/v1/client/plugins/gatecontrol-messenger/media  raw upload → { mediaId, mime, bytes }
  *   GET  /api/v1/client/plugins/gatecontrol-messenger/media/<id>  download
  *   GET  /avatars/<file>                                     account pictures
+ *   GET  /notify-media/<file>                                pictures of notifications (Messenger 1.6 notice cards)
  *
  * Every failure is thrown as a MessengerError { status, code, message }:
  * `code` is the plugin's code (`not_found`, `edit_window`, …), the host's
@@ -20,7 +21,7 @@
  */
 
 const {
-  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
+  PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isNotifyMediaPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
 } = require('../utils/messenger');
 
 const JSON_TIMEOUT_MS = 15000;
@@ -28,6 +29,7 @@ const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DOWNLOAD = 64 * 1024 * 1024;
 const AVATAR_MAX = 2 * 1024 * 1024;
+const NOTICE_IMAGE_MAX = 1024 * 1024;
 
 class MessengerError extends Error {
   constructor(message, { status = null, code = 'failed' } = {}) {
@@ -339,6 +341,18 @@ class MessengerApi {
     if (!isAvatarPath(path)) throw new MessengerError('invalid avatar path', { code: 'invalid' });
     const r = await this._binary(path, AVATAR_MAX, JSON_TIMEOUT_MS);
     if (!/^image\/(png|jpeg|webp)$/.test(r.mime)) throw new MessengerError('not a picture', { code: 'bad_response' });
+    return r;
+  }
+
+  /**
+   * Picture of a notification (`imageUrl` of a notice card: /notify-media/…
+   * of the own server, core 1.169+) → { mime, data } — over the device
+   * token like the push pictures, images up to 1 MiB only.
+   */
+  async noticeImage(path) {
+    if (!isNotifyMediaPath(path)) throw new MessengerError('invalid picture path', { code: 'invalid' });
+    const r = await this._binary(path, NOTICE_IMAGE_MAX, JSON_TIMEOUT_MS);
+    if (!/^image\/(png|jpeg|webp)$/.test(r.mime) || !r.data.length) throw new MessengerError('not a picture', { code: 'bad_response' });
     return r;
   }
 

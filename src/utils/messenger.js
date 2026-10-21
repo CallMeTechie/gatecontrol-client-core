@@ -21,6 +21,8 @@ const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const MEDIA_ID_RE = /^[0-9a-f]{32}$/;
 // Avatars of accounts: a /avatars/ path of the own server (contract "Person").
 const AVATAR_PATH_RE = /^\/avatars\/[A-Za-z0-9_-]{16,128}\.(?:png|jpe?g|webp)$/;
+// Pictures of notifications on the own server (core `imageUrl`, Messenger 1.6 notice cards).
+const NOTIFY_MEDIA_RE = /^\/notify-media\/[A-Za-z0-9_-]{8,128}\.(?:jpg|jpeg|png|webp)$/;
 // A relative path of the plugin's client API as sent in push actions
 // (`conversations/12/read`): no scheme, no `..`, no query.
 const API_PATH_RE = /^(?!.*\.\.)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+){0,5}$/;
@@ -41,12 +43,17 @@ const KNOWN_FEATURES = Object.freeze([
   'status', 'stories', 'polls', 'events', 'arrival', 'actions', 'msg_tools', 'privacy2',
   // Messenger 1.4.1
   'story_duration',
+  // Messenger 1.6: GateControl's notifications in chats (notice channels and
+  // cards, `listPinned`) and "Wo Mitteilungen erscheinen" (core push routes)
+  'notices', 'notice_routes',
 ]);
 // Messenger 1.4.0 `GET me` features (README "Since 1.4.0").
 const FEATURES_14 = Object.freeze({
   status: 'status', stories: 'stories', polls: 'polls', events: 'events', arrival: 'arrival', actions: 'actions', tools: 'msg_tools', privacy: 'privacy2',
   // since 1.4.1: `POST status/stories` takes `durationH` (present together with `stories`)
   storyDuration: 'story_duration',
+  // since 1.6: notice channels / cards, the family chat pinned to the list
+  notices: 'notices', noticeRoutes: 'notice_routes',
 });
 // Story durations in hours (Messenger 1.4.1 `durationH`, `limits.storyDurationsH`); the server's default is 24.
 const STORY_DURATIONS_H = Object.freeze([1, 3, 6, 12, 24]);
@@ -71,8 +78,10 @@ const PREF_RULES = Object.freeze({
 const STATUS_PRESETS = Object.freeze(['none', 'homeoffice', 'away', 'dnd', 'auto_place']);
 const AUDIENCES = Object.freeze(['all', 'family', 'custom']);
 const REMINDER_MIN = Object.freeze([0, 15, 60, 120, 1440]);
-// An app route of another plugin (card link): plg-<id>.
-const ROUTE_RE = /^plg-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// An app route of another plugin (card link): plg-<id>; since Messenger 1.6 it
+// may name a screen of the plugin after a `/` (notice cards:
+// plg-gatecontrol-schule/messages/<id>), no `.` / `..` segments.
+const ROUTE_RE = /^plg-[a-z0-9]+(?:-[a-z0-9]+)*(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9_.:-]{1,80}){0,3}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 // Messenger 1.3.0 `GET me` features that unlock optional send fields.
 const FEATURE_VIDEO_META = 'video_meta';   // `video: { durationMs, width, height }` on video files
@@ -524,11 +533,18 @@ function familieOf(me) {
   return { lists: f.lists === true, calendar: f.calendar === true, places: f.places === true };
 }
 
-/** A card link's route that the apps may open (another plugin's app route plg-<id>) or null. */
+/**
+ * A card link's route that the apps may open (another plugin's app route
+ * plg-<id>, with Messenger 1.6 optionally followed by up to three path
+ * segments: plg-gatecontrol-schule/messages/123) or null.
+ */
 function cardRoute(link) {
   const r = link && typeof link === 'object' && typeof link.route === 'string' ? link.route : '';
-  return ROUTE_RE.test(r) && r.length <= 80 ? r : null;
+  return r.length <= 200 && ROUTE_RE.test(r) ? r : null;
 }
+
+/** A notification picture path of the own server (`/notify-media/<id>.<ext>`). */
+const isNotifyMediaPath = (v) => typeof v === 'string' && NOTIFY_MEDIA_RE.test(v);
 
 /**
  * A chat notification (push payload with `kind: "message"`) → the fields the
@@ -649,6 +665,8 @@ module.exports = {
   CLIENT_ID_RE,
   MEDIA_ID_RE,
   AVATAR_PATH_RE,
+  NOTIFY_MEDIA_RE,
+  isNotifyMediaPath,
   newClientId,
   isClientId,
   isMediaId,

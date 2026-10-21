@@ -13,6 +13,10 @@
  *     portal (one-time login link) or mute the topic for 1 h;
  *   - click → show the app window on the inbox entry (event 'navigate'),
  *     or on an app page that claimed the entry (addClickRoute, e.g. Schule);
+ *     openTarget() does the same for a notification shown as a notice card
+ *     in a chat (Messenger 1.6);
+ *   - where each kind of notification appears (core 1.191 push routes:
+ *     GateControl, family chat or an own chat) — routes() / setRoute();
  *   - "Nicht stören bis" (notifications.dndUntil); critical still shows when
  *     notifications.criticalBypass is on;
  *   - local inbox cache (last 100, encrypted store key `notificationsInbox`),
@@ -44,6 +48,7 @@ const crypto = require('crypto');
 const { t } = require('../i18n');
 const { readNotificationSettings } = require('../utils/notify-schema');
 const { buildToastXml, parseActionUrl } = require('../utils/toast-xml');
+const notifyRoutes = require('../utils/notify-routes');
 
 const PRIORITIES = ['info', 'normal', 'high', 'critical'];
 const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+)*)$/;
@@ -365,6 +370,48 @@ class NotificationCenter extends EventEmitter {
     const r = await this._quietFetch;
     if (r.ok && r.hasQuiet !== false) this._setQuiet(r.quiet, 'prefs');
     return r.ok ? { ok: true, ...this.quietState() } : { ok: false, error: r.error, ...this.quietState() };
+  }
+
+  // ── Where notifications appear (core 1.191 push routes) ──
+
+  /**
+   * GateControl, the family chat or an own chat per kind of notification
+   * (PushClient.fetchRoutes): { ok, routes: { sink, canFamily, groups } } or
+   * { ok: false, error } — 'unsupported' on servers without the route.
+   */
+  async routes() {
+    if (!this.pushClient || typeof this.pushClient.fetchRoutes !== 'function') return { ok: false, error: 'not_attached' };
+    return this.pushClient.fetchRoutes();
+  }
+
+  /** Set where `topic` appears ('inbox' | 'own' | 'family') → { ok, routes } | { ok: false, error }. */
+  async setRoute(topic, dest) {
+    if (!this.pushClient || typeof this.pushClient.setRoute !== 'function') return { ok: false, error: 'not_attached' };
+    return this.pushClient.setRoute(topic, dest);
+  }
+
+  /**
+   * Open what a click on a notification would open, for a notification that
+   * is shown somewhere else — a notice card in a chat (Messenger 1.6, its
+   * `notice { topic, data }` and the card link's route): an app page that
+   * claimed such entries (addClickRoute, e.g. Schule on the school message)
+   * gets 'navigate' { route, id: null, context } like a toast click, and the
+   * answer is { ok: true, route }. Nothing claims it → { ok: false } and the
+   * app opens the route itself (its page, or the plugin's portal tab).
+   */
+  openTarget({ route = null, topic = null, data = null } = {}) {
+    const base = typeof route === 'string' ? route.split('/')[0] : '';
+    const d = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    const entry = {
+      id: null,
+      topic: notifyRoutes.isTopic(topic) ? topic : null,
+      data: APP_ROUTE_RE.test(base) && typeof d.route !== 'string' ? { ...d, route: base } : d,
+    };
+    if (!entry.topic && !APP_ROUTE_RE.test(base)) return { ok: false };
+    const target = this.clickTarget(entry);
+    if (!target) return { ok: false };
+    this.emit('navigate', { route: target.route, id: null, context: target.context });
+    return { ok: true, route: target.route };
   }
 
   /** "Im Portal ändern": the portal tab "Meine Benachrichtigungen" (auto-login). */

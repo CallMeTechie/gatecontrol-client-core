@@ -223,6 +223,31 @@ the portal origin as before. `portal:open` accepts `{ next }` as well
 (validated with `portalNext`, anything else opens the portal home); apps pass
 it on: `openPortal: (opts) => portalOpener.open(opts)`.
 
+### 10. Where notifications appear (core 1.191, Messenger 1.6)
+
+With a sink plugin (the messenger) each kind of notification (push topic) can
+appear in the pinned chat **GateControl** (the inbox, default), in the
+**family chat** (the Familie group, for the whole household — only admins and
+parents may choose it, `canFamily`) or in an **own chat** of its source
+("Schule", only for the person). `routes()` / `setRoute(topic, dest)` (IPC
+`notify:routes` / `notify:routes:set`) use `GET/PUT /api/v1/client/push/routes`
+with the device token; the answer `{ sink, canFamily, groups: [{ source,
+label, topics: [{ id, label, dest, locked, familySetBy }] }] }` is cleaned by
+`utils/notify-routes.js` (`security` and `admin_notice` are always locked to
+GateControl). Refusals come as their codes (`family_not_allowed`, `locked`,
+`no_sink`, `unknown_topic`, `no_user`, `push_disabled`, `invalid_*`); a server
+without the route answers `unsupported` — the apps hide the entries then.
+The apps show the page "Wo Mitteilungen erscheinen" in Einstellungen ›
+Benachrichtigungen and in the chat settings.
+
+A notice card in a chat carries its notification (`card.notice { topic, data
+}`); its link (`card.link.route`, may name a plugin screen after a `/`) opens
+what a click on that notification would: `openTarget({ route, topic, data })`
+(IPC `notify:open`) asks the click routes (`addClickRoute`, e.g. Schule on the
+school message) and emits `navigate` `{ route, id: null, context }` when one
+claims it (`{ ok: true }`); otherwise `{ ok: false }` and the app opens the
+route itself (its page, or the plugin's portal tab).
+
 ## API reference
 
 ### PushClient
@@ -294,6 +319,8 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `unreadCount()`, `topics()`, `status()` | status = push status + `unread`, `dnd`, `toasts`, `enabled`, `quiet`, `quietKnown` |
 | `quietState()` / `refreshQuiet()` | `{ known, quiet, source: 'hello'\|'prefs', at }`; refresh asks `GET …/push/prefs` |
 | `openQuietHoursInPortal()` | portal tab `/portal#benachrichtigungen` (auto-login) |
+| `routes()` / `setRoute(topic, dest)` | where each kind of notification appears (`PushClient.fetchRoutes()` / `setRoute()`): `{ ok, routes }` / `{ ok: false, error }` |
+| `openTarget({ route, topic, data })` | a notice card's link: `navigate` `{ route, id: null, context }` when a click route claims the notification → `{ ok: true, route }`, else `{ ok: false }` |
 | `notify({ title, body, priority, collapseKey, force, onClick })` | local app notification through the same wrapper |
 | `handleArgv(argv)` / `handleProtocolUrl(url)` | toast button activation |
 | `openInbox(id?)` | show the window on the inbox (event `navigate`) |
@@ -328,6 +355,9 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | `notify:dnd` | `dnd(arg?)` | `{ minutes }` / `{ until }` / `null` (off) / no argument (query) → `{ ok, active, until }` |
 | `notify:quiet` | `quiet(opts)` | `{ refresh }` → `{ ok, known, quiet, source, at }` |
 | `notify:quiet:open` | `openQuietHours()` | → boolean (portal tab "Meine Benachrichtigungen") |
+| `notify:routes` | `routes()` | → `{ ok, routes: { sink, canFamily, groups } }` / `{ ok:false, error }` (`unsupported`: older server) |
+| `notify:routes:set` | `setRoute(topic, dest)` | `'inbox'\|'own'\|'family'` → `{ ok, routes }` / `{ ok:false, error }` |
+| `notify:open` | `open({ route, topic, data })` | notice card link → `{ ok, route? }` (ok false: the app opens the route) |
 | `portal:open` | `window.gatecontrol.portal.open(opts)` | `{ next: '/portal#<tab>' }` optional → boolean |
 | event `notify:new` | `onNew(cb)` | entry |
 | event `notify:update` | `onUpdate(cb)` | `{ reason, ids, unread }` |
@@ -335,7 +365,8 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | event `notify:navigate` | `onNavigate(cb)` | `{ route, id, context? }` — `route` is `inbox` (+ `id`) or an app route of the contract (`vpn`, `services`, `gateways`, `plg-<id>`); `context` from `addClickRoute` |
 
 i18n: `push.*` in `src/i18n/locales/{de,en}.json` (states, reasons per
-`status().reason`, `via`, `tunnelOnly` warning, priorities, tray entries).
+`status().reason`, `via`, `tunnelOnly` warning, priorities, tray entries,
+`push.routes.*` for "Wo Mitteilungen erscheinen").
 
 ## Kill switch
 

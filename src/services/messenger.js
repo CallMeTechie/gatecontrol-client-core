@@ -66,7 +66,7 @@ const crypto = require('crypto');
 const MessengerApi = require('./messenger-api');
 const MessengerOutbox = require('./messenger-outbox');
 const {
-  PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, baseMime, byteLength,
+  PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, isNotifyMediaPath, baseMime, byteLength,
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
 } = require('../utils/messenger');
@@ -1170,6 +1170,23 @@ class MessengerService extends EventEmitter {
     const key = `avatar:${urlPath}`;
     if (this._inflight.has(key)) return this._inflight.get(key);
     const run = this.api.avatar(urlPath).then((r) => { this._avatars.set(urlPath, r); return r; })
+      .finally(() => this._inflight.delete(key));
+    this._inflight.set(key, run);
+    return run;
+  }
+
+  /**
+   * The picture of a notice card (Messenger 1.6 `card.imageUrl`, a
+   * /notify-media/… path of the own server) → { mime, data } — kept in the
+   * memory cache only (these pictures expire on the server).
+   */
+  async noticeImage(urlPath) {
+    if (!isNotifyMediaPath(urlPath)) throw new MessengerError('invalid', { code: 'invalid' });
+    const key = `notice:${urlPath}`;
+    const hit = this._media.get(key);
+    if (hit) return hit;
+    if (this._inflight.has(key)) return this._inflight.get(key);
+    const run = this.api.noticeImage(urlPath).then((r) => { this._media.set(key, r); return r; })
       .finally(() => this._inflight.delete(key));
     this._inflight.set(key, run);
     return run;

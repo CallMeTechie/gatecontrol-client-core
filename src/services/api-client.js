@@ -511,6 +511,27 @@ class ApiClient {
     return data;
   }
 
+  /**
+   * Where each kind of notification appears (core 1.191, utils/notify-routes.js):
+   * GET /api/v1/client/push/routes → { ok, sink, canFamily, groups }.
+   * Older servers answer 404.
+   */
+  async getPushRoutes() {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const { data } = await this.client.get('/api/v1/client/push/routes');
+    return data;
+  }
+
+  /**
+   * Set where one topic appears: PUT /api/v1/client/push/routes
+   * { topic, dest: 'inbox'|'own'|'family' } → the same answer as the GET.
+   */
+  async setPushRoute({ topic, dest } = {}) {
+    if (!this.client) throw new Error('Server nicht konfiguriert');
+    const { data } = await this.client.put('/api/v1/client/push/routes', { topic, dest });
+    return data;
+  }
+
   /** Test message to this device: POST /api/v1/client/push/test → { ok, seq }. */
   async pushTest() {
     if (!this.client) throw new Error('Server nicht konfiguriert');
