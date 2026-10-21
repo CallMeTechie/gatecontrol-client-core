@@ -48,13 +48,13 @@ function tmpDir(prefix) {
   return d;
 }
 
-async function setup(srv, { withListener = true, nc = false, shell = null, resumableFrom } = {}) {
+async function setup(srv, { withListener = true, nc = false, shell = null, resumableFrom, partSize } = {}) {
   const apiClient = new ApiClient(srv.url, 'gc_token', log);
   const store = createMemoryStore();
   const downloads = tmpDir('gd-dl-');
   const listener = withListener ? new GateDropListener({ log, port: 0, bindAddresses: ['127.0.0.1'], isAllowedPeer: () => true }) : false;
   const center = nc ? new NotificationCenter({ store, log, Notification: FakeNotification, platform: 'win32', protocol: 'gatecontrol-pro' }) : null;
-  const api = new GateDropApi({ apiClient, log, sleep: async () => {}, resumableFrom });
+  const api = new GateDropApi({ apiClient, log, sleep: async () => {}, resumableFrom, partSize });
   const svc = new GateDropService({
     apiClient, api, log, store, listener, notificationCenter: center, downloadsDir: () => downloads,
     Notification: FakeNotification, platform: 'win32', protocol: 'gatecontrol-pro', shell, resolveCandidate: loopback,
@@ -98,7 +98,7 @@ describe('GateDropService', () => {
   it('sends through the server: upload (resumable after a cut), then POST sends', async () => {
     const srv = await gatedropServer();
     cleanup.push(() => srv.close());
-    const { svc } = await setup(srv, { resumableFrom: 1000 });
+    const { svc } = await setup(srv, { resumableFrom: 1000, partSize: 128 * 1024 });
     const dir = tmpDir('gd-src-');
     const big = crypto.randomBytes(300000);
     const small = Buffer.from('kleine Datei');
@@ -107,7 +107,7 @@ describe('GateDropService', () => {
     assert.deepEqual(prep.rejected.map((r) => r.reason), ['directory', 'missing', 'invalid']);
     assert.ok(!('path' in prep.files[0]), 'no paths to the renderer');
 
-    srv.cutUploadAfter = 100000;
+    srv.cutUploadAfter = 100000; // first part breaks off; the server kept 65536 bytes
     const r = await svc.send({ files: prep.files.map((f) => f.id), text: 'Für dich', note: 'Angebot', to: { people: [8] } });
     assert.equal(r.ok, true);
     const sent = srv.state.sends.get(r.id);
@@ -116,10 +116,14 @@ describe('GateDropService', () => {
     assert.equal(sent.items.length, 2);
     assert.deepEqual(srv.state.media.get(sent.items[0].mediaId).data, big);
     assert.deepEqual(srv.state.media.get(sent.items[1].mediaId).data, small);
-    const resumed = srv.state.uploadCalls.filter((u) => u.uploadId);
-    assert.equal(resumed.length, 2);
-    assert.equal(resumed[1].offset, 100000);
-    assert.equal(resumed[1].range, `bytes 100000-${big.length - 1}/${big.length}`);
+    const parts = srv.state.uploadCalls.filter((u) => u.uploadId);
+    assert.deepEqual(parts.map((u) => u.offset), [0, 65536, 65536 + 131072]);
+    assert.equal(parts[0].range, `bytes 0-131071/${big.length}`);
+    assert.equal(parts[1].range, `bytes 65536-196607/${big.length}`);
+    assert.equal(parts[2].range, `bytes 196608-${big.length - 1}/${big.length}`);
+    assert.ok(parts.every((u) => u.offset % 65536 === 0));
+    assert.equal(new Set(parts.map((u) => u.uploadId)).size, 1);
+    assert.match(parts[0].uploadId, /^[A-Za-z0-9_-]{8,64}$/);
     await assert.rejects(svc.send({ files: ['unknown'], to: { people: [8] } }), (e) => e.code === 'invalid');
     await assert.rejects(svc.send({ text: 'x', to: {} }), (e) => e.code === 'no_target');
   });
@@ -182,22 +186,37 @@ describe('GateDropService', () => {
     assert.equal(fs.readdirSync(downloads).length, 3);
   });
 
-  it('a text send: toast with "Kopieren", silent pushes are not stored', async () => {
+  it('a text send: toast with "Kopieren"; data pushes are not stored, quiet hours stay silent', async () => {
     const srv = await gatedropServer();
     cleanup.push(() => srv.close());
     const copied = [];
     const { svc, center } = await setup(srv, { nc: true });
     svc.clipboard = { writeText: (t) => copied.push(t) };
     const send = srv.addSend({ from: { name: 'Anna' }, text: 'Code: 4711' });
-    const entry = center.handleNotification({ seq: 9, id: 90, topic: 'plugin:gatecontrol-gatedrop:received', title: 'x', silent: true, data: { gatedrop: { send: send.id } } });
+    const entry = center.handleNotification({ seq: 9, id: 90, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', title: '', silent: true, data: { gatedrop: { send: send.id } } });
     await svc.idle();
     assert.equal(entry, null);
+    assert.equal(center.list({ filter: 'all' }).items.length, 0);
     const xml = FakeNotification.shown[0].opts.toastXml;
     assert.match(xml, /Anna hat dir einen Text geschickt/);
     const nonce = /t=([A-Za-z0-9_-]+)/.exec(xml)[1];
     center.handleProtocolUrl(`gatecontrol-pro://notify/action?t=${nonce}`);
     await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(copied, ['Code: 4711']);
+
+    // A visible push during quiet hours (`silent`): kept in the inbox, no toast at all.
+    const quiet = srv.addSend({ from: { name: 'Lena' }, text: 'psst' });
+    const e2 = center.handleNotification({ seq: 10, id: 91, topic: 'plugin:gatecontrol-gatedrop:received', title: 'Lena hat dir einen Text geschickt', silent: true, data: { gatedrop: { send: quiet.id } } });
+    await svc.idle();
+    assert.ok(e2);
+    assert.equal(FakeNotification.shown.length, 1);
+
+    // Other data pushes nobody takes: never shown, never stored, 'data' event.
+    const seen = [];
+    center.on('data', (d) => seen.push(d));
+    assert.equal(center.handleNotification({ seq: 11, id: 92, kind: 'data', topic: 'plugin:x:y', title: '', data: { x: 1 } }), null);
+    assert.deepEqual(seen, [{ topic: 'plugin:x:y', data: { x: 1 } }]);
+    assert.equal(FakeNotification.shown.length, 1);
   });
 
   it('direct push between two PCs: local items, listener learns the ticket from GET transfers/<id>', async () => {
@@ -266,7 +285,7 @@ describe('GateDropService', () => {
     const prep = await sender.svc.prepareFiles([writeFile(dir, 'foto.jpg', data)]);
     await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['tok_b'] } });
     const received = new Promise((r) => receiver.svc.once('received', r));
-    assert.equal(receiver.center.handleNotification({ seq: 1, id: 1, topic: 'plugin:gatecontrol-gatedrop:received', silent: true, title: '', data: pushToB }), null);
+    assert.equal(receiver.center.handleNotification({ seq: 1, id: 1, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', silent: true, title: '', data: pushToB }), null);
     const rec = await received;
     await sender.svc.idle();
     assert.deepEqual(fs.readFileSync(rec.files[0].path), data);

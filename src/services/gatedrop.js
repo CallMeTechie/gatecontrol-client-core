@@ -604,14 +604,19 @@ class GateDropService extends EventEmitter {
     const p = gd.parsePushData(n.data);
     if (!p) return false;
     const key = p.kind === 'direct' ? `t:${p.transferId}` : `s:${p.sendId}`;
-    if (this._seen.has(key)) return n.silent ? 'consumed' : 'quiet';
+    // Data pushes (`kind: "data"`, core 1.193) are only dispatched; a visible
+    // "… hat dir … geschickt" stays in the inbox without the center's toast.
+    const hidden = n.kind === 'data';
+    if (this._seen.has(key)) return hidden ? 'consumed' : 'quiet';
     this._remember(key);
+    // `silent` without kind data: quiet hours → no toast of ours either.
+    p.quiet = !hidden && n.silent === true;
     if (p.kind === 'direct') {
       this._job(this.receiveDirect(p));
       return 'consumed';
     }
     this._job(this.receiveSend(p));
-    return n.silent ? 'consumed' : 'quiet';
+    return hidden ? 'consumed' : 'quiet';
   }
 
   _remember(key) {
@@ -675,7 +680,7 @@ class GateDropService extends EventEmitter {
     }
     const rec = this._record({ key: p.transferId, sendId: p.sendId, transferId: p.transferId, from: p.from, files: saved, via: 'direct' });
     this.emit('progress', { id: jobId, dir: 'in', phase: 'done', sent: total, total });
-    this._toastReceived(rec);
+    this._toastReceived(rec, { quiet: p.quiet === true });
     return { ok: true, record: rec };
   }
 
@@ -687,7 +692,7 @@ class GateDropService extends EventEmitter {
       if (!send) throw new GateDropError('send not found', { code: 'not_found' });
     } catch (err) {
       this.log.warn(`GateDrop send ${p.sendId} could not be loaded: ${err.code || err.message}`);
-      this._toastFailed(p.from);
+      this._toastFailed(p.from, { quiet: p.quiet === true });
       return { ok: false, error: err.code || 'failed' };
     }
     const from = send.from || p.from;
@@ -712,13 +717,13 @@ class GateDropService extends EventEmitter {
       }
     }
     if (failed && !files.length && !send.text && !send.link) {
-      this._toastFailed(from);
+      this._toastFailed(from, { quiet: p.quiet === true });
       return { ok: false, error: 'download_failed' };
     }
     const rec = this._record({ key: send.id, sendId: send.id, from, files, text: send.text, link: send.link, note: send.note, via: 'server' });
     this._inbox.delete('received');
     this.emit('progress', { id: send.id, dir: 'in', phase: 'done', sent: total, total });
-    this._toastReceived(rec);
+    this._toastReceived(rec, { quiet: p.quiet === true });
     return { ok: true, record: rec, failed };
   }
 
@@ -878,10 +883,10 @@ class GateDropService extends EventEmitter {
     return true;
   }
 
-  _decide() {
+  _decide(quiet = false) {
     const nc = this.notificationCenter;
-    if (nc && typeof nc.decideToast === 'function') return nc.decideToast({ priority: 'normal', topic: `${gd.TOPIC_PREFIX}received` });
-    return { show: true, silent: false };
+    if (nc && typeof nc.decideToast === 'function') return nc.decideToast({ priority: 'normal', topic: `${gd.TOPIC_PREFIX}received`, silent: quiet });
+    return quiet ? { show: false, silent: true } : { show: true, silent: false };
   }
 
   _fromName(from) {
@@ -893,7 +898,7 @@ class GateDropService extends EventEmitter {
     return `${path.basename(path.dirname(dir))}\\${path.basename(dir)}`;
   }
 
-  _toastReceived(rec) {
+  _toastReceived(rec, { quiet = false } = {}) {
     const from = this._fromName(rec.from);
     let title;
     let body = '';
@@ -918,11 +923,12 @@ class GateDropService extends EventEmitter {
       return null;
     }
     if (rec.note) body = body ? `${rec.note} · ${body}` : rec.note;
-    return this._showToast({ title, body, buttons, context: { tab: 'received', sendId: rec.sendId } });
+    return this._showToast({ title, body, buttons, quiet, context: { tab: 'received', sendId: rec.sendId } });
   }
 
-  _toastFailed(from) {
+  _toastFailed(from, { quiet = false } = {}) {
     return this._showToast({
+      quiet,
       title: t('gatedrop.toast.failed'),
       body: t('gatedrop.toast.failedBody', { from: this._fromName(from) }),
       buttons: [],
@@ -930,8 +936,8 @@ class GateDropService extends EventEmitter {
     });
   }
 
-  _showToast({ title, body, buttons, context }) {
-    const decision = this._decide();
+  _showToast({ title, body, buttons, context, quiet = false }) {
+    const decision = this._decide(quiet);
     if (!decision.show) return null;
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;

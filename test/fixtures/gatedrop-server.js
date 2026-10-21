@@ -7,7 +7,7 @@
 //   const srv = await gatedropServer({ targets, direct: (body, sendId) => [...] });
 //   srv.url, srv.state (requests, presence, sends, media, results, addItems, uploads),
 //   srv.addSend(send) → stored send (GET sends/<id>, items downloadable),
-//   srv.cutUploadAfter = n  → the next resumable upload breaks off after n bytes,
+//   srv.cutUploadAfter = n  → the next resumable part breaks off after n bytes (whole 64 KiB kept),
 //   srv.close()
 
 const http = require('node:http');
@@ -28,7 +28,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     addItems: [],
     opened: [],
     endedLinks: [],
-    uploads: new Map(),     // uploadId → Buffer (partial)
+    uploads: new Map(),     // uploadId → { data, total, mime } (resumable, partial)
     uploadCalls: [],
     transfers: new Map(),   // transferId → transfer description (GET transfers/<id>)
     nextSend: 100,
@@ -77,41 +77,49 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       return json(res, 200, { plugins: state.plugin ? [{ id: PLUGIN, version, tab: null }] : [{ id: 'gatecontrol-messenger', version: '1.8.0' }] });
     }
 
-    // ── Media (core A1) ─────────────────────────────
+    // ── Media (core A1, resumable parts of core 1.193) ──
+    if (req.method === 'GET' && p === MEDIA && url.searchParams.get('uploadId')) {
+      const up = state.uploads.get(url.searchParams.get('uploadId'));
+      return up ? json(res, 200, { offset: up.data.length, total: up.total, mime: up.mime }) : json(res, 404, { error: 'not_found' });
+    }
     if (req.method === 'PUT' && p === MEDIA) {
       const uploadId = url.searchParams.get('uploadId');
       const offset = Number(url.searchParams.get('offset') || 0);
-      state.uploadCalls.push({ uploadId, offset, range: req.headers['content-range'] || null, length: Number(req.headers['content-length']) });
-      if (uploadId && srv.cutUploadAfter !== null) {
-        const cut = srv.cutUploadAfter;
-        srv.cutUploadAfter = null;
-        let got = Buffer.alloc(0);
-        req.on('data', (c) => {
-          got = Buffer.concat([got, c]);
-          if (got.length >= cut) {
-            state.uploads.set(uploadId, got.subarray(0, cut));
-            req.socket.destroy();
-          }
-        });
-        return undefined;
+      const range = req.headers['content-range'] || null;
+      state.uploadCalls.push({ uploadId, offset, range, length: Number(req.headers['content-length']) });
+      if (uploadId) {
+        const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range || '');
+        if (!m || Number(m[1]) !== offset) return json(res, 400, { error: 'bad range', code: 'bad_range' });
+        const total = Number(m[3]);
+        const up = state.uploads.get(uploadId) || { data: Buffer.alloc(0), total, mime: req.headers['content-type'] };
+        state.uploads.set(uploadId, up);
+        if (offset !== up.data.length) { req.resume(); return json(res, 409, { error: 'offset', code: 'offset_mismatch', offset: up.data.length }); }
+        if (srv.cutUploadAfter !== null) {
+          const cut = srv.cutUploadAfter;
+          srv.cutUploadAfter = null;
+          let got = Buffer.alloc(0);
+          req.on('data', (c) => {
+            got = Buffer.concat([got, c]);
+            if (got.length >= cut) {
+              const keep = Math.floor(cut / 65536) * 65536; // the server keeps whole 64 KiB blocks
+              up.data = Buffer.concat([up.data, got.subarray(0, keep)]);
+              req.socket.destroy();
+            }
+          });
+          return undefined;
+        }
+        const body = await readBody(req);
+        up.data = Buffer.concat([up.data, body]);
+        if (up.data.length < up.total) return json(res, 200, { ok: true, complete: false, uploadId, offset: up.data.length, total: up.total });
+        state.uploads.delete(uploadId);
+        const mediaId = crypto.randomBytes(16).toString('hex');
+        state.media.set(mediaId, { data: up.data, mime: up.mime });
+        return json(res, 200, { ok: true, complete: true, mediaId, mime: up.mime, bytes: up.data.length });
       }
       const body = await readBody(req);
-      let data = body;
-      if (uploadId) {
-        const before = state.uploads.get(uploadId) || Buffer.alloc(0);
-        if (offset !== before.length) return json(res, 409, { error: 'offset mismatch', code: 'upload_offset' });
-        data = Buffer.concat([before, body]);
-        state.uploads.delete(uploadId);
-      }
       const mediaId = crypto.randomBytes(16).toString('hex');
-      state.media.set(mediaId, { data, mime: req.headers['content-type'] });
-      return json(res, 200, { mediaId, mime: req.headers['content-type'], bytes: data.length });
-    }
-    if (req.method === 'HEAD' && p.startsWith(`${MEDIA}/uploads/`)) {
-      const id = p.slice(`${MEDIA}/uploads/`.length);
-      const have = state.uploads.get(id);
-      res.writeHead(have ? 200 : 404, { 'Upload-Offset': String(have ? have.length : 0) });
-      return res.end();
+      state.media.set(mediaId, { data: body, mime: req.headers['content-type'] });
+      return json(res, 200, { mediaId, mime: req.headers['content-type'], bytes: body.length });
     }
 
     if (!p.startsWith(API)) return json(res, 404, { error: 'not_found' });

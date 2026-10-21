@@ -1200,6 +1200,7 @@
     "someone": "Jemand",
     "retention": "Empfangenes bleibt 7 Tage auf dem Server.",
     "folder": "Gespeichert in {{folder}}",
+    "folderLabel": "Empfangene Dateien",
     "openFolder": "Ordner öffnen",
     "explorer": "Im Explorer unter „Senden an“ anzeigen",
     "explorerHint": "Rechtsklick auf Dateien › Senden an › GateDrop",

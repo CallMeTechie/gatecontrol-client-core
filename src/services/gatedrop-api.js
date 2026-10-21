@@ -21,8 +21,8 @@
  *   POST   …/api/sends/<id>/opened
  *   DELETE …/api/links/<token>
  *   PUT    …/gatecontrol-gatedrop/media                             raw upload (streamed)
- *          ?uploadId=&offset= + Content-Range                       resumable (> 50 MB, core ≥ 1.193)
- *   HEAD   …/gatecontrol-gatedrop/media/uploads/<uploadId>          → offset of a cut-off upload
+ *          ?uploadId=&offset= + Content-Range                       resumable parts (> 50 MB, core ≥ 1.193)
+ *   GET    …/gatecontrol-gatedrop/media?uploadId=<id>               → { offset, total, mime } of a resumable upload
  *
  * Failures are thrown as MessengerApi's error class { status, code,
  * message } (same mapping as the chats: plugin `code`, `http_<status>`,
@@ -41,6 +41,7 @@ const { MessengerError: GateDropError, toMessengerError } = MessengerApi;
 const UPLOAD_IDLE_MS = 5 * 60 * 1000;     // socket idle limit of uploads / downloads
 const DOWNLOAD_IDLE_MS = 2 * 60 * 1000;
 const RESUME_ATTEMPTS = 5;
+const PART_SIZE = 8 * 1024 * 1024;     // resumable parts: multiples of 64 KiB (core 1.193)
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -62,12 +63,14 @@ class GateDropApi {
    * @param {object} [opts.http] - MessengerApi-compatible transport (tests)
    * @param {() => Promise<void>} [opts.sleep]
    * @param {number} [opts.resumableFrom] - uploads above this size are resumable (50 MB)
+   * @param {number} [opts.partSize] - resumable part size (8 MiB, a multiple of 64 KiB)
    */
-  constructor({ apiClient, log, http = null, sleep = null, resumableFrom = gd.RESUMABLE_FROM } = {}) {
+  constructor({ apiClient, log, http = null, sleep = null, resumableFrom = gd.RESUMABLE_FROM, partSize = PART_SIZE } = {}) {
     this.log = log || noopLog();
     this.http = http || new MessengerApi({ apiClient, log: this.log });
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.resumableFrom = resumableFrom;
+    this.partSize = partSize; // multiple of 64 KiB
     this.resumable = null; // null = try, false = the server refused the resumable parameters
   }
 
@@ -150,8 +153,12 @@ class GateDropApi {
 
   /**
    * Upload a file from disk (streamed) → { mediaId, mime, bytes }.
-   * Files above 50 MB go up resumable: a cut connection continues at the
-   * offset the server reports (HEAD media/uploads/<id>), up to 5 times.
+   * Files above 50 MB go up resumable (core 1.193): parts of 8 MiB
+   *   PUT media?uploadId=<id>&offset=<n>, Content-Range: bytes n-end/total
+   *   → 200 { complete: false, offset } … { complete: true, mediaId, mime, bytes }
+   *   → 409 { code: offset_mismatch | upload_mismatch | busy, offset } → go on at offset
+   * and a broken part continues where the server stands (GET media?uploadId=<id>
+   * → { offset, total, mime }); up to 5 failures in a row.
    * @param {{ path: string, size: number, mime: string }} file
    * @param {{ onProgress?: (sent: number, total: number) => void }} [opts]
    */
@@ -161,41 +168,75 @@ class GateDropApi {
     if (size > gd.MAX_FILE_BYTES) throw new GateDropError('file too large', { code: 'too_large' });
     const mime = typeof file.mime === 'string' && file.mime ? file.mime : 'application/octet-stream';
     const progress = typeof onProgress === 'function' ? onProgress : () => {};
-    if (size <= this.resumableFrom || this.resumable === false) return this._put(file.path, { mime, size, start: 0, progress });
-
-    const uploadId = crypto.randomBytes(18).toString('base64url');
-    let offset = 0;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await this._put(file.path, { mime, size, start: offset, progress, uploadId });
-      } catch (err) {
-        if (err.status === 400 && offset === 0 && attempt === 0 && /upload/i.test(err.code || '')) {
-          // A server without resumable uploads: plain PUT.
-          this.resumable = false;
-          return this._put(file.path, { mime, size, start: 0, progress });
-        }
-        if (!err.transient || attempt >= RESUME_ATTEMPTS - 1) throw err;
-        await this.sleep(Math.min(30000, 1000 * 2 ** attempt));
-        const at = await this.uploadOffset(uploadId).catch(() => null);
-        offset = at !== null && at <= size ? at : 0;
-        this.log.info(`GateDrop upload continues at ${offset} of ${size} bytes`);
-      }
+    if (size <= this.resumableFrom || this.resumable === false) {
+      const r = await this._put(file.path, { mime, size, start: 0, end: size, progress });
+      return this._media(r, mime, size);
     }
+
+    const uploadId = crypto.randomBytes(18).toString('base64url'); // 24 chars of [A-Za-z0-9_-]
+    let offset = 0;
+    let failures = 0;
+    while (offset < size) {
+      const end = Math.min(size, offset + this.partSize);
+      let r;
+      try {
+        r = await this._put(file.path, { mime, size, start: offset, end, progress, uploadId });
+      } catch (err) {
+        if (!err.transient || ++failures >= RESUME_ATTEMPTS) throw err;
+        await this.sleep(Math.min(30000, 1000 * 2 ** (failures - 1)));
+        const at = await this.uploadOffset(uploadId).catch(() => null);
+        if (at !== null && at <= size) offset = at;
+        this.log.info(`GateDrop upload continues at ${offset} of ${size} bytes`);
+        continue;
+      }
+      const d = r.data || {};
+      if (r.status === 409) {
+        const at = gd.nonNegInt(d.offset);
+        if (d.code === 'busy' || at === null) {
+          if (++failures >= RESUME_ATTEMPTS) throw new GateDropError('upload busy', { status: 409, code: d.code || 'busy' });
+          await this.sleep(Math.min(30000, 1000 * 2 ** (failures - 1)));
+          const st = await this.uploadOffset(uploadId).catch(() => null);
+          if (st !== null) offset = st;
+        } else {
+          offset = at;
+        }
+        continue;
+      }
+      failures = 0;
+      if (d.complete === true || (gd.isMediaId(d.mediaId) && d.complete !== false)) {
+        if (offset === 0 && end < size && d.complete !== true) {
+          // A server without resumable uploads took the first part as a file: whole file in one.
+          this.resumable = false;
+          const whole = await this._put(file.path, { mime, size, start: 0, end: size, progress });
+          return this._media(whole, mime, size);
+        }
+        return this._media(r, mime, size);
+      }
+      const next = gd.nonNegInt(d.offset);
+      offset = next !== null && next > offset ? next : end;
+    }
+    // Every byte went up, but the server never answered `complete`.
+    throw new GateDropError('upload not completed', { code: 'bad_response' });
   }
 
-  async _put(filePath, { mime, size, start, progress, uploadId = null }) {
+  _media(res, mime, size) {
+    const d = (res && res.data) || {};
+    if (!gd.isMediaId(d.mediaId)) throw new GateDropError('bad upload answer', { status: res && res.status, code: 'bad_response' });
+    return { mediaId: d.mediaId, mime: typeof d.mime === 'string' ? d.mime : mime, bytes: Number(d.bytes) || size };
+  }
+
+  /** One PUT of bytes [start, end) → axios response (200, or 409 for resumable parts). */
+  async _put(filePath, { mime, size, start, end, progress, uploadId = null }) {
     const client = this._client();
     const params = {};
-    const headers = { 'Content-Type': mime, 'Content-Length': String(size - start) };
+    const headers = { 'Content-Type': mime, 'Content-Length': String(end - start) };
     if (uploadId) {
       params.uploadId = uploadId;
-      if (start > 0) {
-        params.offset = start;
-        headers['Content-Range'] = `bytes ${start}-${size - 1}/${size}`;
-      }
+      params.offset = start;
+      headers['Content-Range'] = `bytes ${start}-${end - 1}/${size}`;
     }
     let sent = start;
-    const src = fs.createReadStream(filePath, { start });
+    const src = fs.createReadStream(filePath, { start, end: end - 1 });
     const body = src.pipe(counter((n) => { sent += n; progress(sent, size); }));
     src.on('error', (e) => body.destroy(e));
     try {
@@ -210,33 +251,22 @@ class GateDropApi {
         maxContentLength: 1024 * 1024,
         maxRedirects: 0, // no redirect buffering of a 2 GB body
         transformRequest: [(d) => d],
+        validateStatus: (st) => (st >= 200 && st < 300) || (!!uploadId && st === 409),
       });
-      const d = res.data || {};
-      if (!gd.isMediaId(d.mediaId)) throw new GateDropError('bad upload answer', { status: res.status, code: 'bad_response' });
-      return { mediaId: d.mediaId, mime: typeof d.mime === 'string' ? d.mime : mime, bytes: Number(d.bytes) || size };
+      return res;
     } catch (err) {
       src.destroy();
       throw toMessengerError(err);
     }
   }
 
-  /** Bytes the server already holds of a resumable upload, or null. */
+  /** Bytes the server already holds of a resumable upload (GET media?uploadId=), or null. */
   async uploadOffset(uploadId) {
-    const client = this._client();
     try {
-      const res = await client.request({ method: 'HEAD', url: `${gd.MEDIA_PATH}/uploads/${encodeURIComponent(uploadId)}`, timeout: 15000 });
-      const h = res.headers || {};
-      const fromHeader = gd.nonNegInt(h['upload-offset'] || h['x-upload-offset'] || h['x-offset']);
-      if (fromHeader !== null) return fromHeader;
-    } catch (err) {
-      const e = toMessengerError(err);
-      if (e.status === 404) return 0;
-    }
-    // Servers answering the offset as JSON only (GET of the same path).
-    try {
-      const r = await this.http._call('GET', `${gd.MEDIA_PATH}/uploads/${encodeURIComponent(uploadId)}`);
+      const r = await this.http._call('GET', gd.MEDIA_PATH, { params: { uploadId } });
       return gd.nonNegInt(r.offset);
-    } catch {
+    } catch (err) {
+      if (err.status === 404) return 0;
       return null;
     }
   }

@@ -36,6 +36,7 @@
  *                                          context: what addClickRoute's resolver returned)
  *   'portal'   ({ path })                  portal path requested (when no openPortal is given)
  *   'action'   ({ id, seq, action, type }) an action was performed
+ *   'data'     ({ topic, data })           a data push (`kind: "data"`) no handler took; never shown
  *
  * Electron-free when `Notification` is injected (tests); otherwise Electron's
  * Notification is required lazily.
@@ -308,12 +309,19 @@ class NotificationCenter extends EventEmitter {
     // A service that handles some pushes itself (e.g. GateDrop: silent data
     // pushes, files to fetch): 'consumed' → no inbox entry, no toast;
     // 'quiet' → inbox entry without a toast (the service shows its own).
+    // Data pushes (`kind: "data"`, GateControl 1.193) are never shown or
+    // stored: only the handlers see them.
+    const dataOnly = !!n && n.kind === 'data';
     let quiet = false;
     for (const h of this._pushHandlers) {
       let r = false;
       try { r = h.notification(n); } catch (err) { this.log.warn(`Push handler failed: ${err.message}`); }
       if (r === 'consumed' || r === true) return null;
       if (r === 'quiet') { quiet = true; break; }
+    }
+    if (dataOnly) {
+      this.emit('data', { topic: typeof n.topic === 'string' ? n.topic : null, data: n.data && typeof n.data === 'object' ? n.data : null });
+      return null;
     }
     const entry = normalizeEntry(n);
     if (!entry) return null;

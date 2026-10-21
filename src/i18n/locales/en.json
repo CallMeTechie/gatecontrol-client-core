@@ -1200,6 +1200,7 @@
     "someone": "Someone",
     "retention": "Received items stay on the server for 7 days.",
     "folder": "Saved in {{folder}}",
+    "folderLabel": "Received files",
     "openFolder": "Open folder",
     "explorer": "Show under “Send to” in the Explorer",
     "explorerHint": "Right-click files › Send to › GateDrop",
