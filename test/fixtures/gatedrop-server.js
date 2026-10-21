@@ -78,8 +78,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     }
 
     // ── Media (core A1, resumable parts of core 1.193) ──
-    if (req.method === 'GET' && p === MEDIA && url.searchParams.get('uploadId')) {
-      const up = state.uploads.get(url.searchParams.get('uploadId'));
+    if (req.method === 'GET' && p.startsWith(`${MEDIA}/uploads/`)) {
+      const up = state.uploads.get(decodeURIComponent(p.slice(MEDIA.length + 9)));
       return up ? json(res, 200, { offset: up.data.length, total: up.total, mime: up.mime }) : json(res, 404, { error: 'not_found' });
     }
     if (req.method === 'PUT' && p === MEDIA) {

@@ -22,7 +22,7 @@
  *   DELETE …/api/links/<token>
  *   PUT    …/gatecontrol-gatedrop/media                             raw upload (streamed)
  *          ?uploadId=&offset= + Content-Range                       resumable parts (> 50 MB, core ≥ 1.193)
- *   GET    …/gatecontrol-gatedrop/media?uploadId=<id>               → { offset, total, mime } of a resumable upload
+ *   GET    …/gatecontrol-gatedrop/media/uploads/<id>                → { offset, total, mime } of a resumable upload
  *
  * Failures are thrown as MessengerApi's error class { status, code,
  * message } (same mapping as the chats: plugin `code`, `http_<status>`,
@@ -157,7 +157,7 @@ class GateDropApi {
    *   PUT media?uploadId=<id>&offset=<n>, Content-Range: bytes n-end/total
    *   → 200 { complete: false, offset } … { complete: true, mediaId, mime, bytes }
    *   → 409 { code: offset_mismatch | upload_mismatch | busy, offset } → go on at offset
-   * and a broken part continues where the server stands (GET media?uploadId=<id>
+   * and a broken part continues where the server stands (GET media/uploads/<id>
    * → { offset, total, mime }); up to 5 failures in a row.
    * @param {{ path: string, size: number, mime: string }} file
    * @param {{ onProgress?: (sent: number, total: number) => void }} [opts]
@@ -260,10 +260,10 @@ class GateDropApi {
     }
   }
 
-  /** Bytes the server already holds of a resumable upload (GET media?uploadId=), or null. */
+  /** Bytes the server already holds of a resumable upload (GET media/uploads/<id>), or null. */
   async uploadOffset(uploadId) {
     try {
-      const r = await this.http._call('GET', gd.MEDIA_PATH, { params: { uploadId } });
+      const r = await this.http._call('GET', `${gd.MEDIA_PATH}/uploads/${encodeURIComponent(uploadId)}`);
       return gd.nonNegInt(r.offset);
     } catch (err) {
       if (err.status === 404) return 0;
