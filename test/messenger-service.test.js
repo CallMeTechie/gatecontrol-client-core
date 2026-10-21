@@ -439,7 +439,9 @@ describe('MessengerService – video files and file previews (Messenger 1.3.0)',
     assert.match(post.thumbMediaId, /^[0-9a-f]{32}$/);
     assert.deepEqual(post.video, { durationMs: 12346, width: 1280, height: 720 });
     assert.equal(post.meta.fileName, 'clip.mp4');
-    const view = m.messagesView(id).messages[0];
+    // the local view takes the server's copy a moment after the POST answers
+    await waitFor(() => m.messagesView(id).messages.some((x) => x.media));
+    const view = m.messagesView(id).messages.find((x) => x.media);
     assert.equal(view.media.thumbId, post.thumbMediaId);
     assert.deepEqual(view.video, post.video);
 
