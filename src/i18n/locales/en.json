@@ -298,6 +298,51 @@
       "inboxUnread": "Notifications · {{ count }} new",
       "dnd1h": "Do not disturb for 1 hour",
       "dndOff": "End do not disturb"
+    },
+    "routes": {
+      "title": "Where notifications appear",
+      "entryDesc": "GateControl, family chat or a chat of their own, per kind",
+      "open": "Set up",
+      "intro": "Pick the chat for each kind of notification. Everyone in the family sees the ones in the family chat.",
+      "introFamily": "Only adults can choose the family chat – it then applies to everyone in the family.",
+      "dest": {
+        "inbox": "GateControl",
+        "family": "Family chat",
+        "own": "Own chat “{{label}}”"
+      },
+      "option": {
+        "inbox": "GateControl",
+        "family": "Family chat – visible to everyone in the family",
+        "own": "Own chat “{{label}}”"
+      },
+      "hint": {
+        "inbox": "In the pinned chat “GateControl” – only for you",
+        "family": "Visible to everyone in the family",
+        "own": "A chat of its own for everything from {{label}} – only for you"
+      },
+      "familySetBy": "Set for the whole family by {{name}}",
+      "familySet": "Set for the whole family",
+      "familyOnlyAdults": "Only adults in the family can change this.",
+      "locked": "always GateControl",
+      "lockedA11y": "Locked, always appears in GateControl",
+      "noSink": "Needs the Messenger plugin – until then everything appears in GateControl.",
+      "footer": "New plugins show up here by themselves. You can still switch any kind off under “Notifications”.",
+      "loading": "Loading …",
+      "loadFailed": "Could not be loaded.",
+      "retry": "Try again",
+      "unsupported": "Your GateControl server does not know this setting yet.",
+      "empty": "No kinds of notifications yet.",
+      "saved": "Saved: {{topic}} → {{dest}}",
+      "err": {
+        "family": "Only adults in the family may choose the family chat.",
+        "locked": "These notifications always appear in GateControl.",
+        "noSink": "The server needs the Messenger plugin for this.",
+        "forbidden": "You may not change this here.",
+        "unknownTopic": "This kind of notification no longer exists.",
+        "pushDisabled": "Notifications are switched off on the server.",
+        "network": "Not saved – no connection to the server.",
+        "failed": "Not saved. Please try again shortly."
+      }
     }
   },
   "chat": {
@@ -1048,7 +1093,13 @@
       "actionsShown": "Show in the attach menu",
       "actionsLocal": "This choice applies to this PC only.",
       "noActions": "There are no home actions for you.",
-      "needsConfirm": "with confirmation"
+      "needsConfirm": "with confirmation",
+      "routes": "Where notifications appear",
+      "routesSub": "GateControl, family chat or a chat of their own"
+    },
+    "notice": {
+      "tag": "Notifications",
+      "infoSub": "Notifications from {{source}} – only for you"
     }
   },
   "school": {

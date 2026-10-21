@@ -69,6 +69,7 @@
  *   chat:actions         ({ refresh? }) → { ok, actions }                        attach menu "Aus deinem Zuhause"
  *   chat:action          ({ id, op: 'run'|'approve'|'deny', actionId?, plugin? }) → { ok, message, result }
  *   chat:card:image      ({ id }) → { ok, mime, data: Uint8Array }                picture of a plugin card
+ *   chat:notice:image    ({ path }) → { ok, mime, data: Uint8Array }              picture of a notice card (/notify-media/…)
  *   chat:storage         () → { ok, mediaCacheBytes, avatarCacheBytes, cachedChats, cachedMessages, outbox, server }
  *   chat:cache:clear     () → { ok, … storage }
  *
@@ -81,7 +82,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-  posInt, isClientId, isMediaId, isAvatarPath, safeFileName, unsafeToOpen, extForMime, extOf, prefsBody,
+  posInt, isClientId, isMediaId, isAvatarPath, isNotifyMediaPath, safeFileName, unsafeToOpen, extForMime, extOf, prefsBody,
 } = require('../utils/messenger');
 
 const CHAT_EVENTS = {
@@ -384,6 +385,7 @@ function registerMessengerHandlers(handle, {
     return { ok: true, ...(await m.actionOp(posInt(a.id), a.op, { actionId: str(a.actionId, 200), plugin: str(a.plugin, 100) })) };
   }));
   handle('chat:card:image', wrap(async (a) => (posInt(a.id) ? bytesOut(await m.cardImage(posInt(a.id))) : invalid())));
+  handle('chat:notice:image', wrap(async (a) => (isNotifyMediaPath(a.path) ? bytesOut(await m.noticeImage(a.path)) : invalid())));
   handle('chat:storage', wrap(async () => ({ ok: true, ...m.storage() })));
   handle('chat:cache:clear', wrap(async () => ({ ok: true, ...m.clearMediaCache() })));
 

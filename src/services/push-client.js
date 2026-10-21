@@ -52,6 +52,7 @@ const crypto = require('crypto');
 const { SseParser } = require('../utils/sse-parser');
 const { readNotificationSettings } = require('../utils/notify-schema');
 const { checkPushPath, isTunnelOnly } = require('../utils/push-path');
+const notifyRoutes = require('../utils/notify-routes');
 
 const ENDPOINT = '/api/v1/client/push';
 const TOPIC_RE = /^(?:security|devices|services|system|admin_notice|plugin:[a-z0-9]+(?:-[a-z0-9]+)*:[a-z][a-z0-9_-]{0,31})$/;
@@ -154,7 +155,8 @@ function normalizeControl(c) {
 class PushClient extends EventEmitter {
   /**
    * @param {object} opts
-   * @param {object} opts.apiClient - ApiClient (serverUrl, apiKey, buildHeaders, pushAck, pushInbox, pushPrefs, pushTest)
+   * @param {object} opts.apiClient - ApiClient (serverUrl, apiKey, buildHeaders, pushAck, pushInbox, pushPrefs, pushTest,
+   *   getPushRoutes, setPushRoute)
    * @param {object} opts.store - electron-store compatible ({ get, set }), dot paths
    * @param {object} [opts.log]
    * @param {string} [opts.storeKey='notifications']
@@ -391,6 +393,54 @@ class PushClient extends EventEmitter {
     } catch (err) {
       return { ok: false, error: this._errCode(err) };
     }
+  }
+
+  /**
+   * Where each kind of notification appears (core 1.191, utils/notify-routes.js):
+   * { ok: true, routes: { sink, canFamily, groups } } or { ok: false, error }.
+   * A server without the route (404) → error 'unsupported' (the apps hide
+   * the feature); 503 push_disabled and the like come as the server's code.
+   */
+  async fetchRoutes() {
+    if (!this.apiClient || typeof this.apiClient.getPushRoutes !== 'function') return { ok: false, error: 'unsupported' };
+    try {
+      const data = await this.apiClient.getPushRoutes();
+      const routes = data && data.ok !== false ? notifyRoutes.normalizeRoutes(data) : null;
+      return routes ? { ok: true, routes } : { ok: false, error: 'bad_response' };
+    } catch (err) {
+      return { ok: false, error: this._routesErr(err, true) };
+    }
+  }
+
+  /**
+   * Set where `topic` appears: dest 'inbox' | 'own' | 'family' →
+   * { ok: true, routes } (the server's new answer) or { ok: false, error }
+   * (invalid_topic / invalid_dest here; the server's family_not_allowed,
+   * locked, no_sink, unknown_topic, no_user, push_disabled; 'unsupported'
+   * for servers without the route; network codes).
+   */
+  async setRoute(topic, dest) {
+    if (!notifyRoutes.isTopic(topic)) return { ok: false, error: 'invalid_topic' };
+    if (!notifyRoutes.isDest(dest)) return { ok: false, error: 'invalid_dest' };
+    if (notifyRoutes.ALWAYS_INBOX.includes(topic) && dest !== 'inbox') return { ok: false, error: 'locked' };
+    if (!this.apiClient || typeof this.apiClient.setPushRoute !== 'function') return { ok: false, error: 'unsupported' };
+    try {
+      const data = await this.apiClient.setPushRoute({ topic, dest });
+      const routes = data && data.ok !== false ? notifyRoutes.normalizeRoutes(data) : null;
+      if (routes) return { ok: true, routes };
+      return { ok: false, error: notifyRoutes.errorCode(data) || 'bad_response' };
+    } catch (err) {
+      return { ok: false, error: this._routesErr(err, false) };
+    }
+  }
+
+  /** Refusal of the routes API → its code; a 404 without one (older server) → 'unsupported'. */
+  _routesErr(err, isGet) {
+    const res = err && err.response;
+    const code = res ? notifyRoutes.errorCode(res.data) : null;
+    if (res && res.status === 404 && (isGet || code !== 'unknown_topic')) return 'unsupported';
+    if (code) return code;
+    return this._errCode(err);
   }
 
   /** Ask the server for a test message: { ok, seq } or { ok: false, error }. */
