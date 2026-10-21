@@ -495,16 +495,24 @@ class GateDropService extends EventEmitter {
     const localOk = list.length > 0 && await this._allDirect(body.to);
     if (list.length) {
       if (localOk) body.items = list.map((f) => ({ name: f.name, bytes: f.size, mime: f.mime, local: true }));
-      else body.items = await upload.run();
+      else body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
     }
-    const result = await this.api.createSend(body);
+    let result;
+    try {
+      result = await this.api.createSend(body);
+    } catch (err) {
+      // 409 upload_required: a target needs the files on the server after all.
+      if (!(localOk && err && err.code === 'upload_required')) throw err;
+      body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
+      result = await this.api.createSend(body);
+    }
     this._inbox.delete('sent');
     this._inbox.delete('links');
     this.emit('progress', { id: jobId, dir: 'out', phase: 'sent', sent: total, total, sendId: result.id });
 
     const direct = list.length ? result.direct : [];
     if (direct.length) {
-      this._job(Promise.allSettled(direct.map((d) => this._sendDirect(d, list, result.id, upload, jobId, total)))
+      this._job(Promise.allSettled(direct.map((d) => this._sendDirect(d, list, result.id, upload, jobId, total, { local: localOk })))
         .then(() => { this._inbox.delete('sent'); this.emit('changed', { kind: 'sent' }); }));
     }
     this.emit('changed', { kind: 'sent' });
@@ -522,32 +530,55 @@ class GateDropService extends EventEmitter {
     });
   }
 
-  /** Uploads all files once (memoized): → [{ mediaId, name }]. */
+  /**
+   * Uploads files by local index, each at most once (memoized):
+   * run() → all, run([indexes]) → those → [{ index, mediaId, name }].
+   */
   _uploader(list, jobId, total) {
-    let running = null;
+    const done = new Map(); // index → Promise<{ index, mediaId, name }>
+    let chain = Promise.resolve();
+    let base = 0;
+    const one = (index) => {
+      if (done.has(index)) return done.get(index);
+      const f = list[index];
+      // One file after the other (progress, bandwidth); a failed one may be tried again.
+      const p = chain.then(async () => {
+        const start = base;
+        const r = await this.api.upload(f, {
+          onProgress: (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'upload', sent: Math.min(total, start + sent), total, name: f.name }),
+        });
+        base += f.size;
+        return { index, mediaId: r.mediaId, name: f.name };
+      });
+      chain = p.catch(() => {});
+      done.set(index, p);
+      p.catch(() => done.delete(index));
+      return p;
+    };
     return {
-      done: () => !!running,
-      run: () => {
-        if (running) return running;
-        running = (async () => {
-          const items = [];
-          let base = 0;
-          for (const f of list) {
-            const r = await this.api.upload(f, {
-              onProgress: (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'upload', sent: base + sent, total, name: f.name }),
-            });
-            base += f.size;
-            items.push({ mediaId: r.mediaId, name: f.name });
-          }
-          return items;
-        })();
-        running.catch(() => { running = null; });
-        return running;
+      started: () => done.size > 0,
+      run: (indexes = null) => {
+        const want = (Array.isArray(indexes) ? indexes : list.map((_, i) => i)).filter((i) => Number.isSafeInteger(i) && i >= 0 && i < list.length);
+        return Promise.all([...new Set(want)].map(one));
       },
     };
   }
 
-  async _sendDirect(d, list, sendId, upload, jobId, total) {
+  /** POST transfers/<id>/result, tried 3 times (the answer decides the fallback) → answer or null. */
+  async _report(transferId, body) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        return await this.api.transferResult(transferId, body);
+      } catch (err) {
+        this.log.warn(`GateDrop transfer result failed: ${err.code || err.message}`);
+        if (err.transient === false || i === 2) return null;
+        await new Promise((r) => { const tm = setTimeout(r, 2000 * (i + 1)); if (tm.unref) tm.unref(); });
+      }
+    }
+    return null;
+  }
+
+  async _sendDirect(d, list, sendId, upload, jobId, total, { local = true } = {}) {
     const progress = (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'direct', sent, total, deviceId: d.deviceId });
     let ok = false;
     let bytes = 0;
@@ -581,17 +612,17 @@ class GateDropService extends EventEmitter {
       error = err.code || err.message || 'failed';
       this.log.info(`GateDrop direct to ${d.deviceId || 'device'} failed (${error}) – server path`);
     }
-    let answer = { fallback: null };
-    try {
-      answer = await this.api.transferResult(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
-    } catch (err) {
-      this.log.warn(`GateDrop transfer result failed: ${err.code || err.message}`);
-    }
+    const answer = await this._report(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
     if (ok) return { ok: true, via: 'direct' };
-    // Server path: the files go up once, the plugin delivers them.
-    if (!upload.done() || answer.fallback === 'upload') {
-      const items = await upload.run();
-      if (sendId) await this.api.addItems(sendId, items);
+    // fallback 'server': the files are on the server, the plugin delivers.
+    // fallback 'upload': upload the `missing` local items, then POST sends/<id>/items.
+    let indexes = null;
+    if (answer && answer.fallback === 'upload') indexes = answer.missing && answer.missing.length ? answer.missing : list.map((_, i) => i);
+    else if (!answer && local) indexes = list.map((_, i) => i); // no answer: the files must get there anyway
+    if (indexes && indexes.length && sendId) {
+      this.emit('progress', { id: jobId, dir: 'out', phase: 'failed', sent: 0, total });
+      const items = await upload.run(indexes);
+      await this.api.addItems(sendId, items.map((it) => ({ index: it.index, mediaId: it.mediaId })));
     }
     return { ok: true, via: 'server' };
   }
@@ -602,7 +633,8 @@ class GateDropService extends EventEmitter {
   _onPush(n) {
     if (!gd.isGateDropPush(n)) return false;
     const p = gd.parsePushData(n.data);
-    if (!p) return false;
+    // "Link geladen" / "Link gesperrt" (topic link): a normal notification.
+    if (!p || p.kind === 'link') return false;
     const key = p.kind === 'direct' ? `t:${p.transferId}` : `s:${p.sendId}`;
     // Data pushes (`kind: "data"`, core 1.193) are only dispatched; a visible
     // "… hat dir … geschickt" stays in the inbox without the center's toast.
@@ -635,6 +667,15 @@ class GateDropService extends EventEmitter {
 
   /** A direct transfer to this PC (push: wait for the sender; pull: fetch it). */
   async receiveDirect(p) {
+    if (!p.items.length && p.itemCount) {
+      // The push left the item list out (too long): GET transfers/<id>.
+      try {
+        const full = await this.api.transfer(p.transferId);
+        if (full && full.items.length) p = { ...p, items: full.items, sendId: p.sendId || full.sendId, from: p.from || full.from };
+      } catch (err) {
+        this.log.warn(`GateDrop transfer ${p.transferId} could not be read: ${err.code || err.message}`);
+      }
+    }
     const jobId = p.transferId;
     const total = p.items.reduce((s, it) => s + (it.bytes || 0), 0);
     const progress = (sent) => this.emit('progress', { id: jobId, dir: 'in', phase: 'direct', sent, total });
@@ -701,7 +742,7 @@ class GateDropService extends EventEmitter {
     let base = 0;
     let failed = 0;
     for (const it of send.items) {
-      if (!it.mediaId) continue;
+      if (!it.mediaId || !it.available) continue; // local on the sender's device / removed
       let target = null;
       try {
         target = await this._sink({ index: it.index, name: it.name, bytes: it.bytes });
@@ -716,7 +757,7 @@ class GateDropService extends EventEmitter {
         this.log.warn(`GateDrop item ${it.name} could not be loaded: ${err.code || err.message}`);
       }
     }
-    if (failed && !files.length && !send.text && !send.link) {
+    if (!files.length && !send.text && !send.link && (failed || send.items.length)) {
       this._toastFailed(from, { quiet: p.quiet === true });
       return { ok: false, error: 'download_failed' };
     }
@@ -791,7 +832,7 @@ class GateDropService extends EventEmitter {
   _record({ key, sendId = null, transferId = null, from = null, files = [], text = null, link = null, note = null, via }) {
     const rec = {
       key: String(key), sendId, transferId, at: this.now(),
-      from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null } : null,
+      from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null, deviceName: from.deviceName || null } : null,
       files: files.map((f) => ({ name: f.name, path: f.path, bytes: f.bytes })),
       text: text || null, link: link || null, note: note || null, via,
     };
@@ -889,8 +930,12 @@ class GateDropService extends EventEmitter {
     return quiet ? { show: false, silent: true } : { show: true, silent: false };
   }
 
-  _fromName(from) {
-    return (from && from.name) || t('gatedrop.someone');
+  /** "Pixel" for one's own devices (direct transfers, own sends), else the person's name. */
+  _fromName(from, { device = false } = {}) {
+    if (!from) return t('gatedrop.someone');
+    const me = this._targets && this._targets.data && this._targets.data.me;
+    const own = device || (!!me && !!me.id && from.id === me.id);
+    return (own && from.deviceName) || from.name || from.deviceName || t('gatedrop.someone');
   }
 
   _folderLabel() {
@@ -899,7 +944,7 @@ class GateDropService extends EventEmitter {
   }
 
   _toastReceived(rec, { quiet = false } = {}) {
-    const from = this._fromName(rec.from);
+    const from = this._fromName(rec.from, { device: rec.via === 'direct' });
     let title;
     let body = '';
     const buttons = [];

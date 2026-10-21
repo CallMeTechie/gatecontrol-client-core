@@ -12,12 +12,13 @@
  *   GET    …/gatecontrol-gatedrop/api/targets                       people, own devices, NAS, links
  *   PUT    …/api/presence { lan, port, listening }                  LAN addresses of this PC
  *   POST   …/api/sends { items, text?, link?, note?, to }           → { id, deliveries, link?, direct }
- *   POST   …/api/sends/<id>/items { items }                         media after a failed direct transfer
- *   POST   …/api/transfers/<id>/result { ok, bytes?, error? }       → { fallback? }
+ *   POST   …/api/sends/<id>/items { items: [{ index, mediaId }] }   files a failed direct transfer left local
+ *   POST   …/api/transfers/<id>/result { ok, bytes?, error? }       → { fallback: null|server|upload, missing? }
  *   GET    …/api/transfers/<id>                                     ticket of a transfer (listener)
  *   GET    …/api/inbox?kind=received|sent|links
  *   GET    …/api/sends/<id>
- *   GET    …/api/items/<mediaId>                                    download (streamed)
+ *   GET    …/api/items/<mediaId>                                    → { item, url }; the bytes from `url`
+ *   GET    …/gatecontrol-gatedrop/media/<mediaId>                   download (streamed, the apps' media route)
  *   POST   …/api/sends/<id>/opened
  *   DELETE …/api/links/<token>
  *   PUT    …/gatecontrol-gatedrop/media                             raw upload (streamed)
@@ -112,24 +113,35 @@ class GateDropApi {
 
   async createSend(body) { return gd.normalizeSendResult(await this.api('POST', 'sends', { body, timeout: 60000 })); }
 
-  async addItems(sendId, items) { return this.api('POST', `sends/${this._id(sendId)}/items`, { body: { items }, timeout: 60000 }); }
+  /** POST sends/<id>/items { items: [{ index, mediaId }] } — the files a failed direct transfer left local. */
+  async addItems(sendId, items) {
+    const list = (Array.isArray(items) ? items : []).filter((it) => it && Number.isSafeInteger(it.index) && it.index >= 0 && gd.isMediaId(it.mediaId))
+      .map((it) => ({ index: it.index, mediaId: it.mediaId }));
+    if (!list.length) throw new GateDropError('no items', { code: 'invalid' });
+    const r = await this.api('POST', `sends/${this._id(sendId)}/items`, { body: { items: list }, timeout: 60000 });
+    return { send: gd.normalizeSend(r && r.send) };
+  }
 
   async transferResult(transferId, { ok, bytes, error } = {}) {
     if (!gd.isTransferId(transferId)) throw new GateDropError('invalid transfer', { code: 'invalid' });
     const body = { ok: ok === true };
     if (Number.isSafeInteger(bytes) && bytes >= 0) body.bytes = bytes;
-    if (!body.ok && error) body.error = String(error).slice(0, 200);
+    // the plugin takes error codes [a-z0-9_.-]{1,64}
+    if (!body.ok && error) body.error = String(error).toLowerCase().replace(/[^a-z0-9_.-]+/g, '_').slice(0, 64) || 'failed';
     const r = await this.api('POST', `transfers/${transferId}/result`, { body });
-    return { fallback: r && typeof r.fallback === 'string' ? r.fallback : null };
+    // fallback: null (delivered / nothing to do) | 'server' (the server delivers) | 'upload' (+ missing item indexes)
+    const fallback = r && (r.fallback === 'upload' || r.fallback === 'server') ? r.fallback : null;
+    const missing = r && Array.isArray(r.missing) ? r.missing.filter((i) => Number.isSafeInteger(i) && i >= 0 && i < gd.MAX_ITEMS) : null;
+    return { fallback, missing };
   }
 
-  /** GET transfers/<id> → the same shape as the silent push (parsePushData), or null. */
+  /**
+   * GET transfers/<id> → { transfer: { id, sendId, side, mode, status, from, candidates, key, ticket, expiresAt, items } }
+   * → the same shape as the silent push (utils/gatedrop transferOf), or null.
+   */
   async transfer(transferId) {
     if (!gd.isTransferId(transferId)) throw new GateDropError('invalid transfer', { code: 'invalid' });
-    const r = await this.api('GET', `transfers/${transferId}`);
-    const t = r && typeof r === 'object' ? (r.transfer && typeof r.transfer === 'object' ? r.transfer : r) : null;
-    if (!t) return null;
-    return gd.parsePushData({ gatedrop: { transfer: transferId, ...t } });
+    return gd.transferOf(await this.api('GET', `transfers/${transferId}`), transferId);
   }
 
   async inbox(kind) {
@@ -272,18 +284,28 @@ class GateDropApi {
   }
 
   /**
-   * Download a received file (GET items/<mediaId>) into `dest` (writable
-   * stream). Older plugin builds without the route: the core media route.
-   * @returns {Promise<{ bytes: number, mime: string|null }>}
+   * Download a received file into `dest` (writable stream): GET items/<mediaId>
+   * → { item, url } (url: the apps' media route …/gatecontrol-gatedrop/media/<id>),
+   * then the bytes from `url`. Only a path of that media route is followed;
+   * anything else (or no answer of the items route) → …/media/<mediaId>.
+   * @returns {Promise<{ bytes: number, mime: string|null, item: object|null }>}
    */
   async download(mediaId, dest, { onProgress, maxBytes = gd.MAX_FILE_BYTES } = {}) {
     if (!gd.isMediaId(mediaId)) throw new GateDropError('invalid media id', { code: 'invalid' });
+    let url = `${gd.MEDIA_PATH}/${mediaId}`;
+    let item = null;
     try {
-      return await this._stream(`${gd.API_BASE}items/${mediaId}`, dest, { onProgress, maxBytes });
+      const r = await this.api('GET', `items/${mediaId}`);
+      item = r && r.item && typeof r.item === 'object' ? gd.normalizeItems([r.item])[0] || null : null;
+      if (item && !item.available) throw new GateDropError('file not on the server', { status: 410, code: 'gone' });
+      const u = r && typeof r.url === 'string' ? r.url : '';
+      if (u.startsWith(`${gd.MEDIA_PATH}/`) && /^[A-Za-z0-9/_.-]+(?:\?[A-Za-z0-9=&_.%-]*)?$/.test(u) && !u.includes('..')) url = u;
     } catch (err) {
-      if (err.status !== 404 || err.streamed) throw err;
-      return this._stream(`${gd.MEDIA_PATH}/${mediaId}`, dest, { onProgress, maxBytes });
+      if (err.code === 'gone' || err.status === 403 || err.status === 410) throw err;
+      this.log.debug(`GateDrop items/${mediaId}: ${err.code || err.message} – media route`);
     }
+    const r = await this._stream(url, dest, { onProgress, maxBytes });
+    return { ...r, item };
   }
 
   async _stream(url, dest, { onProgress, maxBytes }) {

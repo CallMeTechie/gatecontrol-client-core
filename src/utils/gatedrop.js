@@ -242,7 +242,7 @@ function parseCandidate(v) {
 
 // ── Answers of the plugin ──────────────────────────────────
 
-/** GET targets → { me, people, devices, nas, links } (unknown entries dropped). */
+/** GET targets → { me, people, devices, nas, links, messenger, limits, storage } (unknown entries dropped). */
 function normalizeTargets(raw) {
   const r = obj(raw) || {};
   const me = obj(r.me) || {};
@@ -255,6 +255,8 @@ function normalizeTargets(raw) {
       id,
       name: str(o.name, 80) || (id === 'family' ? 'Familie' : id),
       avatar: typeof o.avatar === 'string' && AVATAR_PATH_RE.test(o.avatar) ? o.avatar : null,
+      initials: str(o.initials, 4) || null,
+      colorHex: typeof o.colorHex === 'string' && /^#[0-9a-fA-F]{6}$/.test(o.colorHex) ? o.colorHex : null,
       kind: id === 'family' || o.kind === 'family' ? 'family' : 'user',
     });
   }
@@ -269,6 +271,7 @@ function normalizeTargets(raw) {
       platform: PLATFORMS.includes(o.platform) ? o.platform : 'unknown',
       online: bool(o.online),
       direct: bool(o.direct),
+      mode: o.mode === 'push' || o.mode === 'pull' ? o.mode : null,
       self: bool(o.self),
     });
   }
@@ -280,12 +283,30 @@ function normalizeTargets(raw) {
     nas.push({ id, label: str(o.label, 80) || id, path: str(o.path, 400) });
   }
   const links = obj(r.links) || {};
+  const l = obj(r.limits) || {};
+  const expires = arr(l.linkExpires).filter((x) => LINK_EXPIRES.includes(x));
+  const posOr = (v, def, max) => { const n = nonNegInt(v); return n !== null && n > 0 ? Math.min(n, max) : def; };
+  const storage = obj(r.storage);
   return {
-    me: { canLink: bool(me.canLink), canNas: bool(me.canNas) },
+    me: { id: idOf(me.id), name: str(me.name, 80) || null, canLink: bool(me.canLink), canNas: bool(me.canNas), deviceId: idOf(me.deviceId) },
     people,
     devices,
     nas,
     links: { enabled: bool(links.enabled) },
+    messenger: bool(r.messenger),
+    limits: {
+      maxItems: posOr(l.maxItems, MAX_ITEMS, MAX_ITEMS),
+      maxBytes: posOr(l.maxBytes, MAX_FILE_BYTES, MAX_FILE_BYTES),
+      types: arr(l.types).filter((x) => typeof x === 'string' && x.length <= 80).slice(0, 40),
+      textMax: posOr(l.textMax, MAX_TEXT, MAX_TEXT),
+      noteMax: posOr(l.noteMax, MAX_NOTE, MAX_NOTE),
+      retentionDays: posOr(l.retentionDays, 7, 365),
+      linkExpires: expires.length ? expires : LINK_EXPIRES.slice(),
+      directPort: posOr(l.directPort, PORT, 65535),
+      presenceEveryS: posOr(l.presenceEveryS, 300, 86400),
+      ticketS: posOr(l.ticketS, TICKET_TTL_MS / 1000, 86400),
+    },
+    storage: storage && nonNegInt(storage.bytes) !== null ? { bytes: nonNegInt(storage.bytes), quota: nonNegInt(storage.quota) } : null,
   };
 }
 
@@ -300,22 +321,26 @@ function normalizeDirect(d) {
   if (!mode) return null;
   // Shape only; whether an address may be used (private IPv4) decides the connecting side.
   const candidates = arr(o.candidates).map((c) => (typeof c === 'string' && CANDIDATE_RE.test(c.trim()) ? c.trim() : null)).filter(Boolean).slice(0, 8);
-  return { deviceId: idOf(o.deviceId), transferId, mode, candidates, key, ticket: o.ticket };
+  return { deviceId: idOf(o.deviceId), transferId, mode, candidates, key, ticket: o.ticket, expiresAt: timeOf(o.expiresAt) };
 }
 
-/** items of a send / transfer → [{ index, mediaId, name, mime, bytes }] */
+/** items of a send / transfer → [{ index, mediaId, name, mime, bytes, local, available }] */
 function normalizeItems(list) {
   const out = [];
   arr(list).slice(0, MAX_ITEMS).forEach((it, i) => {
     const o = obj(it);
     if (!o) return;
     const idx = nonNegInt(o.index);
+    const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
     out.push({
       index: idx !== null && idx < MAX_ITEMS ? idx : i,
-      mediaId: isMediaId(o.mediaId) ? o.mediaId : null,
+      mediaId,
       name: safeFileName(str(o.name, 400), `datei-${i + 1}`),
       mime: str(o.mime, 120) || guessMime(o.name),
       bytes: nonNegInt(o.bytes),
+      local: bool(o.local),
+      // `available` (plugin): the file is on the server; older answers: a mediaId says so.
+      available: typeof o.available === 'boolean' ? o.available && !!mediaId : !!mediaId,
     });
   });
   return out;
@@ -329,33 +354,51 @@ function normalizeDelivery(d) {
   return {
     kind,
     target: str(typeof o.target === 'number' ? String(o.target) : o.target, 200),
-    targetName: str(o.targetName || o.name, 120) || null,
+    targetName: str(o.label || o.targetName || o.name, 120) || null,
     status: DELIVERY_STATUS.includes(o.status) ? o.status : 'pending',
     via: o.via === 'direct' || o.via === 'server' ? o.via : null,
     at: timeOf(o.at),
+    openedAt: timeOf(o.openedAt),
     error: str(o.error, 200) || null,
   };
 }
 
-/** POST sends → { id, deliveries, link, direct } */
-function normalizeSendResult(raw) {
-  const r = obj(raw) || {};
-  const link = obj(r.link);
+/** The public link of POST sends → { token, url, pin, expiresAt, maxDownloads } or null. */
+function linkOf(v) {
+  const link = obj(v);
+  if (!link || typeof link.url !== 'string' || !/^https?:\/\//i.test(link.url)) return null;
   return {
-    id: idOf(r.id),
-    deliveries: arr(r.deliveries).map(normalizeDelivery).filter(Boolean),
-    link: link && typeof link.url === 'string' && /^https?:\/\//i.test(link.url)
-      ? { url: link.url.slice(0, 2048), pin: typeof link.pin === 'string' && /^\d{4,8}$/.test(link.pin) ? link.pin : null }
-      : null,
-    direct: arr(r.direct).map(normalizeDirect).filter(Boolean),
+    token: isLinkToken(link.token) ? link.token : null,
+    url: link.url.slice(0, 2048),
+    pin: typeof link.pin === 'string' && /^\d{4,8}$/.test(link.pin) ? link.pin : null,
+    expiresAt: timeOf(link.expiresAt),
+    maxDownloads: nonNegInt(link.maxDownloads),
   };
 }
 
+/** POST sends → { id, deliveries, link, direct, send } */
+function normalizeSendResult(raw) {
+  const r = obj(raw) || {};
+  return {
+    id: idOf(r.id) || (obj(r.send) ? idOf(r.send.id) : null),
+    deliveries: arr(r.deliveries).map(normalizeDelivery).filter(Boolean),
+    link: linkOf(r.link),
+    direct: arr(r.direct).map(normalizeDirect).filter(Boolean),
+    send: normalizeSend(r.send),
+  };
+}
+
+/** Sender of a send / push: { id, name, deviceId, deviceName } */
 function personOf(v) {
-  if (typeof v === 'string') return { id: null, name: str(v, 80), deviceId: null };
+  if (typeof v === 'string') return { id: null, name: str(v, 80), deviceId: null, deviceName: null };
   const o = obj(v);
   if (!o) return null;
-  return { id: idOf(o.id || o.userId), name: str(o.name || o.deviceName, 80) || null, deviceId: idOf(o.deviceId) };
+  return {
+    id: idOf(o.userId !== undefined ? o.userId : o.id),
+    name: str(o.name, 80) || null,
+    deviceId: idOf(o.deviceId),
+    deviceName: str(o.deviceName, 80) || null,
+  };
 }
 
 /** A send of `GET inbox` / `GET sends/<id>` → clean object or null. */
@@ -366,6 +409,7 @@ function normalizeSend(raw) {
   if (!id) return null;
   return {
     id,
+    role: o.role === 'sent' || o.role === 'received' ? o.role : null,
     at: timeOf(o.createdAt || o.created_at || o.at),
     from: personOf(o.from),
     to: str(o.toLabel || (typeof o.to === 'string' ? o.to : ''), 200) || null,
@@ -375,9 +419,12 @@ function normalizeSend(raw) {
     items: normalizeItems(o.items),
     deliveries: arr(o.deliveries).map(normalizeDelivery).filter(Boolean),
     opened: bool(o.opened),
+    expired: bool(o.expired),
     expiresAt: timeOf(o.expiresAt || o.expires_at),
   };
 }
+
+const LINK_STATES = ['active', 'expired', 'revoked', 'locked', 'used', 'gone'];
 
 /** An active / old public link of `GET inbox?kind=links`. */
 function normalizeLink(raw) {
@@ -385,6 +432,7 @@ function normalizeLink(raw) {
   if (!o) return null;
   const token = isLinkToken(o.token) ? o.token : null;
   if (!token) return null;
+  const state = LINK_STATES.includes(o.state) ? o.state : null;
   return {
     token,
     url: typeof o.url === 'string' && /^https?:\/\//i.test(o.url) ? o.url.slice(0, 2048) : null,
@@ -396,9 +444,11 @@ function normalizeLink(raw) {
     once: bool(o.once) || o.maxDownloads === 1,
     downloads: nonNegInt(o.downloads) || 0,
     maxDownloads: nonNegInt(o.maxDownloads),
-    locked: bool(o.locked),
-    revoked: bool(o.revoked),
-    expired: bool(o.expired),
+    state,
+    locked: bool(o.locked) || state === 'locked',
+    revoked: bool(o.revoked) || state === 'revoked',
+    // used up (single download), expired or the files gone: no longer usable
+    expired: bool(o.expired) || state === 'expired' || state === 'used' || state === 'gone' || (state === 'active' && o.active === false),
     at: timeOf(o.createdAt || o.created_at),
   };
 }
@@ -413,9 +463,11 @@ function normalizeInbox(raw, kind) {
 
 /**
  * `data.gatedrop` of a push →
- *   { kind: 'direct', transferId, mode, key, ticket, candidates, items, from, sendId }
- *   { kind: 'send', sendId, send (when the push carries it) }
- * or null.
+ *   { kind: 'direct', transferId, sendId, mode, key, ticket, candidates, items, itemCount, from, expiresAt }
+ *     (items [] with itemCount when the push left them out: GET transfers/<id>)
+ *   { kind: 'send', sendId, send (when the push carries it), from }
+ *   { kind: 'link', token, sendId }  (topic `link`: "Link geladen" / "Link gesperrt")
+ * or null. `transfer` wins over `send` (a direct push carries both).
  */
 function parsePushData(data) {
   const d = obj(data);
@@ -424,6 +476,8 @@ function parsePushData(data) {
   if (g.transfer !== undefined || g.transferId !== undefined) {
     const direct = normalizeDirect(g);
     if (!direct) return null;
+    const items = normalizeItems(g.items);
+    const count = nonNegInt(g.itemCount);
     return {
       kind: 'direct',
       transferId: direct.transferId,
@@ -431,11 +485,15 @@ function parsePushData(data) {
       key: direct.key,
       ticket: direct.ticket,
       candidates: direct.candidates,
-      items: normalizeItems(g.items),
+      items,
+      itemCount: items.length || (count !== null && count <= MAX_ITEMS ? count : 0),
       from: personOf(g.from),
       sendId: idOf(g.send) || idOf(g.sendId) || (obj(g.transfer) ? idOf(g.transfer.send) : null),
-      expiresAt: timeOf(g.expiresAt),
+      expiresAt: direct.expiresAt,
     };
+  }
+  if (g.link !== undefined) {
+    return { kind: 'link', token: isLinkToken(g.link) ? g.link : null, sendId: idOf(g.send) };
   }
   if (g.send !== undefined) {
     const sendObj = obj(g.send);
@@ -444,6 +502,19 @@ function parsePushData(data) {
     return { kind: 'send', sendId, send: sendObj ? normalizeSend(sendObj) : null, from: personOf(g.from) };
   }
   return null;
+}
+
+/**
+ * GET transfers/<id> → { transfer: { id, sendId, side, mode, status, from, candidates, key, ticket, expiresAt, items } }
+ * → the same shape as a direct push (parsePushData), plus side / status; null when not usable.
+ */
+function transferOf(raw, transferId) {
+  const r = obj(raw);
+  const t = r && (obj(r.transfer) || r);
+  if (!t) return null;
+  const p = parsePushData({ gatedrop: { ...t, transfer: isTransferId(t.id) ? t.id : transferId, send: t.sendId || t.send } });
+  if (!p || p.kind !== 'direct') return null;
+  return { ...p, side: t.side === 'sender' || t.side === 'receiver' ? t.side : null, status: typeof t.status === 'string' ? t.status : null };
 }
 
 // ── Requests ───────────────────────────────────────────────
@@ -504,5 +575,5 @@ module.exports = {
   encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, parseCandidate, ipv4ToInt,
   normalizeTargets, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
-  normalizeInbox, parsePushData, sendTargets, linkArg, isGateDropPush,
+  normalizeInbox, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
 };

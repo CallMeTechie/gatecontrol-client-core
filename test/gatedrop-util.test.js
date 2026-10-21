@@ -91,9 +91,10 @@ describe('GateDrop answers', () => {
       links: { enabled: true },
       future: 1,
     });
-    assert.deepEqual(t.me, { canLink: true, canNas: false });
+    assert.deepEqual(t.me, { id: null, name: null, canLink: true, canNas: false, deviceId: null });
     assert.deepEqual(t.people.map((p) => [p.id, p.kind, p.avatar]), [['8', 'user', '/avatars/annaAvatarFile0001.webp'], ['family', 'family', null], ['9', 'user', null]]);
-    assert.deepEqual(t.devices, [{ id: 'tok_12', name: 'Pixel', platform: 'android', online: true, direct: true, self: false }]);
+    assert.deepEqual(t.devices, [{ id: 'tok_12', name: 'Pixel', platform: 'android', online: true, direct: true, mode: null, self: false }]);
+    assert.deepEqual(t.limits.linkExpires, ['1h', '1d', '7d', 'once']);
     assert.deepEqual(t.nas, [{ id: 'n1', label: 'Fotos', path: '/Familie/Fotos' }]);
     assert.equal(t.links.enabled, true);
     assert.deepEqual(gd.normalizeTargets(null).people, []);
@@ -103,7 +104,7 @@ describe('GateDrop answers', () => {
     const r = gd.normalizeSendResult({
       id: 41,
       deliveries: [{ kind: 'device', target: 'tok_12', status: 'direct', via: 'direct' }, { kind: 'alien' }],
-      link: { url: 'https://gc.example/s/abcdefghijklmnopqrstuv', pin: '4711' },
+      link: { token: 'abcdefghijklmnopqrstuv', url: 'https://gc.example/s/abcdefghijklmnopqrstuv', pin: '4711', expiresAt: '2026-10-22T10:00:00.000Z', maxDownloads: 1 },
       direct: [
         { deviceId: 'tok_12', transferId: 'tr_1', mode: 'push', candidates: ['192.168.1.5:47731', 'bad', 'x:1'], key: KEY_B64, ticket: 'tkt_abcdefghijkl' },
         { deviceId: 'tok_13', transferId: 'tr_2', mode: 'sideways', key: KEY_B64, ticket: 'tkt_abcdefghijkl' },
@@ -112,7 +113,7 @@ describe('GateDrop answers', () => {
     });
     assert.equal(r.id, '41');
     assert.equal(r.deliveries.length, 1);
-    assert.deepEqual(r.link, { url: 'https://gc.example/s/abcdefghijklmnopqrstuv', pin: '4711' });
+    assert.deepEqual(r.link, { token: 'abcdefghijklmnopqrstuv', url: 'https://gc.example/s/abcdefghijklmnopqrstuv', pin: '4711', expiresAt: Date.parse('2026-10-22T10:00:00.000Z'), maxDownloads: 1 });
     assert.equal(r.direct.length, 1);
     assert.deepEqual(r.direct[0].candidates, ['192.168.1.5:47731']);
     assert.equal(r.direct[0].key.length, 32);
@@ -129,6 +130,17 @@ describe('GateDrop answers', () => {
     const s2 = gd.parsePushData({ gatedrop: { send: { id: 'x1', items: [{ mediaId: 'a'.repeat(32), name: 'b.pdf', bytes: 3 }] } } });
     assert.equal(s2.send.items[0].mediaId, 'a'.repeat(32));
     assert.equal(gd.parsePushData({ gatedrop: { transfer: 'tr_9', mode: 'pull', key: 'x', ticket: 'y' } }), null);
+    // the plugin's direct push: transfer + send, items null when too long
+    const big = gd.parsePushData({ route: 'plg-gatecontrol-gatedrop', gatedrop: { transfer: 'a'.repeat(24), send: 'b'.repeat(24), mode: 'push', from: { userId: 2, name: 'Anna', deviceId: '42', deviceName: 'Pixel' }, items: null, itemCount: 20, candidates: ['192.168.1.20:47731'], key: KEY_B64, ticket: 'tkt_abcdefghijkl', expiresAt: '2026-10-21T12:00:00.000Z' } });
+    assert.deepEqual([big.kind, big.sendId, big.items.length, big.itemCount, big.from.deviceName, big.from.id], ['direct', 'b'.repeat(24), 0, 20, 'Pixel', '2']);
+    assert.deepEqual(gd.parsePushData({ gatedrop: { link: 'abcdefghijklmnopqrstuv', send: 'b'.repeat(24) } }), { kind: 'link', token: 'abcdefghijklmnopqrstuv', sendId: 'b'.repeat(24) });
+    const tr = gd.transferOf({ transfer: { id: 'a'.repeat(24), sendId: 'b'.repeat(24), side: 'receiver', mode: 'pull', status: 'open', from: { userId: 2, deviceId: '42', deviceName: 'Pixel' }, candidates: [], key: KEY_B64, ticket: 'tkt_abcdefghijkl', items: [{ index: 0, name: 'a.jpg', bytes: 3, mime: 'image/jpeg' }] } }, 'a'.repeat(24));
+    assert.deepEqual([tr.transferId, tr.sendId, tr.side, tr.items.length], ['a'.repeat(24), 'b'.repeat(24), 'receiver', 1]);
+    // send items of the plugin: only available ones with a mediaId can be downloaded
+    const items = gd.normalizeItems([{ index: 0, mediaId: 'c'.repeat(32), name: 'x', bytes: 1, local: false, available: true }, { index: 1, mediaId: null, name: 'y', bytes: 1, local: true, available: false }]);
+    assert.deepEqual(items.map((i) => [i.index, i.available, i.local]), [[0, true, false], [1, false, true]]);
+    const link = gd.normalizeLink({ token: 'abcdefghijklmnopqrstuv', url: 'https://gc/s/x', state: 'used', active: false, pin: false, maxDownloads: 1, downloads: 1 });
+    assert.deepEqual([link.expired, link.once, link.state], [true, true, 'used']);
     assert.equal(gd.parsePushData({ other: 1 }), null);
     assert.equal(gd.isGateDropPush({ topic: 'plugin:gatecontrol-gatedrop:received' }), true);
     assert.equal(gd.isGateDropPush({ topic: 'security', data: {} }), false);
