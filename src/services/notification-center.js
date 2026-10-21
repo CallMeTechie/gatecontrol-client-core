@@ -36,6 +36,7 @@
  *                                          context: what addClickRoute's resolver returned)
  *   'portal'   ({ path })                  portal path requested (when no openPortal is given)
  *   'action'   ({ id, seq, action, type }) an action was performed
+ *   'data'     ({ topic, data })           a data push (`kind: "data"`) no handler took; never shown
  *
  * Electron-free when `Notification` is injected (tests); otherwise Electron's
  * Notification is required lazily.
@@ -178,6 +179,7 @@ class NotificationCenter extends EventEmitter {
     this.pushClient = null;
     this._chat = null;
     this._clickRoutes = new Map(); // app route → resolver(entry) (addClickRoute)
+    this._pushHandlers = [];       // services that take over some pushes (addPushHandler, e.g. GateDrop)
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
     this._byCollapse = new Map(); // collapse_key → notification id
@@ -304,6 +306,23 @@ class NotificationCenter extends EventEmitter {
         return null;
       }
     }
+    // A service that handles some pushes itself (e.g. GateDrop: silent data
+    // pushes, files to fetch): 'consumed' → no inbox entry, no toast;
+    // 'quiet' → inbox entry without a toast (the service shows its own).
+    // Data pushes (`kind: "data"`, GateControl 1.193) are never shown or
+    // stored: only the handlers see them.
+    const dataOnly = !!n && n.kind === 'data';
+    let quiet = false;
+    for (const h of this._pushHandlers) {
+      let r = false;
+      try { r = h.notification(n); } catch (err) { this.log.warn(`Push handler failed: ${err.message}`); }
+      if (r === 'consumed' || r === true) return null;
+      if (r === 'quiet') { quiet = true; break; }
+    }
+    if (dataOnly) {
+      this.emit('data', { topic: typeof n.topic === 'string' ? n.topic : null, data: n.data && typeof n.data === 'object' ? n.data : null });
+      return null;
+    }
     const entry = normalizeEntry(n);
     if (!entry) return null;
     const now = this.now();
@@ -317,7 +336,7 @@ class NotificationCenter extends EventEmitter {
     this._saveInbox();
 
     const settings = this._settings();
-    const decision = toastDecision(entry, settings, now);
+    const decision = quiet ? { show: false, silent: true, reason: 'handled' } : toastDecision(entry, settings, now);
     const stale = entry.created_at && now - Date.parse(entry.created_at) > this.staleToastMs;
     if (decision.show && !stale && this._burstAllows(now)) {
       this._showToast(entry, decision);
@@ -721,6 +740,19 @@ class NotificationCenter extends EventEmitter {
   }
 
   /**
+   * Let a service handle some pushes itself (GateDrop: silent data pushes and
+   * "files for you"): handler.notification(n) → 'consumed' (not stored, no
+   * toast), 'quiet' (stored without toast) or anything else (as usual);
+   * handler.protocol(nonce) → true when it was one of its toast buttons.
+   * @returns {() => void} removes the handler again
+   */
+  addPushHandler(handler) {
+    if (!handler || typeof handler.notification !== 'function') throw new TypeError('addPushHandler: notification(n) required');
+    this._pushHandlers.push(handler);
+    return () => { this._pushHandlers = this._pushHandlers.filter((h) => h !== handler); };
+  }
+
+  /**
    * The toast rules for a message the center does not store itself (chat):
    * toastDecision with the current settings, plus the replay (stale) and
    * burst caps. A positive answer counts towards the burst limit.
@@ -936,6 +968,16 @@ class NotificationCenter extends EventEmitter {
         if (this._chat.protocol(nonce) === true) return true;
       } catch (err) {
         this.log.warn(`Chat toast action failed: ${err.message}`);
+      }
+    }
+    if (!hit) {
+      for (const h of this._pushHandlers) {
+        if (typeof h.protocol !== 'function') continue;
+        try {
+          if (h.protocol(nonce) === true) return true;
+        } catch (err) {
+          this.log.warn(`Toast action failed: ${err.message}`);
+        }
       }
     }
     if (!hit) {

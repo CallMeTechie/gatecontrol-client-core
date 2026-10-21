@@ -60,7 +60,11 @@ describe('createBridgeApi', () => {
       'chat:story:create', 'chat:story:delete', 'chat:story:react', 'chat:story:seen', 'chat:story:viewers',
       'chat:suggest', 'chat:to-calendar', 'chat:to-list', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
       'config:get', 'config:getAll', 'config:import-file',
-      'config:import-qr', 'config:set', 'dns:leak-test', 'killswitch:toggle', 'locale:get',
+      'config:import-qr', 'config:set', 'dns:leak-test',
+      'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:inbox',
+      'gatedrop:link:end', 'gatedrop:open', 'gatedrop:open-link', 'gatedrop:pick', 'gatedrop:prepare', 'gatedrop:send',
+      'gatedrop:send:get', 'gatedrop:send:save', 'gatedrop:show', 'gatedrop:status', 'gatedrop:targets',
+      'killswitch:toggle', 'locale:get',
       'locale:set', 'logs:export', 'logs:get', 'logs:show',
       'notify:action', 'notify:dnd', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open',
       'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test',
@@ -75,6 +79,7 @@ describe('createBridgeApi', () => {
     assert.deepEqual(events, [
       'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:typing', 'chat:unread',
+      'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
       'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
     ]);
@@ -140,6 +145,7 @@ describe('createBridgeApi', () => {
       notificationCenter: { on() {} },
       messenger: { on() {} },
       school: { on() {} },
+      gatedrop: { on() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });
