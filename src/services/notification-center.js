@@ -384,7 +384,10 @@ class NotificationCenter extends EventEmitter {
     return this.pushClient.fetchRoutes();
   }
 
-  /** Set where `topic` appears ('inbox' | 'own' | 'family') → { ok, routes } | { ok: false, error }. */
+  /**
+   * Set where `topic` appears ('inbox' | 'own' | 'family') → { ok, routes, chat }
+   * | { ok: false, error } — chat: the own chat on 'own' (PushClient.setRoute), else null.
+   */
   async setRoute(topic, dest) {
     if (!this.pushClient || typeof this.pushClient.setRoute !== 'function') return { ok: false, error: 'not_attached' };
     return this.pushClient.setRoute(topic, dest);

@@ -414,7 +414,9 @@ class PushClient extends EventEmitter {
 
   /**
    * Set where `topic` appears: dest 'inbox' | 'own' | 'family' →
-   * { ok: true, routes } (the server's new answer) or { ok: false, error }
+   * { ok: true, routes, chat } (the server's new answer; chat, GateControl
+   * 1.192: on dest 'own' the source's own chat { source, label,
+   * conversationId, created }, else null) or { ok: false, error }
    * (invalid_topic / invalid_dest here; the server's family_not_allowed,
    * locked, no_sink, unknown_topic, no_user, push_disabled; 'unsupported'
    * for servers without the route; network codes).
@@ -427,7 +429,7 @@ class PushClient extends EventEmitter {
     try {
       const data = await this.apiClient.setPushRoute({ topic, dest });
       const routes = data && data.ok !== false ? notifyRoutes.normalizeRoutes(data) : null;
-      if (routes) return { ok: true, routes };
+      if (routes) return { ok: true, routes, chat: notifyRoutes.normalizeChat(data.chat) };
       return { ok: false, error: notifyRoutes.errorCode(data) || 'bad_response' };
     } catch (err) {
       return { ok: false, error: this._routesErr(err, false) };

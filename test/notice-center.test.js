@@ -78,11 +78,22 @@ describe('notify-routes helpers', () => {
     assert.equal(notifyRoutes.errorCode({ error: 'Not found <b>' }), null);
     assert.equal(notifyRoutes.errorCode('x'), null);
   });
+
+  it('normalizes the own chat of a PUT answer (GateControl 1.192); anything else → null', () => {
+    assert.deepEqual(notifyRoutes.normalizeChat({ source: 'plugin:gatecontrol-schule', label: 'Schule', conversationId: '42', created: true }),
+      { source: 'plugin:gatecontrol-schule', label: 'Schule', conversationId: '42', created: true });
+    assert.deepEqual(notifyRoutes.normalizeChat({ source: 'core', label: ' \n', conversationId: 7, created: false }),
+      { source: 'core', label: 'GateControl', conversationId: '7', created: false });
+    // the label falls back to the plugin id; a bad id is dropped, not the chat
+    assert.deepEqual(notifyRoutes.normalizeChat({ source: 'plugin:gatecontrol-schule', conversationId: '../1', created: 'yes' }),
+      { source: 'plugin:gatecontrol-schule', label: 'gatecontrol-schule', conversationId: null, created: false });
+    for (const bad of [null, undefined, 'x', [], {}, { source: 'http://evil', label: 'x' }, { source: 7 }]) assert.equal(notifyRoutes.normalizeChat(bad), null);
+  });
 });
 
 /** A core stub: GET/PUT /api/v1/client/push/routes as `routes` says. */
 function routesServer() {
-  const state = { mode: 'ok', puts: [], routes: JSON.parse(JSON.stringify(ROUTES)) };
+  const state = { mode: 'ok', puts: [], chats: new Set(), routes: JSON.parse(JSON.stringify(ROUTES)) };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -98,7 +109,14 @@ function routesServer() {
       if (b.dest === 'family' && !state.routes.canFamily) return send(403, { ok: false, error: 'family_not_allowed' });
       if (b.topic === 'devices' && b.dest === 'own' && state.mode === 'nosink') return send(409, { ok: false, error: 'no_sink' });
       for (const g of state.routes.groups) for (const tp of g.topics || []) if (tp.id === b.topic) tp.dest = b.dest;
-      return send(200, state.routes);
+      // GateControl 1.192: on "own" the source's own chat (created or the existing one)
+      if (b.dest === 'own' && state.mode !== 'nochat') {
+        const g = state.routes.groups.find((x) => (x.topics || []).some((tp) => tp.id === b.topic));
+        const created = !state.chats.has(g.source);
+        state.chats.add(g.source);
+        return send(200, { ...state.routes, chat: { source: g.source, label: g.label, conversationId: '42', created } });
+      }
+      return send(200, state.mode === 'nochat' ? state.routes : { ...state.routes, chat: null }); // nochat: a server before 1.192
     });
   });
   return { server, state };
@@ -124,6 +142,21 @@ describe('push routes over the device token', () => {
     assert.equal(s.ok, true);
     assert.equal(s.routes.groups[0].topics[1].dest, 'own');
     assert.deepEqual(srv.state.puts.at(-1), { topic: 'devices', dest: 'own' });
+  });
+
+  it('PUT own → the own chat (created, then the existing one); inbox / older servers → null', async () => {
+    srv.state.mode = 'ok';
+    srv.state.chats.clear();
+    const a = await push.setRoute('plugin:gatecontrol-schule:changes', 'own');
+    assert.equal(a.ok, true);
+    assert.deepEqual(a.chat, { source: 'plugin:gatecontrol-schule', label: 'Schule', conversationId: '42', created: true });
+    const b = await push.setRoute('plugin:gatecontrol-schule:changes', 'own');
+    assert.equal(b.chat.created, false);
+    assert.equal((await push.setRoute('plugin:gatecontrol-schule:changes', 'inbox')).chat, null);
+    srv.state.mode = 'nochat'; // a server before 1.192: no chat field
+    const c = await push.setRoute('plugin:gatecontrol-schule:changes', 'own');
+    assert.deepEqual([c.ok, c.chat], [true, null]);
+    srv.state.mode = 'ok';
   });
 
   it('server refusals come back as their codes; older servers as unsupported', async () => {
@@ -215,6 +248,10 @@ describe('NotificationCenter.openTarget (notice card links)', () => {
     assert.equal((await nc.routes()).ok, true);
     assert.deepEqual(await nc.setRoute('devices', 'own'), { ok: false, error: 'no_sink' });
     assert.deepEqual(calls, [['devices', 'own']]);
+    // the own chat of the answer reaches the app unchanged
+    const chat = { source: 'plugin:gatecontrol-schule', label: 'Schule', conversationId: '42', created: true };
+    fake.setRoute = async () => ({ ok: true, routes: { sink: true, canFamily: false, groups: [] }, chat });
+    assert.deepEqual((await nc.setRoute('plugin:gatecontrol-schule:messages', 'own')).chat, chat);
     const lone = new NotificationCenter({ store: createMemoryStore({ notifications: {} }), log, platform: 'win32' });
     assert.deepEqual(await lone.routes(), { ok: false, error: 'not_attached' });
     assert.deepEqual(await lone.setRoute('devices', 'own'), { ok: false, error: 'not_attached' });
@@ -246,7 +283,9 @@ describe('notify IPC and bridge for routes and card links', () => {
     assert.equal((await h['notify:routes']({})).ok, true);
     assert.deepEqual(await h['notify:routes:set']({}, null), { ok: false, error: 'invalid' });
     assert.deepEqual(await h['notify:routes:set']({}, { topic: 'devices', dest: 7 }), { ok: false, error: 'invalid' });
-    await h['notify:routes:set']({}, { topic: 'devices', dest: 'own' });
+    const chat = { source: 'core', label: 'GateControl', conversationId: '9', created: false };
+    nc.setRoute = async (topic, dest) => { seen.push(['set', topic, dest]); return { ok: true, routes: null, chat }; };
+    assert.deepEqual((await h['notify:routes:set']({}, { topic: 'devices', dest: 'own' })).chat, chat);
     await h['notify:open']({}, { route: 'plg-x/y', topic: 'plugin:x:y', data: { a: 1 } });
     await h['notify:open']({}, { route: 5, data: [1] });
     await h['notify:open']({}, { route: 'plg-x', data: { big: 'x'.repeat(20000) } });

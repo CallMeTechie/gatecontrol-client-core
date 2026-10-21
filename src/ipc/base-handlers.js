@@ -631,7 +631,8 @@ function registerBaseHandlers(ipcMain, ctx) {
  *   notify:quiet:open  () → boolean (portal tab "Meine Benachrichtigungen", auto-login)
  *   notify:routes      () → { ok, routes: { sink, canFamily, groups } } | { ok: false, error }
  *                      (where each kind of notification appears, core 1.191; 'unsupported' = older server)
- *   notify:routes:set  ({ topic, dest: 'inbox'|'own'|'family' }) → { ok, routes } | { ok: false, error }
+ *   notify:routes:set  ({ topic, dest: 'inbox'|'own'|'family' }) → { ok, routes, chat } | { ok: false, error }
+ *                      (chat: on 'own' the source's own chat { source, label, conversationId, created }, else null)
  *   notify:open        ({ route, topic?, data? }) → { ok, route? } — a notice card's link opens what a
  *                      click on that notification would (notify:navigate); ok false: nothing claimed it
  */

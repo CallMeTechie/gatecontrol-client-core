@@ -240,6 +240,14 @@ without the route answers `unsupported` — the apps hide the entries then.
 The apps show the page "Wo Mitteilungen erscheinen" in Einstellungen ›
 Benachrichtigungen and in the chat settings.
 
+On `dest: "own"` GateControl 1.192 makes sure the source's own chat exists
+and names it in the PUT answer; `setRoute()` passes it on as `chat: { source,
+label, conversationId (string), created }` (`created`: newly created, false:
+an existing chat is used) — null for inbox / family, on older servers or when
+it failed (`normalizeChat()`). The apps then say "Chat „Schule“ angelegt" /
+"Erscheint im vorhandenen Chat „Schule“" (`push.routes.chatCreated` /
+`chatExisting`) and reload the chat list.
+
 A notice card in a chat carries its notification (`card.notice { topic, data
 }`); its link (`card.link.route`, may name a plugin screen after a `/`) opens
 what a click on that notification would: `openTarget({ route, topic, data })`
