@@ -341,7 +341,7 @@ class GateDropListener extends EventEmitter {
     let target = null;
     try {
       target = await t.sink({ index, name, bytes: size });
-      const dec = new DecryptStream({ key: t.key, transferId, expectedSize: size, maxBytes: this.maxBytes });
+      const dec = new DecryptStream({ key: t.key, transferId, item: index, expectedSize: size, maxBytes: this.maxBytes });
       await pipeline(req, dec, target.stream);
       const savedPath = await target.commit();
       t.received.set(index, { index, name, path: savedPath, bytes: size });
@@ -395,7 +395,7 @@ class GateDropListener extends EventEmitter {
       'Cache-Control': 'no-store',
     });
     try {
-      await pipeline(fs.createReadStream(item.path), new EncryptStream({ key: t.key, transferId }), res);
+      await pipeline(fs.createReadStream(item.path), new EncryptStream({ key: t.key, transferId, item: index }), res);
     } catch (err) {
       this.log.warn(`GateDrop pull of item ${index} broke off: ${err.code || err.message}`);
       res.destroy();

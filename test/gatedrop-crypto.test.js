@@ -1,7 +1,7 @@
 'use strict';
 
 // GateDrop direct transfer encryption (contract C): AES-256-GCM in 1 MiB
-// blocks, nonce = SHA-256(transferId)[0..4] ‖ block counter (8 bytes BE),
+// blocks, nonce = SHA-256(transferId)[0..4] ‖ (item << 32 | block) (8 bytes BE),
 // block = ciphertext ‖ tag. Round trips, tampering, reordering, truncation.
 
 const { describe, it } = require('node:test');
@@ -97,5 +97,22 @@ describe('GateDrop crypto', () => {
 
   it('refuses keys that are not 32 bytes', () => {
     assert.throws(() => new c.EncryptStream({ key: Buffer.alloc(16), transferId: TID }), (e) => e.code === 'key');
+  });
+  it('items of one transfer never share a nonce: item k starts at k << 32', async () => {
+    const salt = c.transferSalt(TID);
+    assert.equal(c.blockNonce(salt, 1n << 32n).subarray(4).toString('hex'), '0000000100000000');
+    const plain = crypto.randomBytes(1500);
+    const sealed1 = await through(new c.EncryptStream({ key: KEY, transferId: TID, item: 1, blockSize: 1024 }), plain);
+    // block 0 of item 1 is sealed under counter 1 << 32 (same as the Android client)
+    assert.deepEqual(c.openBlock(KEY, salt, 1n << 32n, sealed1.subarray(0, 1024 + 16)), plain.subarray(0, 1024));
+    assert.deepEqual(await through(new c.DecryptStream({ key: KEY, transferId: TID, item: 1, blockSize: 1024, expectedSize: plain.length }), sealed1), plain);
+    const sealed0 = await through(new c.EncryptStream({ key: KEY, transferId: TID, item: 0, blockSize: 1024 }), plain);
+    assert.notDeepEqual(sealed0, sealed1);
+    await assert.rejects(through(new c.DecryptStream({ key: KEY, transferId: TID, item: 0, blockSize: 1024, expectedSize: plain.length }), sealed1));
+  });
+
+  it('refuses an item index outside 0 … 2^32-1', () => {
+    assert.throws(() => new c.EncryptStream({ key: KEY, transferId: TID, item: -1 }), (e) => e.code === 'item');
+    assert.throws(() => new c.DecryptStream({ key: KEY, transferId: TID, item: 2 ** 32 }), (e) => e.code === 'item');
   });
 });

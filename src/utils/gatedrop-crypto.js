@@ -4,8 +4,9 @@
  * GateDrop direct transfer encryption (contract C, protocol v1):
  *
  *   AES-256-GCM with the transfer key (32 bytes from the plugin), the file
- *   cut into blocks of 1 MiB plaintext; block i is sealed with
- *     nonce = first 4 bytes of SHA-256(transferId) ‖ i as 8-byte big-endian
+ *   cut into blocks of 1 MiB plaintext; block i of item k is sealed with
+ *     nonce = first 4 bytes of SHA-256(transferId) ‖ (k << 32 | i) as 8-byte big-endian
+ *   so that no nonce repeats across the items of one transfer (one key).
  *   and sent as ciphertext ‖ tag (16 bytes). Every block but the last holds
  *   exactly 1 MiB; an empty file is an empty body.
  *
@@ -36,12 +37,18 @@ function transferSalt(transferId) {
   return crypto.createHash('sha256').update(String(transferId), 'utf8').digest().subarray(0, 4);
 }
 
-/** 12-byte GCM nonce of block `counter`. */
+/** 12-byte GCM nonce of block `counter` (a BigInt: item << 32 | block). */
 function blockNonce(salt, counter) {
   const n = Buffer.alloc(12);
   salt.copy(n, 0, 0, 4);
   n.writeBigUInt64BE(BigInt(counter), 4);
   return n;
+}
+
+/** First block counter of item `item` (0-based index in the transfer). */
+function firstCounter(item) {
+  if (!Number.isSafeInteger(item) || item < 0 || item > 0xffffffff) throw new GateDropCryptoError('item index out of range', 'item');
+  return BigInt(item) << 32n;
 }
 
 function checkKey(key) {
@@ -94,13 +101,13 @@ class Chunks {
 
 /** plaintext in → sealed blocks out. */
 class EncryptStream extends Transform {
-  constructor({ key, transferId, blockSize = BLOCK_SIZE } = {}) {
+  constructor({ key, transferId, item = 0, blockSize = BLOCK_SIZE } = {}) {
     super();
     checkKey(key);
     this.key = key;
     this.salt = transferSalt(transferId);
     this.blockSize = blockSize;
-    this.counter = 0;
+    this.counter = firstCounter(item);
     this.buf = new Chunks();
   }
 
@@ -126,13 +133,13 @@ class EncryptStream extends Transform {
  * caps the plaintext when no size is known.
  */
 class DecryptStream extends Transform {
-  constructor({ key, transferId, expectedSize = null, maxBytes = Infinity, blockSize = BLOCK_SIZE } = {}) {
+  constructor({ key, transferId, item = 0, expectedSize = null, maxBytes = Infinity, blockSize = BLOCK_SIZE } = {}) {
     super();
     checkKey(key);
     this.key = key;
     this.salt = transferSalt(transferId);
     this.sealedBlock = blockSize + TAG_SIZE;
-    this.counter = 0;
+    this.counter = firstCounter(item);
     this.expected = Number.isSafeInteger(expectedSize) && expectedSize >= 0 ? expectedSize : null;
     this.maxBytes = this.expected !== null ? this.expected : maxBytes;
     this.plainBytes = 0;

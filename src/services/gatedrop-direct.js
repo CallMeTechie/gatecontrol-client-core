@@ -96,7 +96,7 @@ async function pushTo({ candidates, transferId, ticket, key, files, onProgress, 
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         const src = fs.createReadStream(f.path);
-        const enc = new EncryptStream({ key, transferId });
+        const enc = new EncryptStream({ key, transferId, item: i });
         src.on('error', (e) => enc.destroy(e));
         src.on('data', (chunk) => { sent += chunk.length; if (onProgress) { try { onProgress(sent, total); } catch { /* UI */ } } });
         const res = await request({
@@ -164,7 +164,7 @@ async function pullFrom({ candidates, transferId, ticket, key, items, sink, maxB
         const target = await sink({ index: it.index, name, bytes: expected });
         try {
           res.on('data', (chunk) => { got += chunk.length; if (onProgress) { try { onProgress(got, total); } catch { /* UI */ } } });
-          await pipeline(res, new DecryptStream({ key, transferId, expectedSize: expected, maxBytes }), target.stream);
+          await pipeline(res, new DecryptStream({ key, transferId, item: it.index, expectedSize: expected, maxBytes }), target.stream);
           saved.push({ index: it.index, name, path: await target.commit(), bytes: expected });
         } catch (err) {
           try { await target.abort(); } catch { /* best effort */ }
