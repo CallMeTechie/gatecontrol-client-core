@@ -333,6 +333,8 @@
       "unsupported": "Your GateControl server does not know this setting yet.",
       "empty": "No kinds of notifications yet.",
       "saved": "Saved: {{topic}} → {{dest}}",
+      "chatCreated": "Chat “{{label}}” created",
+      "chatExisting": "Appears in the existing chat “{{label}}”",
       "err": {
         "family": "Only adults in the family may choose the family chat.",
         "locked": "These notifications always appear in GateControl.",

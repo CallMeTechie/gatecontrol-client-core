@@ -524,7 +524,8 @@ class ApiClient {
 
   /**
    * Set where one topic appears: PUT /api/v1/client/push/routes
-   * { topic, dest: 'inbox'|'own'|'family' } → the same answer as the GET.
+   * { topic, dest: 'inbox'|'own'|'family' } → the same answer as the GET,
+   * plus `chat` (GateControl 1.192: the source's own chat on dest 'own').
    */
   async setPushRoute({ topic, dest } = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');

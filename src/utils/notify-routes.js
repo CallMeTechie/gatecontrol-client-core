@@ -11,7 +11,12 @@
  *
  * GET → { ok, sink, canFamily, groups: [ { source, label, topics: [
  *         { id, label, dest, locked, familySetBy } ] } ] }
- * PUT { topic, dest } → the same answer. Refusals: 400 invalid_dest /
+ * PUT { topic, dest } → the same answer, plus (GateControl 1.192) `chat:
+ *         { source, label, conversationId, created } | null` — on dest "own"
+ *         the source's own chat the server made sure exists (created: newly
+ *         created; false: an existing one is used); null / missing for inbox
+ *         and family, on older servers or when it failed.
+ * Refusals: 400 invalid_dest /
  * invalid_topic, 404 unknown_topic, 409 locked / no_sink, 403
  * family_not_allowed / no_user, 503 push_disabled. Older servers answer
  * 404 to GET → the feature is hidden.
@@ -33,6 +38,8 @@ const ERRORS = Object.freeze([
 ]);
 const MAX_GROUPS = 64;
 const MAX_TOPICS = 64;
+// Conversation ids of the messenger (positive integers, sent as strings).
+const CONV_ID_RE = /^[1-9][0-9]{0,15}$/;
 
 const isTopic = (v) => typeof v === 'string' && v.length <= 120 && TOPIC_RE.test(v);
 const isDest = (v) => typeof v === 'string' && DESTS.includes(v);
@@ -75,6 +82,24 @@ function normalizeRoutes(data) {
   return { sink: flag(data.sink), canFamily: flag(data.canFamily), groups };
 }
 
+/**
+ * The `chat` of a PUT answer (dest "own": the source's own chat) →
+ * { source, label, conversationId (string | null), created } or null when
+ * there is none or it is not one.
+ */
+function normalizeChat(chat) {
+  if (!chat || typeof chat !== 'object' || Array.isArray(chat)) return null;
+  if (typeof chat.source !== 'string' || chat.source.length > 100 || !SOURCE_RE.test(chat.source)) return null;
+  const source = chat.source;
+  const id = typeof chat.conversationId === 'number' && Number.isSafeInteger(chat.conversationId) ? String(chat.conversationId) : chat.conversationId;
+  return {
+    source,
+    label: line(chat.label, 60) || (source === 'core' ? 'GateControl' : source.slice('plugin:'.length)),
+    conversationId: typeof id === 'string' && CONV_ID_RE.test(id) ? id : null,
+    created: flag(chat.created),
+  };
+}
+
 /** `{ error }` (or `code`) of a refusal body, lower case, or null. */
 function errorCode(data) {
   if (!data || typeof data !== 'object') return null;
@@ -92,5 +117,6 @@ module.exports = {
   isTopic,
   isDest,
   normalizeRoutes,
+  normalizeChat,
   errorCode,
 };

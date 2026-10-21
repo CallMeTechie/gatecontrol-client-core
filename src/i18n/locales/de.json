@@ -333,6 +333,8 @@
       "unsupported": "Dein GateControl-Server kennt diese Einstellung noch nicht.",
       "empty": "Noch keine Arten von Mitteilungen.",
       "saved": "Gespeichert: {{topic}} → {{dest}}",
+      "chatCreated": "Chat „{{label}}“ angelegt",
+      "chatExisting": "Erscheint im vorhandenen Chat „{{label}}“",
       "err": {
         "family": "Den Familien-Chat dürfen nur Erwachsene in der Familie wählen.",
         "locked": "Diese Mitteilungen erscheinen immer in GateControl.",

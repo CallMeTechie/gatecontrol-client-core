@@ -148,7 +148,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // "Im Portal ändern" → portal tab "Meine Benachrichtigungen" (auto-login)
       openQuietHours: () => ipcRenderer.invoke('notify:quiet:open'),
       // Where each kind of notification appears (core 1.191): GateControl,
-      // the family chat or an own chat → { ok, routes } | { ok: false, error }
+      // the family chat or an own chat → { ok, routes } | { ok: false, error };
+      // setRoute also gives `chat` (the own chat on 'own', else null)
       routes:   () => ipcRenderer.invoke('notify:routes'),
       setRoute: (topic, dest) => ipcRenderer.invoke('notify:routes:set', { topic, dest }),
       // A notice card's link (Messenger 1.6): open what a click on that
