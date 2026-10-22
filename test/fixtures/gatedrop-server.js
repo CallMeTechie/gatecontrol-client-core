@@ -21,6 +21,7 @@
 //   srv.url, srv.state (requests, presence, sends, media, results, addItems, uploads),
 //   srv.addSend(send) → stored send (GET sends/<id>, items downloadable),
 //   srv.cutUploadAfter = n  → the next resumable part breaks off after n bytes (whole 64 KiB kept),
+//   srv.state.failCreate = { status, code } → POST sends answers with that error,
 //   srv.addSend(send, { pending: true }) → a `waiting` delivery to this device (GET pending lists it until POST opened),
 //   srv.state.pendingMode = 'ok' | 404 (older plugin) | 'no_device' (409),
 //   srv.state.mediaFail = Set of mediaIds whose download answers 500,
@@ -180,6 +181,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       return json(res, 200, { ok: true, presence: { lan: body.lan, port: body.port, listening: body.listening, everyS: 300, freshS: 900 } });
     }
     if (req.method === 'POST' && route === 'sends') {
+      if (state.failCreate) return json(res, state.failCreate.status, { error: state.failCreate.code, code: state.failCreate.code });
       const id = hex24();
       const st = { id, createdAt: Date.now(), from: { userId: 2, name: 'Marc', deviceId: '42', deviceName: 'Laptop' }, text: body.text, link: body.link, note: body.note, to: body.to, deliveries: [] };
       st.items = (body.items || []).map((it, idx) => {
