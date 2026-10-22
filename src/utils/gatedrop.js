@@ -33,7 +33,8 @@ const TICKET_TTL_MS = 10 * 60 * 1000;        // ticket: single use, 10 min
 const CONNECT_TIMEOUT_MS = 2000;             // direct candidate: connect within 2 s, else server path
 const LINK_EXPIRES = Object.freeze(['1h', '1d', '7d', 'once']);
 const INBOX_KINDS = Object.freeze(['received', 'sent', 'links']);
-const DELIVERY_STATUS = Object.freeze(['pending', 'direct', 'delivered', 'opened', 'failed', 'expired']);
+// waiting (GateDrop 1.1.0): the target device was offline, the send waits in its `pending` list.
+const DELIVERY_STATUS = Object.freeze(['pending', 'waiting', 'direct', 'delivered', 'opened', 'failed', 'expired']);
 const PLATFORMS = Object.freeze(['android', 'windows', 'ios', 'web']);
 
 const TRANSFER_ID_RE = /^[A-Za-z0-9_-]{4,100}$/;
@@ -462,6 +463,17 @@ function normalizeInbox(raw, kind) {
 }
 
 /**
+ * GET pending (GateDrop 1.1.0) → the sends waiting for this device, oldest
+ * first ({ ok, items: [send view] }; a bare list is taken too).
+ */
+function normalizePending(raw) {
+  const r = obj(raw);
+  const list = Array.isArray(raw) ? raw : r ? (r.items || r.sends || []) : [];
+  return arr(list).slice(0, 500).map(normalizeSend).filter((s) => s && !s.expired)
+    .map((s, i) => ({ s, i })).sort((a, b) => ((a.s.at || 0) - (b.s.at || 0)) || (a.i - b.i)).map((x) => x.s);
+}
+
+/**
  * `data.gatedrop` of a push →
  *   { kind: 'direct', transferId, sendId, mode, key, ticket, candidates, items, itemCount, from, expiresAt }
  *     (items [] with itemCount when the push left them out: GET transfers/<id>)
@@ -570,10 +582,10 @@ function isGateDropPush(n) {
 module.exports = {
   PLUGIN_ID, APP_ROUTE, TOPIC_PREFIX, API_BASE, MEDIA_PATH, PLUGINS_PATH,
   PORT, BLOCK_SIZE, TAG_SIZE, MAX_FILE_BYTES, MAX_ITEMS, MAX_TEXT, MAX_NOTE, MAX_LINK,
-  RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS,
+  RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS,
   idOf, nonNegInt, timeOf, isTransferId, isTicket, isMediaId, isLinkToken, decodeKey,
   encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, parseCandidate, ipv4ToInt,
   normalizeTargets, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
-  normalizeInbox, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
+  normalizeInbox, normalizePending, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
 };

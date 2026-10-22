@@ -17,9 +17,10 @@
  *   GET    …/api/transfers/<id>                                     ticket of a transfer (listener)
  *   GET    …/api/inbox?kind=received|sent|links
  *   GET    …/api/sends/<id>
+ *   GET    …/api/pending                                            sends waiting for this device (GateDrop 1.1.0)
  *   GET    …/api/items/<mediaId>                                    → { item, url }; the bytes from `url`
  *   GET    …/gatecontrol-gatedrop/media/<mediaId>                   download (streamed, the apps' media route)
- *   POST   …/api/sends/<id>/opened
+ *   POST   …/api/sends/<id>/opened                                  also the receipt: drops the send from `pending`
  *   DELETE …/api/links/<token>
  *   PUT    …/gatecontrol-gatedrop/media                             raw upload (streamed)
  *          ?uploadId=&offset= + Content-Range                       resumable parts (> 50 MB, core ≥ 1.193)
@@ -152,6 +153,21 @@ class GateDropApi {
   async send(id) {
     const r = await this.api('GET', `sends/${this._id(id)}`);
     return gd.normalizeSend(r && r.send && typeof r.send === 'object' ? r.send : r);
+  }
+
+  /**
+   * GET pending (GateDrop 1.1.0) → the sends waiting for this device, oldest
+   * first (send views as GET sends/<id>). null: an older plugin without the
+   * route (404); []: the token belongs to no GateDrop device (409 no_device).
+   */
+  async pending() {
+    try {
+      return gd.normalizePending(await this.api('GET', 'pending'));
+    } catch (err) {
+      if (err && err.status === 404) return null;
+      if (err && err.status === 409 && err.code === 'no_device') return [];
+      throw err;
+    }
   }
 
   async opened(id) { return this.api('POST', `sends/${this._id(id)}/opened`, { body: {} }); }

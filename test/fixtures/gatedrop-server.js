@@ -9,13 +9,21 @@
 // items { index, mediaId|null, name, mime, bytes, local, available },
 // GET items/<id> → { item, url }, GET transfers/<id> → { transfer },
 // POST transfers/<id>/result → { transfer, delivery, fallback, missing? },
-// POST sends/<id>/items { items: [{ index, mediaId }] }.
+// POST sends/<id>/items { items: [{ index, mediaId }] },
+// GET pending (GateDrop 1.1.0, plugins PR #79) → { ok, items: [send view,
+// role "sent"] } oldest first: the sends with a `waiting` / `delivered`
+// delivery to this device (me.deviceId); the call flips `waiting` to
+// `delivered`, POST sends/<id>/opened from this device marks it `opened`
+// (out of the list). Deliveries to an own device that is offline get `waiting`.
 //
 //   const srv = await gatedropServer({ targets, direct: (body, sendId) => [...] });
 //   (direct entries the test returns are registered as transfers of that send)
 //   srv.url, srv.state (requests, presence, sends, media, results, addItems, uploads),
 //   srv.addSend(send) → stored send (GET sends/<id>, items downloadable),
 //   srv.cutUploadAfter = n  → the next resumable part breaks off after n bytes (whole 64 KiB kept),
+//   srv.addSend(send, { pending: true }) → a `waiting` delivery to this device (GET pending lists it until POST opened),
+//   srv.state.pendingMode = 'ok' | 404 (older plugin) | 'no_device' (409),
+//   srv.state.mediaFail = Set of mediaIds whose download answers 500,
 //   srv.close()
 
 const http = require('node:http');
@@ -39,6 +47,9 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     uploads: new Map(),     // uploadId → { data, total, mime } (resumable, partial)
     uploadCalls: [],
     transfers: new Map(),   // transferId → transfer (GET transfers/<id>: { id, sendId, side, mode, status, … })
+    pendingMode: 'ok',
+    pendingCalls: 0,
+    mediaFail: new Set(),
     targets: targets || {
       ok: true,
       me: { id: 2, name: 'Marc', canLink: true, canNas: true, deviceId: '42' },
@@ -82,8 +93,9 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
   srv.view = view;
 
   /** A received send with files on the server: items { name, data, mime }. */
-  srv.addSend = (send) => {
-    const st = { id: send.id || hex24(), createdAt: Date.now(), from: send.from || null, text: send.text, link: send.link, note: send.note, deliveries: [] };
+  srv.addSend = (send, { pending = false } = {}) => {
+    const st = { id: send.id || hex24(), createdAt: send.createdAt || Date.now(), from: send.from || null, text: send.text, link: send.link, note: send.note, deliveries: [] };
+    if (pending) st.deliveries.push({ id: 1, kind: 'device', target: String(state.targets.me.deviceId), label: 'Laptop', status: 'waiting', via: null, at: iso(st.createdAt), error: null, openedAt: null });
     st.items = (send.items || []).map((it, idx) => {
       const mediaId = it.local ? null : (it.mediaId || crypto.randomBytes(16).toString('hex'));
       if (it.data && mediaId) state.media.set(mediaId, { data: it.data, mime: it.mime || 'application/octet-stream' });
@@ -150,6 +162,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
 
     if (req.method === 'GET' && p.startsWith(`${MEDIA}/`)) {
       const md = state.media.get(p.slice(MEDIA.length + 1));
+      if (state.mediaFail.has(p.slice(MEDIA.length + 1))) return json(res, 500, { ok: false, code: 'internal', error: 'broken' });
       if (!md) return json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
       res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length });
       return res.end(md.data);
@@ -183,7 +196,13 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
         }
       }
       let n = 1;
-      for (const d of body.to.devices || []) st.deliveries.push({ id: n++, kind: 'device', target: d, label: d, status: direct.some((x) => x.deviceId === d) ? 'direct' : 'delivered', via: direct.some((x) => x.deviceId === d) ? 'direct' : 'server', at: iso(Date.now()), error: null, openedAt: null });
+      for (const d of body.to.devices || []) {
+        const dev = (state.targets.devices || []).find((x) => String(x.id) === String(d));
+        const isDirect = direct.some((x) => x.deviceId === d);
+        // An own device that is offline: the send waits in its `pending` list.
+        const status = isDirect ? 'direct' : dev && dev.online === false ? 'waiting' : 'delivered';
+        st.deliveries.push({ id: n++, kind: 'device', target: d, label: dev ? dev.name : d, status, via: isDirect ? 'direct' : status === 'waiting' ? null : 'server', at: iso(Date.now()), error: null, openedAt: null });
+      }
       for (const u of body.to.people || []) st.deliveries.push({ id: n++, kind: 'person', target: String(u), label: String(u), status: 'delivered', via: 'server', at: iso(Date.now()), error: null, openedAt: null });
       let link = null;
       if (body.to.link) {
@@ -211,6 +230,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     if (req.method === 'POST' && (m = /^sends\/([^/]+)\/opened$/.exec(route))) {
       state.opened.push(m[1]);
       const st = state.sends.get(m[1]);
+      const own = st && st.deliveries.find((d) => d.kind === 'device' && d.target === String(state.targets.me.deviceId));
+      if (own) { own.status = 'opened'; own.openedAt = iso(Date.now()); }
       return st ? json(res, 200, { ok: true, send: view(st) }) : json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
     }
     if (req.method === 'GET' && (m = /^sends\/([^/]+)$/.exec(route))) {
@@ -231,6 +252,17 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     if (req.method === 'GET' && (m = /^transfers\/([^/]+)$/.exec(route))) {
       const tr = state.transfers.get(m[1]);
       return tr ? json(res, 200, { ok: true, transfer: tr }) : json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
+    }
+    if (req.method === 'GET' && route === 'pending') {
+      state.pendingCalls++;
+      if (state.pendingMode === 404) return json(res, 404, { error: 'not_found' });
+      if (state.pendingMode === 'no_device') return json(res, 409, { ok: false, code: 'no_device', error: 'no device' });
+      const me = String(state.targets.me.deviceId);
+      const mine = (st) => st.deliveries.find((d) => d.kind === 'device' && d.target === me && (d.status === 'waiting' || d.status === 'delivered'));
+      const list = [...state.sends.values()].filter(mine).sort((a, b) => a.createdAt - b.createdAt);
+      const items = list.map((st) => view(st, 'sent'));
+      for (const st of list) { const d = mine(st); if (d.status === 'waiting') { d.status = 'delivered'; d.via = 'server'; } }
+      return json(res, 200, { ok: true, items });
     }
     if (req.method === 'GET' && route === 'inbox') {
       const kind = url.searchParams.get('kind');

@@ -21,6 +21,15 @@
  *     the server) — are saved to Downloads\GateControl (unique names), then
  *     one toast "… hat dir … geschickt" with "Ordner öffnen" / "Anzeigen"
  *     (text: "Kopieren", link: "Öffnen"). A click opens the GateDrop page.
+ *   - Sent while this PC was offline (GateDrop 1.1.0): GET pending lists the
+ *     sends waiting for this device; they are fetched like a `{ send }` push
+ *     and acknowledged with POST sends/<id>/opened. Polled when GateDrop
+ *     becomes available, on every push-stream hello, after resume from sleep,
+ *     after a network change and with the 5-minute presence tick (debounced,
+ *     one poll at a time). Handled send ids (last 500, store
+ *     `gatedropHandled`) are shared with the push path: a send is saved once,
+ *     whichever way it arrives first; a failed download stays unhandled and
+ *     the next poll tries again (only the items still missing).
  *   - Lists: inbox (Empfangen / Gesendet / Links), end a link.
  *
  * Events: 'state' (status()), 'compose' ({ files, rejected }) open the send
@@ -53,8 +62,11 @@ const DEFAULT_TIMING = {
   inboxTtlMs: 30 * 1000,
   pullStartMs: 60 * 1000,      // a device that should pull from us: first request within 1 min
   preparedTtlMs: 60 * 60 * 1000,
+  pendingDebounceMs: 2000,     // GET pending: triggers close together → one poll
+  resumeDelayMs: 5000,         // after resume from sleep: give the network a moment
 };
 const MAX_SAVED = 100;
+const MAX_HANDLED = 500;
 const MAX_NONCES = 60;
 const MAX_SEEN = 300;
 
@@ -87,18 +99,24 @@ class GateDropService extends EventEmitter {
    * @param {() => object} [opts.getInterfaces]
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
+   * @param {string} [opts.storeKey] - saved files (default `gatedropSaved`)
+   * @param {string} [opts.handledKey] - handled send ids (default `gatedropHandled`)
+   * @param {object|null} [opts.powerMonitor] - Electron powerMonitor ('resume'); default: electron's, when there
    */
   constructor({
     apiClient, log, store = null, notificationCenter = null, pushClient = null, api = null, listener = null,
     downloadsDir = defaultDownloadsDir, shell = null, clipboard = null, Notification = null, platform = process.platform,
     protocol = null, toastImagePath = null, showWindow = null, direct = null, resolveCandidate = gd.parseCandidate,
     getInterfaces = () => os.networkInterfaces(), timing = {}, now = Date.now, storeKey = 'gatedropSaved',
+    handledKey = 'gatedropHandled', powerMonitor,
   } = {}) {
     super();
     this.log = log || noopLog();
     this.api = api || new GateDropApi({ apiClient, log: this.log });
     this.store = store;
     this.storeKey = storeKey;
+    this.handledKey = handledKey;
+    this._powerMonitor = powerMonitor;
     this.notificationCenter = notificationCenter;
     this.pushClient = pushClient;
     this.getInterfaces = getInterfaces;
@@ -129,7 +147,14 @@ class GateDropService extends EventEmitter {
     this._prepared = new Map();  // token → { path, name, size, mime, at }
     this._pendingCompose = null;
     this._nonces = new Map();    // toast button nonce → action
-    this._seen = new Set();      // handled transfers / sends (replays)
+    this._seen = new Set();      // handled direct transfers (replays)
+    this._handled = null;        // Set of handled send ids (store `gatedropHandled`), loaded on first use
+    this._inflight = new Map();  // send id → Promise of its running download (push and poll share it)
+    this._failToasted = new Set(); // sends whose failure was already shown (a poll retries quietly)
+    this._acked = new Set();     // sends acknowledged (POST opened) in this session
+    this._polling = null;        // running GET pending
+    this._pollAgain = false;     // a trigger came in while it ran
+    this._pendingOff = undefined; // plugin version without GET pending (404)
     this._jobs = new Set();
     this._lanKey = '';
     this._lastPresence = null;
@@ -152,16 +177,39 @@ class GateDropService extends EventEmitter {
     }
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
+      // Stream (re)connected: what was sent while we were away is waiting.
       const onHello = () => {
         if (this._state.state !== 'available') this.check().catch(() => {});
-        else this.reportPresence({ force: true }).catch(() => {});
+        else {
+          this.reportPresence({ force: true }).catch(() => {});
+          this.schedulePending();
+        }
       };
       pc.on('hello', onHello);
       this._unsub.push(() => pc.removeListener('hello', onHello));
     }
+    const pm = this._powerMonitorOf();
+    if (pm) {
+      const onResume = () => this.schedulePending(this.timing.resumeDelayMs);
+      pm.on('resume', onResume);
+      this._unsub.push(() => pm.removeListener('resume', onResume));
+    }
     this._every('network', this.timing.networkCheckMs, () => this._checkNetwork());
-    this._every('presence', this.timing.presenceMs, () => this.reportPresence({ force: true }).catch(() => {}));
+    this._every('presence', this.timing.presenceMs, () => {
+      this.reportPresence({ force: true }).catch(() => {});
+      this.schedulePending();
+    });
     this.check().catch(() => {});
+  }
+
+  _powerMonitorOf() {
+    if (this._powerMonitor !== undefined) return this._powerMonitor && typeof this._powerMonitor.on === 'function' ? this._powerMonitor : null;
+    try {
+      const pm = require('electron').powerMonitor;
+      return pm && typeof pm.on === 'function' ? pm : null;
+    } catch {
+      return null;
+    }
   }
 
   stop() {
@@ -184,6 +232,9 @@ class GateDropService extends EventEmitter {
     this._inbox.clear();
     this._retry = 0;
     this._lastPresence = null;
+    this._pendingOff = undefined;
+    this._failToasted.clear();
+    this._acked.clear();
     this._scope = this.api.scope();
     this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
     if (this._started) return this.check().catch(() => this.status());
@@ -225,6 +276,7 @@ class GateDropService extends EventEmitter {
   }
 
   async _check() {
+    const was = this.available();
     this._ensureScope();
     clearTimeout(this._timers.check);
     let next = this.timing.recheckMs;
@@ -248,6 +300,8 @@ class GateDropService extends EventEmitter {
       }
     }
     await this._applyAvailability();
+    // Became available (app start, server back): fetch what waits for this PC.
+    if (!was && this.available()) this.schedulePending();
     if (this._started) {
       this._timers.check = setTimeout(() => this.check().catch(() => {}), next);
       if (this._timers.check.unref) this._timers.check.unref();
@@ -299,6 +353,7 @@ class GateDropService extends EventEmitter {
     this._targets = null;
     await this.reportPresence({ force: true }).catch(() => {});
     this.emit('state', this.status());
+    this.schedulePending();
   }
 
   /** PUT presence (skipped when nothing changed, unless force). */
@@ -635,19 +690,20 @@ class GateDropService extends EventEmitter {
     const p = gd.parsePushData(n.data);
     // "Link geladen" / "Link gesperrt" (topic link): a normal notification.
     if (!p || p.kind === 'link') return false;
-    const key = p.kind === 'direct' ? `t:${p.transferId}` : `s:${p.sendId}`;
     // Data pushes (`kind: "data"`, core 1.193) are only dispatched; a visible
     // "… hat dir … geschickt" stays in the inbox without the center's toast.
     const hidden = n.kind === 'data';
-    if (this._seen.has(key)) return hidden ? 'consumed' : 'quiet';
-    this._remember(key);
     // `silent` without kind data: quiet hours → no toast of ours either.
     p.quiet = !hidden && n.silent === true;
     if (p.kind === 'direct') {
+      const key = `t:${p.transferId}`;
+      if (this._seen.has(key)) return 'consumed';
+      this._remember(key);
       this._job(this.receiveDirect(p));
       return 'consumed';
     }
-    this._job(this.receiveSend(p));
+    // A send: saved once, whether this push or GET pending gets there first.
+    if (!this._isHandled(p.sendId) && !this._inflight.has(p.sendId)) this._job(this._receiveOnce(p));
     return hidden ? 'consumed' : 'quiet';
   }
 
@@ -720,36 +776,49 @@ class GateDropService extends EventEmitter {
       return { ok: false, error };
     }
     const rec = this._record({ key: p.transferId, sendId: p.sendId, transferId: p.transferId, from: p.from, files: saved, via: 'direct' });
+    if (p.sendId) this._markHandled(p.sendId);
     this.emit('progress', { id: jobId, dir: 'in', phase: 'done', sent: total, total });
     this._toastReceived(rec, { quiet: p.quiet === true });
     return { ok: true, record: rec };
   }
 
-  /** A send to fetch from the server: GET sends/<id> (unless the push has it), download every item. */
-  async receiveSend(p) {
+  /**
+   * A send to fetch from the server: GET sends/<id> (unless the push has it), download every item.
+   * @param {object} p - { sendId, send?, from?, quiet? } (parsePushData kind 'send', or a send of GET pending)
+   * @param {object} [o]
+   * @param {boolean} [o.failToast=true] - toast "… konnte nicht geladen werden" on failure
+   * @param {boolean} [o.resume=false] - keep the items an earlier attempt saved (only the missing ones
+   *   are downloaded; nothing new and nothing failed → { ok: true, skipped: 'saved' } without a toast)
+   * @returns {Promise<{ ok, record?, failed?, error?, skipped? }>} ok with failed > 0: some items are missing
+   */
+  async receiveSend(p, { failToast = true, resume = false } = {}) {
     let send = p.send && (p.send.items.length || p.send.text || p.send.link) ? p.send : null;
     try {
       if (!send) send = await this.api.send(p.sendId);
       if (!send) throw new GateDropError('send not found', { code: 'not_found' });
     } catch (err) {
       this.log.warn(`GateDrop send ${p.sendId} could not be loaded: ${err.code || err.message}`);
-      this._toastFailed(p.from, { quiet: p.quiet === true });
+      if (failToast) this._toastFailed(p.from, { quiet: p.quiet === true });
       return { ok: false, error: err.code || 'failed' };
     }
     const from = send.from || p.from;
+    const prior = resume ? this._savedList().find((r) => r.sendId === send.id) || null : null;
+    const have = prior ? prior.files.filter((f) => Number.isSafeInteger(f.index) && this._exists(f.path)) : [];
+    const haveIdx = new Set(have.map((f) => f.index));
     const files = [];
     const total = send.items.reduce((s, it) => s + (it.bytes || 0), 0);
     let base = 0;
     let failed = 0;
     for (const it of send.items) {
       if (!it.mediaId || !it.available) continue; // local on the sender's device / removed
+      if (haveIdx.has(it.index)) continue; // saved by an earlier attempt
       let target = null;
       try {
         target = await this._sink({ index: it.index, name: it.name, bytes: it.bytes });
         const r = await this.api.download(it.mediaId, target.stream, {
           onProgress: (got) => this.emit('progress', { id: send.id, dir: 'in', phase: 'download', sent: base + got, total, name: it.name }),
         });
-        files.push({ name: it.name, path: await target.commit(), bytes: r.bytes });
+        files.push({ index: it.index, name: it.name, path: await target.commit(), bytes: r.bytes });
         base += r.bytes;
       } catch (err) {
         failed++;
@@ -757,15 +826,165 @@ class GateDropService extends EventEmitter {
         this.log.warn(`GateDrop item ${it.name} could not be loaded: ${err.code || err.message}`);
       }
     }
-    if (!files.length && !send.text && !send.link && (failed || send.items.length)) {
-      this._toastFailed(from, { quiet: p.quiet === true });
+    if (!files.length && !have.length && !send.text && !send.link && (failed || send.items.length)) {
+      if (failToast) this._toastFailed(from, { quiet: p.quiet === true });
       return { ok: false, error: 'download_failed' };
     }
-    const rec = this._record({ key: send.id, sendId: send.id, from, files, text: send.text, link: send.link, note: send.note, via: 'server' });
+    // Saved before (all of it, or the text / link): nothing new to show.
+    if (prior && !files.length) return failed ? { ok: false, error: 'download_failed', failed } : { ok: true, record: prior, failed: 0, skipped: 'saved' };
+    const all = [...have, ...files].sort((a, b) => a.index - b.index);
+    const rec = this._record({ key: send.id, sendId: send.id, from, files: all, text: send.text, link: send.link, note: send.note, via: 'server' });
     this._inbox.delete('received');
     this.emit('progress', { id: send.id, dir: 'in', phase: 'done', sent: total, total });
-    this._toastReceived(rec, { quiet: p.quiet === true });
+    // A second attempt names only what it added.
+    const fresh = new Set(files.map((f) => f.path));
+    this._toastReceived(have.length ? { ...rec, files: rec.files.filter((f) => fresh.has(f.path)), text: null, link: null, note: null } : rec, { quiet: p.quiet === true });
     return { ok: true, record: rec, failed };
+  }
+
+  // ── Handled sends / GET pending ──────────────────────────
+
+  _handledSet() {
+    if (!this._handled) {
+      let ids = [];
+      try {
+        const raw = this.store && this.store.get(this.handledKey);
+        ids = raw && Array.isArray(raw.ids) ? raw.ids.filter((x) => typeof x === 'string' && x.length <= 128) : [];
+      } catch { ids = []; }
+      this._handled = new Set(ids.slice(-MAX_HANDLED));
+    }
+    return this._handled;
+  }
+
+  _isHandled(id) {
+    return typeof id === 'string' && this._handledSet().has(id);
+  }
+
+  /** Remember a send as saved (oldest dropped beyond 500), persisted in the store. */
+  _markHandled(id) {
+    if (typeof id !== 'string' || !id) return;
+    const set = this._handledSet();
+    set.delete(id);
+    set.add(id);
+    while (set.size > MAX_HANDLED) set.delete(set.values().next().value);
+    if (this.store) {
+      try { this.store.set(this.handledKey, { v: 1, ids: [...set] }); } catch (err) { this.log.warn(`GateDrop handled list could not be saved: ${err.message}`); }
+    }
+  }
+
+  /**
+   * One download per send, whichever path asks first (push or GET pending):
+   * handled → { ok, skipped: 'handled' }; running → that same promise.
+   * Handled once every item is saved; a failure toast only the first time.
+   */
+  _receiveOnce(p) {
+    const id = p.sendId;
+    if (this._isHandled(id)) return Promise.resolve({ ok: true, skipped: 'handled' });
+    const running = this._inflight.get(id);
+    if (running) return running;
+    const failToast = !this._failToasted.has(id);
+    const run = this.receiveSend(p, { failToast, resume: true })
+      .catch((err) => ({ ok: false, error: (err && err.code) || 'failed' }))
+      .then((r) => {
+        if (r.ok && !r.failed) {
+          this._markHandled(id);
+          this._failToasted.delete(id);
+        } else {
+          this._failToasted.add(id);
+          while (this._failToasted.size > MAX_HANDLED) this._failToasted.delete(this._failToasted.values().next().value);
+        }
+        return r;
+      })
+      .finally(() => this._inflight.delete(id));
+    this._inflight.set(id, run);
+    return run;
+  }
+
+  /** Poll GET pending soon (triggers close together → one poll). */
+  schedulePending(delayMs = this.timing.pendingDebounceMs) {
+    if (!this._started) return;
+    clearTimeout(this._timers.pending);
+    this._timers.pending = setTimeout(() => {
+      this._timers.pending = null;
+      this._job(this.pollPending());
+    }, Math.max(0, delayMs));
+    if (this._timers.pending.unref) this._timers.pending.unref();
+  }
+
+  /**
+   * GET pending → save each send waiting for this PC (as a `{ send }` push),
+   * then POST sends/<id>/opened. Never two at once: a call while one runs
+   * makes it go round once more.
+   * @returns {Promise<{ ok, supported?, received?, failed?, error? }>}
+   */
+  pollPending() {
+    if (this._polling) {
+      this._pollAgain = true;
+      return this._polling;
+    }
+    this._polling = (async () => {
+      let r;
+      do {
+        this._pollAgain = false;
+        r = await this._pollOnce();
+      } while (this._pollAgain && this._started && this.available());
+      return r;
+    })().finally(() => { this._polling = null; });
+    return this._polling;
+  }
+
+  async _pollOnce() {
+    if (!this.available()) return { ok: false, error: 'unavailable' };
+    this._ensureScope();
+    // An older plugin (no GET pending) stays skipped until its version changes.
+    if (this._pendingOff !== undefined && this._pendingOff === this._state.version) return { ok: true, supported: false };
+    let list;
+    try {
+      list = await this.api.pending();
+    } catch (err) {
+      this.log.debug(`GateDrop pending failed: ${err.code || err.message}`);
+      return { ok: false, error: (err && err.code) || 'failed' };
+    }
+    if (list === null) {
+      this._pendingOff = this._state.version;
+      this.log.info('GateDrop: the plugin has no pending list (older than 1.1.0)');
+      return { ok: true, supported: false };
+    }
+    this._pendingOff = undefined;
+    let received = 0;
+    let failed = 0;
+    // Own devices are named in the toast ("Pixel hat dir …") and this
+    // device's delivery is found by me.deviceId: needs `me`. The entries are
+    // own sends (role "sent") when they come from one's own devices — the
+    // role says nothing here, the delivery to this device does.
+    if (list.some((s) => !this._isHandled(s.id)) && !this._targets) await this.targets().catch(() => {});
+    const me = this._targets && this._targets.data && this._targets.data.me;
+    const myId = me && me.deviceId;
+    for (const send of list) {
+      const mine = myId ? send.deliveries.find((d) => d.kind === 'device' && d.target === myId) : null;
+      if (mine && mine.status === 'opened') { this._markHandled(send.id); continue; } // taken care of here before
+      const r = await this._receiveOnce({ kind: 'send', sendId: send.id, send, from: send.from });
+      if (r.ok && !r.failed) {
+        if (!r.skipped) received++;
+        await this._ack(send.id);
+      } else {
+        failed++;
+      }
+    }
+    if (received || failed) this.log.info(`GateDrop pending: ${received} saved, ${failed} failed of ${list.length}`);
+    return { ok: true, supported: true, received, failed };
+  }
+
+  /** POST sends/<id>/opened: the receipt, the plugin drops the send from `pending`. */
+  async _ack(id) {
+    if (this._acked.has(id)) return;
+    try {
+      await this.api.opened(id);
+      this._acked.add(id);
+      while (this._acked.size > MAX_HANDLED) this._acked.delete(this._acked.values().next().value);
+    } catch (err) {
+      this.log.debug(`GateDrop opened ${id} failed: ${err.code || err.message}`);
+    }
   }
 
   /**
@@ -775,7 +994,9 @@ class GateDropService extends EventEmitter {
   async saveSend(sendId) {
     const send = await this.api.send(sendId);
     if (!send) throw new GateDropError('send not found', { code: 'not_found' });
-    return this.receiveSend({ kind: 'send', sendId: send.id, send, from: send.from });
+    const r = await this.receiveSend({ kind: 'send', sendId: send.id, send, from: send.from });
+    if (r.ok && !r.failed) this._markHandled(send.id);
+    return r;
   }
 
   /**
@@ -833,7 +1054,7 @@ class GateDropService extends EventEmitter {
     const rec = {
       key: String(key), sendId, transferId, at: this.now(),
       from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null, deviceName: from.deviceName || null } : null,
-      files: files.map((f) => ({ name: f.name, path: f.path, bytes: f.bytes })),
+      files: files.map((f) => ({ ...(Number.isSafeInteger(f.index) ? { index: f.index } : {}), name: f.name, path: f.path, bytes: f.bytes })),
       text: text || null, link: link || null, note: note || null, via,
     };
     const list = this._savedList().filter((r) => r.key !== rec.key && !(rec.sendId && r.sendId === rec.sendId));
