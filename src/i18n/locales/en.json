@@ -1246,6 +1246,7 @@
       "noPeople": "No people available",
       "online": "online",
       "offline": "offline",
+      "offlineLater": "offline · arrives once it is online",
       "direct": "on the same Wi-Fi",
       "family": "Family",
       "cancel": "Cancel",
@@ -1316,6 +1317,7 @@
     },
     "status": {
       "pending": "waiting",
+      "waiting": "Waiting until “{{device}}” is online",
       "direct": "direct",
       "delivered": "delivered",
       "opened": "opened",

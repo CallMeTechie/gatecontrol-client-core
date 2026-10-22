@@ -100,6 +100,17 @@ describe('GateDrop answers', () => {
     assert.deepEqual(gd.normalizeTargets(null).people, []);
   });
 
+  it('pending (GateDrop 1.1.0): oldest first, expired dropped, delivery status `waiting` kept', () => {
+    const view = (id, createdAt, extra = {}) => ({ id, role: 'sent', createdAt, expiresAt: null, expired: false, from: { userId: 2, name: 'Marc', avatarUrl: null, deviceId: '43', deviceName: 'Pixel' }, text: null, link: null, note: null, items: [], deliveries: [{ kind: 'device', target: '42', label: 'Laptop', status: 'waiting' }], ...extra });
+    const list = gd.normalizePending({ ok: true, items: [view('b', '2026-10-22T10:00:00Z', { text: 'zwei' }), view('a', '2026-10-22T09:00:00Z', { link: 'https://x.example/' }), view('c', '2026-10-21T09:00:00Z', { expired: true }), { id: { bad: 1 } }] });
+    assert.deepEqual(list.map((s) => s.id), ['a', 'b']);
+    assert.equal(list[0].role, 'sent');
+    assert.deepEqual(list[0].from, { id: '2', name: 'Marc', deviceId: '43', deviceName: 'Pixel' });
+    assert.equal(list[0].deliveries[0].status, 'waiting');
+    assert.deepEqual(gd.normalizePending(null), []);
+    assert.ok(gd.DELIVERY_STATUS.includes('waiting'));
+  });
+
   it('send result with direct entries and a link', () => {
     const r = gd.normalizeSendResult({
       id: 41,
@@ -210,5 +221,7 @@ describe('i18n gatedrop.* (de / en)', () => {
     for (const k of Object.keys(d)) assert.deepEqual(ph(d[k]), ph(e[k]), k);
     assert.equal(d['toast.openFolder'], 'Ordner öffnen');
     assert.equal(d['toast.show'], 'Anzeigen');
+    assert.equal(d['dialog.offlineLater'], 'offline · kommt an, sobald es online ist');
+    assert.equal(d['status.waiting'], 'Wartet, bis „{{device}}“ online ist');
   });
 });
