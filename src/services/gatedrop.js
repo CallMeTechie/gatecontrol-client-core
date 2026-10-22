@@ -35,6 +35,8 @@
  * Events: 'state' (status()), 'compose' ({ files, rejected }) open the send
  * dialog, 'progress' ({ id, dir, phase, sent, total, name }), 'received'
  * (record), 'changed' ({ kind }), 'navigate' ({ tab, sendId }).
+ * Phases out: upload → sent → direct / failed (direct failed, the server takes
+ * over) → done | error; in: download / direct → done | failed.
  */
 
 const EventEmitter = require('events');
@@ -69,6 +71,8 @@ const MAX_SAVED = 100;
 const MAX_HANDLED = 500;
 const MAX_NONCES = 60;
 const MAX_SEEN = 300;
+/** A caller's own job id for the 'progress' events of a send. */
+const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -506,10 +510,13 @@ class GateDropService extends EventEmitter {
    * @param {string[]} [o.files] - ids from prepareFiles()
    * @param {string} [o.text] [o.link] [o.note]
    * @param {object} o.to - { people, devices, nas, link: { expires, pin } }
-   * @returns {Promise<{ ok, id, deliveries, link, direct }>} after the send exists on the
-   *   server; direct transfers and fallbacks continue in the background ('progress').
+   * @param {string} [o.job] - id of the 'progress' events of this send (the caller's
+   *   own, so it can follow the upload before the answer arrives)
+   * @returns {Promise<{ ok, id, job, deliveries, link, direct }>} after the send exists on
+   *   the server; direct transfers and fallbacks continue in the background ('progress').
+   *   The job ends with phase 'done' ({ via: 'direct' | 'server' }) or 'error' ({ code }).
    */
-  async send({ files = [], text = null, link = null, note = null, to } = {}) {
+  async send({ files = [], text = null, link = null, note = null, to, job = null } = {}) {
     if (!this.available()) throw new GateDropError('GateDrop is not available', { code: 'unavailable' });
     const list = [];
     for (const id of Array.isArray(files) ? files : []) {
@@ -544,22 +551,29 @@ class GateDropService extends EventEmitter {
       if (!st.isFile() || st.size !== f.size) throw new GateDropError(`${f.name} changed`, { code: 'changed' });
     }
 
-    const jobId = crypto.randomBytes(8).toString('hex');
+    const jobId = typeof job === 'string' && JOB_RE.test(job) ? job : crypto.randomBytes(8).toString('hex');
     const total = list.reduce((s, f) => s + f.size, 0);
+    const end = (phase, extra) => this.emit('progress', { id: jobId, dir: 'out', phase, sent: phase === 'done' ? total : 0, total, ...extra });
     const upload = this._uploader(list, jobId, total);
-    const localOk = list.length > 0 && await this._allDirect(body.to);
-    if (list.length) {
-      if (localOk) body.items = list.map((f) => ({ name: f.name, bytes: f.size, mime: f.mime, local: true }));
-      else body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
-    }
     let result;
+    let localOk = false;
     try {
-      result = await this.api.createSend(body);
+      localOk = list.length > 0 && await this._allDirect(body.to);
+      if (list.length) {
+        if (localOk) body.items = list.map((f) => ({ name: f.name, bytes: f.size, mime: f.mime, local: true }));
+        else body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
+      }
+      try {
+        result = await this.api.createSend(body);
+      } catch (err) {
+        // 409 upload_required: a target needs the files on the server after all.
+        if (!(localOk && err && err.code === 'upload_required')) throw err;
+        body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
+        result = await this.api.createSend(body);
+      }
     } catch (err) {
-      // 409 upload_required: a target needs the files on the server after all.
-      if (!(localOk && err && err.code === 'upload_required')) throw err;
-      body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
-      result = await this.api.createSend(body);
+      end('error', { code: (err && err.code) || 'failed' });
+      throw err;
     }
     this._inbox.delete('sent');
     this._inbox.delete('links');
@@ -568,10 +582,19 @@ class GateDropService extends EventEmitter {
     const direct = list.length ? result.direct : [];
     if (direct.length) {
       this._job(Promise.allSettled(direct.map((d) => this._sendDirect(d, list, result.id, upload, jobId, total, { local: localOk })))
-        .then(() => { this._inbox.delete('sent'); this.emit('changed', { kind: 'sent' }); }));
+        .then((outcomes) => {
+          this._inbox.delete('sent');
+          this.emit('changed', { kind: 'sent' });
+          // A fallback that could not get the files to the server: the send is incomplete.
+          const bad = outcomes.find((o) => o.status === 'rejected');
+          if (bad) end('error', { sendId: result.id, code: (bad.reason && bad.reason.code) || 'failed' });
+          else end('done', { sendId: result.id, via: outcomes.every((o) => o.value && o.value.via === 'direct') ? 'direct' : 'server' });
+        }));
+    } else {
+      end('done', { sendId: result.id, via: 'server' });
     }
     this.emit('changed', { kind: 'sent' });
-    return { ok: true, id: result.id, deliveries: result.deliveries, link: result.link, direct: direct.map((d) => ({ deviceId: d.deviceId, mode: d.mode })) };
+    return { ok: true, id: result.id, job: jobId, deliveries: result.deliveries, link: result.link, direct: direct.map((d) => ({ deviceId: d.deviceId, mode: d.mode })) };
   }
 
   /** Only own devices in the same network that listen → items may go `local`. */

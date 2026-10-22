@@ -1287,6 +1287,17 @@
       "download": "Downloading … {{percent}} %",
       "failed": "Direct transfer failed – continuing through the server."
     },
+    "sendToast": {
+      "preparing": "Preparing …",
+      "transferring": "Transferring …",
+      "files": "{{count}} files",
+      "text": "Text",
+      "done": "Sent",
+      "doneDirect": "Sent · directly over Wi-Fi",
+      "failed": "Sending failed",
+      "retry": "Try again",
+      "close": "Close"
+    },
     "list": {
       "emptyReceived": "Nothing received yet.",
       "emptySent": "Nothing sent yet.",

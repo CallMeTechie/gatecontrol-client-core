@@ -80,7 +80,7 @@ function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dia
   handle('gatedrop:compose:take', wrap(async () => ({ ok: true, ...s.takeCompose() })));
   handle('gatedrop:send', wrap(async (a) => {
     if (!Array.isArray(a.files || []) || !optStr(a.text, 20000) || !optStr(a.link, 2048) || !optStr(a.note, 500) || !a.to || typeof a.to !== 'object') return invalid();
-    return s.send({ files: a.files || [], text: a.text || null, link: a.link || null, note: a.note || null, to: a.to });
+    return s.send({ files: a.files || [], text: a.text || null, link: a.link || null, note: a.note || null, to: a.to, job: typeof a.job === 'string' ? a.job : null });
   }));
   handle('gatedrop:inbox', wrap(async (a) => s.inbox({ kind: a.kind, refresh: a.refresh === true })));
   handle('gatedrop:send:get', wrap(async (a) => {

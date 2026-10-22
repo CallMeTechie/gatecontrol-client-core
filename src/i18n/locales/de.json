@@ -1287,6 +1287,17 @@
       "download": "Wird geladen … {{percent}} %",
       "failed": "Direktübertragung fehlgeschlagen – es geht über den Server weiter."
     },
+    "sendToast": {
+      "preparing": "Wird vorbereitet …",
+      "transferring": "Wird übertragen …",
+      "files": "{{count}} Dateien",
+      "text": "Text",
+      "done": "Gesendet",
+      "doneDirect": "Gesendet · direkt im WLAN",
+      "failed": "Senden fehlgeschlagen",
+      "retry": "Erneut versuchen",
+      "close": "Schließen"
+    },
     "list": {
       "emptyReceived": "Noch nichts empfangen.",
       "emptySent": "Noch nichts gesendet.",

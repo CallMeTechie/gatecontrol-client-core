@@ -108,8 +108,16 @@ describe('GateDropService', () => {
     assert.ok(!('path' in prep.files[0]), 'no paths to the renderer');
 
     srv.cutUploadAfter = 100000; // first part breaks off; the server kept 65536 bytes
-    const r = await svc.send({ files: prep.files.map((f) => f.id), text: 'Für dich', note: 'Angebot', to: { people: [8] } });
+    const events = [];
+    svc.on('progress', (p) => events.push(p));
+    const r = await svc.send({ files: prep.files.map((f) => f.id), text: 'Für dich', note: 'Angebot', to: { people: [8] }, job: 'job-1' });
     assert.equal(r.ok, true);
+    // the caller's job id from the first upload byte to the end
+    assert.equal(r.job, 'job-1');
+    assert.ok(events.every((e) => e.id === 'job-1' && e.dir === 'out'));
+    assert.equal(events[0].phase, 'upload');
+    assert.deepEqual(events.slice(-2).map((e) => e.phase), ['sent', 'done']);
+    assert.deepEqual([events.at(-1).via, events.at(-1).sendId, events.at(-1).sent], ['server', r.id, big.length + small.length]);
     const sent = srv.state.sends.get(r.id);
     assert.equal(sent.text, 'Für dich');
     assert.deepEqual(sent.to, { people: ['8'], devices: [], nas: [] });
@@ -126,6 +134,13 @@ describe('GateDropService', () => {
     assert.match(parts[0].uploadId, /^[A-Za-z0-9_-]{8,64}$/);
     await assert.rejects(svc.send({ files: ['unknown'], to: { people: [8] } }), (e) => e.code === 'invalid');
     await assert.rejects(svc.send({ text: 'x', to: {} }), (e) => e.code === 'no_target');
+    // the server refuses the send → the job ends with 'error'; an unusable job id → an own one
+    srv.state.failCreate = { status: 403, code: 'forbidden' };
+    events.length = 0;
+    await assert.rejects(svc.send({ text: 'x', to: { people: [8] }, job: 'bad id!' }));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].phase, 'error');
+    assert.match(events[0].id, /^[0-9a-f]{16}$/);
   });
 
   it('a public link answer is passed on (url + PIN)', async () => {
@@ -257,9 +272,14 @@ describe('GateDropService', () => {
     const sender = await setup(srv);
     const dir = tmpDir('gd-src-');
     const prep = await sender.svc.prepareFiles([writeFile(dir, 'a.txt', 'hallo')]);
+    const events = [];
+    sender.svc.on('progress', (p) => events.push(p.phase));
     const r = await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['tok_buero'] } });
     await sender.svc.idle();
     assert.equal(srv.state.results[0].ok, false);
+    // direct failed → over the server → done
+    assert.equal(events.at(-1), 'done');
+    assert.ok(events.includes('failed'));
     assert.equal(srv.state.addItems.length, 1);
     assert.equal(srv.state.addItems[0].sendId, r.id);
     const mediaId = srv.state.addItems[0].items[0].mediaId;
@@ -282,6 +302,7 @@ describe('GateDropService', () => {
     const dir = tmpDir('gd-src-');
     const data = crypto.randomBytes(1500000);
     const prep = await sender.svc.prepareFiles([writeFile(dir, 'foto.jpg', data)]);
+    const outcome = new Promise((r) => sender.svc.on('progress', (p) => { if (p.phase === 'done' || p.phase === 'error') r(p); }));
     await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['tok_b'] } });
     const received = new Promise((r) => receiver.svc.once('received', r));
     assert.equal(receiver.center.handleNotification({ seq: 1, id: 1, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', silent: true, title: '', data: pushToB }), null);
@@ -289,6 +310,7 @@ describe('GateDropService', () => {
     await sender.svc.idle();
     assert.deepEqual(fs.readFileSync(rec.files[0].path), data);
     assert.deepEqual(srv.state.results.map((x) => x.ok), [true, true]);
+    assert.deepEqual([(await outcome).phase, (await outcome).via], ['done', 'direct']);
     assert.match(FakeNotification.shown.at(-1).opts.toastXml, /A hat dir foto\.jpg geschickt/);
   });
 });
@@ -408,7 +430,8 @@ describe('GateDrop IPC', () => {
     });
     assert.equal((await handlers['gatedrop:prepare']({}, { paths: 'C:\\x' })).code, 'invalid');
     assert.equal((await handlers['gatedrop:send']({}, { files: [], text: 'x'.repeat(20001), to: {} })).code, 'invalid');
-    assert.equal((await handlers['gatedrop:send']({}, { files: ['a'], to: { people: [8] } })).ok, true);
+    assert.equal((await handlers['gatedrop:send']({}, { files: ['a'], to: { people: [8] }, job: 'j1' })).ok, true);
+    assert.equal(calls.find((c) => c[0] === 'send')[1].job, 'j1');
     assert.equal((await handlers['gatedrop:show']({}, { path: 'C:\\x' })).code, 'invalid');
     assert.equal((await handlers['gatedrop:pick']({})).code, 'cancelled');
     assert.deepEqual(await handlers['gatedrop:explorer']({}, { enabled: true }), { ok: true, enabled: false, supported: false });
