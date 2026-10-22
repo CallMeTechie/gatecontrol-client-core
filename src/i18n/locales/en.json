@@ -1289,6 +1289,7 @@
     },
     "sendToast": {
       "preparing": "Preparing …",
+      "transferring": "Transferring …",
       "files": "{{count}} files",
       "text": "Text",
       "done": "Sent",
