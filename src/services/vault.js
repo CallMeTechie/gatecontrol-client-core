@@ -1076,21 +1076,24 @@ class VaultService extends EventEmitter {
       const queued = s.outbox.find((o) => o.id === sent.id) || null;
       // the entry was changed again meanwhile: that newer save stays queued (on top of the new revision)
       const changedAgain = !!queued && queued.blob !== sent.blob;
+      // a conflict with exactly what we sent: our earlier try got through, only its answer was lost
+      const echoed = !res.ok && res.code === 'conflict' && !!res.current && res.current.blob === sent.blob;
       const items = new Map(s.items);
       let outbox = s.outbox;
-      if (res.ok) {
+      if (res.ok || echoed) {
         const old = items.get(sent.id);
-        const rev = res.rev || sent.baseRev + 1;
+        const rev = echoed ? res.current.rev : res.rev || sent.baseRev + 1;
         items.set(sent.id, {
           id: sent.id, vaultId: sent.vaultId, rev, keyRev: sent.keyRev, blob: sent.blob,
           state: old && old.state === 'trash' ? 'trash' : 'live', trashedAt: old ? old.trashedAt : null,
           updatedAt: new Date(this.now()).toISOString(), updatedBy: me, device: this.deviceName,
-          seq: res.seq || (old ? old.seq : 0),
+          seq: (echoed ? res.current.seq : res.seq) || (old ? old.seq : 0),
         });
         if (changedAgain) {
-          // its blob is bound to the old revision (AD): encrypt again on top of the new one
+          // its blob is bound to the old revision (AD): encrypt again on top of the new one; locked meanwhile
+          // (no keys): it stays as it is — never dropped (at worst a conflict copy once unlocked)
           const again = this._reencrypt(queued, rev);
-          outbox = outbox.filter((o) => o.id !== sent.id).concat(again ? [again] : []);
+          if (again || this._keys) outbox = outbox.filter((o) => o.id !== sent.id).concat(again ? [again] : []);
         } else if (queued) {
           outbox = outbox.filter((o) => o.id !== sent.id);
         }
@@ -1098,7 +1101,8 @@ class VaultService extends EventEmitter {
         // both versions stay: the server's as the entry, ours as a copy
         items.set(sent.id, res.current);
         // (a key change's save conflicting: just the newer version; a queued change of it meets it on its own)
-        if (!rekey) {
+        // locked meanwhile (no keys for the copy): ours stays queued and meets the conflict again once unlocked
+        if (!rekey && this._keys) {
           outbox = outbox.filter((o) => o.id !== sent.id);
           const copy = this._conflictCopy(queued || sent);
           if (copy) {
