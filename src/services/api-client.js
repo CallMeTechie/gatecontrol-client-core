@@ -36,6 +36,9 @@ class ApiClient {
     this.apiKey = apiKey;
     this.peerId = peerId;
     this.configHash = null;
+    // Internal DNS from the last config answer: { domain, server }, null
+    // (off on the server), or undefined (not known / older server).
+    this.internalDns = undefined;
     this.portalUrl = null;
     this.autoOpenPortal = false;
     this.client = null;
@@ -161,6 +164,8 @@ class ApiClient {
 
     if (data.config) {
       this.configHash = data.hash || null;
+      // { domain, server } | null; stays undefined for servers that do not send it.
+      this.internalDns = Object.prototype.hasOwnProperty.call(data, 'internalDns') ? data.internalDns : undefined;
       return data.config;
     }
 
@@ -181,6 +186,7 @@ class ApiClient {
 
       if (data.updated && data.config) {
         this.configHash = data.hash;
+        if (Object.prototype.hasOwnProperty.call(data, 'internalDns')) this.internalDns = data.internalDns;
         this.log.info('New configuration available');
         return data.config;
       }

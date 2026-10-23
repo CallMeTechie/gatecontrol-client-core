@@ -27,6 +27,47 @@ const { execFile } = require('node:child_process');
  *
  * Requires Admin rights (Pro/Community run elevated via NSIS).
  */
+const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+const LEGACY = { namespace: '.gc.internal', nameServer: '10.8.0.1' };
+
+function isIPv4(s) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(s || ''));
+  return !!m && m.slice(1).every((o) => Number(o) <= 255);
+}
+
+const ipToNum = (ip) => ip.split('.').reduce((n, o) => ((n << 8) | Number(o)) >>> 0, 0);
+const numToIp = (n) => [24, 16, 8, 0].map((s) => (n >>> s) & 255).join('.');
+
+/** Values of `key = a, b` lines in the [Interface] section of a WireGuard config. */
+function interfaceValues(wgConfig, key) {
+  const out = [];
+  let inInterface = false;
+  for (const raw of String(wgConfig || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith('[')) { inInterface = /^\[interface\]$/i.test(line); continue; }
+    if (!inInterface) continue;
+    const m = /^([A-Za-z]+)\s*=\s*(.*)$/.exec(line);
+    if (m && m[1].toLowerCase() === key) out.push(...m[2].split(',').map((v) => v.trim()).filter(Boolean));
+  }
+  return out;
+}
+
+/**
+ * Resolver for a server that does not say which one (GateControl < 1.195):
+ * a DNS entry of the tunnel config inside the VPN subnet, else the subnet's
+ * first address (the gateway, where the server's dnsmasq listens).
+ */
+function nameServerFromConfig(wgConfig) {
+  const addr = interfaceValues(wgConfig, 'address').map((a) => a.split('/')).find(([ip]) => isIPv4(ip));
+  if (!addr) return LEGACY.nameServer;
+  // Clients get a /32; the VPN subnet itself is (at least) a /24.
+  const mask = Math.min(Number(addr[1] ?? 32), 24);
+  const maskNum = mask === 0 ? 0 : (0xFFFFFFFF << (32 - mask)) >>> 0;
+  const network = (ipToNum(addr[0]) & maskNum) >>> 0;
+  const inSubnet = interfaceValues(wgConfig, 'dns').find((d) => isIPv4(d) && ((ipToNum(d) & maskNum) >>> 0) === network);
+  return inSubnet || numToIp(network + 1);
+}
+
 class DnsPolicy {
   constructor(log) {
     this.log = log || console;
@@ -53,6 +94,11 @@ class DnsPolicy {
   async add(namespace, nameServer) {
     if (!namespace || !nameServer) return;
     const ns = namespace.startsWith('.') ? namespace : '.' + namespace;
+    // Both end up inside a PowerShell command line.
+    if (!DOMAIN_RE.test(ns.slice(1)) || !isIPv4(nameServer)) {
+      this.log.warn('NRPT rule skipped, invalid namespace or name server: ' + ns + ' -> ' + nameServer);
+      return;
+    }
     const comment = 'GateControl:' + ns;
 
     // Remove any prior rule for this namespace, including:
@@ -109,5 +155,23 @@ class DnsPolicy {
     if (!res.err) this.applied.clear();
   }
 }
+
+/**
+ * Which NRPT rule to install for the peers' hostnames.
+ *
+ * internalDns is what GET /client/config reported: { domain, server } from
+ * the server's settings, null when its internal DNS is off (no rule), or
+ * undefined when unknown (older server, or the config could not be fetched)
+ * — then the server default domain and the resolver from the tunnel config.
+ *
+ * @returns {{ namespace: string, nameServer: string } | null}
+ */
+DnsPolicy.ruleFor = function ruleFor({ internalDns, wgConfig } = {}) {
+  if (internalDns === null) return null;
+  if (internalDns && DOMAIN_RE.test(String(internalDns.domain || '')) && isIPv4(internalDns.server)) {
+    return { namespace: '.' + internalDns.domain.toLowerCase(), nameServer: internalDns.server };
+  }
+  return { namespace: LEGACY.namespace, nameServer: nameServerFromConfig(wgConfig) };
+};
 
 module.exports = DnsPolicy;
