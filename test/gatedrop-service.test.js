@@ -411,6 +411,104 @@ describe('GateDropService – plugin shapes', () => {
   });
 });
 
+describe('GateDropService – who may send to this PC (GateDrop 1.2.0)', () => {
+  it('reads and sets the setting; older plugins and unknown devices: not supported', async () => {
+    const srv = await gatedropServer({ version: '1.2.0' });
+    cleanup.push(() => srv.close());
+    const { svc } = await setup(srv);
+    assert.deepEqual(await svc.deviceAccess(), { ok: true, supported: true, receiveFrom: 'self' });
+    await svc.targets();
+    assert.deepEqual(await svc.setDeviceAccess('everyone'), { ok: true, supported: true, receiveFrom: 'everyone' });
+    assert.deepEqual(srv.state.deviceCalls.at(-1), { method: 'PUT', body: { receiveFrom: 'everyone' } });
+    assert.equal((await svc.targets()).me.receiveFrom, 'everyone', 'the cached targets follow');
+    await assert.rejects(svc.setDeviceAccess('friends'), (e) => e.code === 'invalid');
+    assert.equal(srv.state.deviceCalls.length, 2);
+    srv.state.deviceMode = 404;
+    assert.deepEqual(await svc.deviceAccess(), { ok: true, supported: false, receiveFrom: null });
+    srv.state.deviceMode = 'no_device';
+    assert.deepEqual(await svc.deviceAccess(), { ok: true, supported: false, receiveFrom: null });
+  });
+
+  it('sends to another person\'s open device like to an own one; local items when it is direct', async () => {
+    const srv = await gatedropServer({ version: '1.2.0' });
+    cleanup.push(() => srv.close());
+    srv.state.targets.peopleDevices = [
+      { id: '51', name: 'Surface', platform: 'windows', online: true, direct: false, owner: { id: 3, name: 'Lena' } },
+      { id: '52', name: 'Laptop', platform: 'windows', online: true, direct: true, mode: 'push', owner: { id: 3, name: 'Lena' } },
+    ];
+    const { svc } = await setup(srv);
+    const tg = await svc.targets();
+    assert.deepEqual(tg.peopleDevices.map((d) => [d.id, d.owner.name]), [['51', 'Lena'], ['52', 'Lena']]);
+    const dir = tmpDir('gd-src-');
+    const prep = await svc.prepareFiles([writeFile(dir, 'a.txt', 'hallo'), writeFile(dir, 'b.txt', 'welt')]);
+
+    // through the server: the files go up, the delivery is labelled "Surface (Lena)"
+    const r = await svc.send({ files: [prep.files[0].id], to: { devices: ['51'] } });
+    assert.deepEqual(srv.state.sends.get(r.id).to.devices, ['51']);
+    assert.equal(srv.state.sends.get(r.id).items[0].local, false);
+    assert.equal(r.deliveries[0].targetName, 'Surface (Lena)');
+
+    // in the same Wi-Fi: the items stay local (direct transfer)
+    const r2 = await svc.send({ files: [prep.files[1].id], to: { devices: ['52'] } });
+    assert.equal(srv.state.sends.get(r2.id).items[0].local, true);
+
+    // closed for others meanwhile: 409 unavailable → target_unavailable, the targets are asked again
+    srv.state.closed.add('51');
+    srv.state.targets.peopleDevices = srv.state.targets.peopleDevices.filter((d) => d.id !== '51');
+    const events = [];
+    svc.on('progress', (p) => events.push(p));
+    await assert.rejects(svc.send({ text: 'hi', to: { devices: ['51'] }, job: 'j9' }), (e) => e.code === 'target_unavailable');
+    assert.equal(events.at(-1).phase, 'error');
+    assert.equal(events.at(-1).code, 'target_unavailable');
+    assert.deepEqual((await svc.targets()).peopleDevices.map((d) => d.id), ['52']);
+  });
+
+  it('a send from another person names the person, one from an own device the device', async () => {
+    const srv = await gatedropServer({ version: '1.2.0' });
+    cleanup.push(() => srv.close());
+    const { svc, center } = await setup(srv, { nc: true });
+    const other = srv.addSend({ from: { userId: 3, name: 'Lena', deviceId: '51', deviceName: 'Surface', own: false }, text: 'Hallo' });
+    center.handleNotification({ seq: 1, id: 1, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', title: '', silent: true, data: { gatedrop: { send: other.id } } });
+    await svc.idle();
+    assert.match(FakeNotification.shown.at(-1).opts.toastXml, /Lena hat dir einen Text geschickt/);
+    const own = srv.addSend({ from: { userId: 2, name: 'Marc', deviceId: '43', deviceName: 'Pixel', own: true }, text: 'Notiz' });
+    center.handleNotification({ seq: 2, id: 2, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', title: '', silent: true, data: { gatedrop: { send: own.id } } });
+    await svc.idle();
+    assert.match(FakeNotification.shown.at(-1).opts.toastXml, /Pixel hat dir einen Text geschickt/);
+    // direct transfers: own unless `own: false`; without `own` (older plugins) as before
+    assert.equal(svc._fromName({ id: '3', name: 'Lena', deviceName: 'Surface', own: false }, { device: true }), 'Lena');
+    assert.equal(svc._fromName({ id: '2', name: 'Marc', deviceName: 'Pixel', own: true }, { device: true }), 'Pixel');
+    assert.equal(svc._fromName({ id: '3', name: 'Lena', deviceName: 'Surface', own: null }, { device: true }), 'Surface');
+    assert.equal(svc._fromName({ id: '3', name: 'Lena', deviceName: 'Surface', own: null }), 'Lena');
+  });
+
+  it('a direct transfer from another person\'s device: the toast names the person', async () => {
+    const srv = await gatedropServer({ version: '1.2.0' });
+    cleanup.push(() => srv.close());
+    srv.state.targets.peopleDevices = [{ id: 'tok_lena', name: 'Lenas PC', platform: 'windows', online: true, direct: true, mode: 'pull', owner: { id: 3, name: 'Lena' } }];
+    let pushToB = null;
+    const sender = await setup(srv);
+    const sPort = sender.listener.status().addresses[0].port;
+    srv.state.direct = (body) => {
+      const entry = { deviceId: 'tok_lena', transferId: 'tr_pull_other', mode: 'pull', candidates: [`127.0.0.1:${sPort}`], key: KEY_B64(), ticket: TICKET() };
+      pushToB = { gatedrop: { transfer: entry.transferId, mode: 'pull', from: { userId: 2, name: 'Marc', deviceId: '42', deviceName: 'Laptop', own: false }, items: body.items.map((it) => ({ name: it.name, bytes: it.bytes })), candidates: entry.candidates, key: entry.key, ticket: entry.ticket } };
+      return [entry];
+    };
+    const receiver = await setup(srv, { nc: true });
+    const dir = tmpDir('gd-src-');
+    const prep = await sender.svc.prepareFiles([writeFile(dir, 'foto.jpg', crypto.randomBytes(5000))]);
+    await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['tok_lena'] } });
+    assert.equal(srv.state.sends.size, 1);
+    assert.equal([...srv.state.sends.values()][0].items[0].local, true);
+    const received = new Promise((r) => receiver.svc.once('received', r));
+    receiver.center.handleNotification({ seq: 1, id: 1, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', silent: true, title: '', data: pushToB });
+    const rec = await received;
+    await sender.svc.idle();
+    assert.equal(rec.from.own, false);
+    assert.match(FakeNotification.shown.at(-1).opts.toastXml, /Marc hat dir foto\.jpg geschickt/);
+  });
+});
+
 describe('GateDrop IPC', () => {
   it('checks arguments and forwards events', async () => {
     const handlers = {};
@@ -423,6 +521,8 @@ describe('GateDrop IPC', () => {
       send: async (m) => { calls.push(['send', m]); return { ok: true, id: '1' }; },
       showItem: () => { throw Object.assign(new Error('unknown file'), { code: 'invalid' }); },
       inbox: async (o) => ({ ok: true, ...o, items: [] }),
+      deviceAccess: async () => ({ ok: true, supported: true, receiveFrom: 'self' }),
+      setDeviceAccess: async (m) => { calls.push(['access', m]); return { ok: true, supported: true, receiveFrom: m }; },
     });
     registerGateDropHandlers((ch, fn) => { handlers[ch] = fn; }, {
       gatedrop: svc, log, getMainWindow: () => ({ webContents: { send: (ch, p) => sent.push([ch, p]) } }),
@@ -435,6 +535,11 @@ describe('GateDrop IPC', () => {
     assert.equal((await handlers['gatedrop:show']({}, { path: 'C:\\x' })).code, 'invalid');
     assert.equal((await handlers['gatedrop:pick']({})).code, 'cancelled');
     assert.deepEqual(await handlers['gatedrop:explorer']({}, { enabled: true }), { ok: true, enabled: false, supported: false });
+    assert.deepEqual(await handlers['gatedrop:access']({}), { ok: true, supported: true, receiveFrom: 'self' });
+    assert.equal((await handlers['gatedrop:access:set']({}, { receiveFrom: 'all' })).code, 'invalid');
+    assert.equal((await handlers['gatedrop:access:set']({}, null)).code, 'invalid');
+    assert.deepEqual(await handlers['gatedrop:access:set']({}, { receiveFrom: 'everyone' }), { ok: true, supported: true, receiveFrom: 'everyone' });
+    assert.deepEqual(calls.filter((c) => c[0] === 'access'), [['access', 'everyone']]);
     svc.emit('compose', { files: [1] });
     svc.emit('progress', { id: 'x' });
     assert.deepEqual(sent.map((s) => s[0]), ['gatedrop:compose', 'gatedrop:progress']);

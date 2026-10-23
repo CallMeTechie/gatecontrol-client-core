@@ -1204,6 +1204,13 @@
     "openFolder": "Open folder",
     "explorer": "Show under “Send to” in the Explorer",
     "explorerHint": "Right-click files › Send to › GateDrop",
+    "access": {
+      "title": "Who may send to this PC?",
+      "self": "Only me",
+      "everyone": "Everyone on this GateControl",
+      "selfHint": "Only your own devices can send files here.",
+      "everyoneHint": "Others see this PC when sharing and can send files straight here."
+    },
     "listening": "Ready to receive directly over Wi-Fi",
     "notListening": "Direct Wi-Fi receiving is off – files come through the server",
     "stale": "No connection – you see the last loaded state.",
@@ -1234,6 +1241,8 @@
       "note": "Note",
       "notePlaceholder": "Note to the recipients (optional)",
       "devices": "My devices",
+      "peopleDevices": "Other people's devices",
+      "deviceOf": "{{device}} · {{owner}}",
       "people": "People",
       "nasLink": "Drop off & link",
       "nas": "NAS: {{path}}",
@@ -1362,6 +1371,7 @@
     "sendTo": "Share with GateControl",
     "error": {
       "unavailable": "GateDrop cannot be reached right now.",
+      "target_unavailable": "A chosen device no longer takes sends from others – choose the targets again.",
       "network": "No connection to the server.",
       "timeout": "The server does not answer.",
       "too_large": "The file is too large.",

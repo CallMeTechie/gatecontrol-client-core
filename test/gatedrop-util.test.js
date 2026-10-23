@@ -91,7 +91,8 @@ describe('GateDrop answers', () => {
       links: { enabled: true },
       future: 1,
     });
-    assert.deepEqual(t.me, { id: null, name: null, canLink: true, canNas: false, deviceId: null });
+    assert.deepEqual(t.me, { id: null, name: null, canLink: true, canNas: false, deviceId: null, receiveFrom: null });
+    assert.deepEqual(t.peopleDevices, []);
     assert.deepEqual(t.people.map((p) => [p.id, p.kind, p.avatar]), [['8', 'user', '/avatars/annaAvatarFile0001.webp'], ['family', 'family', null], ['9', 'user', null]]);
     assert.deepEqual(t.devices, [{ id: 'tok_12', name: 'Pixel', platform: 'android', online: true, direct: true, mode: null, self: false }]);
     assert.deepEqual(t.limits.linkExpires, ['1h', '1d', '7d', 'once']);
@@ -100,12 +101,40 @@ describe('GateDrop answers', () => {
     assert.deepEqual(gd.normalizeTargets(null).people, []);
   });
 
+  it('targets (GateDrop 1.2.0): others\' open devices with their owner, this device\'s setting', () => {
+    const t = gd.normalizeTargets({
+      me: { id: 2, deviceId: '42', receiveFrom: 'everyone' },
+      devices: [{ id: '43', name: 'Pixel', platform: 'android', online: true }],
+      peopleDevices: [
+        { id: 51, name: 'Surface', platform: 'windows', online: false, direct: false, owner: { id: 3, name: 'Marc' } },
+        { id: '52', name: 'Handy', platform: 'android', online: true, direct: true, mode: 'push', owner: { id: 4 } },
+        { id: '53', name: 'no owner' },
+        { id: '43', name: 'own id again', owner: { id: 3, name: 'Marc' } },
+        { id: '51', name: 'twice', owner: { id: 3, name: 'Marc' } },
+      ],
+    });
+    assert.equal(t.me.receiveFrom, 'everyone');
+    assert.deepEqual(t.peopleDevices, [
+      { id: '51', name: 'Surface', platform: 'windows', online: false, direct: false, mode: null, owner: { id: '3', name: 'Marc' } },
+      { id: '52', name: 'Handy', platform: 'android', online: true, direct: true, mode: 'push', owner: { id: '4', name: null } },
+    ]);
+    assert.equal(gd.normalizeTargets({ me: { receiveFrom: 'all' } }).me.receiveFrom, null);
+    // GET / PUT device
+    assert.deepEqual(gd.normalizeDeviceAccess({ ok: true, device: { id: '42', receiveFrom: 'self' } }), { id: '42', receiveFrom: 'self' });
+    assert.equal(gd.normalizeDeviceAccess({ ok: true, device: { id: '42', receiveFrom: 'friends' } }), null);
+    assert.equal(gd.normalizeDeviceAccess(null), null);
+    // from.own: true (own account) / false (another person) / null (older plugin)
+    assert.equal(gd.normalizeSend({ id: 'x1', from: { userId: 3, name: 'Marc', own: false } }).from.own, false);
+    assert.equal(gd.normalizeSend({ id: 'x1', from: { userId: 2, name: 'Anna', deviceName: 'Pixel', own: true } }).from.own, true);
+    assert.equal(gd.normalizeSend({ id: 'x1', from: { userId: 2, name: 'Anna', own: 'yes' } }).from.own, null);
+  });
+
   it('pending (GateDrop 1.1.0): oldest first, expired dropped, delivery status `waiting` kept', () => {
     const view = (id, createdAt, extra = {}) => ({ id, role: 'sent', createdAt, expiresAt: null, expired: false, from: { userId: 2, name: 'Marc', avatarUrl: null, deviceId: '43', deviceName: 'Pixel' }, text: null, link: null, note: null, items: [], deliveries: [{ kind: 'device', target: '42', label: 'Laptop', status: 'waiting' }], ...extra });
     const list = gd.normalizePending({ ok: true, items: [view('b', '2026-10-22T10:00:00Z', { text: 'zwei' }), view('a', '2026-10-22T09:00:00Z', { link: 'https://x.example/' }), view('c', '2026-10-21T09:00:00Z', { expired: true }), { id: { bad: 1 } }] });
     assert.deepEqual(list.map((s) => s.id), ['a', 'b']);
     assert.equal(list[0].role, 'sent');
-    assert.deepEqual(list[0].from, { id: '2', name: 'Marc', deviceId: '43', deviceName: 'Pixel' });
+    assert.deepEqual(list[0].from, { id: '2', name: 'Marc', deviceId: '43', deviceName: 'Pixel', own: null });
     assert.equal(list[0].deliveries[0].status, 'waiting');
     assert.deepEqual(gd.normalizePending(null), []);
     assert.ok(gd.DELIVERY_STATUS.includes('waiting'));
@@ -143,7 +172,9 @@ describe('GateDrop answers', () => {
     assert.equal(gd.parsePushData({ gatedrop: { transfer: 'tr_9', mode: 'pull', key: 'x', ticket: 'y' } }), null);
     // the plugin's direct push: transfer + send, items null when too long
     const big = gd.parsePushData({ route: 'plg-gatecontrol-gatedrop', gatedrop: { transfer: 'a'.repeat(24), send: 'b'.repeat(24), mode: 'push', from: { userId: 2, name: 'Anna', deviceId: '42', deviceName: 'Pixel' }, items: null, itemCount: 20, candidates: ['192.168.1.20:47731'], key: KEY_B64, ticket: 'tkt_abcdefghijkl', expiresAt: '2026-10-21T12:00:00.000Z' } });
-    assert.deepEqual([big.kind, big.sendId, big.items.length, big.itemCount, big.from.deviceName, big.from.id], ['direct', 'b'.repeat(24), 0, 20, 'Pixel', '2']);
+    assert.deepEqual([big.kind, big.sendId, big.items.length, big.itemCount, big.from.deviceName, big.from.id, big.from.own], ['direct', 'b'.repeat(24), 0, 20, 'Pixel', '2', null]);
+    const other = gd.parsePushData({ gatedrop: { transfer: 'a'.repeat(24), mode: 'push', from: { userId: 3, name: 'Marc', deviceId: '51', deviceName: 'Surface', own: false }, items: [], candidates: [], key: KEY_B64, ticket: 'tkt_abcdefghijkl' } });
+    assert.deepEqual([other.from.name, other.from.own], ['Marc', false]);
     assert.deepEqual(gd.parsePushData({ gatedrop: { link: 'abcdefghijklmnopqrstuv', send: 'b'.repeat(24) } }), { kind: 'link', token: 'abcdefghijklmnopqrstuv', sendId: 'b'.repeat(24) });
     const tr = gd.transferOf({ transfer: { id: 'a'.repeat(24), sendId: 'b'.repeat(24), side: 'receiver', mode: 'pull', status: 'open', from: { userId: 2, deviceId: '42', deviceName: 'Pixel' }, candidates: [], key: KEY_B64, ticket: 'tkt_abcdefghijkl', items: [{ index: 0, name: 'a.jpg', bytes: 3, mime: 'image/jpeg' }] } }, 'a'.repeat(24));
     assert.deepEqual([tr.transferId, tr.sendId, tr.side, tr.items.length], ['a'.repeat(24), 'b'.repeat(24), 'receiver', 1]);

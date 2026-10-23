@@ -36,6 +36,8 @@ const INBOX_KINDS = Object.freeze(['received', 'sent', 'links']);
 // waiting (GateDrop 1.1.0): the target device was offline, the send waits in its `pending` list.
 const DELIVERY_STATUS = Object.freeze(['pending', 'waiting', 'direct', 'delivered', 'opened', 'failed', 'expired']);
 const PLATFORMS = Object.freeze(['android', 'windows', 'ios', 'web']);
+// Who may send to this device (GateDrop 1.2.0, GET/PUT device): only its owner, or every account.
+const RECEIVE_FROM = Object.freeze(['self', 'everyone']);
 
 const TRANSFER_ID_RE = /^[A-Za-z0-9_-]{4,100}$/;
 const TICKET_RE = /^[A-Za-z0-9_\-+/=.~]{8,512}$/;
@@ -243,7 +245,34 @@ function parseCandidate(v) {
 
 // ── Answers of the plugin ──────────────────────────────────
 
-/** GET targets → { me, people, devices, nas, links, messenger, limits, storage } (unknown entries dropped). */
+/** One device of GET targets (own or another person's) → { id, name, platform, online, direct, mode, self } or null. */
+function deviceOf(d) {
+  const o = obj(d);
+  const id = o && idOf(o.id);
+  if (!id) return null;
+  return {
+    id,
+    name: str(o.name, 80) || id,
+    platform: PLATFORMS.includes(o.platform) ? o.platform : 'unknown',
+    online: bool(o.online),
+    direct: bool(o.direct),
+    mode: o.mode === 'push' || o.mode === 'pull' ? o.mode : null,
+    self: bool(o.self),
+  };
+}
+
+/** GET / PUT device (GateDrop 1.2.0) → { id, receiveFrom } or null when the answer has no known mode. */
+function normalizeDeviceAccess(raw) {
+  const r = obj(raw) || {};
+  const d = obj(r.device) || r;
+  if (!RECEIVE_FROM.includes(d.receiveFrom)) return null;
+  return { id: idOf(d.id), receiveFrom: d.receiveFrom };
+}
+
+/**
+ * GET targets → { me, people, devices, peopleDevices, nas, links, messenger, limits, storage }
+ * (unknown entries dropped; peopleDevices: [{ …device, owner: { id, name } }], [] before GateDrop 1.2.0).
+ */
 function normalizeTargets(raw) {
   const r = obj(raw) || {};
   const me = obj(r.me) || {};
@@ -261,20 +290,16 @@ function normalizeTargets(raw) {
       kind: id === 'family' || o.kind === 'family' ? 'family' : 'user',
     });
   }
-  const devices = [];
-  for (const d of arr(r.devices)) {
-    const o = obj(d);
-    const id = o && idOf(o.id);
-    if (!id) continue;
-    devices.push({
-      id,
-      name: str(o.name, 80) || id,
-      platform: PLATFORMS.includes(o.platform) ? o.platform : 'unknown',
-      online: bool(o.online),
-      direct: bool(o.direct),
-      mode: o.mode === 'push' || o.mode === 'pull' ? o.mode : null,
-      self: bool(o.self),
-    });
+  const devices = arr(r.devices).map((d) => deviceOf(d)).filter(Boolean);
+  // Other people's devices open for everyone (GateDrop 1.2.0): sent to like own ones (`to.devices`).
+  const peopleDevices = [];
+  for (const d of arr(r.peopleDevices)) {
+    const dev = deviceOf(d);
+    const owner = dev && obj(d.owner);
+    const ownerId = owner && idOf(owner.id);
+    if (!ownerId || devices.some((x) => x.id === dev.id) || peopleDevices.some((x) => x.id === dev.id)) continue;
+    delete dev.self;
+    peopleDevices.push({ ...dev, owner: { id: ownerId, name: str(owner.name, 80) || null } });
   }
   const nas = [];
   for (const n of arr(r.nas)) {
@@ -289,9 +314,13 @@ function normalizeTargets(raw) {
   const posOr = (v, def, max) => { const n = nonNegInt(v); return n !== null && n > 0 ? Math.min(n, max) : def; };
   const storage = obj(r.storage);
   return {
-    me: { id: idOf(me.id), name: str(me.name, 80) || null, canLink: bool(me.canLink), canNas: bool(me.canNas), deviceId: idOf(me.deviceId) },
+    me: {
+      id: idOf(me.id), name: str(me.name, 80) || null, canLink: bool(me.canLink), canNas: bool(me.canNas), deviceId: idOf(me.deviceId),
+      receiveFrom: RECEIVE_FROM.includes(me.receiveFrom) ? me.receiveFrom : null,
+    },
     people,
     devices,
+    peopleDevices,
     nas,
     links: { enabled: bool(links.enabled) },
     messenger: bool(r.messenger),
@@ -389,9 +418,13 @@ function normalizeSendResult(raw) {
   };
 }
 
-/** Sender of a send / push: { id, name, deviceId, deviceName } */
+/**
+ * Sender of a send / push: { id, name, deviceId, deviceName, own }. own (GateDrop 1.2.0):
+ * true — from the viewer's own account (name it by the device), false — from another
+ * person (name them), null — an older plugin that does not say.
+ */
 function personOf(v) {
-  if (typeof v === 'string') return { id: null, name: str(v, 80), deviceId: null, deviceName: null };
+  if (typeof v === 'string') return { id: null, name: str(v, 80), deviceId: null, deviceName: null, own: null };
   const o = obj(v);
   if (!o) return null;
   return {
@@ -399,6 +432,7 @@ function personOf(v) {
     name: str(o.name, 80) || null,
     deviceId: idOf(o.deviceId),
     deviceName: str(o.deviceName, 80) || null,
+    own: typeof o.own === 'boolean' ? o.own : null,
   };
 }
 
@@ -582,10 +616,10 @@ function isGateDropPush(n) {
 module.exports = {
   PLUGIN_ID, APP_ROUTE, TOPIC_PREFIX, API_BASE, MEDIA_PATH, PLUGINS_PATH,
   PORT, BLOCK_SIZE, TAG_SIZE, MAX_FILE_BYTES, MAX_ITEMS, MAX_TEXT, MAX_NOTE, MAX_LINK,
-  RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS,
+  RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS, RECEIVE_FROM,
   idOf, nonNegInt, timeOf, isTransferId, isTicket, isMediaId, isLinkToken, decodeKey,
   encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, parseCandidate, ipv4ToInt,
-  normalizeTargets, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
+  normalizeTargets, normalizeDeviceAccess, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
   normalizeInbox, normalizePending, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
 };

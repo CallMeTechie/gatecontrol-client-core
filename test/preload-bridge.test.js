@@ -61,7 +61,7 @@ describe('createBridgeApi', () => {
       'chat:suggest', 'chat:to-calendar', 'chat:to-list', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
       'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test',
-      'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:inbox',
+      'gatedrop:access', 'gatedrop:access:set', 'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:inbox',
       'gatedrop:link:end', 'gatedrop:open', 'gatedrop:open-link', 'gatedrop:pick', 'gatedrop:prepare', 'gatedrop:send',
       'gatedrop:send:get', 'gatedrop:send:save', 'gatedrop:show', 'gatedrop:status', 'gatedrop:targets',
       'killswitch:toggle', 'locale:get',
