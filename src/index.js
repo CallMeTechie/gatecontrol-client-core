@@ -53,6 +53,7 @@ const schoolUtil = require('./utils/school');
 const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
 const gatedropShell = require('./utils/gatedrop-shell');
+const vaultCrypto = require('./utils/vault-crypto');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -134,6 +135,7 @@ module.exports = {
   notifyRoutes,
   gatedropUtil,
   gatedropShell,
+  vaultCrypto,
 
   // Support bundle
   collectSupportBundle,
