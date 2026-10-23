@@ -29,6 +29,7 @@ const SchoolService = require('./services/school');
 const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
+const VaultService = require('./services/vault');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -54,6 +55,7 @@ const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
 const gatedropShell = require('./utils/gatedrop-shell');
 const vaultCrypto = require('./utils/vault-crypto');
+const vaultUtil = require('./utils/vault');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -99,6 +101,7 @@ module.exports = {
   GateDropService,
   GateDropApi,
   GateDropListener,
+  VaultService,
 
   // Utils
   validation,
@@ -136,6 +139,7 @@ module.exports = {
   gatedropUtil,
   gatedropShell,
   vaultCrypto,
+  vaultUtil,
 
   // Support bundle
   collectSupportBundle,

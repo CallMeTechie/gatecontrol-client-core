@@ -22,6 +22,7 @@ const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
+const { registerVaultHandlers } = require('./vault-handlers');
 const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -128,6 +129,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.gatedrop] - GateDropService (opt-in, "GateDrop"): registers
  *   the gatedrop:* channels (ipc/gatedrop-handlers.js), forwards its events to
  *   the main window and resets it after a successful server:setup.
+ * @param {object} [ctx.vault] - VaultService (opt-in, "Vault"): registers the
+ *   vault:* channels (ipc/vault-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @returns {string[]} the channels registered via ipcMain.handle
@@ -150,6 +154,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
   const gatedropSvc = ctx.gatedrop || null;
+  const vaultSvc = ctx.vault || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -185,6 +190,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // GateDrop: availability, targets and lists belong to the old server.
     if (gatedropSvc) {
       Promise.resolve().then(() => gatedropSvc.resetForNewServer()).catch((err) => log.warn(`GateDrop reset failed: ${err.message}`));
+    }
+    // Vault: lock; the copy, availability and account belong to the old server / login.
+    if (vaultSvc) {
+      Promise.resolve().then(() => vaultSvc.resetForNewServer()).catch((err) => log.warn(`Vault reset failed: ${err.message}`));
     }
   }
 
@@ -614,6 +623,9 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (gatedropSvc) {
     registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null });
   }
+
+  // ── Vault (plugin gatecontrol-vault, opt-in) ────────────
+  if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

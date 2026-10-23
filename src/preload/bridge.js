@@ -302,6 +302,67 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onNavigate:  (cb) => subscribe('gatedrop:navigate', cb),
     },
 
+    // ── Vault (plugin gatecontrol-vault, password manager) ─
+    // Served when the app passes a VaultService to registerBaseHandlers
+    // (ipc/vault-handlers.js lists arguments and answers). Lists carry no
+    // secrets; entry() / history() / copy() are the explicit requests.
+    vault: {
+      status:           () => ipcRenderer.invoke('vault:status'),
+      check:            () => ipcRenderer.invoke('vault:check'),
+      // setup in two steps: setup → { recoveryKey } (show it), confirmSetup once kept
+      setup:            (password, personalName) => ipcRenderer.invoke('vault:setup', { password, personalName }),
+      confirmSetup:     () => ipcRenderer.invoke('vault:setup:confirm'),
+      cancelSetup:      () => ipcRenderer.invoke('vault:setup:cancel'),
+      unlock:           (password) => ipcRenderer.invoke('vault:unlock', { password }),
+      unlockRemembered: () => ipcRenderer.invoke('vault:unlockRemembered'),
+      lock:             () => ipcRenderer.invoke('vault:lock'),
+      recover:          (recoveryKey) => ipcRenderer.invoke('vault:recover', { recoveryKey }),
+      completeRecovery: (password) => ipcRenderer.invoke('vault:completeRecovery', { password }),
+      changePassword:   (current, password) => ipcRenderer.invoke('vault:changePassword', { current, password }),
+      deleteAccount:    (confirm) => ipcRenderer.invoke('vault:deleteAccount', { confirm }),
+      sync:             () => ipcRenderer.invoke('vault:sync'),
+      // opts: { vaultId?, trash? }
+      entries:          (opts) => ipcRenderer.invoke('vault:entries', opts && typeof opts === 'object' ? { vaultId: opts.vaultId, trash: opts.trash === true } : {}),
+      entry:            (id, opts) => ipcRenderer.invoke('vault:entry', { id, emergencyId: opts && opts.emergencyId }),
+      // { domain } (web address) or { app } → entries of that site, favourites first
+      match:            (opts) => ipcRenderer.invoke('vault:match', opts && typeof opts === 'object' ? { domain: opts.domain, app: opts.app } : {}),
+      // { id?, vaultId, data: { type, title, fields, … } }
+      save:             (entry) => ipcRenderer.invoke('vault:save', entry && typeof entry === 'object' ? { id: entry.id, vaultId: entry.vaultId, data: entry.data } : {}),
+      trash:            (id) => ipcRenderer.invoke('vault:trash', { id }),
+      restore:          (id) => ipcRenderer.invoke('vault:restore', { id }),
+      purge:            (id) => ipcRenderer.invoke('vault:purge', { id }),
+      history:          (id) => ipcRenderer.invoke('vault:history', { id }),
+      vaults:           () => ipcRenderer.invoke('vault:vaults'),
+      createVault:      (name) => ipcRenderer.invoke('vault:createVault', { name }),
+      renameVault:      (id, name) => ipcRenderer.invoke('vault:renameVault', { id, name }),
+      deleteVault:      (id) => ipcRenderer.invoke('vault:deleteVault', { id }),
+      people:           () => ipcRenderer.invoke('vault:people'),
+      addMember:        (vaultId, userId, role) => ipcRenderer.invoke('vault:addMember', { vaultId, userId, role }),
+      setRole:          (vaultId, userId, role) => ipcRenderer.invoke('vault:setRole', { vaultId, userId, role }),
+      removeMember:     (vaultId, userId) => ipcRenderer.invoke('vault:removeMember', { vaultId, userId }),
+      emergency:        () => ipcRenderer.invoke('vault:emergency'),
+      emergencyAdd:     (userId, waitHours) => ipcRenderer.invoke('vault:emergencyAdd', { userId, waitHours }),
+      emergencyRemove:  (id) => ipcRenderer.invoke('vault:emergencyRemove', { id }),
+      // step: 'request' | 'deny' | 'approve'
+      emergencyStep:    (id, step) => ipcRenderer.invoke('vault:emergencyStep', { id, step }),
+      emergencyOpen:    (id) => ipcRenderer.invoke('vault:emergencyOpen', { id }),
+      importParse:      (text, opts) => ipcRenderer.invoke('vault:import:parse', { text, vaultId: opts && opts.vaultId }),
+      importSave:       (vaultId, opts) => ipcRenderer.invoke('vault:import:save', { vaultId, skipDuplicates: !(opts && opts.skipDuplicates === false) }),
+      generate:         (opts) => ipcRenderer.invoke('vault:generate', opts && typeof opts === 'object' ? opts : {}),
+      strength:         (password) => ipcRenderer.invoke('vault:strength', { password }),
+      // { id, emergencyId? } of an entry, or { uri } (otpauth:// or a base32 secret)
+      totp:             (arg) => ipcRenderer.invoke('vault:totp', arg && typeof arg === 'object' ? arg : {}),
+      // { id, field, emergencyId? } or { text }; cleared after 30 s when unchanged
+      copy:             (arg) => ipcRenderer.invoke('vault:copy', arg && typeof arg === 'object' ? arg : {}),
+      settings:         () => ipcRenderer.invoke('vault:settings:get'),
+      // { autoLockMinutes?: 0|1|5|15|60, remember?: boolean }
+      setSettings:      (patch) => ipcRenderer.invoke('vault:settings:set', patch && typeof patch === 'object' ? patch : {}),
+      touch:            () => ipcRenderer.invoke('vault:touch'),
+      clearNotices:     () => ipcRenderer.invoke('vault:notices:clear'),
+      onState:          (cb) => subscribe('vault:state', cb),
+      onPush:           (cb) => subscribe('vault:push', cb),
+    },
+
     // ── Shell ────────────────────────────────────────────
     shell: {
       openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),

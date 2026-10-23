@@ -32,11 +32,14 @@ const AVATAR_MAX = 2 * 1024 * 1024;
 const NOTICE_IMAGE_MAX = 1024 * 1024;
 
 class MessengerError extends Error {
-  constructor(message, { status = null, code = 'failed' } = {}) {
+  constructor(message, { status = null, code = 'failed', body = null } = {}) {
     super(message);
     this.name = 'MessengerError';
     this.status = status;
     this.code = code;
+    // The refusal's JSON body (extra fields such as Vault's `current` / `account` / `left`); not enumerable, so
+    // errors still compare and log as before.
+    if (body && typeof body === 'object') Object.defineProperty(this, 'body', { value: body, enumerable: false });
   }
 
   /** Network trouble, timeouts, 5xx and 429: worth another try later. */
@@ -58,7 +61,7 @@ function toMessengerError(err) {
     const code = data && typeof data === 'object' && typeof data.code === 'string' ? data.code
       : (data && typeof data === 'object' && typeof data.error === 'string' && /^[a-z_]{2,40}$/.test(data.error) ? data.error : `http_${res.status}`);
     const message = data && typeof data === 'object' && typeof data.error === 'string' ? data.error : `HTTP ${res.status}`;
-    return new MessengerError(message, { status: res.status, code });
+    return new MessengerError(message, { status: res.status, code, body: data && typeof data === 'object' ? data : null });
   }
   const c = err && err.code;
   if (c === 'ECONNABORTED' || c === 'ETIMEDOUT' || (err && /timeout/i.test(String(err.message)))) {
@@ -96,7 +99,7 @@ class MessengerApi {
       const res = await client.request({ method, url: path, data: body, params, timeout });
       const data = res.data;
       if (data && typeof data === 'object' && data.ok === false) {
-        throw new MessengerError(typeof data.error === 'string' ? data.error : 'refused', { status: res.status, code: data.code || 'failed' });
+        throw new MessengerError(typeof data.error === 'string' ? data.error : 'refused', { status: res.status, code: data.code || 'failed', body: data });
       }
       return data && typeof data === 'object' ? data : {};
     } catch (err) {
