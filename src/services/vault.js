@@ -1319,7 +1319,7 @@ class VaultService extends EventEmitter {
     try {
       const v = vault.parseVault((await this._req('POST', 'vaults', { body: { id, nameEnc: vc.encryptName(key, id, n), sealedKey: vc.sealKey(key, keys.publicKey) } })).vault);
       if (!v) throw fail('invalid_answer');
-      this._putKey(id, v.keyRev, key);
+      if (this._keys === keys) this._putKey(id, v.keyRev, key);
       return this._applyVault(v);
     } finally {
       vc.wipe(key);
@@ -1435,13 +1435,15 @@ class VaultService extends EventEmitter {
     const keys = this._keys;
     let v = this._vault(vaultId);
     if (!keys || !v) return false;
+    // lock() zeroes the keys this run holds (newKey too): after any await, stop unless still the same unlock
+    const alive = () => this._keys === keys;
     let newRev;
     if (v.pending && this._keysOf(v).has(v.pending.keyRev)) {
       newRev = v.pending.keyRev;
     } else {
       const people = vault.parsePeople(await this._req('GET', 'people'));
       const me = this._myUserId();
-      if (!people || me == null) return false;
+      if (!people || me == null || !alive()) return false;
       const pks = new Map(people.map((p) => [p.id, p.publicKey]));
       const key = vc.newVaultKey();
       try {
@@ -1454,6 +1456,7 @@ class VaultService extends EventEmitter {
         newRev = v.keyRev + 1;
         const nv = vault.parseVault((await this._req('POST', `vaults/${this._seg(vaultId)}/rekey/start`, { body: { keyRev: newRev, keys: sealed } })).vault);
         if (!nv) throw fail('invalid_answer');
+        if (!alive()) return false;
         this._putKey(vaultId, newRev, key);
         this._applyVault(nv);
         v = nv;
@@ -1464,6 +1467,7 @@ class VaultService extends EventEmitter {
     const newKey = this._keysOf(v).get(newRev);
     if (!newKey) return false;
     for (let round = 0; round < 10; round++) {
+      if (!alive()) return false;
       const left = [...this._state.items.values()].filter((it) => it.vaultId === vaultId && it.state !== 'purged' && it.keyRev !== newRev);
       if (!left.length) break;
       const old = this._keysOf(v);
@@ -1482,12 +1486,13 @@ class VaultService extends EventEmitter {
         const results = vault.parseSaveResults(await this._req('POST', 'items', { body: { items: batch, device: this.deviceName } }));
         if (!results) throw fail('invalid_answer');
         this._applyResults(batch, results, { rekey: true });
+        if (!alive()) return false;
       }
       // conflicts brought newer versions: fetch them and go again
       if (!(await this._pull(null, this._state.seq))) return false;
       v = this._vault(vaultId) || v;
     }
-    const cur = this._keysOf(v).get(v.keyRev);
+    const cur = alive() ? this._keysOf(v).get(v.keyRev) : null;
     if (!cur) return false;
     let name;
     try { name = vc.decryptName(cur, vaultId, v.nameEnc); } catch { return false; }
