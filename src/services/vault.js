@@ -1211,18 +1211,17 @@ class VaultService extends EventEmitter {
     if (!v) throw fail('not_found');
     if (!vault.canWrite(v)) throw fail('read_only');
     await this._ready;
-    let s = this._state;
-    let n = 0;
+    // new ids each: appended in one go (queueSave per entry scans the outbox — quadratic for a big import)
+    const saves = [];
     for (const raw of Array.isArray(list) ? list : []) {
       const d = vault.normalizeEntry(raw);
       if (!d) continue;
       let save = null;
       try { save = this._encryptSave(v, vc.newId(), 0, d); } catch { /* too large: left out */ }
-      if (!save) continue;
-      s = vault.queueSave(s, save);
-      n++;
+      if (save) saves.push(save);
     }
-    this._setState(s);
+    const n = saves.length;
+    this._setState({ ...this._state, outbox: [...this._state.outbox, ...saves] });
     this._rebuild();
     this._emit();
     this.syncSoon();
