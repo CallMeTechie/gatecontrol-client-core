@@ -257,10 +257,12 @@ const canManage = (v) => !!v && v.role === 'manage';
 /**
  * The copy of the server's Vault data — encrypted, exactly as the server sent
  * it — and the outbox of saves not yet confirmed:
- * { account, known, seq, vaults: [Vault], items: Map<id, Item>, outbox: [SaveItem], lastSyncMs }.
+ * { account, known, seq, vaults: [Vault], items: Map<id, Item>, outbox: [SaveItem], lastSyncMs, fresh: [vault id] }.
+ * `fresh`: vaults that appeared after the first sync (shared with the person since) whose older entries still have
+ * to be fetched (vault=<id>&since=0) — kept in the copy so an interrupted sync does not skip them.
  */
 function emptyState() {
-  return { account: null, known: false, seq: 0, vaults: [], items: new Map(), outbox: [], lastSyncMs: 0 };
+  return { account: null, known: false, seq: 0, vaults: [], items: new Map(), outbox: [], lastSyncMs: 0, fresh: [] };
 }
 
 /**
@@ -271,6 +273,10 @@ function emptyState() {
  */
 function mergePage(state, page, nowMs) {
   const vaultIds = new Set(page.vaults.map((v) => v.id));
+  const had = new Set(state.vaults.map((v) => v.id));
+  // after the first full sync (seq > 0) a new vault's older entries are not in `since` pages: remember to fetch them
+  const added = state.seq > 0 ? page.vaults.filter((v) => !had.has(v.id)).map((v) => v.id) : [];
+  const fresh = [...new Set([...(state.fresh || []), ...added])].filter((id) => vaultIds.has(id));
   const items = new Map();
   for (const [id, it] of state.items) if (vaultIds.has(it.vaultId)) items.set(id, it);
   const purged = new Set();
@@ -292,6 +298,7 @@ function mergePage(state, page, nowMs) {
     items,
     outbox: state.outbox.filter((o) => vaultIds.has(o.vaultId) && !purged.has(o.id)),
     lastSyncMs: nowMs,
+    fresh,
   };
 }
 
@@ -314,6 +321,7 @@ function stateToJson(state, owner) {
     vaults: state.vaults,
     items: [...state.items.values()],
     outbox: state.outbox,
+    fresh: state.fresh || [],
   };
 }
 
@@ -330,6 +338,7 @@ function stateFromJson(o, owner) {
     items,
     outbox: Array.isArray(o.outbox) ? o.outbox.map(parseSaveItem).filter(Boolean) : [],
     lastSyncMs: long(o, 'lastSyncMs') || 0,
+    fresh: Array.isArray(o.fresh) ? o.fresh.filter(isId) : [],
   };
 }
 

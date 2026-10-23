@@ -1002,11 +1002,13 @@ class VaultService extends EventEmitter {
       this._setState({ ...this._state, account: a.account, known: true });
     }
     await this._flushLocked();
-    const before = new Set(this._state.vaults.map((v) => v.id));
     if (!(await this._pull(null, this._state.seq))) return;
-    // a vault shared with this person since: all its entries (they are older than our counter)
-    for (const v of this._state.vaults) {
-      if (before.size && !before.has(v.id) && !(await this._pull(v.id, 0))) return;
+    // a vault shared with this person since: all its entries (they are older than our counter). mergePage keeps
+    // such vaults in `fresh` (in the copy) until fetched, so an interrupted sync or a restart does not skip them.
+    for (const id of [...this._state.fresh]) {
+      if (!this._vault(id)) continue;
+      if (!(await this._pull(id, 0))) return;
+      this._setState({ ...this._state, fresh: this._state.fresh.filter((x) => x !== id) });
     }
     this._rebuild();
     // the outbox again: saves made while fetching, saves to encrypt again with a new key
