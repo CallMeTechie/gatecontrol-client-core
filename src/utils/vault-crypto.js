@@ -9,6 +9,7 @@
 //   vault key     32 B random per vault and key generation, sealed (crypto_box_seal) to each member's public key
 //   wrapped       0x01 ‖ nonce (24 B) ‖ XChaCha20-Poly1305-IETF(plaintext, AD) — the AD binds it to its place
 //   encoding      base64url without padding
+//   safety number SHA-256("gcv1:fingerprint:" ‖ public key) → 8 groups of 5 digits, compared between two devices
 //
 // Everything is synchronous once ready() resolved; Argon2id takes ~0.3–1 s at 64 MiB — call it off the UI thread.
 
@@ -326,6 +327,20 @@ function decryptItem(vaultKey, item) {
   return obj;
 }
 
+// ── safety number ───────────────────────────────────────────
+
+/**
+ * A person's safety number: 40 digits in 8 groups of 5 from SHA-256("gcv1:fingerprint:" ‖ public key), each group
+ * a 4-byte big-endian word mod 100000. Shown on their own device (Vault › Profil) and next to them when sharing or
+ * naming a trusted person — equal numbers mean the server handed out the right key.
+ */
+function safetyNumber(publicKey) {
+  const h = require('node:crypto').createHash('sha256').update(utf8('gcv1:fingerprint:')).update(bytes(publicKey, 32, 'publicKey')).digest();
+  const groups = [];
+  for (let i = 0; i < 8; i++) groups.push(String(h.readUInt32BE(i * 4) % 100000).padStart(5, '0'));
+  return groups.join(' ');
+}
+
 // ── emergency access ────────────────────────────────────────
 
 /** POST emergency's sealedKey: the grantor's user key sealed to the trusted person's public key. */
@@ -350,7 +365,7 @@ module.exports = {
   b64, unb64, newId, wrap, unwrap, seal, openSealed,
   newKdf, masterKey, formatRecoveryKey, parseRecoveryKey,
   createAccount, unlock, unlockWithRecovery, changePassword, recover,
-  newVaultKey, sealKey, vaultKeys, encryptName, decryptName,
+  newVaultKey, sealKey, vaultKeys, encryptName, decryptName, safetyNumber,
   encryptItem, encryptItemBytes, decryptItem,
   sealForEmergency, openEmergency, wipe,
 };

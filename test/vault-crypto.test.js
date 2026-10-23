@@ -41,6 +41,11 @@ describe('vault-crypto: fixed vectors', () => {
     assert.equal(toHex(vc.parseRecoveryKey(recoveryKey.text)), recoveryKey.key);
   });
 
+  it('safety number', () => {
+    assert.equal(vc.safetyNumber(hex(V.safetyNumber.publicKey)), V.safetyNumber.text);
+    assert.match(V.safetyNumber.text, /^(\d{5} ){7}\d{5}$/);
+  });
+
   it('a sealed box from the vector opens with the seeded key pair', () => {
     const s = V.sealed;
     const pair = sodium.crypto_box_seed_keypair(hex(s.seed));
@@ -125,6 +130,10 @@ describe('vault-crypto: the vectors from a second implementation (OpenSSL)', () 
     const pub = crypto.createPublicKey(priv).export({ format: 'der', type: 'spki' }).subarray(-32);
     assert.deepEqual(pub, unb64(a.body.publicKey));
     assert.equal(pub.toString('hex'), V.sealed.publicKey);
+    // the safety number, by hand
+    const h = crypto.createHash('sha256').update('gcv1:fingerprint:').update(hex(V.safetyNumber.publicKey)).digest();
+    const groups = Array.from({ length: 8 }, (_, i) => String(h.readUInt32BE(i * 4) % 100000).padStart(5, '0'));
+    assert.equal(groups.join(' '), V.safetyNumber.text);
   });
 });
 

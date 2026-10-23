@@ -47,6 +47,10 @@
     "key": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
     "sealed": "8OGcqkwZN0bxvarDHgM5nBMViPEBuXc7aJcf6kCGoAuVlLQwEFXcUIEY-sCk6Y9PsTEf5IjqcgxeTcaYH4atAmuFKsfpR4Hs3jiHUrdClJI"
   },
+  "safetyNumber": {
+    "publicKey": "5730800ab340fcb18ce5111eda9d705f91388b41e4544cbd103ba5942db2233e",
+    "text": "94888 53954 83918 91221 46887 80530 87508 28947"
+  },
   "account": {
     "password": "Korrekt Pferd Batterie Heftklammer – Grüße",
     "kdf": {
