@@ -366,7 +366,10 @@ function normalizeEntry(input) {
   if (input.v !== undefined && input.v !== 1) return null;
   if (!ITEM_TYPES.includes(input.type)) return null;
   const out = {};
-  for (const [k, v] of Object.entries(input)) if (!ENTRY_KNOWN.has(k) && v !== undefined) out[k] = clone(v);
+  // defineProperty: a key "__proto__" (JSON of another member's app) stays a kept key instead of setting the prototype
+  for (const [k, v] of Object.entries(input)) {
+    if (!ENTRY_KNOWN.has(k) && v !== undefined) Object.defineProperty(out, k, { value: clone(v), enumerable: true, writable: true, configurable: true });
+  }
   out.v = 1;
   out.type = input.type;
   out.title = typeof input.title === 'string' ? input.title : '';
