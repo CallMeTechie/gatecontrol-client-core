@@ -752,7 +752,9 @@ class VaultService extends EventEmitter {
 
   _accountGone() {
     const had = !!this._state.account;
-    this.lock('account');
+    // nothing to lock when there never was an account (e.g. a check while the person is setting up: that setup
+    // and the recovery key on screen must stay)
+    if (had) this.lock('account');
     this._setState({ ...vault.emptyState(), known: true });
     if (had && this._owner && this.dir) {
       fs.promises.rm(this._rememberFile(this._owner), { force: true }).catch(() => {});
