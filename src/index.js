@@ -29,7 +29,6 @@ const SchoolService = require('./services/school');
 const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
-const VaultService = require('./services/vault');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -54,7 +53,6 @@ const schoolUtil = require('./utils/school');
 const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
 const gatedropShell = require('./utils/gatedrop-shell');
-const vaultCrypto = require('./utils/vault-crypto');
 const vaultUtil = require('./utils/vault');
 
 // ── Shared validators ───────────────────────────────────────
@@ -101,7 +99,6 @@ module.exports = {
   GateDropService,
   GateDropApi,
   GateDropListener,
-  VaultService,
 
   // Utils
   validation,
@@ -138,7 +135,6 @@ module.exports = {
   notifyRoutes,
   gatedropUtil,
   gatedropShell,
-  vaultCrypto,
   vaultUtil,
 
   // Support bundle
@@ -161,3 +157,9 @@ module.exports = {
   // i18n
   i18n,
 };
+
+// Vault loads libsodium (WASM): only when used, not in every process that requires the core (renderer preloads).
+Object.defineProperties(module.exports, {
+  VaultService: { enumerable: true, get: () => require('./services/vault') },
+  vaultCrypto: { enumerable: true, get: () => require('./utils/vault-crypto') },
+});

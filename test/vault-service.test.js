@@ -543,6 +543,17 @@ describe('VaultService: auto-lock, clipboard, generator, import, emergency, push
     assert.equal(clip.text, '');
   });
 
+  it('a check while setting up keeps the setup (there was no account to lock)', async () => {
+    const s = device(vaultServer(), 2, 'pc');
+    await s.check();
+    const { recoveryKey } = await s.setup({ password: PW });
+    assert.ok(recoveryKey);
+    await s.check();
+    assert.equal(s.status().setupPending, true);
+    await s.confirmSetup();
+    assert.equal(s.status().account, 'ready');
+  });
+
   it('a setup not yet confirmed does not survive a lock', async () => {
     const s = device(vaultServer(), 2, 'pc');
     await s.check();
