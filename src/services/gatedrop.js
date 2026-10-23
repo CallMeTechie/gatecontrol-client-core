@@ -31,6 +31,11 @@
  *     whichever way it arrives first; a failed download stays unhandled and
  *     the next poll tries again (only the items still missing).
  *   - Lists: inbox (Empfangen / Gesendet / Links), end a link.
+ *   - Who may send to this PC (GateDrop 1.2.0, GET/PUT device): only its
+ *     owner ("Nur ich", default) or everyone of this GateControl ("Alle im
+ *     GateControl-Netz"). Others' devices open for everyone come with the
+ *     targets (`peopleDevices`) and are sent to like own devices; a send from
+ *     another person names that person in the toast, an own device its name.
  *
  * Events: 'state' (status()), 'compose' ({ files, rejected }) open the send
  * dialog, 'progress' ({ id, dir, phase, sent, total, name }), 'received'
@@ -435,6 +440,41 @@ class GateDropService extends EventEmitter {
     return { ok: true, kind: k, items: out, stale };
   }
 
+  /**
+   * Who may send to this PC (GET device, GateDrop 1.2.0) →
+   * { ok, supported, receiveFrom: 'self' | 'everyone' | null }. supported false:
+   * a plugin older than 1.2.0 (404) or a token GateDrop knows no app
+   * installation of (409 no_device) — the setting is not offered then.
+   */
+  async deviceAccess() {
+    this._ensureScope();
+    if (!this.available()) return { ok: true, supported: false, receiveFrom: null };
+    try {
+      const d = await this.api.getDevice();
+      this._setReceiveFrom(d.receiveFrom);
+      return { ok: true, supported: true, receiveFrom: d.receiveFrom };
+    } catch (err) {
+      if (err && (err.status === 404 || (err.status === 409 && err.code === 'no_device'))) return { ok: true, supported: false, receiveFrom: null };
+      throw err;
+    }
+  }
+
+  /** PUT device { receiveFrom } → { ok, supported: true, receiveFrom } */
+  async setDeviceAccess(mode) {
+    if (!gd.RECEIVE_FROM.includes(mode)) throw new GateDropError('invalid mode', { code: 'invalid' });
+    if (!this.available()) throw new GateDropError('GateDrop is not available', { code: 'unavailable' });
+    this._ensureScope();
+    const d = await this.api.putDevice(mode);
+    this._setReceiveFrom(d.receiveFrom);
+    this.log.info(`GateDrop: this PC takes sends from ${d.receiveFrom === 'everyone' ? 'everyone' : 'its owner only'}`);
+    return { ok: true, supported: true, receiveFrom: d.receiveFrom };
+  }
+
+  _setReceiveFrom(mode) {
+    const me = this._targets && this._targets.data && this._targets.data.me;
+    if (me) me.receiveFrom = mode;
+  }
+
   async sendDetails(id) {
     return { ok: true, send: await this.api.send(id) };
   }
@@ -572,6 +612,11 @@ class GateDropService extends EventEmitter {
         result = await this.api.createSend(body);
       }
     } catch (err) {
+      // 409 unavailable (GateDrop 1.2.0): another person's device was closed for others meanwhile.
+      if (err && err.status === 409 && err.code === 'unavailable') {
+        err.code = 'target_unavailable';
+        this._targets = null;
+      }
       end('error', { code: (err && err.code) || 'failed' });
       throw err;
     }
@@ -597,13 +642,17 @@ class GateDropService extends EventEmitter {
     return { ok: true, id: result.id, job: jobId, deliveries: result.deliveries, link: result.link, direct: direct.map((d) => ({ deviceId: d.deviceId, mode: d.mode })) };
   }
 
-  /** Only own devices in the same network that listen → items may go `local`. */
+  /**
+   * Only devices in the same network that listen — own ones or others' open
+   * for everyone (peopleDevices) — → items may go `local`.
+   */
   async _allDirect(to) {
     if (!to.devices.length || to.people.length || to.nas.length || to.link) return false;
     let targets;
     try { targets = await this.targets(); } catch { return false; }
+    const all = [...(targets.devices || []), ...(targets.peopleDevices || [])];
     return to.devices.every((id) => {
-      const d = targets.devices.find((x) => x.id === id);
+      const d = all.find((x) => x.id === id);
       return !!(d && d.direct);
     });
   }
@@ -1076,7 +1125,7 @@ class GateDropService extends EventEmitter {
   _record({ key, sendId = null, transferId = null, from = null, files = [], text = null, link = null, note = null, via }) {
     const rec = {
       key: String(key), sendId, transferId, at: this.now(),
-      from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null, deviceName: from.deviceName || null } : null,
+      from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null, deviceName: from.deviceName || null, own: typeof from.own === 'boolean' ? from.own : null } : null,
       files: files.map((f) => ({ ...(Number.isSafeInteger(f.index) ? { index: f.index } : {}), name: f.name, path: f.path, bytes: f.bytes })),
       text: text || null, link: link || null, note: note || null, via,
     };
@@ -1174,11 +1223,19 @@ class GateDropService extends EventEmitter {
     return quiet ? { show: false, silent: true } : { show: true, silent: false };
   }
 
-  /** "Pixel" for one's own devices (direct transfers, own sends), else the person's name. */
+  /**
+   * "Pixel" for one's own devices, else the person's name ("Marc" — also for
+   * a direct transfer from Marc's device to this PC when it is open for
+   * everyone). `from.own` (GateDrop 1.2.0) decides; without it (older
+   * plugins): a direct transfer or a sender with the own user id is own.
+   */
   _fromName(from, { device = false } = {}) {
     if (!from) return t('gatedrop.someone');
-    const me = this._targets && this._targets.data && this._targets.data.me;
-    const own = device || (!!me && !!me.id && from.id === me.id);
+    let own = from.own;
+    if (typeof own !== 'boolean') {
+      const me = this._targets && this._targets.data && this._targets.data.me;
+      own = device || (!!me && !!me.id && from.id === me.id);
+    }
     return (own && from.deviceName) || from.name || from.deviceName || t('gatedrop.someone');
   }
 

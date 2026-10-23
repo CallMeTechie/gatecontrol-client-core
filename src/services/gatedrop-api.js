@@ -9,7 +9,9 @@
  * changes stay here:
  *
  *   GET    /api/v1/client/plugins                                   is the plugin there?
- *   GET    …/gatecontrol-gatedrop/api/targets                       people, own devices, NAS, links
+ *   GET    …/gatecontrol-gatedrop/api/targets                       people, own and others' open devices, NAS, links
+ *   GET    …/api/device                                             who may send to this PC (GateDrop 1.2.0)
+ *   PUT    …/api/device { receiveFrom: 'self' | 'everyone' }
  *   PUT    …/api/presence { lan, port, listening }                  LAN addresses of this PC
  *   POST   …/api/sends { items, text?, link?, note?, to }           → { id, deliveries, link?, direct }
  *   POST   …/api/sends/<id>/items { items: [{ index, mediaId }] }   files a failed direct transfer left local
@@ -107,6 +109,24 @@ class GateDropApi {
   // ── JSON API ─────────────────────────────────────────────
 
   async targets() { return gd.normalizeTargets(await this.api('GET', 'targets')); }
+
+  /**
+   * GET device (GateDrop 1.2.0) → { id, receiveFrom: 'self' | 'everyone' }.
+   * Throws like every call (an older plugin: 404; a token without app installation: 409 no_device).
+   */
+  async getDevice() {
+    const d = gd.normalizeDeviceAccess(await this.api('GET', 'device'));
+    if (!d) throw new GateDropError('bad device answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** PUT device { receiveFrom } → { id, receiveFrom } */
+  async putDevice(receiveFrom) {
+    if (!gd.RECEIVE_FROM.includes(receiveFrom)) throw new GateDropError('invalid mode', { code: 'invalid' });
+    const d = gd.normalizeDeviceAccess(await this.api('PUT', 'device', { body: { receiveFrom } }));
+    if (!d) throw new GateDropError('bad device answer', { code: 'bad_response' });
+    return d;
+  }
 
   async presence({ lan, port, listening }) {
     return this.api('PUT', 'presence', { body: { lan: lan.map((a) => ({ ip: a.ip, prefix: a.prefix })), port, listening: listening === true } });

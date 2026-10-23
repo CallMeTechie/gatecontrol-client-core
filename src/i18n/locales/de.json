@@ -1204,6 +1204,13 @@
     "openFolder": "Ordner öffnen",
     "explorer": "Im Explorer unter „Senden an“ anzeigen",
     "explorerHint": "Rechtsklick auf Dateien › Senden an › GateDrop",
+    "access": {
+      "title": "Wer darf an diesen PC senden?",
+      "self": "Nur ich",
+      "everyone": "Alle im GateControl-Netz",
+      "selfHint": "Nur deine eigenen Geräte können Dateien hierher schicken.",
+      "everyoneHint": "Andere sehen diesen PC beim Teilen und können Dateien direkt hierher schicken."
+    },
     "listening": "Direkt im WLAN empfangsbereit",
     "notListening": "Direktempfang im WLAN nicht aktiv – Dateien kommen über den Server",
     "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
@@ -1234,6 +1241,8 @@
       "note": "Notiz",
       "notePlaceholder": "Notiz an die Empfänger (optional)",
       "devices": "Meine Geräte",
+      "peopleDevices": "Geräte anderer",
+      "deviceOf": "{{device}} · {{owner}}",
       "people": "Personen",
       "nasLink": "Ablegen & Link",
       "nas": "NAS: {{path}}",
@@ -1362,6 +1371,7 @@
     "sendTo": "Mit GateControl teilen",
     "error": {
       "unavailable": "GateDrop ist gerade nicht erreichbar.",
+      "target_unavailable": "Ein gewähltes Gerät nimmt nichts mehr von anderen an – wähle die Ziele neu.",
       "network": "Keine Verbindung zum Server.",
       "timeout": "Der Server antwortet nicht.",
       "too_large": "Die Datei ist zu groß.",

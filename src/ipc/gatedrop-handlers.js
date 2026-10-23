@@ -7,7 +7,7 @@
  *
  *   gatedrop:status        () → GateDropService.status()
  *   gatedrop:check         () → status after asking the server again
- *   gatedrop:targets       ({ refresh? }) → { ok, me, people, devices, nas, links }
+ *   gatedrop:targets       ({ refresh? }) → { ok, me, people, devices, peopleDevices, nas, links }
  *   gatedrop:pick          () → file dialog → { ok, files, rejected } | { ok: false, code: 'cancelled' }
  *   gatedrop:prepare       ({ paths }) → { ok, files: [{ id, name, size, mime }], rejected }
  *   gatedrop:compose:take  () → files of a "Senden an" start the window has not seen yet
@@ -22,6 +22,8 @@
  *   gatedrop:copy          ({ text }) → clipboard
  *   gatedrop:open-link     ({ url }) → browser (http/https only)
  *   gatedrop:explorer      ({ enabled? }) → { ok, enabled } "Senden an" shortcut (when the app has it)
+ *   gatedrop:access        () → { ok, supported, receiveFrom } who may send to this PC (GateDrop 1.2.0)
+ *   gatedrop:access:set    ({ receiveFrom: 'self' | 'everyone' }) → { ok, supported, receiveFrom }
  *
  * Events to the main window: gatedrop:state, gatedrop:compose, gatedrop:progress,
  * gatedrop:received, gatedrop:changed, gatedrop:navigate.
@@ -104,6 +106,11 @@ function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dia
     if (!explorer) return { ok: true, enabled: false, supported: false };
     if (typeof a.enabled === 'boolean') await explorer.set(a.enabled);
     return { ok: true, enabled: !!explorer.get(), supported: true };
+  }));
+  handle('gatedrop:access', wrap(async () => s.deviceAccess()));
+  handle('gatedrop:access:set', wrap(async (a) => {
+    if (a.receiveFrom !== 'self' && a.receiveFrom !== 'everyone') return invalid();
+    return s.setDeviceAccess(a.receiveFrom);
   }));
 
   const send = (channel, payload) => {

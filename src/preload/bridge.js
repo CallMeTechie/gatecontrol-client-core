@@ -291,6 +291,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       openLink:    (url) => ipcRenderer.invoke('gatedrop:open-link', { url }),
       // "Senden an → GateDrop" in the Explorer: () → state, (true|false) → set
       explorer:    (enabled) => ipcRenderer.invoke('gatedrop:explorer', typeof enabled === 'boolean' ? { enabled } : {}),
+      // Who may send to this PC (GateDrop 1.2.0) → { ok, supported, receiveFrom: 'self' | 'everyone' }
+      access:      () => ipcRenderer.invoke('gatedrop:access'),
+      setAccess:   (receiveFrom) => ipcRenderer.invoke('gatedrop:access:set', { receiveFrom }),
       onState:     (cb) => subscribe('gatedrop:state', cb),
       onCompose:   (cb) => subscribe('gatedrop:compose', cb),
       onProgress:  (cb) => subscribe('gatedrop:progress', cb),

@@ -25,6 +25,11 @@
 //   srv.addSend(send, { pending: true }) → a `waiting` delivery to this device (GET pending lists it until POST opened),
 //   srv.state.pendingMode = 'ok' | 404 (older plugin) | 'no_device' (409),
 //   srv.state.mediaFail = Set of mediaIds whose download answers 500,
+//   GET / PUT device (GateDrop 1.2.0): srv.state.device = { receiveFrom }, srv.state.deviceMode =
+//     'ok' | 404 (older plugin) | 'no_device' (409); srv.state.deviceCalls = [{ method, body }],
+//   targets.peopleDevices: others' devices open for everyone (sendable like own devices; a send's
+//     `from.own` is false for another person), srv.state.closed = Set of their ids closed meanwhile
+//     (POST sends → 409 unavailable),
 //   srv.close()
 
 const http = require('node:http');
@@ -49,13 +54,18 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     uploadCalls: [],
     transfers: new Map(),   // transferId → transfer (GET transfers/<id>: { id, sendId, side, mode, status, … })
     pendingMode: 'ok',
+    device: { receiveFrom: 'self' },
+    deviceMode: 'ok',
+    deviceCalls: [],
+    closed: new Set(),
     pendingCalls: 0,
     mediaFail: new Set(),
     targets: targets || {
       ok: true,
-      me: { id: 2, name: 'Marc', canLink: true, canNas: true, deviceId: '42' },
+      me: { id: 2, name: 'Marc', canLink: true, canNas: true, deviceId: '42', receiveFrom: 'self' },
       people: [{ id: 'family', name: 'Familie', avatar: null, initials: null, colorHex: null, kind: 'family' }, { id: 8, name: 'Anna', avatar: null, initials: 'AN', colorHex: '#84CC16', kind: 'user' }],
       devices: [{ id: '43', name: 'Pixel', platform: 'android', online: true, direct: false, mode: null }],
+      peopleDevices: [],
       nas: [{ id: 1, label: 'Fotos', path: '/Familie/Fotos' }],
       links: { enabled: true },
       messenger: true,
@@ -86,7 +96,10 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
   /** A send as the plugin answers it (GET sends/<id>, inbox entries). */
   const view = (st, role = 'received') => ({
     id: st.id, role, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + 7 * 86400000), expired: false,
-    from: { userId: st.from && st.from.userId != null ? st.from.userId : 3, name: (st.from && st.from.name) || 'Anna', avatarUrl: null, deviceId: (st.from && st.from.deviceId) || '41', deviceName: (st.from && st.from.deviceName) || null },
+    from: {
+      userId: st.from && st.from.userId != null ? st.from.userId : 3, name: (st.from && st.from.name) || 'Anna', avatarUrl: null, deviceId: (st.from && st.from.deviceId) || '41', deviceName: (st.from && st.from.deviceName) || null,
+      ...(st.from && typeof st.from.own === 'boolean' ? { own: st.from.own } : {}),
+    },
     text: st.text || null, link: st.link || null, note: st.note || null,
     items: st.items.map((i) => ({ index: i.idx, mediaId: i.mediaId || null, name: i.name, mime: i.mime || null, bytes: i.bytes, local: !!i.local && !i.mediaId, available: !!i.mediaId })),
     deliveries: st.deliveries || [],
@@ -175,13 +188,24 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     if (!state.plugin) return json(res, 404, { error: 'not_found' });
     let m;
 
-    if (req.method === 'GET' && route === 'targets') return json(res, 200, state.targets);
+    if (req.method === 'GET' && route === 'targets') return json(res, 200, { ...state.targets, me: { ...state.targets.me, receiveFrom: state.device.receiveFrom } });
+    if (route === 'device' && (req.method === 'GET' || req.method === 'PUT')) {
+      state.deviceCalls.push({ method: req.method, body });
+      if (state.deviceMode === 404) return json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
+      if (state.deviceMode === 'no_device') return json(res, 409, { ok: false, code: 'no_device', error: 'no device' });
+      if (req.method === 'PUT') {
+        if (!body || !['self', 'everyone'].includes(body.receiveFrom)) return json(res, 400, { ok: false, code: 'invalid', error: 'invalid' });
+        state.device = { receiveFrom: body.receiveFrom };
+      }
+      return json(res, 200, { ok: true, device: { id: String(state.targets.me.deviceId), receiveFrom: state.device.receiveFrom } });
+    }
     if (req.method === 'PUT' && route === 'presence') {
       state.presence.push(body);
       return json(res, 200, { ok: true, presence: { lan: body.lan, port: body.port, listening: body.listening, everyS: 300, freshS: 900 } });
     }
     if (req.method === 'POST' && route === 'sends') {
       if (state.failCreate) return json(res, state.failCreate.status, { error: state.failCreate.code, code: state.failCreate.code });
+      if ((body.to.devices || []).some((d) => state.closed.has(String(d)))) return json(res, 409, { ok: false, code: 'unavailable', error: 'Das Gerät nimmt nichts mehr an.' });
       const id = hex24();
       const st = { id, createdAt: Date.now(), from: { userId: 2, name: 'Marc', deviceId: '42', deviceName: 'Laptop' }, text: body.text, link: body.link, note: body.note, to: body.to, deliveries: [] };
       st.items = (body.items || []).map((it, idx) => {
@@ -199,7 +223,9 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       }
       let n = 1;
       for (const d of body.to.devices || []) {
-        const dev = (state.targets.devices || []).find((x) => String(x.id) === String(d));
+        const own = (state.targets.devices || []).find((x) => String(x.id) === String(d));
+        const other = own ? null : (state.targets.peopleDevices || []).find((x) => String(x.id) === String(d));
+        const dev = own || (other ? { ...other, name: `${other.name} (${other.owner.name})` } : null);
         const isDirect = direct.some((x) => x.deviceId === d);
         // An own device that is offline: the send waits in its `pending` list.
         const status = isDirect ? 'direct' : dev && dev.online === false ? 'waiting' : 'delivered';
