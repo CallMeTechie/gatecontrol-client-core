@@ -1383,5 +1383,9 @@
       "invalid": "The request was invalid.",
       "failed": "That did not work ({{code}})."
     }
+  },
+  "vault": {
+    "personalName": "Personal",
+    "conflictSuffix": "(conflict)"
   }
 }

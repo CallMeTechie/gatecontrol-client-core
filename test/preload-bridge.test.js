@@ -72,7 +72,16 @@ describe('createBridgeApi', () => {
       'school:absences', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',
       'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
-      'update:policy', 'wireguard:check',
+      'update:policy',
+      'vault:addMember', 'vault:changePassword', 'vault:check', 'vault:completeRecovery', 'vault:copy', 'vault:createVault',
+      'vault:deleteAccount', 'vault:deleteVault', 'vault:emergency', 'vault:emergencyAdd', 'vault:emergencyOpen',
+      'vault:emergencyRemove', 'vault:emergencyStep', 'vault:entries', 'vault:entry', 'vault:generate', 'vault:history',
+      'vault:import:parse', 'vault:import:save', 'vault:lock', 'vault:match', 'vault:notices:clear', 'vault:people', 'vault:purge',
+      'vault:recover', 'vault:removeMember', 'vault:renameVault', 'vault:restore', 'vault:save', 'vault:setRole',
+      'vault:settings:get', 'vault:settings:set', 'vault:setup', 'vault:setup:cancel', 'vault:setup:confirm', 'vault:status',
+      'vault:strength', 'vault:sync', 'vault:totp', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockRemembered',
+      'vault:vaults',
+      'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
@@ -82,6 +91,7 @@ describe('createBridgeApi', () => {
       'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
       'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
+      'vault:push', 'vault:state',
     ]);
   });
 
@@ -146,6 +156,7 @@ describe('createBridgeApi', () => {
       messenger: { on() {} },
       school: { on() {} },
       gatedrop: { on() {} },
+      vault: { on() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });

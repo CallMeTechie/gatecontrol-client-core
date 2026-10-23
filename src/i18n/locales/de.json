@@ -1383,5 +1383,9 @@
       "invalid": "Die Anfrage war ungültig.",
       "failed": "Das hat nicht geklappt ({{code}})."
     }
+  },
+  "vault": {
+    "personalName": "Persönlich",
+    "conflictSuffix": "(Konflikt)"
   }
 }

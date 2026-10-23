@@ -364,7 +364,7 @@ module.exports = {
   ready, VaultCryptoError, AD, ITEM_TYPES, DEFAULT_KDF, KDF_BOUNDS,
   b64, unb64, newId, wrap, unwrap, seal, openSealed,
   newKdf, masterKey, formatRecoveryKey, parseRecoveryKey,
-  createAccount, unlock, unlockWithRecovery, changePassword, recover,
+  createAccount, keysFrom, unlock, unlockWithRecovery, changePassword, recover,
   newVaultKey, sealKey, vaultKeys, encryptName, decryptName, safetyNumber,
   encryptItem, encryptItemBytes, decryptItem,
   sealForEmergency, openEmergency, wipe,
