@@ -88,19 +88,22 @@ const optEmergency = (v) => v === undefined || v === null || emergencyId(v);
  */
 function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   const invalid = () => ({ ok: false, code: 'invalid', error: 'invalid argument', status: null });
-  const wrap = (fn) => async (_e, arg) => {
+  // Only what a person does counts as activity for the auto-lock: the page's own refreshes (lists after
+  // vault:state, the 2FA countdown, background syncs) go through `passive` and never keep the vault open.
+  const wrap = (fn, { passive = false } = {}) => async (_e, arg) => {
     try {
-      s.touch();
+      if (!passive) s.touch();
       const r = await fn(obj(arg));
       return r && r.ok === false ? r : { ok: true, ...(r || {}) };
     } catch (err) {
       return fail(err);
     }
   };
-  const withStatus = (fn) => wrap(async (a) => { const r = await fn(a); if (r && r.ok === false) return r; return { status: s.status() }; });
+  const withStatus = (fn, opts) => wrap(async (a) => { const r = await fn(a); if (r && r.ok === false) return r; return { status: s.status() }; }, opts);
+  const passive = { passive: true };
 
   handle('vault:status', () => s.status());
-  handle('vault:check', withStatus(() => s.check()));
+  handle('vault:check', withStatus(() => s.check(), passive));
 
   handle('vault:setup', wrap(async (a) => {
     if (!secret(a.password) || (a.personalName != null && !name(a.personalName))) return invalid();
@@ -118,13 +121,13 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:sync', wrap(async () => {
     const r = await s.sync();
     return r.state === 'done' ? { sync: r } : { ok: false, code: r.code || r.state, error: r.state, status: null };
-  }));
+  }, passive));
 
   // entries
   handle('vault:entries', wrap(async (a) => {
     if (a.vaultId != null && !vault.isId(a.vaultId)) return invalid();
     return s.entries({ vaultId: a.vaultId || null, trash: a.trash === true });
-  }));
+  }, passive));
   handle('vault:entry', wrap(async (a) => {
     if (!vault.isId(a.id) || !optEmergency(a.emergencyId)) return invalid();
     return { entry: await s.entry(a.id, { emergencyId: a.emergencyId || null }) };
@@ -144,11 +147,11 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:history', wrap(async (a) => (vault.isId(a.id) ? { history: await s.history(a.id) } : invalid())));
 
   // vaults and members
-  handle('vault:vaults', wrap(() => s.vaults()));
+  handle('vault:vaults', wrap(() => s.vaults(), passive));
   handle('vault:createVault', wrap(async (a) => (name(a.name) ? { vault: await s.createVault(a.name) } : invalid())));
   handle('vault:renameVault', wrap(async (a) => (vault.isId(a.id) && name(a.name) ? { vault: await s.renameVault(a.id, a.name) } : invalid())));
   handle('vault:deleteVault', wrap(async (a) => (vault.isId(a.id) ? s.deleteVault(a.id) : invalid())));
-  handle('vault:people', wrap(async () => ({ people: await s.people() })));
+  handle('vault:people', wrap(async () => ({ people: await s.people() }), passive));
   handle('vault:addMember', wrap(async (a) => (vault.isId(a.vaultId) && userId(a.userId) && vault.ROLES.includes(a.role)
     ? { vault: await s.addMember(a.vaultId, a.userId, a.role) } : invalid())));
   handle('vault:setRole', wrap(async (a) => (vault.isId(a.vaultId) && userId(a.userId) && vault.ROLES.includes(a.role)
@@ -156,7 +159,7 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:removeMember', wrap(async (a) => (vault.isId(a.vaultId) && userId(a.userId) ? { vault: await s.removeMember(a.vaultId, a.userId) } : invalid())));
 
   // emergency access
-  handle('vault:emergency', wrap(() => s.emergency()));
+  handle('vault:emergency', wrap(() => s.emergency(), passive));
   handle('vault:emergencyAdd', wrap(async (a) => (userId(a.userId) && Number.isSafeInteger(a.waitHours) && a.waitHours >= 1 && a.waitHours <= 720
     ? { emergency: await s.emergencyAdd(a.userId, a.waitHours) } : invalid())));
   handle('vault:emergencyRemove', wrap(async (a) => (emergencyId(a.id) ? s.emergencyRemove(a.id) : invalid())));
@@ -177,7 +180,7 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:totp', wrap(async (a) => {
     if (a.id != null) return vault.isId(a.id) && optEmergency(a.emergencyId) ? s.totp({ id: a.id, emergencyId: a.emergencyId || null }) : invalid();
     return typeof a.uri === 'string' && a.uri.length <= 2048 ? s.totp({ uri: a.uri }) : invalid();
-  }));
+  }, passive));
   handle('vault:copy', wrap(async (a) => {
     if (a.id != null) {
       return vault.isId(a.id) && typeof a.field === 'string' && a.field.length <= 64 && optEmergency(a.emergencyId)
@@ -185,7 +188,7 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
     }
     return typeof a.text === 'string' && a.text.length <= 4096 ? s.copy({ text: a.text }) : invalid();
   }));
-  handle('vault:settings:get', wrap(async () => s.settings()));
+  handle('vault:settings:get', wrap(async () => s.settings(), passive));
   handle('vault:settings:set', wrap(async (a) => {
     const patch = {};
     if (a.autoLockMinutes !== undefined) {

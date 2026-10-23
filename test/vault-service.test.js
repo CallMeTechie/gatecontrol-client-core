@@ -537,6 +537,20 @@ describe('VaultService: auto-lock, clipboard, generator, import, emergency, push
     assert.equal(clip.text, 'generiert');
     const none = device(srv, 2, 'x');
     await assert.rejects(none.copy({ text: 'x' }), code('unsupported'));
+    // locking clears it at once (still only when it holds our copy)
+    await a.copy({ id, field: 'password' });
+    a.lock();
+    assert.equal(clip.text, '');
+  });
+
+  it('a setup not yet confirmed does not survive a lock', async () => {
+    const s = device(vaultServer(), 2, 'pc');
+    await s.check();
+    await s.setup({ password: PW });
+    assert.equal(s.status().setupPending, true);
+    s.lock('system');
+    assert.equal(s.status().setupPending, false);
+    await assert.rejects(s.confirmSetup(), code('no_setup'));
   });
 
   it('generator and strength', () => {

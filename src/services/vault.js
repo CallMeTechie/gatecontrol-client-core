@@ -580,6 +580,10 @@ class VaultService extends EventEmitter {
     this._emergency.clear();
     this._importDraft = null;
     this._recovering = false;
+    // a setup not yet confirmed holds keys too: it starts over after a lock
+    this._wipeSetup();
+    // a copied secret does not outlive the unlock (only while it is still what we put there)
+    this._clearClipboard();
     if (was) this._lastLock = { reason, at: this.now() };
     this._rebuild();
     this._emit();
@@ -1695,17 +1699,25 @@ class VaultService extends EventEmitter {
     this.clipboard.writeText(value);
     if (this._copied) clearTimeout(this._copied.timer);
     const timer = setTimeout(() => {
-      if (this._copied && this._copied.timer === timer) this._copied = null;
-      try {
-        const cb = this.clipboard;
-        if (typeof cb.readText === 'function' && cb.readText() !== value) return;
-        if (typeof cb.clear === 'function') cb.clear();
-        else cb.writeText('');
-      } catch { /* clipboard busy */ }
+      if (this._copied && this._copied.timer === timer) this._clearClipboard();
     }, this.timing.clipboardMs);
     if (timer.unref) timer.unref();
-    this._copied = { timer };
+    this._copied = { timer, value };
     return { clearsInMs: this.timing.clipboardMs };
+  }
+
+  /** Clears the clipboard when it still holds what copy() put there. */
+  _clearClipboard() {
+    const copied = this._copied;
+    if (!copied) return;
+    clearTimeout(copied.timer);
+    this._copied = null;
+    try {
+      const cb = this.clipboard;
+      if (typeof cb.readText === 'function' && cb.readText() !== copied.value) return;
+      if (typeof cb.clear === 'function') cb.clear();
+      else cb.writeText('');
+    } catch { /* clipboard busy */ }
   }
 
   // ── Push ─────────────────────────────────────────────────
