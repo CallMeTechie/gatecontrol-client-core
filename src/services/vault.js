@@ -877,6 +877,9 @@ class VaultService extends EventEmitter {
 
   /** After recover(): a new master password and a new recovery key → { recoveryKey } (show once). Needs the server. */
   async completeRecovery({ password } = {}) {
+    this._needKeys();
+    // only after recover(): otherwise it would set a new password without the current one (changePassword checks it)
+    if (!this._recovering) throw fail('invalid');
     if (!vault.goodMasterPassword(password)) throw fail('weak_password');
     await this._ready;
     const recoveryKey = await this._updateAccount((account, keys) => {
@@ -925,9 +928,10 @@ class VaultService extends EventEmitter {
     throw fail('conflict');
   }
 
-  /** Deletes the account and everything only this person had (needs the server). confirm: 'DELETE'. */
+  /** Deletes the account and everything only this person had (needs the server, unlocked). confirm: 'DELETE'. */
   async deleteAccount({ confirm } = {}) {
     await this._ensureLoaded();
+    this._needKeys();
     if (confirm !== 'DELETE') throw fail('invalid');
     await this._req('POST', 'account/delete', { body: { confirm: 'DELETE' } });
     const owner = this._owner;
@@ -1541,6 +1545,8 @@ class VaultService extends EventEmitter {
   async emergencyStep(id, step) {
     await this._ensureLoaded();
     if (typeof id !== 'string' || !vault.EMERGENCY_ID_RE.test(id) || !vault.EMERGENCY_STEPS.includes(step)) throw fail('invalid');
+    // approving hands out read access to every vault: only while unlocked
+    if (step === 'approve') this._needKeys();
     const e = vault.parseEmergency((await this._req('POST', `emergency/${id}/${step}`, { body: {} })).emergency);
     if (!e) throw fail('invalid_answer');
     return e;
