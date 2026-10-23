@@ -786,7 +786,7 @@ function csvRows(text) {
 const CSV_COLUMNS = {
   title: ['title', 'name', 'account', 'item name'],
   url: ['url', 'login_uri', 'uri', 'website', 'web site', 'login url', 'origin'],
-  username: ['username', 'login_username', 'user name', 'user', 'login', 'email', 'e-mail'],
+  username: ['username', 'login_username', 'user name', 'login name', 'user', 'login', 'email', 'e-mail'],
   password: ['password', 'login_password'],
   notes: ['notes', 'note', 'extra', 'comments'],
   totp: ['totp', 'login_totp', 'otpauth', 'one-time password', 'otp'],
@@ -810,15 +810,17 @@ function csv(text) {
   else if (header.includes('group')) source = 'KeePass';
   else if (header.includes('otpauth')) source = '1Password';
   else if (header.slice(0, 5).join(',') === 'name,url,username,password,note') source = 'Chrome / Edge';
-  const get = (r, k) => (col[k] >= 0 && r[col[k]] !== undefined ? r[col[k]].trim() : '');
+  const raw = (r, k) => (col[k] >= 0 && r[col[k]] !== undefined ? r[col[k]] : '');
+  const get = (r, k) => raw(r, k).trim();
   const out = [];
   for (const r of rows.slice(1)) {
     const url = get(r, 'url');
-    const password = get(r, 'password');
+    // as it is: spaces at either end can be part of a password
+    const password = raw(r, 'password');
     const username = get(r, 'username');
     const notes = get(r, 'notes');
     const title = get(r, 'title') || urlHost(url) || '';
-    const isNote = get(r, 'type') === 'note' || (!password && !username && !url);
+    const isNote = get(r, 'type') === 'note' || (!password.trim() && !username && !url);
     if (!title.trim() && !password.trim() && !notes.trim()) continue;
     if (isNote) out.push(entry('note', title.trim() ? title : notes.slice(0, 40), { notes }));
     else {
