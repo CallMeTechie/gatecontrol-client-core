@@ -301,6 +301,128 @@ describe('Updater: signed updates', () => {
   });
 });
 
+describe('Updater: one download at a time (race of two checks)', () => {
+  // Download whose bytes the test releases: the first check is still
+  // downloading when the second one comes (log 1.43.1: two downloads into
+  // the same .part/target, the second overwrote the verified installer →
+  // "Installer wurde nach dem Download verändert", then ENOENT on rename).
+  function slowDownloads() {
+    const gates = [];
+    axios.get = async (url, opts = {}) => {
+      calls.push({ url, opts });
+      if (url.endsWith('/api/v1/client/update/check')) return { data: checkResponse };
+      const body = downloadBody;
+      const stream = new Readable({ read() {} });
+      gates.push(() => { stream.push(body.subarray(0, 100)); stream.push(body.subarray(100)); stream.push(null); });
+      return { data: stream };
+    };
+    return {
+      release: async () => {
+        while (!gates.length) await new Promise((r) => setImmediate(r));
+        gates.shift()();
+      },
+      pending: () => gates.length,
+    };
+  }
+  const partFiles = () => fs.readdirSync(tmp).filter((n) => n.endsWith('.part'));
+
+  it('two parallel checks download once; the installer starts with the verified file', async () => {
+    const dl = slowDownloads();
+    const { u, log } = makeUpdater();
+    let readyCount = 0;
+    u.onUpdateReady = () => { readyCount += 1; };
+    const first = u.check();
+    const second = u.check();
+    await dl.release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.version, '1.1.0');
+    assert.deepEqual(a, b);
+    assert.equal(downloads().length, 1, 'one download');
+    assert.equal(calls.filter((c) => c.url.endsWith('/check')).length, 1, 'the second check joined the first');
+    assert.equal(readyCount, 1);
+    assert.deepEqual(partFiles(), []);
+    assert.deepEqual(fs.readFileSync(path.join(tmp, FILE)), INSTALLER);
+    assert.deepEqual(await u.install(), { ok: true, via: 'spawn' });
+    assert.equal(rejected(log), false);
+    assert.ok(!log.lines.warn.some((l) => l.includes('Update-Download fehlgeschlagen')));
+  });
+
+  it('a timer check and a manual check (_check) racing: still one download', async () => {
+    const dl = slowDownloads();
+    const { u, log } = makeUpdater();
+    const p1 = u._check();
+    await new Promise((r) => setImmediate(r));
+    const p2 = u._check();
+    await dl.release();
+    await Promise.all([p1, p2]);
+    assert.equal(downloads().length, 1);
+    assert.equal(dl.pending(), 0);
+    assert.ok(u.isUpdateReady());
+    assert.equal(rejected(log), false);
+  });
+
+  it('a ready, verified update is not downloaded again by the next check', async () => {
+    const { u } = makeUpdater();
+    await u.check();
+    await u.check();
+    await u.check();
+    assert.equal(downloads().length, 1);
+    assert.ok(u.isUpdateReady());
+  });
+
+  it('install while the download runs waits for it instead of failing', async () => {
+    const dl = slowDownloads();
+    const { u, log } = makeUpdater();
+    const checking = u.check();
+    while (!u.isDownloading()) await new Promise((r) => setImmediate(r));
+    const prep = u.prepareInstall();
+    await dl.release();
+    assert.deepEqual(await prep, { ok: true, version: '1.1.0' });
+    await checking;
+    assert.equal(downloads().length, 1);
+    assert.equal(rejected(log), false);
+  });
+
+  it('ensureUpdate(): nothing ready → check and download; afterwards ready', async () => {
+    const { u } = makeUpdater();
+    assert.equal(u.isUpdateReady(), false);
+    assert.equal(await u.ensureUpdate(), true);
+    assert.equal(downloads().length, 1);
+    assert.equal(await u.ensureUpdate(), true);
+    assert.equal(downloads().length, 1, 'ready update reused');
+  });
+
+  it('each download writes its own .part file; leftovers of earlier runs are removed', async () => {
+    fs.writeFileSync(path.join(tmp, `${FILE}.part`), 'old leftover');
+    fs.writeFileSync(path.join(tmp, `${FILE}.123-abc.part`), 'old leftover');
+    const dl = slowDownloads();
+    const { u } = makeUpdater();
+    const checking = u.check();
+    while (!u.isDownloading() || !partFiles().length) await new Promise((r) => setImmediate(r));
+    const parts = partFiles();
+    assert.equal(parts.length, 1);
+    assert.match(parts[0], new RegExp(`^${FILE.replace(/\./g, '\\.')}\\.\\d+-[0-9a-f]{12}\\.part$`));
+    await dl.release();
+    await checking;
+    assert.deepEqual(partFiles(), []);
+    assert.ok(u.isUpdateReady());
+  });
+
+  it('a download overtaken by a newer offer is discarded, not marked ready', async () => {
+    const dl = slowDownloads();
+    const { u } = makeUpdater();
+    const checking = u.check();
+    while (!u.isDownloading()) await new Promise((r) => setImmediate(r));
+    // A new offer arrives while the old file is still downloading.
+    u.latestRelease = { ...u.latestRelease, sha256: 'b'.repeat(64) };
+    await dl.release();
+    await checking;
+    assert.equal(u.downloadPath, null);
+    assert.equal(fs.existsSync(path.join(tmp, FILE)), false);
+    assert.deepEqual(partFiles(), []);
+  });
+});
+
 describe('Updater: starting the installer', () => {
   it('prepareInstall only verifies: nothing is started', async () => {
     const { u } = makeUpdater();

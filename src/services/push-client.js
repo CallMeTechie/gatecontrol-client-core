@@ -265,6 +265,7 @@ class PushClient extends EventEmitter {
       const { state, reason } = this._status;
       if (state === STATE.ERROR && (reason === 'auth' || reason === 'rate_limited')) return;
       if (state === STATE.DISABLED && (reason === 'unsupported' || reason === 'push_disabled' || reason === 'off')) return;
+      if (this._openedAt) this.log.info(`Push reconnect: network changed (stream was open ${this._livedS()} s)`);
       this._teardown();
       this._clearTimer('retry');
       this._connect();
@@ -593,22 +594,36 @@ class PushClient extends EventEmitter {
     }, ms);
   }
 
+  /** Seconds the current stream has been open (one decimal). */
+  _livedS() {
+    return this._openedAt ? Math.round((Date.now() - this._openedAt) / 100) / 10 : 0;
+  }
+
   _streamEnded(gen) {
     const lived = this._openedAt ? Date.now() - this._openedAt : 0;
+    const livedS = this._livedS();
     this._teardown();
     if (!this._running) return;
     if (lived >= this.timing.stableAfterMs) this._attempt = 0;
-    this._retry(gen, this._nextDelay(), { state: STATE.CONNECTING, reason: 'reconnecting' });
+    const delay = this._nextDelay();
+    // Info level: a stream that keeps ending right after the connect (flapping
+    // "Push connected" / "Push control unavailable") shows up in the log.
+    this.log.info(`Push stream ended after ${livedS} s — reconnecting in ${Math.round(delay / 100) / 10} s`);
+    this._retry(gen, delay, { state: STATE.CONNECTING, reason: 'reconnecting' });
   }
 
   _fail(gen, reason, detail) {
     if (gen !== this._gen) return;
     const lived = this._openedAt ? Date.now() - this._openedAt : 0;
+    const livedS = this._livedS();
     this._teardown();
     if (!this._running) return;
     if (lived >= this.timing.stableAfterMs) this._attempt = 0;
-    this.log.debug(`Push stream ${reason}${detail ? `: ${detail}` : ''}`);
-    this._retry(gen, this._nextDelay(), { state: STATE.ERROR, reason });
+    const delay = this._nextDelay();
+    const what = `Push stream ${reason}${detail ? `: ${detail}` : ''}`;
+    if (lived > 0) this.log.info(`${what} (open ${livedS} s) — reconnecting in ${Math.round(delay / 100) / 10} s`);
+    else this.log.debug(what);
+    this._retry(gen, delay, { state: STATE.ERROR, reason });
   }
 
   _httpError(gen, status, code, headers) {

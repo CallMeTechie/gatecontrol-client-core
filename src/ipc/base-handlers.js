@@ -19,6 +19,7 @@ const { portalNext } = require('../utils/portal');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
 const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
+const { parseLogText, filterByPeriod } = require('../utils/log-parse');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
@@ -525,8 +526,13 @@ function registerBaseHandlers(ipcMain, ctx) {
   });
 
   // ── Logs ────────────────────────────────────────────────
+  // opts.period: 'all' | '1h' | '12h' | '24h'.
+  // opts.format: 'entries' → [{ ts, date, time, ms, level, msg }] newest
+  //   first (utils/log-parse.js: "\r\n" line ends, multi-line entries kept
+  //   together); otherwise the text, newest entry first (older renderers).
   handle('logs:get', async (_, opts = {}) => {
     const fs = require('fs').promises;
+    const entriesWanted = !!opts && opts.format === 'entries';
     try {
       const logPath = log.transports.file.getFile().path;
       const stat = await fs.stat(logPath);
@@ -547,28 +553,15 @@ function registerBaseHandlers(ipcMain, ctx) {
         content = await fs.readFile(logPath, 'utf-8');
       }
 
-      let lines = content.split('\n').filter(l => l.trim());
+      const period = opts && typeof opts.period === 'string' ? opts.period : 'all';
+      const entries = filterByPeriod(parseLogText(content, { raw: !entriesWanted }), period);
+      // Newest first
+      entries.reverse();
 
-      // Time filter
-      if (opts.period && opts.period !== 'all') {
-        const hours = opts.period === '24h' ? 24 : opts.period === '12h' ? 12 : opts.period === '1h' ? 1 : 0;
-        if (hours > 0) {
-          const cutoff = new Date(Date.now() - hours * 3600000);
-          lines = lines.filter(line => {
-            // electron-log format: [YYYY-MM-DD HH:MM:SS.mmm] or [HH:MM:SS.mmm]
-            const m = line.match(/\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
-            if (!m) return true; // keep lines without timestamp
-            return new Date(m[1]) >= cutoff;
-          });
-        }
-      }
-
-      // Reverse: newest first
-      lines.reverse();
-
-      return lines.join('\n');
+      if (entriesWanted) return entries;
+      return entries.map((e) => e.raw).join('\n');
     } catch {
-      return t('logs.empty');
+      return entriesWanted ? [] : t('logs.empty');
     }
   });
 

@@ -244,6 +244,43 @@ describe('NotificationCenter actions', () => {
     assert.deepEqual(events.navigate[1], { route: 'inbox', id: null });
   });
 
+  it('local toast (update): click runs onClick; the action button runs once, closes the toast', () => {
+    const { center, N, events, shown } = setup();
+    const clicks = [];
+    const n = center.notify({
+      title: 'GateControl Pro', body: 'Version 1.2.0 verfügbar', collapseKey: 'update',
+      onClick: () => clicks.push('body'),
+      actions: [{ label: 'Jetzt installieren', onClick: () => clicks.push('button') }, { label: '', onClick: () => {} }, { label: 'x' }],
+    });
+    assert.ok(n);
+    const urls = buttonUrls(N.created[0]);
+    assert.equal(urls.length, 1, 'only valid actions become buttons');
+    assert.match(N.created[0].opts.toastXml, /content="Jetzt installieren"/);
+    N.created[0].emit('click');
+    assert.deepEqual(clicks, ['body']);
+    assert.equal(center.handleArgv(['GateControl.exe', urls[0]]), true);
+    assert.deepEqual(clicks, ['body', 'button']);
+    assert.equal(N.created[0].closed, true);
+    assert.equal(events.navigate.length, 0);
+    assert.equal(shown.length, 0);
+    // single use: a replay only opens the inbox
+    assert.equal(center.handleProtocolUrl(urls[0]), true);
+    assert.deepEqual(clicks, ['body', 'button']);
+  });
+
+  it('a replaced local toast (same collapse key) drops its button nonce', () => {
+    const { center, N } = setup();
+    const clicks = [];
+    center.notify({ title: 'a', collapseKey: 'update', actions: [{ label: 'Install', onClick: () => clicks.push(1) }] });
+    const [oldUrl] = buttonUrls(N.created[0]);
+    center.notify({ title: 'b', collapseKey: 'update', actions: [{ label: 'Install', onClick: () => clicks.push(2) }] });
+    assert.equal(N.created[0].closed, true);
+    center.handleProtocolUrl(oldUrl);
+    assert.deepEqual(clicks, []);
+    center.handleProtocolUrl(buttonUrls(N.created[1])[0]);
+    assert.deepEqual(clicks, [2]);
+  });
+
   it('ignores foreign schemes, forged and malformed URLs', () => {
     const { center, events } = setup();
     center.handleNotification(note(1));

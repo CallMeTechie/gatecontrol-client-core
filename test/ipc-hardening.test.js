@@ -177,6 +177,66 @@ describe('logs:show', () => {
   });
 });
 
+describe('logs:get', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  function withLog(text) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-logs-'));
+    const file = path.join(dir, 'main.log');
+    fs.writeFileSync(file, text);
+    const { handlers } = makeCtx({
+      log: { info() {}, warn() {}, error() {}, debug() {}, transports: { file: { getFile: () => ({ path: file }) } } },
+    });
+    return { handlers, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  // Windows: electron-log ends lines with "\r\n".
+  const text = [
+    '[2026-10-24 20:58:30.000] [info]  first',
+    '[2026-10-24 20:58:31.000] [error] boom',
+    'Error: boom',
+    '    at x (y.js:1:1)',
+    '[2026-10-24 20:58:32.553] [info]  Push connected (tunnel, control events)',
+    '',
+  ].join('\r\n');
+
+  it("format 'entries': parsed, newest first, stack trace kept with its entry", async () => {
+    const { handlers, done } = withLog(text);
+    try {
+      const entries = await handlers['logs:get']({}, { period: 'all', format: 'entries' });
+      assert.deepEqual(entries.map((e) => [e.time, e.level, e.msg]), [
+        ['20:58:32', 'info', 'Push connected (tunnel, control events)'],
+        ['20:58:31', 'error', 'boom\nError: boom\n    at x (y.js:1:1)'],
+        ['20:58:30', 'info', 'first'],
+      ]);
+    } finally { done(); }
+  });
+
+  it('text (older renderers): newest entry first, no carriage returns, entries not torn apart', async () => {
+    const { handlers, done } = withLog(text);
+    try {
+      const out = await handlers['logs:get']({}, { period: 'all' });
+      assert.equal(out, [
+        '[2026-10-24 20:58:32.553] [info]  Push connected (tunnel, control events)',
+        '[2026-10-24 20:58:31.000] [error] boom',
+        'Error: boom',
+        '    at x (y.js:1:1)',
+        '[2026-10-24 20:58:30.000] [info]  first',
+      ].join('\n'));
+    } finally { done(); }
+  });
+
+  it('missing file → [] for entries', async () => {
+    const { handlers } = makeCtx({
+      log: { info() {}, warn() {}, error() {}, debug() {}, transports: { file: { getFile: () => ({ path: '/nonexistent/gc/main.log' }) } } },
+    });
+    assert.deepEqual(await handlers['logs:get']({}, { format: 'entries' }), []);
+    assert.equal(typeof await handlers['logs:get']({}, {}), 'string');
+  });
+});
+
 describe('https for API-key setups', () => {
   it('refuses http:// server URLs', async () => {
     const { handlers, stored, calls } = makeCtx();

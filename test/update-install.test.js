@@ -18,14 +18,22 @@ const t = (k) => ({
   'update.installVpnRestored': 'VPN wieder verbunden.',
 }[k] || k);
 
-function harness({ ready = true, prepare = { ok: true, version: '1.2.0' }, launch = { ok: true, via: 'spawn' }, connected = true, reconnectFails = false } = {}) {
+function harness({ ready = true, prepare = { ok: true, version: '1.2.0' }, launch = { ok: true, via: 'spawn' }, connected = true, reconnectFails = false, ensure = undefined } = {}) {
   const events = [];
+  const status = [];
+  const prepares = Array.isArray(prepare) ? prepare.slice() : null;
   const updater = {
+    latestRelease: { version: '1.2.0' },
     isUpdateReady: () => ready,
-    prepareInstall: async () => { events.push('prepare'); return prepare; },
+    prepareInstall: async () => { events.push('prepare'); return prepares ? prepares.shift() : prepare; },
     launchInstaller: async () => { events.push('launch'); return launch; },
     check: async () => { events.push('check'); return null; },
   };
+  // ensure: 'ok' (download makes it ready) | 'fail' (nothing to get) | undefined (older updater)
+  if (ensure) {
+    updater.isDownloading = () => false;
+    updater.ensureUpdate = async () => { events.push('ensure'); ready = ensure === 'ok'; return ready; };
+  }
   let isConnected = connected;
   const install = createUpdateInstaller({
     getUpdater: () => updater,
@@ -36,8 +44,9 @@ function harness({ ready = true, prepare = { ok: true, version: '1.2.0' }, launc
     liftFirewall: async () => { events.push('firewall'); },
     quit: () => { events.push('quit'); },
     quitDelayMs: 5,
+    onStatus: (state, info) => { status.push([state, info.version]); },
   });
-  return { install, events, updater };
+  return { install, events, updater, status };
 }
 
 const settle = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -54,6 +63,37 @@ describe('createUpdateInstaller', () => {
     const h = harness({ ready: false });
     assert.deepEqual(await h.install(), { ok: false, code: 'not_ready' });
     assert.deepEqual(h.events, []);
+  });
+
+  it('not downloaded yet: the click downloads first (visible status), then installs', async () => {
+    const h = harness({ ready: false, ensure: 'ok' });
+    assert.deepEqual(await h.install(), { ok: true, via: 'spawn' });
+    await settle();
+    assert.deepEqual(h.events, ['ensure', 'prepare', 'disconnect', 'firewall', 'launch', 'quit']);
+    assert.deepEqual(h.status, [['downloading', '1.2.0']]);
+  });
+
+  it('nothing to download: not_ready, the VPN is not touched', async () => {
+    const h = harness({ ready: false, ensure: 'fail' });
+    assert.deepEqual(await h.install(), { ok: false, code: 'not_ready' });
+    assert.deepEqual(h.events, ['ensure']);
+  });
+
+  it('a running download is waited for before installing', async () => {
+    const h = harness({ ready: true, ensure: 'ok' });
+    let downloading = true;
+    h.updater.isDownloading = () => downloading;
+    const ensure = h.updater.ensureUpdate;
+    h.updater.ensureUpdate = async () => { const r = await ensure(); downloading = false; return r; };
+    assert.equal((await h.install()).ok, true);
+    assert.deepEqual(h.events.slice(0, 2), ['ensure', 'prepare']);
+  });
+
+  it('a changed installer is downloaded again and checked once more before the VPN goes down', async () => {
+    const h = harness({ ensure: 'ok', prepare: [{ ok: false, code: 'verify_failed', message: 'changed' }, { ok: true, version: '1.2.0' }] });
+    assert.deepEqual(await h.install(), { ok: true, via: 'spawn' });
+    await settle();
+    assert.deepEqual(h.events, ['prepare', 'ensure', 'prepare', 'disconnect', 'firewall', 'launch', 'quit']);
   });
 
   it('a broken installer keeps the VPN and is downloaded again', async () => {

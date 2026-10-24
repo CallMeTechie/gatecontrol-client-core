@@ -212,6 +212,11 @@ class Updater {
     this._openPath = openPath || ((p) => shell.openPath(p));
     this.launchGraceMs = Number.isInteger(launchGraceMs) && launchGraceMs >= 0 ? launchGraceMs : LAUNCH_GRACE_MS;
     this._installing = false;
+    // Single-flight: one check and one download at a time. A second check
+    // (timer, "Nach Updates suchen", install click) joins the running one;
+    // two downloads into the same file overwrote the verified installer.
+    this._checking = null; // Promise of the running check
+    this._dl = null;       // { sha256, promise } of the running download
     // Letzte vom Server gemeldete Richtlinie (unsigniert, nur Anzeige)
     this.policy = { channel: null, minVersion: null, mandatory: false };
 
@@ -279,9 +284,37 @@ class Updater {
   }
 
   /**
-   * Update-Check durchführen
+   * Update-Check durchführen. Läuft schon einer, wartet der Aufrufer auf
+   * genau diesen (kein zweiter Download derselben Datei).
    */
-  async _check() {
+  _check() {
+    if (this._checking) return this._checking;
+    const run = this._runCheck().finally(() => {
+      if (this._checking === run) this._checking = null;
+    });
+    this._checking = run;
+    return run;
+  }
+
+  /**
+   * Für „Installieren“ (Tray, Toast, Karte): sorgt für ein geprüftes Update.
+   * Wartet auf einen laufenden Download bzw. Check und prüft/lädt sonst neu.
+   * @returns {Promise<boolean>} isUpdateReady()
+   */
+  async ensureUpdate() {
+    if (this.disabled) return false;
+    if (this._dl) await this._dl.promise.catch(() => {});
+    if (this._checking) await this._checking.catch(() => {});
+    if (!this.isUpdateReady()) await this._check();
+    return this.isUpdateReady();
+  }
+
+  /** true, solange ein Update heruntergeladen wird. */
+  isDownloading() {
+    return !!this._dl;
+  }
+
+  async _runCheck() {
     if (this.disabled) {
       this.log.debug('Update-Check übersprungen: Auto-Update deaktiviert (kein Signaturschlüssel)');
       return;
@@ -424,7 +457,10 @@ class Updater {
   }
 
   /**
-   * Installer herunterladen (nur mit geprüftem Manifest)
+   * Installer herunterladen (nur mit geprüftem Manifest). Ein laufender
+   * Download desselben Installers (SHA-256) wird nicht ein zweites Mal
+   * gestartet; der Aufrufer wartet auf ihn. Ein anderer Installer wartet,
+   * bis der laufende Download fertig ist.
    */
   async _download() {
     const rel = this.latestRelease;
@@ -432,6 +468,29 @@ class Updater {
       this.log.warn('Kein geprüftes Update zum Herunterladen');
       return;
     }
+    while (this._dl) {
+      if (this._dl.sha256 === rel.sha256) {
+        this.log.info(`Update-Download läuft bereits (v${rel.version}) – warte darauf`);
+        await this._dl.promise.catch(() => {});
+        return;
+      }
+      await this._dl.promise.catch(() => {});
+    }
+    if (!this._isCurrent(rel)) return; // inzwischen ein anderes Angebot
+    const dl = { sha256: rel.sha256, promise: null };
+    dl.promise = this._downloadOnce(rel).finally(() => {
+      if (this._dl === dl) this._dl = null;
+    });
+    this._dl = dl;
+    await dl.promise;
+  }
+
+  /** Noch das aktuelle Angebot? (Ein neuer Check kann es ersetzt haben.) */
+  _isCurrent(rel) {
+    return !!this.latestRelease && this.latestRelease.sha256 === rel.sha256;
+  }
+
+  async _downloadOnce(rel) {
 
     try {
       fs.mkdirSync(this.downloadDir, { recursive: true });
@@ -442,7 +501,10 @@ class Updater {
       this._reject('Dateiname verlässt das Download-Verzeichnis');
       return;
     }
-    const partPath = `${filePath}.part`;
+    // Eigene .part-Datei pro Download: nichts anderes schreibt hinein oder
+    // löscht sie (früher teilten sich zwei Downloads `<Datei>.part`).
+    const partPath = `${filePath}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.part`;
+    this._removeStaleParts(path.basename(filePath));
 
     // Vorhandene Datei nur nach erneutem Hashen wiederverwenden.
     if (fs.existsSync(filePath)) {
@@ -455,6 +517,7 @@ class Updater {
         this.log.warn(`Zwischengespeichertes Update nicht lesbar (${filePath}): ${err.message}`);
       }
       if (accept) {
+        if (!this._isCurrent(rel)) return;
         this.log.info(`Update bereits heruntergeladen und geprüft: ${filePath}`);
         this.downloadPath = filePath;
         this._notifyReady();
@@ -472,7 +535,6 @@ class Updater {
 
     this.log.info(`Lade Update herunter: ${rel.downloadUrl}`);
 
-    try { fs.unlinkSync(partPath); } catch { /* nicht vorhanden */ }
     try {
       const res = await axios.get(rel.downloadUrl, {
         responseType: 'stream',
@@ -487,6 +549,11 @@ class Updater {
         try { fs.unlinkSync(partPath); } catch { /* best effort */ }
         return;
       }
+      if (!this._isCurrent(rel)) {
+        this.log.info(`Update v${rel.version} wurde inzwischen durch ein anderes Angebot ersetzt – verworfen`);
+        try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+        return;
+      }
       fs.renameSync(partPath, filePath);
       this.log.info(`Integrity-Check bestanden (${actual.size} Bytes, SHA-256 ${actual.sha256})`);
 
@@ -496,6 +563,19 @@ class Updater {
     } catch (err) {
       this.log.warn(`Update-Download fehlgeschlagen: ${err.message}`);
       try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+    }
+  }
+
+  /**
+   * Übrig gebliebene .part-Dateien dieses Installers (abgebrochener Download,
+   * Absturz) entfernen. Läuft nur, wenn kein anderer Download aktiv ist.
+   */
+  _removeStaleParts(fileName) {
+    let names = [];
+    try { names = fs.readdirSync(this.downloadDir); } catch { return; }
+    for (const name of names) {
+      if (!name.startsWith(`${fileName}.`) || !name.endsWith('.part')) continue;
+      try { fs.unlinkSync(path.join(this.downloadDir, name)); } catch { /* best effort */ }
     }
   }
 
@@ -561,6 +641,8 @@ class Updater {
    * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
    */
   async _verifyInstaller() {
+    // Ein laufender Download ersetzt die Datei gleich: erst auf ihn warten.
+    if (this._dl) await this._dl.promise.catch(() => {});
     if (this.disabled || !this.latestRelease?.sha256 || !this.downloadPath || !fs.existsSync(this.downloadPath)) {
       this.log.error('Kein geprüftes Update gefunden');
       return { ok: false, code: 'not_ready', message: 'Kein geprüftes Update bereit' };

@@ -85,6 +85,8 @@
   "update": {
     "title": "Update",
     "available": "Version {{ version }} available",
+    "availableToast": "Version {{ version }} available – click to install.",
+    "downloading": "Downloading update {{ version }} – the installation starts automatically afterwards.",
     "readyToInstall": "Update ready to install",
     "install": "Install now",
     "later": "Later",
