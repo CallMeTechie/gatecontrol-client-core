@@ -290,3 +290,33 @@ describe('wifi-scan: struct layout', () => {
     for (const k of ['rssi', 'linkQuality', 'capability', 'ieOffset', 'ieSize']) assert.equal(koffi.offsetof(bss, k), L.BSS[k], k);
   });
 });
+
+describe('wifi-scan: copying native memory', () => {
+  let koffi = null;
+  try { koffi = require('koffi'); } catch { /* not installed for this platform */ }
+
+  it("copies without koffi.view (Electron's V8 sandbox forbids external buffers)", { skip: koffi ? false : 'koffi not available' }, () => {
+    const mem = koffi.alloc('uint8_t', 8);
+    koffi.encode(mem, 'uint8_t', [1, 2, 3, 4, 250, 251, 252, 253], 8);
+    const noView = { ...koffi, decode: koffi.decode, view() { throw new Error('koffi.view is forbidden in Electron'); } };
+    const copy = ws.copyNative(noView, mem, 8);
+    assert.ok(Buffer.isBuffer(copy));
+    assert.deepEqual([...copy], [1, 2, 3, 4, 250, 251, 252, 253]);
+    // a copy: changing the native memory afterwards doesn't change it
+    koffi.encode(mem, 'uint8_t', [0, 0, 0, 0, 0, 0, 0, 0], 8);
+    assert.deepEqual([...copy], [1, 2, 3, 4, 250, 251, 252, 253]);
+    assert.equal(ws.copyNative(noView, mem, 0).length, 0);
+    koffi.free(mem);
+  });
+
+  it('no service reads native memory through koffi.view', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const dir = path.join(__dirname, '..', 'src');
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    for (const f of files) {
+      const code = fs.readFileSync(path.join(dir, f), 'utf8').replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, '');
+      assert.ok(!/koffi\.view\s*\(/.test(code), `${f} uses koffi.view`);
+    }
+  });
+});
