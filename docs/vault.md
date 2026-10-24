@@ -14,9 +14,10 @@ Everything is end-to-end encrypted: the server only ever sees ciphertext.
 | `createBridgeApi()` → `window.gatecontrol.vault` | Renderer API |
 | `vaultUtil` (`src/utils/vault.js`) | Pure helpers: server JSON, merge of the offline copy, entry JSON v1, TOTP (RFC 6238), password generator / strength, matching by web address, import (Bitwarden JSON; CSV of Chrome / Edge, Bitwarden, 1Password, KeePass, Firefox), push context |
 | `wifiScan` (`src/services/wifi-scan.js`) | Wi-Fi networks nearby for Wi-Fi entries (Windows Native Wifi API via koffi), see below |
-| i18n `vault.*` | The personal vault's default name, the suffix of conflict copies |
+| `totpQr` (`src/services/totp-qr.js`), `totpQrUtil` (`src/utils/totp-qr.js`) | 2FA keys from QR codes (screen, clipboard, image file) for the entry editor, see below |
+| i18n `vault.*` | The personal vault's default name, the suffix of conflict copies, the file dialog of "QR-Code scannen" |
 
-No new dependency (libsodium-wrappers-sumo is already there for `vaultCrypto`).
+No new runtime dependency (libsodium-wrappers-sumo is already there for `vaultCrypto`, jsQR — pinned to 1.4.0 — for the QR codes); `qrcode-generator` 1.4.4 (MIT) draws the QR codes of the tests (dev only).
 
 ## What stays where
 
@@ -94,3 +95,50 @@ The edit form of a Wi-Fi entry offers "WLAN in der Nähe suchen": IPC
 - For `location_denied` the page opens `ms-settings:privacy-location` through
   `shell:open-external`, which allows exactly that settings page besides
   http(s) links (`isAllowedSettingsUri`, `src/utils/external-url.js`).
+
+## 2FA key from a QR code ("QR-Code scannen")
+
+Next to "2FA-Schlüssel" (entries of type login and 2FA code) the edit form offers
+"QR-Code scannen" with three sources: IPC `vault:totp-qr` →
+`window.gatecontrol.vault.totpQr(source)` →
+`{ ok, uris: ['otpauth://totp/…'] }` (at least one), else `{ ok: false, code }`.
+
+- Needs the vault **unlocked** (`locked` otherwise, also when it locked while the
+  scan ran) and counts as activity. One scan at a time (a second call waits).
+- `source: 'screen'`: every display through Electron's `desktopCapturer`
+  (`types: ['screen']`) at its native resolution (`thumbnailSize`: the largest
+  display size × scale factor). When nothing is found and the main window is
+  visible, the window is made fully transparent (`setOpacity(0)`, ~250 ms for
+  the compositor) for one more capture and restored right after: it may cover
+  the website's QR code. Windows / macOS only; elsewhere there is one capture.
+- `source: 'clipboard'`: `clipboard.readImage()` (e.g. after Windows + Shift + S).
+- `source: 'file'`: `dialog.showOpenDialog` (PNG, JPG, GIF, BMP, WebP, ≤ 30 MB).
+  PNG / JPG through `nativeImage`; GIF, BMP and WebP through the Windows shell's
+  thumbnail (`nativeImage.createThumbnailFromPath`, 2048 px), elsewhere
+  `unsupported`.
+- Decoding: [jsQR](https://github.com/cozmo/jsQR) 1.4.0 (Apache-2.0, pure
+  JavaScript, no native build) in a worker thread
+  (`src/services/totp-qr-worker.js`; in the main process when the worker cannot
+  start). Bitmaps (BGRA from `toBitmap()`) never reach the renderer. Images
+  ≥ 2000 px wide are searched at half size first (normal and light-on-dark
+  codes; ~0.4 s for a 4K screen), then at full size (small codes); smaller
+  ones at full size. A found code is painted white and the image searched
+  again (several codes); when nothing is found, four overlapping tiles are
+  searched (jsQR mixes up two codes of the same size).
+- Only `otpauth://totp/…` URIs that the vault's own parser accepts
+  (`parseTotp`: SHA1 / SHA256 / SHA512, 6–8 digits) are returned, deduplicated.
+  `otpauth-migration://offline?data=…` (Google Authenticator's "Konten
+  exportieren"; protobuf `MigrationPayload` with `OtpParameters { secret,
+  name, issuer, algorithm, digits, type }`) becomes one `otpauth://totp/Issuer:Account?secret=…&issuer=…`
+  URI per TOTP account (HOTP and MD5 accounts are left out).
+- Codes: `none_found` (no QR code with a 2FA key), `hotp` (only
+  `otpauth://hotp` codes: "HOTP wird nicht unterstützt"), `invalid_code`
+  (an otpauth code without a usable key), `no_image` (no image in the
+  clipboard), `unsupported` (image format, or no screen capture), `cancelled`
+  (file dialog closed), `failed`.
+- The page puts the chosen URI into the 2FA field (digits, period and algorithm
+  stay in it), fills the title from the issuer / account while it is empty and,
+  for logins, the user name from the account when it is empty and looks like an
+  e-mail address or user name. Several codes: the person picks one.
+- Neither images nor URIs are logged (only the source, the number of codes or
+  the code).
