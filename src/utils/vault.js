@@ -912,6 +912,64 @@ function pushContext(n) {
   };
 }
 
+// ── Wi-Fi: the QR code's text and shares (plugin 1.4.0, README "WLAN-Freigaben") ─────────
+
+const SHARE_TARGETS = ['wall', 'portal'];
+const SHARE_DURATIONS = ['5m', '1h', '24h', 'forever'];
+const SHARE_SECURITY = ['WPA', 'WEP', 'SAE', 'nopass'];
+
+const fieldOf = (data, k) => (isObj(data) && isObj(data.fields) && typeof data.fields[k] === 'string' ? data.fields[k] : '');
+
+/**
+ * The Wi-Fi of an entry as its QR code and a share need it → { ssid, security: 'WPA'|'WEP'|'SAE'|'nopass',
+ * password ('' for nopass), hidden } or null without a network name. The same rules as the portal tab
+ * (VaultLogic.wifiOf) and Android (VaultWifiQr): no password or security none/offen/open/keine → nopass; WEP → WEP;
+ * WPA3/SAE without WPA2 → SAE; else WPA. hidden: the field `hidden` is true/1/ja/yes.
+ */
+function wifiOf(data) {
+  const ssid = fieldOf(data, 'ssid');
+  if (!ssid) return null;
+  const pw = fieldOf(data, 'password');
+  const sec = fieldOf(data, 'security').toUpperCase();
+  let t = 'WPA';
+  if (!pw || /^(NONE|OFFEN|OPEN|KEINE)$/.test(sec)) t = 'nopass';
+  else if (/WEP/.test(sec)) t = 'WEP';
+  else if (/SAE|WPA3/.test(sec) && !/WPA2/.test(sec)) t = 'SAE';
+  return { ssid, security: t, password: t === 'nopass' ? '' : pw, hidden: /^(true|1|ja|yes)$/i.test(fieldOf(data, 'hidden').trim()) };
+}
+
+/** WIFI:T:<type>;S:<ssid>;P:<password>;H:true;; of wifiOf(…) — \ ; , : " escaped with \. */
+function wifiText(w) {
+  const esc = (v) => String(v == null ? '' : v).replace(/([\\;,:"])/g, '\\$1');
+  return `WIFI:T:${w.security};S:${esc(w.ssid)};${w.security === 'nopass' ? '' : `P:${esc(w.password)};`}${w.hidden ? 'H:true;' : ''};`;
+}
+
+/** Does a running share still hold what the entry holds? */
+function wifiSame(data, share) {
+  const w = wifiOf(data);
+  return !!(w && isObj(share) && w.ssid === share.ssid && w.security === share.security && w.password === (share.password || '') && w.hidden === (share.hidden === true));
+}
+
+/** One share of GET wifi-shares → a checked record (with the copy, password included), or null. */
+function parseShare(o) {
+  if (!isObj(o) || typeof o.id !== 'string' || !EMERGENCY_ID_RE.test(o.id) || !isId(o.itemId) || !SHARE_TARGETS.includes(o.target)) return null;
+  if (typeof o.ssid !== 'string' || !SHARE_SECURITY.includes(o.security)) return null;
+  const by = isObj(o.createdBy) ? o.createdBy : {};
+  return {
+    id: o.id, itemId: o.itemId, vaultId: isId(o.vaultId) ? o.vaultId : null, target: o.target,
+    ssid: o.ssid.slice(0, 64), security: o.security, password: typeof o.password === 'string' ? o.password.slice(0, 128) : '', hidden: o.hidden === true,
+    expiresAt: typeof o.expiresAt === 'string' && Number.isFinite(Date.parse(o.expiresAt)) ? o.expiresAt : null,
+    createdAt: str(o, 'createdAt'), createdBy: (typeof by.name === 'string' ? by.name : '').slice(0, 120), canEnd: o.canEnd === true,
+  };
+}
+
+/** GET wifi-shares → { shares, targets: { wall, portal } } or null. */
+function parseShares(o) {
+  if (!isObj(o) || !Array.isArray(o.shares)) return null;
+  const t = isObj(o.targets) ? o.targets : {};
+  return { shares: o.shares.map(parseShare).filter(Boolean), targets: { wall: t.wall === true, portal: t.portal !== false } };
+}
+
 module.exports = {
   PLUGIN_ID, APP_ROUTE, TOPIC_PREFIX, API_BASE, ID_RE, EMERGENCY_ID_RE,
   ROLES, ITEM_TYPES, EMERGENCY_STEPS, AUTO_LOCK_CHOICES, DEFAULT_AUTO_LOCK, BATCH_BYTES, BATCH_ITEMS, SYNC_LIMIT,
@@ -926,4 +984,5 @@ module.exports = {
   urlHost, siteOf, fitsDomain, fitsApp, matchEntries,
   csvRows, parseImport, importCounts, withoutDuplicates, duplicateFlags,
   pushContext,
+  SHARE_TARGETS, SHARE_DURATIONS, SHARE_SECURITY, wifiOf, wifiText, wifiSame, parseShare, parseShares,
 };

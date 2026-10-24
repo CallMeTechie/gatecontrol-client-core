@@ -363,6 +363,11 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       setSettings:      (patch) => ipcRenderer.invoke('vault:settings:set', patch && typeof patch === 'object' ? patch : {}),
       // Wi-Fi networks nearby (Windows): { ok, networks: [{ ssid, security, signal, connected }] } | { ok: false, code }
       wifiScan:         () => ipcRenderer.invoke('vault:wifi-scan'),
+      // Wi-Fi shares (plugin 1.4.0): a Wi-Fi entry on the wall tablet / the portal's start page — main sends the copy
+      wifiShares:       (id) => ipcRenderer.invoke('vault:wifi-shares', { id }),
+      // target: 'wall' | 'portal'; duration: '5m' | '1h' | '24h' | 'forever' | 'keep'
+      wifiShare:        (id, target, duration) => ipcRenderer.invoke('vault:wifi-share', { id, target, duration }),
+      wifiShareEnd:     (shareId) => ipcRenderer.invoke('vault:wifi-share-end', { shareId }),
       // 2FA key from a QR code: 'screen' | 'clipboard' | 'file' → { ok, uris: ['otpauth://totp/…'] } | { ok: false, code }
       totpQr:           (source) => ipcRenderer.invoke('vault:totp-qr', { source: typeof source === 'string' ? source : '' }),
       touch:            () => ipcRenderer.invoke('vault:touch'),
