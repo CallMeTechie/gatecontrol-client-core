@@ -795,10 +795,16 @@ class NotificationCenter extends EventEmitter {
    * Show a local notification through the same wrapper (the apps' own
    * "VPN verbunden" etc.). Respects DND and the toast setting unless
    * opts.force. Returns the Notification or null.
+   *
+   * opts.actions: buttons on the Windows toast ([{ label, onClick }], max. 3),
+   * e.g. "Jetzt installieren" on the update toast. Like the push buttons they
+   * use protocol activation with a single-use nonce (needs the app's
+   * protocol); the nonce lives as long as the toast is known here.
    * @param {{ title: string, body?: string, priority?: string, silent?: boolean,
-   *   collapseKey?: string, force?: boolean, onClick?: Function }} opts
+   *   collapseKey?: string, force?: boolean, onClick?: Function,
+   *   actions?: Array<{ label: string, onClick: Function }> }} opts
    */
-  notify({ title, body = '', priority = 'normal', silent = false, collapseKey = null, force = false, onClick = null } = {}) {
+  notify({ title, body = '', priority = 'normal', silent = false, collapseKey = null, force = false, onClick = null, actions = null } = {}) {
     if (!title) return null;
     const entry = {
       id: -1, seq: 0, title: str(title, 120), body: str(body, 1000),
@@ -807,7 +813,10 @@ class NotificationCenter extends EventEmitter {
     };
     const decision = force ? { show: true, silent: priority === 'info' } : toastDecision(entry, this._settings(), this.now());
     if (!decision.show) return null;
-    return this._showToast(entry, { ...decision, silent: decision.silent || silent }, onClick);
+    const local = Array.isArray(actions)
+      ? actions.filter((a) => a && typeof a.label === 'string' && a.label && typeof a.onClick === 'function').slice(0, 3)
+      : [];
+    return this._showToast(entry, { ...decision, silent: decision.silent || silent }, onClick, local);
   }
 
   _NotificationClass() {
@@ -820,7 +829,7 @@ class NotificationCenter extends EventEmitter {
     return this._Notification;
   }
 
-  _showToast(entry, decision, onClick = null) {
+  _showToast(entry, decision, onClick = null, localActions = []) {
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
 
@@ -835,6 +844,7 @@ class NotificationCenter extends EventEmitter {
     const topic = entry.topic ? this._topics.find((x) => x.id === entry.topic) : null;
     const attribution = topic ? topic.label : '';
 
+    const id = entry.id > 0 ? entry.id : `local:${crypto.randomBytes(6).toString('hex')}`;
     let options;
     if (this.platform === 'win32') {
       const buttons = [];
@@ -843,6 +853,12 @@ class NotificationCenter extends EventEmitter {
           const nonce = crypto.randomBytes(12).toString('base64url');
           this._nonces.set(nonce, { id: entry.id, actionId: a.id });
           buttons.push({ label: a.label, nonce });
+        }
+      } else if (this.protocol && localActions.length) {
+        for (const a of localActions) {
+          const nonce = crypto.randomBytes(12).toString('base64url');
+          this._nonces.set(nonce, { id, run: a.onClick });
+          buttons.push({ label: str(a.label, 40), nonce });
         }
       }
       options = {
@@ -864,9 +880,9 @@ class NotificationCenter extends EventEmitter {
       n = new N(options);
     } catch (err) {
       this.log.warn(`Notification could not be created: ${err.message}`);
+      for (const [nonce, v] of this._nonces) if (v.id === id) this._nonces.delete(nonce);
       return null;
     }
-    const id = entry.id > 0 ? entry.id : `local:${crypto.randomBytes(6).toString('hex')}`;
     this._toasts.set(id, { notification: n, collapseKey: key });
     if (key) this._byCollapse.set(key, id);
     // References stay after the banner disappeared: close() also removes a
@@ -1002,6 +1018,11 @@ class NotificationCenter extends EventEmitter {
     }
     this._nonces.delete(nonce);
     this._closeToast(hit.id);
+    if (typeof hit.run === 'function') {
+      // Button of a local toast (e.g. "Jetzt installieren").
+      try { hit.run(); } catch (err) { this.log.warn(`Toast action failed: ${err.message}`); }
+      return true;
+    }
     this.performAction(hit.id, hit.actionId).catch((err) => this.log.warn(`Notification action failed: ${err.message}`));
     return true;
   }

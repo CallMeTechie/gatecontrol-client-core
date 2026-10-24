@@ -18,6 +18,13 @@
  * off through shell.openPath() without looking at the result, so a failed
  * start left the user offline with nothing happening.
  *
+ * No verified update yet (still downloading, never checked, or the file
+ * was dropped as changed): the click waits for the running download or
+ * checks and downloads now (updater.ensureUpdate()), reports that through
+ * onStatus('downloading') and then installs. A file that fails the re-hash
+ * is downloaded once more and checked again. Before, such a click only
+ * logged "kein geprüftes Update bereit" and did nothing.
+ *
  * Result: { ok: true, via } | { ok: false, code, message?, vpnRestored? }
  * (code: not_ready | busy | verify_failed | launch_failed | exited).
  */
@@ -34,11 +41,33 @@ function noopLog() { return { info() {}, warn() {}, error() {}, debug() {} }; }
  * @param {() => Promise<void>} [deps.liftFirewall] - kill switch off for the installer
  * @param {() => void} deps.quit - end the app (the installer is running)
  * @param {number} [deps.quitDelayMs=300]
+ * @param {(state: 'downloading', info: {version: string|null}) => void} [deps.onStatus]
+ *   - visible status while the update is fetched first (toast / window)
  * @returns {() => Promise<object>} installUpdate()
  */
-function createUpdateInstaller({ getUpdater, log, isConnected, disconnect, reconnect, liftFirewall = async () => {}, quit, quitDelayMs = 300 }) {
+function createUpdateInstaller({ getUpdater, log, isConnected, disconnect, reconnect, liftFirewall = async () => {}, quit, quitDelayMs = 300, onStatus = null }) {
   const L = log || noopLog();
   let running = null;
+
+  const status = (state, updater) => {
+    if (typeof onStatus !== 'function') return;
+    const version = (updater && updater.latestRelease && updater.latestRelease.version) || null;
+    try { onStatus(state, { version }); } catch (err) { L.warn(`Update-Status-Anzeige fehlgeschlagen: ${err && err.message}`); }
+  };
+
+  // Verified update ready, or fetched now (waits for a running download).
+  async function ensureReady(updater, { force = false } = {}) {
+    if (!force && updater.isUpdateReady() && !(updater.isDownloading && updater.isDownloading())) return true;
+    if (typeof updater.ensureUpdate !== 'function') return updater.isUpdateReady();
+    L.info('Update-Installation angefordert – geprüftes Update wird zuerst heruntergeladen');
+    status('downloading', updater);
+    try {
+      return !!(await updater.ensureUpdate());
+    } catch (err) {
+      L.warn(`Update konnte nicht geladen werden: ${err && err.message}`);
+      return false;
+    }
+  }
 
   // The verified file is gone or broken: fetch it again in the background.
   const redownload = (updater) => {
@@ -47,13 +76,18 @@ function createUpdateInstaller({ getUpdater, log, isConnected, disconnect, recon
 
   async function run() {
     const updater = getUpdater();
-    if (!updater || !updater.isUpdateReady()) {
-      L.warn('Update-Installation angefordert, aber kein geprüftes Update bereit');
+    if (!updater || !(await ensureReady(updater))) {
+      L.warn('Update-Installation angefordert, aber kein geprüftes Update verfügbar');
       return { ok: false, code: 'not_ready' };
     }
     L.info('Update-Installation gestartet ...');
 
-    const prep = await updater.prepareInstall();
+    let prep = await updater.prepareInstall();
+    if (!prep.ok && prep.code === 'verify_failed' && typeof updater.ensureUpdate === 'function') {
+      // The file no longer matches the signed manifest (dropped): fetch it once more.
+      L.warn('Installer passte nicht zum Manifest – lade das Update neu und prüfe erneut');
+      if (await ensureReady(updater, { force: true })) prep = await updater.prepareInstall();
+    }
     if (!prep.ok) {
       L.error(`Update-Installation abgebrochen (${prep.code}): ${prep.message || ''} – VPN bleibt verbunden`);
       if (prep.code === 'verify_failed') redownload(updater);

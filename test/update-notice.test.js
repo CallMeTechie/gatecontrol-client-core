@@ -7,7 +7,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const i18n = require('../src/i18n');
-const { updateMenuItems, mandatoryNotice } = require('../src/utils/update-notice');
+const { updateMenuItems, mandatoryNotice, updateToast } = require('../src/utils/update-notice');
 
 i18n.setLocale('de');
 const t = i18n.t;
@@ -47,5 +47,30 @@ describe('mandatoryNotice', () => {
     assert.equal(en.title, 'Update required');
     assert.match(en.body, /requires this update/);
     i18n.setLocale('de');
+  });
+});
+
+describe('updateToast', () => {
+  it('optional update: click and "Jetzt installieren" both install', () => {
+    let installs = 0;
+    const o = updateToast({ version: '1.43.1' }, { t, install: () => installs++, productName: 'GateControl Pro' });
+    assert.equal(o.title, 'GateControl Pro');
+    assert.equal(o.body, 'Version 1.43.1 verfügbar – zum Installieren klicken.');
+    assert.equal(o.collapseKey, 'update');
+    assert.equal(o.force, false);
+    assert.deepEqual(o.actions.map((a) => a.label), ['Jetzt installieren']);
+    o.onClick();
+    o.actions[0].onClick();
+    assert.equal(installs, 2);
+  });
+
+  it('mandatory update: forced, names the required version, click installs', () => {
+    let installs = 0;
+    const o = updateToast({ version: '2.0.0', minVersion: '1.9.0', mandatory: true }, { t, install: () => installs++, productName: 'GateControl' });
+    assert.equal(o.title, 'GateControl - Update erforderlich');
+    assert.match(o.body, /1\.9\.0/);
+    assert.equal(o.force, true);
+    o.onClick();
+    assert.equal(installs, 1);
   });
 });
