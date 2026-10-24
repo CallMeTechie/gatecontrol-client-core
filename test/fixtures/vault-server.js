@@ -15,7 +15,7 @@ const { MessengerError } = require('../../src/services/messenger-api');
 
 const API = '/api/v1/client/plugins/gatecontrol-vault/api/';
 const PLUGINS = '/api/v1/client/plugins';
-const STATUS = { invalid: 400, forbidden: 403, no_account: 404, not_found: 404, exists: 409, conflict: 409, stale_key: 409, rekeying: 409, last_manager: 409, limit: 409 };
+const STATUS = { invalid: 400, forbidden: 403, no_account: 404, not_found: 404, exists: 409, conflict: 409, stale_key: 409, rekeying: 409, last_manager: 409, limit: 409, no_wall: 409 };
 const ID_RE = /^[A-Za-z0-9_-]{16,40}$/;
 const B64 = /^[A-Za-z0-9_-]+$/;
 
@@ -27,6 +27,8 @@ function vaultServer({ people = [{ id: 2, name: 'Anna' }, { id: 3, name: 'Marc' 
     items: new Map(),        // id → item
     history: new Map(),      // item id → [{ rev, keyRev, blob, updatedAt, updatedBy, device }]
     emergency: new Map(),    // id → { id, grantor, grantee, waitHours, status, sealedKey, requestedAt, releaseAt, grantedAt }
+    shares: new Map(),       // id → Wi-Fi share (plugin 1.4.0): { id, itemId, vaultId, target, ssid, security, password, hidden, expiresAt, createdBy }
+    wall: true,              // the Familie plugin with a wall tablet is there (targets.wall)
     seq: 0,
     offline: false,
     plugin,
@@ -326,6 +328,35 @@ function vaultServer({ people = [{ id: 2, name: 'Anna' }, { id: 3, name: 'Marc' 
           const rows = [...srv.items.values()].filter((it) => ids.includes(it.vaultId) && it.state !== 'purged' && it.seq > since).sort((x, y) => x.seq - y.seq);
           return { seq: srv.seq, items: rows.map(itemView), more: false, next: srv.seq };
         }
+      }
+    }
+    if (a === 'wifi-shares') {
+      need(uid);
+      const DUR = { '5m': 5 * 60000, '1h': 3600000, '24h': 86400000, forever: null };
+      const view = (x) => ({ ...x, createdBy: { id: x.createdBy, name: srv.users.get(x.createdBy).name }, canEnd: canWrite(member(x.vaultId, uid).role) });
+      if (n === 1 && method === 'GET') {
+        const mine = [...srv.shares.values()].filter((x) => { const v = srv.vaults.get(x.vaultId); return v && v.members.has(uid) && (!q.item || x.itemId === q.item); });
+        return { shares: mine.map(view), targets: { wall: srv.wall, portal: true } };
+      }
+      if (n === 1 && method === 'POST') {
+        const it = srv.items.get(id(B.itemId));
+        if (!it || it.state === 'purged') throw fail('not_found');
+        needRole(it.vaultId, uid, 'write');
+        if (!['wall', 'portal'].includes(B.target) || !(B.duration in DUR || B.duration === 'keep')) throw fail('invalid');
+        if (B.target === 'wall' && !srv.wall) throw fail('no_wall');
+        let x = [...srv.shares.values()].find((y) => y.itemId === it.id && y.target === B.target);
+        if (B.duration === 'keep' && !x) throw fail('not_found');
+        const expiresAt = B.duration === 'keep' ? x.expiresAt : (DUR[B.duration] == null ? null : new Date(Date.now() + DUR[B.duration]).toISOString());
+        if (!x) { x = { id: crypto.randomBytes(12).toString('hex'), itemId: it.id, vaultId: it.vaultId, target: B.target, createdBy: uid }; srv.shares.set(x.id, x); }
+        Object.assign(x, { ssid: B.ssid, security: B.security, password: B.password, hidden: B.hidden === true, expiresAt });
+        return { share: view(x) };
+      }
+      if (n === 2 && method === 'DELETE') {
+        const x = srv.shares.get(b);
+        if (!x) throw fail('not_found');
+        needRole(x.vaultId, uid, 'write');
+        srv.shares.delete(b);
+        return { removed: b };
       }
     }
     throw fail('not_found');

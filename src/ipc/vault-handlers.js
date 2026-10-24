@@ -60,6 +60,12 @@
  *                          codes no_adapter, service_off, radio_off, location_denied, failed)
  *   vault:totp-qr          ({ source: 'screen'|'clipboard'|'file' }) → { ok, uris: ['otpauth://totp/…'] }   (unlocked;
  *                          codes none_found, hotp, invalid_code, no_image, unsupported, cancelled, failed)
+ *   vault:wifi-shares      ({ id }) → { ok, shares: [{ id, target, expiresAt, createdBy, canEnd, current }], targets: { wall, portal } }
+ *                          (a Wi-Fi entry's running shares — never the password; current: false → offer "Aktualisieren")
+ *   vault:wifi-share       ({ id, target: 'wall'|'portal', duration: '5m'|'1h'|'24h'|'forever'|'keep' }) → { ok, share }
+ *                          (main decrypts the entry and sends the copy; codes forbidden, conflict, no_wall, unavailable,
+ *                          limit, rate_limited)
+ *   vault:wifi-share-end   ({ shareId }) → { ok }
  *   vault:touch            () → { ok }
  *   vault:notices:clear    () → { ok }
  *
@@ -220,6 +226,11 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   }));
   // Wi-Fi networks nearby for a Wi-Fi entry: the person asked for it (activity), needs the vault unlocked
   handle('vault:wifi-scan', wrap(() => s.wifiScan()));
+  // Wi-Fi shares (plugin 1.4.0): the renderer names the entry, main builds the copy from the decrypted entry
+  handle('vault:wifi-shares', wrap(async (a) => (vault.isId(a.id) ? s.wifiShares(a.id) : invalid()), passive));
+  handle('vault:wifi-share', wrap(async (a) => (vault.isId(a.id) && vault.SHARE_TARGETS.includes(a.target)
+    && (vault.SHARE_DURATIONS.includes(a.duration) || a.duration === 'keep') ? s.wifiShare(a.id, a.target, a.duration) : invalid())));
+  handle('vault:wifi-share-end', wrap(async (a) => (emergencyId(a.shareId) ? s.wifiShareEnd(a.shareId) : invalid())));
   // 2FA key from a QR code (screen, clipboard image, image file): activity, needs the vault unlocked
   handle('vault:totp-qr', wrap(async (a) => (QR_SOURCES.includes(a.source)
     ? s.totpQr({ source: a.source, getWindow: getMainWindow }) : invalid())));

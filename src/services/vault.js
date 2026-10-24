@@ -2001,6 +2001,60 @@ class VaultService extends EventEmitter {
     }
   }
 
+  // ── Wi-Fi shares (plugin 1.4.0, README "WLAN-Freigaben") ─
+
+  /** A Wi-Fi entry of the person's own vaults (not an emergency view) and its Wi-Fi, or invalid / not_found. */
+  _wifiEntry(id) {
+    const e = this._find(id);
+    const w = e.data && e.data.type === 'wifi' ? vault.wifiOf(e.data) : null;
+    if (!w) throw fail('invalid');
+    return { e, w };
+  }
+
+  /**
+   * The running shares of a Wi-Fi entry → { shares: [{ id, target, expiresAt, createdBy, canEnd, current }],
+   * targets: { wall, portal } }. Never the password: the renderer only needs where, how long, who and whether
+   * the share still shows what the entry holds (`current: false` → "Aktualisieren").
+   */
+  async wifiShares(id) {
+    await this._ensureLoaded();
+    const { e } = this._wifiEntry(id);
+    const r = vault.parseShares(await this._req('GET', 'wifi-shares', { params: { item: id } }));
+    if (!r) throw fail('invalid_answer');
+    return {
+      shares: r.shares.filter((x) => x.itemId === id).map((x) => ({
+        id: x.id, target: x.target, expiresAt: x.expiresAt, createdBy: x.createdBy, canEnd: x.canEnd, current: vault.wifiSame(e.data, x),
+      })),
+      targets: r.targets,
+    };
+  }
+
+  /**
+   * Show a Wi-Fi entry on the wall tablet or the portal's start page: this device decrypts the entry and sends a copy
+   * of network name, security, password and hidden (nothing else) → { share: { id, target, expiresAt } }.
+   * duration: '5m' | '1h' | '24h' | 'forever', or 'keep' (renew the copy of a running share, same end).
+   * Codes of the plugin: `forbidden` (read role), `conflict` (in the trash), `no_wall`, `unavailable`, `limit`,
+   * `rate_limited`.
+   */
+  async wifiShare(id, target, duration) {
+    await this._ensureLoaded();
+    if (!vault.SHARE_TARGETS.includes(target) || !(vault.SHARE_DURATIONS.includes(duration) || duration === 'keep')) throw fail('invalid');
+    const { e, w } = this._wifiEntry(id);
+    if (e.trashed) throw fail('conflict');
+    const r = await this._req('POST', 'wifi-shares', { body: { itemId: id, target, duration, ssid: w.ssid, security: w.security, password: w.password, hidden: w.hidden } });
+    const share = vault.parseShare(r && r.share);
+    if (!share) throw fail('invalid_answer');
+    return { share: { id: share.id, target: share.target, expiresAt: share.expiresAt } };
+  }
+
+  /** End a share now (write role in its vault). */
+  async wifiShareEnd(shareId) {
+    await this._ensureLoaded();
+    this._needKeys();
+    if (typeof shareId !== 'string' || !vault.EMERGENCY_ID_RE.test(shareId)) throw fail('invalid');
+    await this._req('DELETE', `wifi-shares/${shareId}`);
+  }
+
   /**
    * 2FA keys from a QR code for the entry editor ("QR-Code scannen", services/totp-qr.js):
    * { source: 'screen' | 'clipboard' | 'file', getWindow? } → { uris: ['otpauth://totp/…'] } (at least one;
