@@ -320,7 +320,7 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `get(id)` | one entry |
 | `refresh()` | replace the cache with the server inbox (also runs after every `hello`) |
 | `markRead(ids \| 'all')` | local + `ack read`; failed acks are retried after the next `hello` |
-| `performAction(id, actionId)` | `open_app_route` → `navigate`; `open_portal` → `openPortal(target)` (portal tab via the login link with `next`, or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; always acks with `action` |
+| `performAction(id, actionId)` | `open_app_route` → `navigate`; `open_portal` → `openPortal(target)` (portal tab via the login link with `next`, or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; `callback` (answer button of a plugin push, handed to the plugin by the server); always acks with `action`; `ack` / `callback` are remembered as the entry's `acted` (local only) |
 | `getPrefs()` / `setPrefs(patch)` | `{ enabled, direct, toasts, criticalBypass, mutedTopics, dndUntil, topics }` |
 | `setDnd({ minutes } \| { until } \| null)` / `dndState()` | "Nicht stören bis" |
 | `muteTopic(topic, ms)` | local mute |
