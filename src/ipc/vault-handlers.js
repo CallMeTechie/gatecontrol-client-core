@@ -53,6 +53,8 @@
  *   vault:copy             ({ id, field, emergencyId? } | { text }) → { ok, clearsInMs }
  *   vault:wifi-scan        () → { ok, networks: [{ ssid, security, signal, connected }] }   (unlocked; Windows, takes ~4 s;
  *                          codes no_adapter, service_off, radio_off, location_denied, failed)
+ *   vault:totp-qr          ({ source: 'screen'|'clipboard'|'file' }) → { ok, uris: ['otpauth://totp/…'] }   (unlocked;
+ *                          codes none_found, hotp, invalid_code, no_image, unsupported, cancelled, failed)
  *   vault:touch            () → { ok }
  *   vault:notices:clear    () → { ok }
  *
@@ -69,6 +71,7 @@ const VAULT_EVENTS = {
 
 const MAX_SECRET = 1024;              // passwords, recovery key
 const MAX_IMPORT = 20 * 1024 * 1024;  // text of an export file
+const QR_SOURCES = ['screen', 'clipboard', 'file'];
 
 function fail(err) {
   return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
@@ -205,6 +208,9 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   }));
   // Wi-Fi networks nearby for a Wi-Fi entry: the person asked for it (activity), needs the vault unlocked
   handle('vault:wifi-scan', wrap(() => s.wifiScan()));
+  // 2FA key from a QR code (screen, clipboard image, image file): activity, needs the vault unlocked
+  handle('vault:totp-qr', wrap(async (a) => (QR_SOURCES.includes(a.source)
+    ? s.totpQr({ source: a.source, getWindow: getMainWindow }) : invalid())));
   handle('vault:touch', wrap(async () => {}));
   handle('vault:notices:clear', wrap(async () => { s.clearNotices(); }));
 

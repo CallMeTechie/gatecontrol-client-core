@@ -164,4 +164,7 @@ Object.defineProperties(module.exports, {
   vaultCrypto: { enumerable: true, get: () => require('./utils/vault-crypto') },
   // Wi-Fi networks nearby (Windows Native Wifi API via koffi, loaded on the first scan)
   wifiScan: { enumerable: true, get: () => require('./services/wifi-scan') },
+  // 2FA keys from QR codes (screen / clipboard / image file; jsQR in a worker thread)
+  totpQr: { enumerable: true, get: () => require('./services/totp-qr') },
+  totpQrUtil: { enumerable: true, get: () => require('./utils/totp-qr') },
 });

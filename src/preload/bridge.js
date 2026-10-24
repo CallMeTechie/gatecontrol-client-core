@@ -359,6 +359,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       setSettings:      (patch) => ipcRenderer.invoke('vault:settings:set', patch && typeof patch === 'object' ? patch : {}),
       // Wi-Fi networks nearby (Windows): { ok, networks: [{ ssid, security, signal, connected }] } | { ok: false, code }
       wifiScan:         () => ipcRenderer.invoke('vault:wifi-scan'),
+      // 2FA key from a QR code: 'screen' | 'clipboard' | 'file' → { ok, uris: ['otpauth://totp/…'] } | { ok: false, code }
+      totpQr:           (source) => ipcRenderer.invoke('vault:totp-qr', { source: typeof source === 'string' ? source : '' }),
       touch:            () => ipcRenderer.invoke('vault:touch'),
       clearNotices:     () => ipcRenderer.invoke('vault:notices:clear'),
       onState:          (cb) => subscribe('vault:state', cb),

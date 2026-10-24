@@ -543,6 +543,30 @@ describe('VaultService: auto-lock, clipboard, generator, import, emergency, push
     assert.equal(clip.text, '');
   });
 
+  it('copy: the asynchronous clipboard of Electron 44 (readText / writeText return Promises) is cleared too', async () => {
+    const srv = vaultServer();
+    let text = '';
+    const clip = {
+      writeText: async (t) => { await wait(1); text = t; },
+      readText: async () => { await wait(1); return text; },
+      clear: () => { text = ''; },
+    };
+    const a = device(srv, 2, 'pc', { clipboard: clip, timing: { clipboardMs: 30 } });
+    await setUp(a);
+    await a.copy({ text: 'Geheim-async-1' });
+    assert.equal(text, 'Geheim-async-1', 'written before copy() answers');
+    await wait(80);
+    assert.equal(text, '', 'cleared after the time');
+    await a.copy({ text: 'Geheim-async-2' });
+    text = 'was anderes';
+    await wait(80);
+    assert.equal(text, 'was anderes', 'the person copied something else meanwhile');
+    await a.copy({ text: 'Geheim-async-3' });
+    a.lock();
+    await wait(10);
+    assert.equal(text, '', 'locking clears it');
+  });
+
   it('a check while setting up keeps the setup (there was no account to lock)', async () => {
     const s = device(vaultServer(), 2, 'pc');
     await s.check();
@@ -741,6 +765,78 @@ describe('vault:* IPC', () => {
     assert.equal((await call('vault:wifi-scan')).code, 'failed');
     answer = new TypeError('boom');
     assert.equal((await call('vault:wifi-scan')).code, 'failed');
+  });
+
+  it('vault:totp-qr: unlocked only, counts as activity, sources checked, codes, URIs never logged', async () => {
+    const srv = vaultServer();
+    const URI = 'otpauth://totp/Example:anna@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example';
+    let answer = [URI];
+    const scans = [];
+    const totpQr = async (opts) => {
+      scans.push(opts);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    };
+    const lines = [];
+    const qrLog = { info: (m) => lines.push(m), warn: (m) => lines.push(m), debug: (m) => lines.push(m), error: (m) => lines.push(m) };
+    const s = device(srv, 2, 'pc', { totpQr, log: qrLog });
+    const { handlers } = register(s);
+    const call = (ch, arg) => handlers[ch](null, arg);
+    await setUp(s);
+    s.lock('manual');
+    assert.equal((await call('vault:totp-qr', { source: 'screen' })).code, 'locked');
+    assert.equal(scans.length, 0, 'no scan while locked');
+    await s.unlock({ password: PW });
+    for (const bad of [undefined, {}, { source: 'camera' }, { source: 1 }, { source: 'SCREEN' }]) {
+      assert.equal((await call('vault:totp-qr', bad)).code, 'invalid', JSON.stringify(bad));
+    }
+    assert.equal(scans.length, 0);
+    let touched = 0;
+    const touch = s.touch.bind(s);
+    s.touch = () => { touched++; touch(); };
+    for (const source of ['screen', 'clipboard', 'file']) {
+      assert.deepEqual(await call('vault:totp-qr', { source }), { ok: true, uris: [URI] });
+      assert.equal(scans.at(-1).source, source);
+      assert.equal(typeof scans.at(-1).getWindow, 'function', 'the main window for the dialog / hiding');
+    }
+    assert.equal(touched, 3, 'the person asked for it: activity');
+    for (const c of ['none_found', 'hotp', 'invalid_code', 'no_image', 'unsupported', 'cancelled']) {
+      answer = Object.assign(new Error(c), { code: c });
+      const r = await call('vault:totp-qr', { source: 'clipboard' });
+      assert.deepEqual([r.ok, r.code], [false, c]);
+    }
+    answer = [];
+    assert.equal((await call('vault:totp-qr', { source: 'screen' })).code, 'none_found');
+    answer = Object.assign(new Error('boom'), { code: 'EWHATEVER' });
+    assert.equal((await call('vault:totp-qr', { source: 'screen' })).code, 'failed');
+    answer = new TypeError('boom');
+    assert.equal((await call('vault:totp-qr', { source: 'screen' })).code, 'failed');
+    // locked while the scan ran (auto-lock): the keys found do not leave
+    answer = [URI];
+    const slow = s._totpQr;
+    s._totpQr = async (o) => { const r = await slow(o); s.lock('manual'); return r; };
+    assert.equal((await call('vault:totp-qr', { source: 'screen' })).code, 'locked');
+    s._totpQr = slow;
+    assert.ok(lines.length > 0);
+    assert.ok(!lines.some((l) => /otpauth|JBSWY3DP/i.test(String(l))), 'no URI / secret in the log');
+  });
+
+  it('vault:totp-qr: one scan at a time (a second call waits for the first)', async () => {
+    const srv = vaultServer();
+    let running = 0;
+    let most = 0;
+    const totpQr = async ({ source }) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, 20));
+      running--;
+      return [`otpauth://totp/${source}?secret=JBSWY3DPEHPK3PXP`];
+    };
+    const s = device(srv, 2, 'pc', { totpQr });
+    await setUp(s);
+    const [a, b] = await Promise.all([s.totpQr({ source: 'screen' }), s.totpQr({ source: 'file' })]);
+    assert.equal(most, 1);
+    assert.deepEqual([a.uris[0], b.uris[0]], ['otpauth://totp/screen?secret=JBSWY3DPEHPK3PXP', 'otpauth://totp/file?secret=JBSWY3DPEHPK3PXP']);
   });
 
   it('VaultService.wifiScan uses services/wifi-scan by default (no_adapter off Windows)', { skip: process.platform === 'win32' ? 'Windows: a real scan' : false }, async () => {

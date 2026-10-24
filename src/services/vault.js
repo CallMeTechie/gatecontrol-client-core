@@ -45,7 +45,8 @@
  * service's own: `locked`, `wrong_password`, `recovery_key`, `weak_password`,
  * `read_only`, `too_large`, `no_setup`, `not_remembered`, `remember_failed`,
  * `unsupported`, `empty`, `import_encrypted`, `import_unknown`, `invalid_answer`; wifiScan(): `no_adapter`,
- * `service_off`, `radio_off`, `location_denied`, `failed`.
+ * `service_off`, `radio_off`, `location_denied`, `failed`; totpQr(): `none_found`, `hotp`, `invalid_code`,
+ * `no_image`, `unsupported`, `cancelled`, `failed`.
  *
  * Events: 'state' (status()), 'push' (context of a Vault push message).
  */
@@ -73,6 +74,8 @@ const DEFAULT_TIMING = {
 
 const MAX_NOTICES = 5;
 const WIFI_CODES = ['no_adapter', 'service_off', 'radio_off', 'location_denied'];
+const QR_SOURCES = ['screen', 'clipboard', 'file'];
+const QR_CODES = ['none_found', 'hotp', 'invalid_code', 'no_image', 'unsupported', 'cancelled'];
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -101,6 +104,7 @@ class VaultService extends EventEmitter {
    * @param {object} [opts.kdf] - { m, t } of new accounts / passwords (default Argon2id 64 MiB, 3 passes)
    * @param {object} [opts.log]
    * @param {Function} [opts.wifiScan] - Wi-Fi scan for Wi-Fi entries (default: services/wifi-scan.js scanWifi; tests)
+   * @param {Function} [opts.totpQr] - QR code reader for 2FA keys (default: services/totp-qr.js scanTotpQr; tests)
    * @param {object} [opts.api] - MessengerApi-compatible transport (tests)
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
@@ -108,6 +112,7 @@ class VaultService extends EventEmitter {
   constructor({
     apiClient, log, dir = null, protect = null, clipboard = null, notificationCenter = null, pushClient = null,
     powerMonitor = null, deviceName = null, kdf = null, api = null, timing = {}, now = Date.now, wifiScan = null,
+    totpQr = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -123,6 +128,8 @@ class VaultService extends EventEmitter {
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this.now = now;
     this._wifiScan = typeof wifiScan === 'function' ? wifiScan : null;
+    this._totpQr = typeof totpQr === 'function' ? totpQr : null;
+    this._qrRun = null;
 
     this._ready = vc.ready();
     this._sodium = false;
@@ -1708,6 +1715,41 @@ class VaultService extends EventEmitter {
   }
 
   /**
+   * 2FA keys from a QR code for the entry editor ("QR-Code scannen", services/totp-qr.js):
+   * { source: 'screen' | 'clipboard' | 'file', getWindow? } → { uris: ['otpauth://totp/…'] } (at least one;
+   * otpauth-migration exports become one URI per TOTP account). Only while unlocked; one scan at a time
+   * (a second call waits for the first). The URIs are never logged.
+   * Codes: `none_found`, `hotp`, `invalid_code`, `no_image`, `unsupported`, `cancelled`, `failed`.
+   */
+  async totpQr({ source, getWindow = null } = {}) {
+    this._needKeys();
+    if (!QR_SOURCES.includes(source)) throw fail('invalid');
+    const scan = this._totpQr || require('./totp-qr').scanTotpQr;
+    const prev = this._qrRun || Promise.resolve();
+    const run = prev.catch(() => {}).then(async () => {
+      this._needKeys();
+      try {
+        const uris = await scan({ source, getWindow, log: this.log });
+        this._needKeys();   // locked meanwhile (auto-lock): the keys found stay here
+        if (!Array.isArray(uris) || !uris.length) throw Object.assign(new Error('none_found'), { code: 'none_found' });
+        this.log.info(`Vault: QR scan (${source}): ${uris.length} 2FA code(s)`);
+        return { uris: uris.slice() };
+      } catch (err) {
+        if (err && err.code === 'locked') throw err;
+        const code = err && QR_CODES.includes(err.code) ? err.code : 'failed';
+        this.log.info(`Vault: QR scan (${source}): ${code}${code === 'failed' && err && err.name ? ` (${err.name})` : ''}`);
+        throw fail(code);
+      }
+    });
+    this._qrRun = run;
+    try {
+      return await run;
+    } finally {
+      if (this._qrRun === run) this._qrRun = null;
+    }
+  }
+
+  /**
    * Copies a value to the clipboard and clears it after 30 s when it is still
    * there: { id, field, emergencyId? } (field: username, password, totp, notes,
    * url, custom:<n>, any key of fields) or { text } (e.g. a generated password).
@@ -1720,7 +1762,7 @@ class VaultService extends EventEmitter {
       value = vault.entryValue(this._find(id, emergencyId).data, field, this.now());
     }
     if (!value) throw fail('empty');
-    this.clipboard.writeText(value);
+    await this.clipboard.writeText(value);   // Electron ≥ 44: a Promise
     if (this._copied) clearTimeout(this._copied.timer);
     const timer = setTimeout(() => {
       if (this._copied && this._copied.timer === timer) this._clearClipboard();
@@ -1730,18 +1772,27 @@ class VaultService extends EventEmitter {
     return { clearsInMs: this.timing.clipboardMs };
   }
 
-  /** Clears the clipboard when it still holds what copy() put there. */
+  /**
+   * Clears the clipboard when it still holds what copy() put there. readText() is asynchronous since
+   * Electron 44 (a Promise), synchronous before: a synchronous one clears at once. → Promise (tests).
+   */
   _clearClipboard() {
     const copied = this._copied;
-    if (!copied) return;
+    if (!copied) return Promise.resolve();
     clearTimeout(copied.timer);
     this._copied = null;
-    try {
-      const cb = this.clipboard;
-      if (typeof cb.readText === 'function' && cb.readText() !== copied.value) return;
+    const cb = this.clipboard;
+    const clear = (current) => {
+      if (current !== copied.value) return;
       if (typeof cb.clear === 'function') cb.clear();
       else cb.writeText('');
+    };
+    try {
+      const current = typeof cb.readText === 'function' ? cb.readText() : copied.value;
+      if (current && typeof current.then === 'function') return Promise.resolve(current).then(clear).catch(() => { /* clipboard busy */ });
+      clear(current);
     } catch { /* clipboard busy */ }
+    return Promise.resolve();
   }
 
   // ── Push ─────────────────────────────────────────────────

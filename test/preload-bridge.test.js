@@ -79,7 +79,7 @@ describe('createBridgeApi', () => {
       'vault:import:parse', 'vault:import:save', 'vault:lock', 'vault:match', 'vault:notices:clear', 'vault:people', 'vault:purge',
       'vault:recover', 'vault:removeMember', 'vault:renameVault', 'vault:restore', 'vault:save', 'vault:setRole',
       'vault:settings:get', 'vault:settings:set', 'vault:setup', 'vault:setup:cancel', 'vault:setup:confirm', 'vault:status',
-      'vault:strength', 'vault:sync', 'vault:totp', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockRemembered',
+      'vault:strength', 'vault:sync', 'vault:totp', 'vault:totp-qr', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockRemembered',
       'vault:vaults', 'vault:wifi-scan',
       'wireguard:check',
     ]);

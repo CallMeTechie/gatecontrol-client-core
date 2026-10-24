@@ -1386,6 +1386,8 @@
   },
   "vault": {
     "personalName": "Persönlich",
-    "conflictSuffix": "(Konflikt)"
+    "conflictSuffix": "(Konflikt)",
+    "qrFileTitle": "QR-Code mit 2FA-Schlüssel wählen",
+    "qrFileFilter": "Bilder"
   }
 }
