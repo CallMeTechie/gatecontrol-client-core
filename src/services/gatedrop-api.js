@@ -16,7 +16,7 @@
  *   POST   …/api/sends { items, text?, link?, note?, to }           → { id, deliveries, link?, direct }
  *   POST   …/api/sends/<id>/items { items: [{ index, mediaId }] }   files a failed direct transfer left local
  *   POST   …/api/transfers/<id>/result { ok, bytes?, error? }       → { fallback: null|server|upload, missing? }
- *   GET    …/api/transfers/<id>                                     ticket of a transfer (listener)
+ *   GET    …/api/transfers/<id>                                     ticket of a transfer (listener), its status
  *   GET    …/api/inbox?kind=received|sent|links
  *   GET    …/api/sends/<id>
  *   GET    …/api/pending                                            sends waiting for this device (GateDrop 1.1.0)
@@ -163,6 +163,15 @@ class GateDropApi {
   async transfer(transferId) {
     if (!gd.isTransferId(transferId)) throw new GateDropError('invalid transfer', { code: 'invalid' });
     return gd.transferOf(await this.api('GET', `transfers/${transferId}`), transferId);
+  }
+
+  /**
+   * GET transfers/<id> → { status, side, peer } (utils/gatedrop transferStatusOf), also for an
+   * ended transfer: a device waiting for the other end learns that it gave up.
+   */
+  async transferStatus(transferId) {
+    if (!gd.isTransferId(transferId)) throw new GateDropError('invalid transfer', { code: 'invalid' });
+    return gd.transferStatusOf(await this.api('GET', `transfers/${transferId}`));
   }
 
   async inbox(kind) {

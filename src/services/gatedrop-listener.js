@@ -269,6 +269,7 @@ class GateDropListener extends EventEmitter {
       items: items.map((it, i) => ({ index: i, path: it.path, name: it.name, size: it.size })),
       sent: new Set(),
       started: false,
+      active: 0,             // items being served right now
       expiresAt: this.now() + this.timing.ticketTtlMs,
     };
     this._outgoing.set(transferId, t);
@@ -288,11 +289,15 @@ class GateDropListener extends EventEmitter {
 
   hasIncoming(transferId) { return this._incoming.has(transferId); }
 
-  /** Drop expired transfers (tickets live 10 min). */
+  /**
+   * Drop expired transfers (tickets live 10 min). An outgoing one that started
+   * and broke off (the device fetches nothing more) ends too: an expired ticket
+   * gets no further item anyway, and the sender must not wait for ever.
+   */
   sweep() {
     const now = this.now();
     for (const [id, t] of [...this._incoming]) if (t.expiresAt <= now && !t.busy.size) this._failIncoming(id, 'expired');
-    for (const [id, t] of [...this._outgoing]) if (t.expiresAt <= now && !t.started) this.cancelOutgoing(id, 'expired');
+    for (const [id, t] of [...this._outgoing]) if (t.expiresAt <= now && !t.active) this.cancelOutgoing(id, t.started ? 'broken_off' : 'expired');
   }
 
   _failIncoming(id, reason) {
@@ -331,6 +336,8 @@ class GateDropListener extends EventEmitter {
     } catch (err) {
       const status = err instanceof ListenerError ? err.status : 500;
       if (!(err instanceof ListenerError)) this.log.warn(`GateDrop listener: ${err.code || err.message}`);
+      // A device reached this PC and was refused: the log shows why (diagnosis).
+      else this.log.info(`GateDrop listener: ${req.method} from ${peer} refused (${status} ${err.code})`);
       req.resume();
       this._reply(res, status, { error: err.code || 'failed' });
     } finally {
@@ -338,7 +345,7 @@ class GateDropListener extends EventEmitter {
     }
   }
 
-  async _incomingFor(transferId, ticket) {
+  async _incomingFor(transferId, ticket, req) {
     let t = this._incoming.get(transferId);
     if (!t && this.resolveIncoming && gd.isTicket(ticket)) {
       // The sender came before the silent push: ask the plugin (authenticated).
@@ -346,12 +353,16 @@ class GateDropListener extends EventEmitter {
       t = this._incoming.get(transferId);
     }
     if (!t || t.expiresAt <= this.now() || !sameTicket(ticket, t.ticket)) throw new ListenerError(403, 'forbidden');
+    if (!t.reached) {
+      t.reached = true;
+      this.log.info(`GateDrop direct: ${gd.plainIPv4(req.socket.remoteAddress)} sends transfer ${transferId}`);
+    }
     return t;
   }
 
   async _receive(req, res, transferId) {
     const ticket = req.headers['x-gd-ticket'];
-    const t = await this._incomingFor(transferId, ticket);
+    const t = await this._incomingFor(transferId, ticket, req);
 
     const index = gd.nonNegInt(req.headers['x-gd-item']);
     if (index === null || index >= gd.MAX_ITEMS || (t.count !== null && index >= t.count)) throw new ListenerError(400, 'bad_item');
@@ -418,7 +429,9 @@ class GateDropListener extends EventEmitter {
     let stat;
     try { stat = await fs.promises.stat(item.path); } catch { throw new ListenerError(410, 'gone'); }
     if (!stat.isFile() || stat.size !== item.size) throw new ListenerError(410, 'changed');
+    if (!t.started) this.log.info(`GateDrop direct: ${gd.plainIPv4(req.socket.remoteAddress)} fetches transfer ${transferId}`);
     t.started = true;
+    t.active++;
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
       'Content-Length': gd.encryptedSize(item.size),
@@ -433,6 +446,8 @@ class GateDropListener extends EventEmitter {
       this.log.warn(`GateDrop pull of item ${index} broke off: ${err.code || err.message}`);
       res.destroy();
       return;
+    } finally {
+      t.active--;
     }
     t.sent.add(index);
     this.emit('outgoing-item', { transferId, index, bytes: item.size });

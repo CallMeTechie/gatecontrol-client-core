@@ -30,6 +30,8 @@
 //   targets.peopleDevices: others' devices open for everyone (sendable like own devices; a send's
 //     `from.own` is false for another person), srv.state.closed = Set of their ids closed meanwhile
 //     (POST sends → 409 unavailable),
+//   srv.failTransfer(id, error) → the other end reported a failure (GET transfers/<id>: status failed, no key /
+//     ticket, peer { ok: false, error } as GateDrop 1.2.1 answers),
 //   srv.close()
 
 const http = require('node:http');
@@ -105,6 +107,12 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     deliveries: st.deliveries || [],
   });
   srv.view = view;
+
+  srv.failTransfer = (id, error = 'failed') => {
+    const tr = state.transfers.get(id);
+    if (!tr) throw new Error(`no transfer ${id}`);
+    Object.assign(tr, { status: 'failed', key: null, ticket: null, peer: { ok: false, error } });
+  };
 
   /** A received send with files on the server: items { name, data, mime }. */
   srv.addSend = (send, { pending = false } = {}) => {

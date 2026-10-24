@@ -49,7 +49,7 @@ function tmpDir(prefix) {
   return d;
 }
 
-async function setup(srv, { withListener = true, nc = false, shell = null, resumableFrom, partSize } = {}) {
+async function setup(srv, { withListener = true, nc = false, shell = null, resumableFrom, partSize, timing, logTo = null } = {}) {
   const apiClient = new ApiClient(srv.url, 'gc_token', log);
   const store = createMemoryStore();
   const downloads = tmpDir('gd-dl-');
@@ -57,9 +57,9 @@ async function setup(srv, { withListener = true, nc = false, shell = null, resum
   const center = nc ? new NotificationCenter({ store, log, Notification: FakeNotification, platform: 'win32', protocol: 'gatecontrol-pro' }) : null;
   const api = new GateDropApi({ apiClient, log, sleep: async () => {}, resumableFrom, partSize });
   const svc = new GateDropService({
-    apiClient, api, log, store, listener, notificationCenter: center, downloadsDir: () => downloads,
+    apiClient, api, log: logTo ? { ...log, info: (m) => logTo.push(m) } : log, store, listener, notificationCenter: center, downloadsDir: () => downloads,
     Notification: FakeNotification, platform: 'win32', protocol: 'gatecontrol-pro', shell, resolveCandidate: loopback,
-    getInterfaces: () => ({}),
+    getInterfaces: () => ({}), timing,
   });
   svc.start();
   cleanup.push(async () => { svc.stop(); await svc.idle(); });
@@ -313,6 +313,81 @@ describe('GateDropService', () => {
     assert.deepEqual(srv.state.results.map((x) => x.ok), [true, true]);
     assert.deepEqual([(await outcome).phase, (await outcome).via], ['done', 'direct']);
     assert.match(FakeNotification.shown.at(-1).opts.toastXml, /A hat dir foto\.jpg geschickt/);
+  });
+});
+
+describe('GateDropService – direct transfer gives up fast', () => {
+  it('a device that should pull starts within 15 s, else the server path', () => {
+    assert.ok(GateDropService.DEFAULT_TIMING.pullStartMs <= 15000);
+    assert.ok(GateDropService.DEFAULT_TIMING.directPollMs <= 3000);
+  });
+
+  it('pull: the phone reports that it could not fetch → the PC stops waiting at once, server path', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    srv.state.targets.devices = [{ id: '106', name: 'Pixel', platform: 'android', online: true, direct: true }];
+    const lines = [];
+    // pullStartMs a minute (as before): only the poll may end the wait early
+    const sender = await setup(srv, { timing: { pullStartMs: 60000, directPollMs: 20 }, logTo: lines });
+    const sPort = sender.listener.status().addresses[0].port;
+    srv.state.direct = () => [{ deviceId: '106', transferId: 'c'.repeat(24), mode: 'pull', candidates: [`127.0.0.1:${sPort}`], key: KEY_B64(), ticket: TICKET() }];
+    const dir = tmpDir('gd-src-');
+    const prep = await sender.svc.prepareFiles([writeFile(dir, 'foto.jpg', 'pixel')]);
+    const outcome = new Promise((r) => sender.svc.on('progress', (p) => { if (p.phase === 'done' || p.phase === 'error') r(p); }));
+    const t0 = Date.now();
+    const r = await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['106'] } });
+    // the phone: GateDropRepository.receiveOffer → transferResult(false, 'pull_failed')
+    srv.failTransfer('c'.repeat(24), 'pull_failed');
+    const end = await outcome;
+    await sender.svc.idle();
+    assert.deepEqual([end.phase, end.via], ['done', 'server']);
+    assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
+    assert.deepEqual(srv.state.results.map((x) => [x.ok, x.error]), [[false, 'receiver_failed']]);
+    assert.equal(srv.state.addItems.length, 1);
+    assert.equal(srv.state.addItems[0].sendId, r.id);
+    assert.ok(lines.some((m) => m.includes('GateDrop direct to 106 failed (receiver_failed: pull_failed) – server path')), lines.join('\n'));
+  });
+
+  it('pull: nobody fetches → not_fetched after pullStartMs, server path', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    srv.state.targets.devices = [{ id: '106', name: 'Pixel', platform: 'android', online: true, direct: true }];
+    const sender = await setup(srv, { timing: { pullStartMs: 150, directPollMs: 20 } });
+    const sPort = sender.listener.status().addresses[0].port;
+    srv.state.direct = () => [{ deviceId: '106', transferId: 'd'.repeat(24), mode: 'pull', candidates: [`127.0.0.1:${sPort}`], key: KEY_B64(), ticket: TICKET() }];
+    const prep = await sender.svc.prepareFiles([writeFile(tmpDir('gd-src-'), 'a.txt', 'hallo')]);
+    const outcome = new Promise((r) => sender.svc.on('progress', (p) => { if (p.phase === 'done' || p.phase === 'error') r(p); }));
+    await sender.svc.send({ files: [prep.files[0].id], to: { devices: ['106'] } });
+    assert.deepEqual([(await outcome).phase, (await outcome).via], ['done', 'server']);
+    await sender.svc.idle();
+    assert.deepEqual(srv.state.results.map((x) => [x.ok, x.error]), [[false, 'not_fetched']]);
+  });
+
+  it('push to this PC: the phone reports that it could not send → the PC stops waiting (not 10 minutes)', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const lines = [];
+    const receiver = await setup(srv, { nc: true, timing: { directPollMs: 20 }, logTo: lines });
+    const rPort = receiver.listener.status().addresses[0].port;
+    const send = srv.addSend({ from: { userId: 2, name: 'Marc', deviceId: '106', deviceName: 'Pixel' }, items: [{ name: 'bild.jpg', bytes: 5, local: true }] });
+    const tid = 'e'.repeat(24);
+    const key = KEY_B64();
+    const ticket = TICKET();
+    srv.state.transfers.set(tid, { id: tid, sendId: send.id, side: 'receiver', mode: 'push', status: 'open', fromDevice: '106', toDevice: '42', candidates: [`127.0.0.1:${rPort}`], key, ticket, expiresAt: new Date(Date.now() + 600000).toISOString(), items: [{ index: 0, name: 'bild.jpg', bytes: 5, mime: 'image/jpeg' }] });
+    const failed = new Promise((r) => receiver.svc.on('progress', (p) => { if (p.dir === 'in' && (p.phase === 'failed' || p.phase === 'done')) r(p); }));
+    const t0 = Date.now();
+    receiver.center.handleNotification({
+      seq: 1, id: 1, kind: 'data', topic: 'plugin:gatecontrol-gatedrop:received', silent: true, title: '',
+      data: { gatedrop: { transfer: tid, send: send.id, mode: 'push', from: { userId: 2, name: 'Marc', deviceId: '106', deviceName: 'Pixel' }, items: [{ index: 0, name: 'bild.jpg', bytes: 5 }], candidates: [`127.0.0.1:${rPort}`], key, ticket } },
+    });
+    // the phone could not reach the PC: GateDropRepository.runJob → transferResult(false, 'push_failed')
+    setTimeout(() => srv.failTransfer(tid, 'push_failed'), 50);
+    assert.equal((await failed).phase, 'failed');
+    await receiver.svc.idle();
+    assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
+    assert.equal(receiver.listener.hasIncoming(tid), false);
+    assert.deepEqual(srv.state.results.map((x) => [x.ok, x.error]), [[false, 'sender_failed']]);
+    assert.ok(lines.some((m) => m.includes('GateDrop direct receive failed (sender_failed: push_failed)')), lines.join('\n'));
   });
 });
 
