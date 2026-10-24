@@ -176,6 +176,19 @@ describe('windows-hello: keys', () => {
     clean(rt);
   });
 
+  it("without koffi.view (Electron's V8 sandbox forbids external buffers): everything still works", async () => {
+    const rt = fakeWinRt(koffi);
+    runtimes.push(rt);
+    const noView = new Proxy(koffi, { get: (o, k) => (k === 'view' ? () => { throw new Error('external buffers are not allowed'); } : o[k]) });
+    const hello = createWindowsHello({ platform: 'win32', koffi: noView, api: rt.api, timing: { pollMs: 1 } });
+    assert.deepEqual(await hello.available(), { available: true, reason: null });
+    const c = challenge();
+    const made = await hello.create('k', c);
+    assert.equal(made.status, 'ok');
+    assert.ok((await hello.sign('k', c)).signature.equals(made.signature));
+    clean(rt);
+  });
+
   it('WinRt.finish releases the operation and its IAsyncInfo when results throw', async () => {
     const { rt } = setup();
     const w = new WinRt({ koffi, api: rt.api, timing: { pollMs: 1 } });
