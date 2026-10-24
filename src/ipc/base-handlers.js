@@ -14,7 +14,7 @@ const { t, getLocale } = require('../i18n');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
-const { isSafeExternalUrl } = require('../utils/external-url');
+const { isSafeExternalUrl, isAllowedSettingsUri } = require('../utils/external-url');
 const { portalNext } = require('../utils/portal');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
@@ -509,7 +509,8 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Shell ───────────────────────────────────────────────
   handle('shell:open-external', async (_, url) => {
-    if (!isSafeExternalUrl(url)) {
+    // http(s) links, or exactly one of the allowed Windows settings pages (ms-settings:privacy-location)
+    if (!isSafeExternalUrl(url) && !isAllowedSettingsUri(url)) {
       log.warn('shell:open-external rejected a non-http(s) URL');
       return false;
     }

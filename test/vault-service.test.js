@@ -710,6 +710,46 @@ describe('vault:* IPC', () => {
     assert.deepEqual(sent.at(-1), ['vault:push', { topic: 'share' }]);
   });
 
+  it('vault:wifi-scan: unlocked only, counts as activity, codes of the scan', async () => {
+    const srv = vaultServer();
+    let answer = [{ ssid: 'Heim', security: 'WPA2/WPA3', signal: 80, connected: true }];
+    let scans = 0;
+    const wifiScan = async () => {
+      scans++;
+      if (answer instanceof Error) throw answer;
+      return answer;
+    };
+    const s = device(srv, 2, 'pc', { wifiScan });
+    const { handlers } = register(s);
+    const call = (ch, arg) => handlers[ch](null, arg);
+    await setUp(s);
+    s.lock('manual');
+    assert.equal((await call('vault:wifi-scan')).code, 'locked');
+    assert.equal(scans, 0, 'no scan while locked');
+    await s.unlock({ password: PW });
+    let touched = 0;
+    const touch = s.touch.bind(s);
+    s.touch = () => { touched++; touch(); };
+    assert.deepEqual(await call('vault:wifi-scan'), { ok: true, networks: answer });
+    assert.equal(touched, 1, 'the person asked for it: activity');
+    for (const code of ['no_adapter', 'service_off', 'radio_off', 'location_denied']) {
+      answer = Object.assign(new Error(code), { code, win32: 5 });
+      const r = await call('vault:wifi-scan');
+      assert.deepEqual([r.ok, r.code], [false, code]);
+    }
+    answer = Object.assign(new Error('boom'), { code: 'EWHATEVER' });
+    assert.equal((await call('vault:wifi-scan')).code, 'failed');
+    answer = new TypeError('boom');
+    assert.equal((await call('vault:wifi-scan')).code, 'failed');
+  });
+
+  it('VaultService.wifiScan uses services/wifi-scan by default (no_adapter off Windows)', { skip: process.platform === 'win32' ? 'Windows: a real scan' : false }, async () => {
+    const srv = vaultServer();
+    const s = device(srv, 2);
+    await setUp(s);
+    await assert.rejects(s.wifiScan(), code('no_adapter'));
+  });
+
   it('nothing is registered without a VaultService', () => {
     const handlers = {};
     registerBaseHandlers({ handle: (c, fn) => { handlers[c] = fn; }, on() {} }, {

@@ -80,7 +80,7 @@ describe('createBridgeApi', () => {
       'vault:recover', 'vault:removeMember', 'vault:renameVault', 'vault:restore', 'vault:save', 'vault:setRole',
       'vault:settings:get', 'vault:settings:set', 'vault:setup', 'vault:setup:cancel', 'vault:setup:confirm', 'vault:status',
       'vault:strength', 'vault:sync', 'vault:totp', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockRemembered',
-      'vault:vaults',
+      'vault:vaults', 'vault:wifi-scan',
       'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);

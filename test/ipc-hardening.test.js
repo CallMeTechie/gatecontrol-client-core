@@ -147,6 +147,24 @@ describe('shell:open-external', () => {
     }
     assert.deepEqual(calls.opened, ['https://svc.example.com/x', 'http://10.8.0.5:8080']);
   });
+
+  it('opens the location privacy page of Windows settings, and no other ms-settings: page', async () => {
+    const { handlers, calls } = makeCtx();
+    assert.equal(await handlers['shell:open-external']({}, 'ms-settings:privacy-location'), true);
+    for (const bad of ['ms-settings:privacy-location?x=1', 'ms-settings:privacy-locationx', 'MS-SETTINGS:network',
+      'ms-settings:privacy', 'ms-settings:', 'ms-settings:privacy-location/../network', 'ms-settings:privacy-location#x']) {
+      assert.equal(await handlers['shell:open-external']({}, bad), false, bad);
+    }
+    assert.deepEqual(calls.opened, ['ms-settings:privacy-location']);
+  });
+
+  it('isSafeExternalUrl (server links) stays http(s) only', () => {
+    const { isSafeExternalUrl, isAllowedSettingsUri } = require('../src/utils/external-url');
+    assert.equal(isSafeExternalUrl('ms-settings:privacy-location'), false);
+    assert.equal(isAllowedSettingsUri('ms-settings:privacy-location'), true);
+    assert.equal(isAllowedSettingsUri(' ms-settings:privacy-location '), true);
+    assert.equal(isAllowedSettingsUri(null), false);
+  });
 });
 
 describe('logs:show', () => {

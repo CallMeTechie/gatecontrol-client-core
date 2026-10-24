@@ -162,4 +162,6 @@ module.exports = {
 Object.defineProperties(module.exports, {
   VaultService: { enumerable: true, get: () => require('./services/vault') },
   vaultCrypto: { enumerable: true, get: () => require('./utils/vault-crypto') },
+  // Wi-Fi networks nearby (Windows Native Wifi API via koffi, loaded on the first scan)
+  wifiScan: { enumerable: true, get: () => require('./services/wifi-scan') },
 });
