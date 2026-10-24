@@ -357,6 +357,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       settings:         () => ipcRenderer.invoke('vault:settings:get'),
       // { autoLockMinutes?: 0|1|5|15|60, remember?: boolean }
       setSettings:      (patch) => ipcRenderer.invoke('vault:settings:set', patch && typeof patch === 'object' ? patch : {}),
+      // Wi-Fi networks nearby (Windows): { ok, networks: [{ ssid, security, signal, connected }] } | { ok: false, code }
+      wifiScan:         () => ipcRenderer.invoke('vault:wifi-scan'),
       touch:            () => ipcRenderer.invoke('vault:touch'),
       clearNotices:     () => ipcRenderer.invoke('vault:notices:clear'),
       onState:          (cb) => subscribe('vault:state', cb),

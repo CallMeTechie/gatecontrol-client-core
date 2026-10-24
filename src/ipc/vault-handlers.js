@@ -51,6 +51,8 @@
  *   vault:settings:get     () → { ok, autoLockMinutes, choices, remember, rememberAvailable }
  *   vault:settings:set     ({ autoLockMinutes?, remember? }) → same
  *   vault:copy             ({ id, field, emergencyId? } | { text }) → { ok, clearsInMs }
+ *   vault:wifi-scan        () → { ok, networks: [{ ssid, security, signal, connected }] }   (unlocked; Windows, takes ~4 s;
+ *                          codes no_adapter, service_off, radio_off, location_denied, failed)
  *   vault:touch            () → { ok }
  *   vault:notices:clear    () → { ok }
  *
@@ -201,6 +203,8 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
     }
     return s.setSettings(patch);
   }));
+  // Wi-Fi networks nearby for a Wi-Fi entry: the person asked for it (activity), needs the vault unlocked
+  handle('vault:wifi-scan', wrap(() => s.wifiScan()));
   handle('vault:touch', wrap(async () => {}));
   handle('vault:notices:clear', wrap(async () => { s.clearNotices(); }));
 

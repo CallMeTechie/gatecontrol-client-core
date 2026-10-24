@@ -44,7 +44,8 @@
  * (`network`, `timeout`, `not_configured`, `http_<status>`), and this
  * service's own: `locked`, `wrong_password`, `recovery_key`, `weak_password`,
  * `read_only`, `too_large`, `no_setup`, `not_remembered`, `remember_failed`,
- * `unsupported`, `empty`, `import_encrypted`, `import_unknown`, `invalid_answer`.
+ * `unsupported`, `empty`, `import_encrypted`, `import_unknown`, `invalid_answer`; wifiScan(): `no_adapter`,
+ * `service_off`, `radio_off`, `location_denied`, `failed`.
  *
  * Events: 'state' (status()), 'push' (context of a Vault push message).
  */
@@ -71,6 +72,7 @@ const DEFAULT_TIMING = {
 };
 
 const MAX_NOTICES = 5;
+const WIFI_CODES = ['no_adapter', 'service_off', 'radio_off', 'location_denied'];
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -98,13 +100,14 @@ class VaultService extends EventEmitter {
    * @param {string} [opts.deviceName] - shown in an entry's history (default: the computer's name)
    * @param {object} [opts.kdf] - { m, t } of new accounts / passwords (default Argon2id 64 MiB, 3 passes)
    * @param {object} [opts.log]
+   * @param {Function} [opts.wifiScan] - Wi-Fi scan for Wi-Fi entries (default: services/wifi-scan.js scanWifi; tests)
    * @param {object} [opts.api] - MessengerApi-compatible transport (tests)
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
    */
   constructor({
     apiClient, log, dir = null, protect = null, clipboard = null, notificationCenter = null, pushClient = null,
-    powerMonitor = null, deviceName = null, kdf = null, api = null, timing = {}, now = Date.now,
+    powerMonitor = null, deviceName = null, kdf = null, api = null, timing = {}, now = Date.now, wifiScan = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -119,6 +122,7 @@ class VaultService extends EventEmitter {
     this.kdfOpts = kdf && typeof kdf === 'object' ? { m: kdf.m, t: kdf.t } : {};
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this.now = now;
+    this._wifiScan = typeof wifiScan === 'function' ? wifiScan : null;
 
     this._ready = vc.ready();
     this._sodium = false;
@@ -1683,6 +1687,24 @@ class VaultService extends EventEmitter {
     const p = vault.parseTotp(text);
     if (!p) throw fail(text ? 'invalid' : 'empty');
     return vault.totpCode(p, this.now());
+  }
+
+  /**
+   * Wi-Fi networks nearby, for a Wi-Fi entry ("WLAN in der Nähe suchen"; Windows Native Wifi API,
+   * services/wifi-scan.js) → { networks: [{ ssid, security, signal, connected }] }. Only while unlocked.
+   * Codes: `no_adapter`, `service_off`, `radio_off`, `location_denied` (Windows' location access is off),
+   * `failed`.
+   */
+  async wifiScan() {
+    this._needKeys();
+    const scan = this._wifiScan || require('./wifi-scan').scanWifi;
+    try {
+      return { networks: await scan({ log: this.log }) };
+    } catch (err) {
+      const code = err && WIFI_CODES.includes(err.code) ? err.code : 'failed';
+      this.log.info(`Vault: Wi-Fi scan: ${code}${err && err.win32 != null ? ` (Windows error ${err.win32})` : ''}`);
+      throw fail(code);
+    }
   }
 
   /**

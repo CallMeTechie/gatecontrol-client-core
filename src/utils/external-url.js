@@ -6,6 +6,10 @@
  * reach local files. Service URLs come from the server, so the renderer
  * must not be trusted with the scheme.
  *
+ * shell:open-external additionally opens a short list of Windows settings
+ * pages, matched exactly (isAllowedSettingsUri): the location privacy page
+ * that Vault's Wi-Fi scan points to when Windows denies scan results.
+ *
  * Pure — no Electron — so it is unit-testable.
  */
 
@@ -23,4 +27,12 @@ function isSafeExternalUrl(raw) {
   return (url.protocol === 'https:' || url.protocol === 'http:') && !!url.hostname;
 }
 
-module.exports = { isSafeExternalUrl };
+/** Windows settings pages the renderer may open, exact URIs only (no other ms-settings: page, no arguments). */
+const SETTINGS_URIS = Object.freeze(['ms-settings:privacy-location']);
+
+/** true for exactly one of SETTINGS_URIS. */
+function isAllowedSettingsUri(raw) {
+  return typeof raw === 'string' && SETTINGS_URIS.includes(raw.trim());
+}
+
+module.exports = { isSafeExternalUrl, isAllowedSettingsUri, SETTINGS_URIS };
