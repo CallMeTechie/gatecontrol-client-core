@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const EventEmitter = require('node:events');
 
 const realResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
@@ -51,6 +52,7 @@ function makeLog() {
 }
 
 let tmp;
+let spawned;
 let calls;
 let checkResponse;
 let downloadBody;
@@ -60,6 +62,7 @@ beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-updater-test-'));
   electron.__state.version = '1.0.0';
   electron.__state.opened = [];
+  spawned = [];
   calls = [];
   const manifest = makeManifest();
   checkResponse = {
@@ -81,10 +84,33 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+/**
+ * child_process.spawn double: 'ok' (starts and keeps running), 'error'
+ * (CreateProcess refused), 'exit' (starts and quits right away).
+ */
+function fakeSpawn(behavior = 'ok') {
+  return (file, args, opts) => {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    child.unref = () => { child.unrefed = true; };
+    spawned.push({ file, args, opts, child });
+    setImmediate(() => {
+      if (behavior === 'error') {
+        child.emit('error', Object.assign(new Error('spawn UNKNOWN'), { code: 'UNKNOWN', errno: -4094 }));
+        return;
+      }
+      child.emit('spawn');
+      if (behavior === 'exit') setImmediate(() => child.emit('exit', 2, null));
+    });
+    return child;
+  };
+}
+
 function makeUpdater(over = {}) {
   const log = makeLog();
   const u = new Updater({
-    serverUrl: SERVER, apiKey: 'secret-token', log, product: 'pro', publicKey: PUB_PEM, downloadDir: tmp, ...over,
+    serverUrl: SERVER, apiKey: 'secret-token', log, product: 'pro', publicKey: PUB_PEM, downloadDir: tmp,
+    spawn: fakeSpawn(), launchGraceMs: 30, ...over,
   });
   return { u, log };
 }
@@ -106,8 +132,15 @@ describe('Updater: signed updates', () => {
     // GitHub link: no API token leaves for a foreign origin
     assert.equal(downloads().length, 1);
     assert.equal(downloads()[0].opts.headers['X-API-Token'], undefined);
-    assert.equal(u.install(), true);
-    assert.deepEqual(electron.__state.opened, [path.join(tmp, FILE)]);
+    assert.deepEqual(await u.install(), { ok: true, via: 'spawn' });
+    // started directly (no shell), detached so it outlives the app, in update mode
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].file, path.join(tmp, FILE));
+    assert.deepEqual(spawned[0].args, ['--updated']);
+    assert.equal(spawned[0].opts.detached, true);
+    assert.equal(spawned[0].opts.stdio, 'ignore');
+    assert.equal(spawned[0].child.unrefed, true);
+    assert.deepEqual(electron.__state.opened, []);
   });
 
   it('sends the token (without redirects) only to the configured server origin', async () => {
@@ -219,7 +252,7 @@ describe('Updater: signed updates', () => {
     const b = makeUpdater();
     assert.equal(await b.u.check(), null);
     assert.deepEqual(fs.readdirSync(tmp), []);
-    assert.equal(b.u.install(), false);
+    assert.equal((await b.u.install()).code, 'not_ready');
   });
 
   it('re-hashes a cached file before reuse', async () => {
@@ -239,9 +272,11 @@ describe('Updater: signed updates', () => {
     const { u, log } = makeUpdater();
     await u.check();
     fs.writeFileSync(path.join(tmp, FILE), Buffer.concat([INSTALLER.subarray(0, 10), Buffer.from('X'), INSTALLER.subarray(11)]));
-    assert.equal(u.install(), false);
+    assert.deepEqual((await u.install()).code, 'verify_failed');
+    assert.deepEqual(spawned, []);
     assert.deepEqual(electron.__state.opened, []);
     assert.ok(rejected(log));
+    assert.equal(u.isUpdateReady(), false, 'the changed file is dropped');
   });
 
   it('stays disabled without a (valid) public key', async () => {
@@ -253,7 +288,7 @@ describe('Updater: signed updates', () => {
       u.start(() => {});
       assert.equal(u.checkTimer, null);
       assert.equal(await u.check(), null);
-      assert.equal(u.install(), false);
+      assert.equal((await u.install()).ok, false);
     }
     assert.equal(calls.length, 0);
   });
@@ -263,6 +298,61 @@ describe('Updater: signed updates', () => {
     assert.equal(Updater.isNewerVersion('1.9.9', '1.10.0'), false);
     assert.equal(Updater.isNewerVersion('1.0.0', '1.0.0'), false);
     assert.equal(Updater.isNewerVersion('x', '1.0.0'), false);
+  });
+});
+
+describe('Updater: starting the installer', () => {
+  it('prepareInstall only verifies: nothing is started', async () => {
+    const { u } = makeUpdater();
+    await u.check();
+    assert.deepEqual(await u.prepareInstall(), { ok: true, version: '1.1.0' });
+    assert.deepEqual(spawned, []);
+    assert.deepEqual(electron.__state.opened, []);
+  });
+
+  it('a refused direct start falls back to the shell (UAC) and reports its error', async () => {
+    const { u, log } = makeUpdater({ spawn: fakeSpawn('error') });
+    await u.check();
+    assert.deepEqual(await u.install(), { ok: true, via: 'shell' });
+    assert.deepEqual(electron.__state.opened, [path.join(tmp, FILE)]);
+    assert.ok(log.lines.warn.some((l) => l.includes('spawn UNKNOWN')));
+
+    const b = makeUpdater({ spawn: fakeSpawn('error'), openPath: async () => 'Failed to open path' });
+    await b.u.check();
+    const r = await b.u.install();
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'launch_failed');
+    assert.match(r.message, /UNKNOWN.*Failed to open path/);
+    assert.ok(b.log.lines.error.some((l) => l.includes('Installer konnte nicht gestartet werden')));
+  });
+
+  it('an installer that quits right away is a failure (no silent success)', async () => {
+    const { u } = makeUpdater({ spawn: fakeSpawn('exit') });
+    await u.check();
+    const r = await u.install();
+    assert.deepEqual(r, { ok: false, code: 'exited', message: 'Exit-Code 2' });
+    assert.deepEqual(electron.__state.opened, [], 'no second start through the shell');
+  });
+
+  it('a spawn that throws synchronously is reported as well', async () => {
+    const { u } = makeUpdater({
+      spawn: () => { throw Object.assign(new Error('bad'), { code: 'EINVAL' }); },
+      openPath: async () => 'Failed to open path',
+    });
+    await u.check();
+    const r = await u.install();
+    assert.equal(r.code, 'launch_failed');
+    assert.match(r.message, /EINVAL/);
+  });
+
+  it('a second start while one runs is refused', async () => {
+    const { u } = makeUpdater({ launchGraceMs: 80 });
+    await u.check();
+    const first = u.launchInstaller();
+    assert.equal((await u.launchInstaller()).code, 'busy');
+    assert.equal((await u.prepareInstall()).code, 'busy');
+    assert.equal((await first).ok, true);
+    assert.equal(spawned.length, 1);
   });
 });
 
@@ -295,7 +385,7 @@ describe('Updater: server policy (channel / minVersion / mandatory)', () => {
     assert.ok(rejected(log));
     assert.equal(downloads().length, 0);
     assert.equal(u.isMandatory(), false);
-    assert.equal(u.install(), false);
+    assert.equal((await u.install()).ok, false);
     // the hint itself is kept for display only
     assert.equal(u.getUpdatePolicy().belowMinimum, true);
     assert.equal(u.getUpdatePolicy().mandatory, false);
@@ -309,7 +399,7 @@ describe('Updater: server policy (channel / minVersion / mandatory)', () => {
     assert.ok(log.lines.error.some((l) => l.includes('nicht neuer')));
     assert.equal(downloads().length, 0);
     assert.equal(u.isMandatory(), false);
-    assert.equal(u.install(), false);
+    assert.equal((await u.install()).ok, false);
   });
 
   it('mandatory never skips the hash check of the download', async () => {

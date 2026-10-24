@@ -18,6 +18,20 @@
  *   - hasht den Installer direkt vor dem Start erneut.
  * Einen Rückfall auf unsignierte Updates gibt es nicht.
  *
+ * Installation in zwei Schritten, damit die App den VPN-Tunnel erst trennt,
+ * wenn der Installer wirklich startklar ist:
+ *   prepareInstall()  – Update bereit? Installer erneut hashen. Ändert nichts.
+ *   launchInstaller() – erneut hashen, Installer direkt starten (spawn,
+ *     detached, Argument --updated: der NSIS-Installer überspringt die
+ *     Seiten und beendet die laufende App selbst, ohne Rückfrage) und kurz
+ *     beobachten: Fehler beim Start oder ein sofortiges Ende kommen als
+ *     { ok: false, code, message } zurück statt still verloren zu gehen.
+ *     Klappt der direkte Start nicht (z. B. fehlende Rechte), startet ihn
+ *     die Shell (UAC-Abfrage), deren Fehlermeldung ebenfalls zurückkommt.
+ * Früher startete install() den Installer per shell.openPath() ohne auf das
+ * Ergebnis zu warten und meldete immer Erfolg: Die App trennte das VPN und
+ * beendete sich, auch wenn kein Installer lief.
+ *
  * Server-Richtlinie (Update-Kanal stable/beta, Mindestversion, Pflicht-Update):
  * Die Felder channel, minVersion und mandatory der Check-Antwort sind NICHT
  * signiert. Sie dienen nur der Anzeige (Kanal im Info-Bereich, nicht
@@ -29,6 +43,7 @@
 
 const { app, shell } = require('electron');
 const axios = require('axios');
+const childProcess = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -45,6 +60,10 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const PUBLIC_KEY_PLACEHOLDER = 'REPLACE_WITH_UPDATE_PUBLIC_KEY';
 const REJECT_MSG = 'Update nicht signiert/ungültig – abgelehnt';
 const CHANNELS = ['stable', 'beta'];
+// NSIS (electron-builder): --updated = Update-Modus (Seiten überspringen, laufende App ohne Rückfrage beenden)
+const INSTALLER_ARGS = Object.freeze(['--updated']);
+// So lange wird der gestartete Installer beobachtet, bevor die App sich beendet.
+const LAUNCH_GRACE_MS = 1500;
 
 /**
  * PEM → Ed25519-KeyObject, sonst null (Platzhalter, leer, anderer Typ, kaputt).
@@ -138,24 +157,6 @@ function sanitizeUpdatePolicy(data) {
   };
 }
 
-/** SHA-256 + Größe einer Datei (synchron, in Blöcken). */
-function hashFileSync(filePath) {
-  const hash = crypto.createHash('sha256');
-  const buf = Buffer.alloc(1024 * 1024);
-  let size = 0;
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    let n;
-    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
-      hash.update(buf.subarray(0, n));
-      size += n;
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  return { sha256: hash.digest('hex'), size };
-}
-
 /** SHA-256 + Größe einer Datei (asynchron). */
 function hashFile(filePath) {
   return new Promise((resolve, reject) => {
@@ -187,8 +188,11 @@ class Updater {
    * @param {string} opts.publicKey - Ed25519-Public-Key (SPKI-PEM). Ohne gültigen
    *   Schlüssel bleibt der Updater deaktiviert.
    * @param {string} [opts.downloadDir] - Zielverzeichnis (Standard: tmp/gatecontrol-update)
+   * @param {Function} [opts.spawn] - child_process.spawn (Tests)
+   * @param {Function} [opts.openPath] - shell.openPath (Tests)
+   * @param {number} [opts.launchGraceMs] - Beobachtung des gestarteten Installers
    */
-  constructor({ serverUrl, apiKey, log, clientType, product, publicKey, downloadDir }) {
+  constructor({ serverUrl, apiKey, log, clientType, product, publicKey, downloadDir, spawn, openPath, launchGraceMs }) {
     this.log = log;
     this.serverUrl = serverUrl;
     this.apiKey = apiKey;
@@ -204,6 +208,10 @@ class Updater {
     this.startTimer = null;
     this.onUpdateReady = null;
     this.onPolicyChange = null;
+    this._spawn = spawn || childProcess.spawn;
+    this._openPath = openPath || ((p) => shell.openPath(p));
+    this.launchGraceMs = Number.isInteger(launchGraceMs) && launchGraceMs >= 0 ? launchGraceMs : LAUNCH_GRACE_MS;
+    this._installing = false;
     // Letzte vom Server gemeldete Richtlinie (unsigniert, nur Anzeige)
     this.policy = { channel: null, minVersion: null, mandatory: false };
 
@@ -549,32 +557,132 @@ class Updater {
   }
 
   /**
-   * Update installieren (Installer starten, App beenden). Der Installer wird
-   * unmittelbar vor dem Start erneut gehasht.
+   * Installer erneut hashen und mit dem Manifest vergleichen.
+   * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
    */
-  install() {
+  async _verifyInstaller() {
     if (this.disabled || !this.latestRelease?.sha256 || !this.downloadPath || !fs.existsSync(this.downloadPath)) {
       this.log.error('Kein geprüftes Update gefunden');
-      return false;
+      return { ok: false, code: 'not_ready', message: 'Kein geprüftes Update bereit' };
     }
-
     let actual;
     try {
-      actual = hashFileSync(this.downloadPath);
+      actual = await hashFile(this.downloadPath);
     } catch (err) {
       this._reject(`Installer nicht lesbar: ${err.message}`);
-      return false;
+      return { ok: false, code: 'verify_failed', message: `Installer nicht lesbar: ${err.code || err.message}` };
     }
     if (actual.size !== this.latestRelease.fileSize || actual.sha256 !== this.latestRelease.sha256) {
       this._reject('Installer wurde nach dem Download verändert');
       try { fs.unlinkSync(this.downloadPath); } catch { /* best effort */ }
       this.downloadPath = null;
-      return false;
+      return { ok: false, code: 'verify_failed', message: 'Installer passt nicht mehr zum signierten Manifest' };
     }
+    return { ok: true, sha256: actual.sha256 };
+  }
 
-    this.log.info(`Starte Installer: ${this.downloadPath} (SHA-256 ${actual.sha256})`);
-    shell.openPath(this.downloadPath);
-    return true;
+  /**
+   * Schritt 1: Ist das Update startklar? Ändert nichts am System; die App
+   * trennt den Tunnel erst danach.
+   * @returns {Promise<{ok: true, version: string} | {ok: false, code: string, message: string}>}
+   */
+  async prepareInstall() {
+    if (this._installing) return { ok: false, code: 'busy', message: 'Installation läuft bereits' };
+    const v = await this._verifyInstaller();
+    if (!v.ok) return v;
+    return { ok: true, version: this.latestRelease.version };
+  }
+
+  /**
+   * Schritt 2: Installer starten (erneut gehasht) und kurz beobachten.
+   * @returns {Promise<{ok: true, via: 'spawn'|'shell'} | {ok: false, code: string, message: string}>}
+   */
+  async launchInstaller() {
+    if (this._installing) return { ok: false, code: 'busy', message: 'Installation läuft bereits' };
+    this._installing = true;
+    try {
+      const v = await this._verifyInstaller();
+      if (!v.ok) return v;
+      const file = this.downloadPath;
+      this.log.info(`Starte Installer: "${file}" ${INSTALLER_ARGS.join(' ')} (SHA-256 ${v.sha256})`);
+
+      const direct = await this._spawnInstaller(file);
+      if (direct.ok) {
+        this.log.info(`Installer läuft (PID ${direct.pid})`);
+        return { ok: true, via: 'spawn' };
+      }
+      if (direct.code === 'exited') {
+        this.log.error(`Installer wurde sofort beendet: ${direct.message}`);
+        return direct;
+      }
+      // Direkter Start abgelehnt (z. B. ERROR_ELEVATION_REQUIRED ohne Adminrechte):
+      // die Shell startet ihn mit UAC-Abfrage.
+      this.log.warn(`Installer-Start per spawn fehlgeschlagen (${direct.message}) – versuche die Shell`);
+      let shellError;
+      try {
+        shellError = await this._openPath(file);
+      } catch (err) {
+        shellError = err.message || String(err);
+      }
+      if (shellError) {
+        this.log.error(`Installer konnte nicht gestartet werden: ${direct.message}; Shell: ${shellError}`);
+        return { ok: false, code: 'launch_failed', message: `${direct.message}; ${shellError}` };
+      }
+      this.log.info('Installer über die Shell gestartet');
+      return { ok: true, via: 'shell' };
+    } finally {
+      this._installing = false;
+    }
+  }
+
+  /** spawn → { ok: true, pid } | { ok: false, code: 'launch_failed'|'exited', message } */
+  _spawnInstaller(file) {
+    return new Promise((resolve) => {
+      let child;
+      let settled = false;
+      let timer = null;
+      const done = (r) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (child) {
+          child.removeListener('exit', onExit);
+          child.removeListener('error', onError);
+          // Nach dem Erfolg darf ein späterer Fehler den Prozess nicht abstürzen lassen.
+          child.on('error', () => {});
+          if (r.ok && typeof child.unref === 'function') child.unref();
+        }
+        resolve(r);
+      };
+      const onError = (err) => done({ ok: false, code: 'launch_failed', message: `${err.code || 'Fehler'}: ${err.message}` });
+      const onExit = (code, signal) => done({ ok: false, code: 'exited', message: `Exit-Code ${code === null ? signal : code}` });
+      try {
+        child = this._spawn(file, [...INSTALLER_ARGS], {
+          cwd: path.dirname(file),
+          detached: true,     // überlebt das Beenden der App (eigener Job/Prozessgruppe)
+          stdio: 'ignore',
+          windowsHide: false,
+        });
+      } catch (err) {
+        onError(err);
+        return;
+      }
+      child.once('error', onError);
+      child.once('exit', onExit);
+      child.once('spawn', () => {
+        timer = setTimeout(() => done({ ok: true, pid: child.pid }), this.launchGraceMs);
+      });
+    });
+  }
+
+  /**
+   * Prüfen und starten in einem Schritt (Kompatibilität; die Apps rufen
+   * prepareInstall() vor dem Trennen des Tunnels und dann launchInstaller()).
+   */
+  async install() {
+    const prep = await this.prepareInstall();
+    if (!prep.ok) return prep;
+    return this.launchInstaller();
   }
 
   /**
@@ -604,6 +712,7 @@ Updater.parsePublicKey = parsePublicKey;
 Updater.isNewerVersion = isNewerVersion;
 Updater.sanitizeUpdatePolicy = sanitizeUpdatePolicy;
 Updater.CHANNELS = CHANNELS;
+Updater.INSTALLER_ARGS = INSTALLER_ARGS;
 Updater.PUBLIC_KEY_PLACEHOLDER = PUBLIC_KEY_PLACEHOLDER;
 
 module.exports = Updater;
