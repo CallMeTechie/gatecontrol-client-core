@@ -98,6 +98,8 @@ class GateDropListener extends EventEmitter {
     this._sweep = null;
     this._started = false;
     this._refreshing = null;
+    this._skipped = [];        // adapters left out by the last scan (diagnosis)
+    this._bindErrors = new Map(); // ip → error code of the last bind attempt
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -117,6 +119,7 @@ class GateDropListener extends EventEmitter {
     this._sweep = null;
     const all = [...this._servers.values()];
     this._servers.clear();
+    this._bindErrors.clear();
     await Promise.all(all.map((s) => new Promise((r) => { try { s.server.close(() => r()); s.server.closeAllConnections?.(); } catch { r(); } })));
     for (const id of [...this._incoming.keys()]) this._failIncoming(id, 'stopped');
     this._outgoing.clear();
@@ -125,8 +128,19 @@ class GateDropListener extends EventEmitter {
 
   /** The addresses to listen on now: [{ ip, prefix }]. */
   wantedAddresses() {
-    if (Array.isArray(this.bindAddresses)) return this.bindAddresses.map((ip) => ({ ip, prefix: 24 }));
-    try { return gd.lanAddresses(this.getInterfaces()); } catch { return []; }
+    if (Array.isArray(this.bindAddresses)) {
+      this._skipped = [];
+      return this.bindAddresses.map((ip) => ({ ip, prefix: 24 }));
+    }
+    try {
+      const scan = gd.lanScan(this.getInterfaces());
+      this._skipped = scan.skipped;
+      return scan.addresses;
+    } catch (err) {
+      this._skipped = [];
+      this.log.warn(`GateDrop listener: network adapters not readable: ${err.message}`);
+      return [];
+    }
   }
 
   /** Bind new LAN addresses, close vanished ones (network change). → status() */
@@ -140,6 +154,7 @@ class GateDropListener extends EventEmitter {
     if (!this._started) return this.status();
     const wanted = this.wantedAddresses();
     const ips = new Set(wanted.map((a) => a.ip));
+    for (const ip of [...this._bindErrors.keys()]) if (!ips.has(ip)) this._bindErrors.delete(ip);
     for (const [ip, s] of [...this._servers]) {
       if (ips.has(ip)) continue;
       this._servers.delete(ip);
@@ -150,10 +165,17 @@ class GateDropListener extends EventEmitter {
       try {
         const s = await this._listen(a.ip);
         this._servers.set(a.ip, { ...s, prefix: a.prefix });
-        this.log.info(`GateDrop listener on ${a.ip}:${s.port}`);
+        this._bindErrors.delete(a.ip);
+        this.log.info(`GateDrop listener on ${a.ip}:${s.port}${a.name ? ` (${a.name})` : ''}`);
       } catch (err) {
-        this.log.warn(`GateDrop listener on ${a.ip} failed: ${err.code || err.message}`);
+        const code = String(err.code || err.message || 'failed').slice(0, 40);
+        if (this._bindErrors.get(a.ip) !== code) this.log.warn(`GateDrop listener on ${a.ip}:${this.port} failed: ${code}`);
+        this._bindErrors.set(a.ip, code);
       }
+    }
+    if (!wanted.length) {
+      const why = this._skipped.map((x) => `${x.name} ${x.ip} (${x.why})`).join(', ');
+      this.log.info(`GateDrop listener: no LAN address${why ? ` – skipped: ${why}` : ''}`);
     }
     this.emit('state', this.status());
     return this.status();
@@ -179,10 +201,21 @@ class GateDropListener extends EventEmitter {
     });
   }
 
-  /** { listening, port, addresses: [{ ip, prefix, port }] } */
+  /**
+   * { listening, port, addresses: [{ ip, prefix, port }], started,
+   *   skipped: [{ name, ip, why }], bindErrors: [{ ip, code }] }
+   * (skipped / bindErrors: why it does not listen — shown on the GateDrop page)
+   */
   status() {
     const addresses = [...this._servers.entries()].map(([ip, s]) => ({ ip, prefix: s.prefix, port: s.port }));
-    return { listening: addresses.length > 0, port: addresses.length ? addresses[0].port : this.port, addresses };
+    return {
+      listening: addresses.length > 0,
+      port: addresses.length ? addresses[0].port : this.port,
+      addresses,
+      started: this._started,
+      skipped: this._skipped.map((x) => ({ name: x.name, ip: x.ip, why: x.why })),
+      bindErrors: [...this._bindErrors.entries()].map(([ip, code]) => ({ ip, code })),
+    };
   }
 
   get listening() {

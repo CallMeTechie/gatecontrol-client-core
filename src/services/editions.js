@@ -72,6 +72,15 @@ function rdpAllowRuleName(id) {
 }
 
 /**
+ * z.B. "GateControl Pro GateDrop" – eingehende Freigabe für GateDrop (TCP 47731).
+ * Muss zu GC_GATEDROP_RULE in build/installer.nsh der jeweiligen App passen
+ * (die App legt die Regel bei Bedarf selbst neu an, services/gatedrop-firewall.js).
+ */
+function gatedropRuleName(id) {
+  return `GateControl ${getEdition(id).name} GateDrop`;
+}
+
+/**
  * Ist die Edition auf diesem Rechner installiert oder läuft sie gerade
  * (z.B. als portable Version)? Im Zweifel (Prüfung nicht möglich) wird
  * true geliefert – Aufrufer nutzen das Ergebnis, um fremde Regeln NICHT
@@ -136,6 +145,7 @@ module.exports = {
   otherEditions,
   killSwitchRulePrefix,
   rdpAllowRuleName,
+  gatedropRuleName,
   isEditionPresent,
   isOtherEditionPresent,
 };

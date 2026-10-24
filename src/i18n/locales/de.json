@@ -99,7 +99,17 @@
     "channelBeta": "Beta",
     "channelUnknown": "Unbekannt",
     "channelHint": "Vom Server zugewiesen",
-    "installRequired": "Update erforderlich: v{{ version }} installieren"
+    "installRequired": "Update erforderlich: v{{ version }} installieren",
+    "installStarting": "Installer wird gestartet …",
+    "installFailed": "Update konnte nicht installiert werden",
+    "installVpnRestored": "Die VPN-Verbindung wurde wiederhergestellt.",
+    "installError": {
+      "not_ready": "Das Update ist nicht mehr bereit. Bitte erneut nach Updates suchen.",
+      "verify_failed": "Die heruntergeladene Datei ist beschädigt oder wurde verändert. Sie wird neu geladen.",
+      "launch_failed": "Der Installer ließ sich nicht starten.",
+      "exited": "Der Installer wurde sofort wieder beendet.",
+      "busy": "Die Installation wird bereits gestartet."
+    }
   },
   "peer": {
     "expired": "Peer-Zertifikat abgelaufen",
@@ -1213,6 +1223,17 @@
     },
     "listening": "Direkt im WLAN empfangsbereit",
     "notListening": "Direktempfang im WLAN nicht aktiv – Dateien kommen über den Server",
+    "listeningWarn": "Direktempfang im WLAN gestört – Dateien kommen über den Server",
+    "directWhy": {
+      "unavailable": "GateDrop ist gerade nicht erreichbar.",
+      "starting": "Wird gestartet …",
+      "no_lan": "Kein WLAN- oder LAN-Adapter mit Heimnetz-Adresse gefunden.",
+      "bind_failed": "Port 47731 ließ sich nicht öffnen (belegt oder von Windows reserviert).",
+      "firewall_shields_up": "Die Windows-Firewall blockiert alle eingehenden Verbindungen. Windows-Sicherheit › Firewall- & Netzwerkschutz › Netzwerkprofil › „Alle eingehenden Verbindungen blockieren“ ausschalten.",
+      "firewall_blocked": "Eine Windows-Firewall-Regel blockiert GateControl.",
+      "firewall_rule": "Die Firewall-Freigabe für TCP 47731 fehlt – GateControl bitte neu installieren.",
+      "firewall_unknown": "Die Firewall-Freigabe ließ sich nicht prüfen."
+    },
     "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
     "retry": "Erneut versuchen",
     "loading": "Wird geladen …",

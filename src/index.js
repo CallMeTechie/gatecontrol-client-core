@@ -29,6 +29,7 @@ const SchoolService = require('./services/school');
 const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
+const GateDropFirewall = require('./services/gatedrop-firewall');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -47,6 +48,7 @@ const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/po
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
 const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
+const { createUpdateInstaller, installErrorText } = require('./utils/update-install');
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
@@ -99,6 +101,7 @@ module.exports = {
   GateDropService,
   GateDropApi,
   GateDropListener,
+  GateDropFirewall,
 
   // Utils
   validation,
@@ -129,6 +132,8 @@ module.exports = {
   formatBytesShort,
   updateMenuItems,
   mandatoryNotice,
+  createUpdateInstaller,
+  installErrorText,
   clientPolicy,
   messengerUtil,
   schoolUtil,

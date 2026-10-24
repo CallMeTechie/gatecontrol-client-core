@@ -209,29 +209,105 @@ function sameSubnet(a, b, prefix) {
 
 // Tunnel adapters are no LAN: the VPN subnet is private as well.
 const DEFAULT_EXCLUDE_RE = /gatecontrol|wireguard|wintun|^wg|vpn|tap-|tun\d|vethernet|virtualbox|vmware|hyper-v|docker|loopback/i;
+// Hyper-V with an external virtual switch moves the PC's LAN address from the
+// WLAN/Ethernet adapter to "vEthernet (<switch name>)". Such an adapter only
+// counts when no other LAN adapter has an address; the internal NAT switches
+// (Default Switch, WSL, nat) never do.
+const HYPERV_EXTERNAL_RE = /^vethernet\b/i;
+const HYPERV_INTERNAL_RE = /default switch|wsl|\bnat\b|internal/i;
+
+function ipv4Entries(list) {
+  return arr(list).filter((a) => a && !a.internal && (a.family === 'IPv4' || a.family === 4) && typeof a.address === 'string');
+}
+
+function prefixFor(a) {
+  let prefix = null;
+  if (typeof a.cidr === 'string' && /\/\d{1,2}$/.test(a.cidr)) prefix = Number(a.cidr.split('/')[1]);
+  if (prefix === null) prefix = prefixOf(a.netmask);
+  if (!Number.isInteger(prefix) || prefix < 8 || prefix > 32) prefix = 24;
+  return prefix;
+}
+
+/**
+ * The LAN adapters of os.networkInterfaces() → { addresses: [{ ip, prefix, name }]
+ * (sorted, no duplicates), skipped: [{ name, ip, why }] } — `why` says why an
+ * adapter with an IPv4 address does not count: 'virtual' (tunnel, VM switch,
+ * VPN), 'link_local' (169.254.x.x: no address from the router), 'public'.
+ * The skipped list is the diagnosis when no address is left.
+ */
+function lanScan(ifaces, { exclude = DEFAULT_EXCLUDE_RE } = {}) {
+  const out = [];
+  const skipped = [];
+  const seen = new Set();
+  const hyperv = [];
+  const take = (name, a) => {
+    if (seen.has(a.address)) return;
+    seen.add(a.address);
+    out.push({ ip: a.address, prefix: prefixFor(a), name });
+  };
+  for (const [name, list] of Object.entries(ifaces || {})) {
+    const entries = ipv4Entries(list);
+    if (exclude && exclude.test(name)) {
+      for (const a of entries) {
+        if (isPrivateIPv4(a.address) && HYPERV_EXTERNAL_RE.test(name) && !HYPERV_INTERNAL_RE.test(name)) hyperv.push({ name, a });
+        else skipped.push({ name, ip: a.address, why: 'virtual' });
+      }
+      continue;
+    }
+    for (const a of entries) {
+      if (isPrivateIPv4(a.address)) take(name, a);
+      else skipped.push({ name, ip: a.address, why: /^169\.254\./.test(a.address) ? 'link_local' : 'public' });
+    }
+  }
+  const hasLan = out.length > 0;
+  for (const { name, a } of hyperv) {
+    if (hasLan) skipped.push({ name, ip: a.address, why: 'virtual' });
+    else take(name, a);
+  }
+  out.sort((x, y) => (ipv4ToInt(x.ip) - ipv4ToInt(y.ip)));
+  return { addresses: out, skipped };
+}
 
 /**
  * Private IPv4 addresses of the LAN adapters (os.networkInterfaces()) →
  * [{ ip, prefix, name }] (sorted, no duplicates).
  */
-function lanAddresses(ifaces, { exclude = DEFAULT_EXCLUDE_RE } = {}) {
-  const out = [];
-  const seen = new Set();
-  for (const [name, list] of Object.entries(ifaces || {})) {
-    if (exclude && exclude.test(name)) continue;
-    for (const a of arr(list)) {
-      if (!a || a.internal) continue;
-      if (a.family !== 'IPv4' && a.family !== 4) continue;
-      if (!isPrivateIPv4(a.address) || seen.has(a.address)) continue;
-      let prefix = null;
-      if (typeof a.cidr === 'string' && /\/\d{1,2}$/.test(a.cidr)) prefix = Number(a.cidr.split('/')[1]);
-      if (prefix === null) prefix = prefixOf(a.netmask);
-      if (!Number.isInteger(prefix) || prefix < 8 || prefix > 32) prefix = 24;
-      seen.add(a.address);
-      out.push({ ip: a.address, prefix, name });
+function lanAddresses(ifaces, opts) {
+  return lanScan(ifaces, opts).addresses;
+}
+
+// Why direct receiving on this PC is off (or at risk) — the GateDrop page
+// shows it next to "Direktempfang im WLAN …", the log names it.
+const DIRECT_REASONS = Object.freeze([
+  'unavailable', 'starting', 'no_lan', 'bind_failed',
+  'firewall_shields_up', 'firewall_blocked', 'firewall_rule', 'firewall_unknown',
+]);
+
+/**
+ * State of direct receiving → { state: 'on' | 'warn' | 'off', reason, detail }.
+ * @param {object} o
+ * @param {boolean} o.available - the plugin is there
+ * @param {object} o.listener - GateDropListener.status() ({ listening, addresses, skipped, bindErrors })
+ * @param {object|null} [o.firewall] - GateDropFirewall result ({ checked, issues: [{ code, detail }] }) or null
+ */
+function directState({ available, listener, firewall = null }) {
+  const l = obj(listener) || {};
+  if (!available) return { state: 'off', reason: 'unavailable', detail: null };
+  if (!l.listening) {
+    const errs = arr(l.bindErrors);
+    if (errs.length) return { state: 'off', reason: 'bind_failed', detail: errs.map((e) => `${e.ip}: ${e.code}`).join(', ') };
+    if (l.started && !arr(l.addresses).length) {
+      const names = [...new Set(arr(l.skipped).map((s) => `${s.name} (${s.ip})`))];
+      return { state: 'off', reason: 'no_lan', detail: names.length ? names.join(', ') : null };
     }
+    return { state: 'off', reason: 'starting', detail: null };
   }
-  return out.sort((x, y) => (ipv4ToInt(x.ip) - ipv4ToInt(y.ip)));
+  const issues = arr(firewall && firewall.issues);
+  for (const code of ['firewall_shields_up', 'firewall_blocked', 'firewall_rule', 'firewall_unknown']) {
+    const hit = issues.find((i) => i && i.code === code);
+    if (hit) return { state: code === 'firewall_unknown' ? 'on' : 'warn', reason: code, detail: hit.detail || null };
+  }
+  return { state: 'on', reason: null, detail: null };
 }
 
 /** 'ip:port' of a direct candidate (private IPv4 only) → { host, port }, else null. */
@@ -619,7 +695,7 @@ module.exports = {
   RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS, RECEIVE_FROM,
   idOf, nonNegInt, timeOf, isTransferId, isTicket, isMediaId, isLinkToken, decodeKey,
   encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
-  isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, parseCandidate, ipv4ToInt,
+  isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, lanScan, parseCandidate, ipv4ToInt, DIRECT_REASONS, directState,
   normalizeTargets, normalizeDeviceAccess, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
   normalizeInbox, normalizePending, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
 };

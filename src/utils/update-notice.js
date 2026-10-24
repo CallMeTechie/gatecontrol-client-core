@@ -7,7 +7,7 @@
  * A mandatory update (server: below the minimum version) gets a prominent
  * tray entry at the top of the menu and a notification that names the
  * required version. Installing always goes through the client's
- * installUpdate() → updater.install() (re-hash right before the start);
+ * installUpdate() (utils/update-install.js: re-hash, then tunnel down, then start);
  * nothing here installs on its own.
  */
 

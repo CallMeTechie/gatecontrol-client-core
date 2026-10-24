@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const EventEmitter = require('node:events');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -312,6 +313,86 @@ describe('GateDropService', () => {
     assert.deepEqual(srv.state.results.map((x) => x.ok), [true, true]);
     assert.deepEqual([(await outcome).phase, (await outcome).via], ['done', 'direct']);
     assert.match(FakeNotification.shown.at(-1).opts.toastXml, /A hat dir foto\.jpg geschickt/);
+  });
+});
+
+describe('GateDropService – direct receiving state (why "nicht aktiv")', () => {
+  async function make(srv, { listener, firewall = null } = {}) {
+    const apiClient = new ApiClient(srv.url, 'gc_token', log);
+    const api = new GateDropApi({ apiClient, log, sleep: async () => {} });
+    const svc = new GateDropService({
+      apiClient, api, log, store: createMemoryStore(), listener, firewall, downloadsDir: () => tmpDir('gd-dl-'),
+      Notification: FakeNotification, platform: 'win32', getInterfaces: () => ({}),
+    });
+    const states = [];
+    svc.on('state', (st) => states.push(st));
+    svc.start();
+    cleanup.push(async () => { svc.stop(); await svc.idle(); });
+    await svc.check();
+    await svc.idle();
+    return { svc, states };
+  }
+
+  it('the window learns that the listener runs (state event after the bind)', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const listener = new GateDropListener({ log, port: 0, bindAddresses: ['127.0.0.1'], isAllowedPeer: () => true });
+    const { svc, states } = await make(srv, { listener });
+    assert.equal(svc.status().listening, true);
+    // The last state the window got must say "listening" – before, it was
+    // sent while the listener was still starting and never again.
+    const last = states[states.length - 1];
+    assert.equal(last.listening, true);
+    assert.deepEqual(last.direct, { state: 'on', reason: null, detail: null });
+  });
+
+  it('no LAN adapter: reason no_lan with the adapters that were left out', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const listener = new GateDropListener({
+      log, port: 0, isAllowedPeer: () => true,
+      getInterfaces: () => ({ 'vEthernet (Default Switch)': [{ family: 'IPv4', address: '172.26.80.1', netmask: '255.255.240.0', internal: false }] }),
+    });
+    const { svc, states } = await make(srv, { listener });
+    assert.deepEqual(svc.status().direct, { state: 'off', reason: 'no_lan', detail: 'vEthernet (Default Switch) (172.26.80.1)' });
+    assert.equal(states[states.length - 1].direct.reason, 'no_lan');
+    assert.equal(srv.state.presence[srv.state.presence.length - 1].listening, false);
+  });
+
+  it('port taken: reason bind_failed with the error', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const blocker = net.createServer();
+    await new Promise((r) => blocker.listen({ host: '127.0.0.1', port: 0 }, r));
+    cleanup.push(() => new Promise((r) => blocker.close(r)));
+    const listener = new GateDropListener({ log, port: blocker.address().port, bindAddresses: ['127.0.0.1'], isAllowedPeer: () => true });
+    const { svc } = await make(srv, { listener });
+    assert.equal(svc.status().direct.reason, 'bind_failed');
+    assert.match(svc.status().direct.detail, /^127\.0\.0\.1: EADDRINUSE$/);
+  });
+
+  it('firewall blocks: shown as warning, presence says not listening (server path right away)', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const listener = new GateDropListener({ log, port: 0, bindAddresses: ['127.0.0.1'], isAllowedPeer: () => true });
+    let runs = 0;
+    const firewall = { ensure: async () => { runs++; return { checked: true, issues: [{ code: 'firewall_shields_up', detail: 'Public' }], repaired: [] }; } };
+    const { svc, states } = await make(srv, { listener, firewall });
+    assert.equal(runs, 1);
+    assert.equal(svc.status().listening, true);
+    assert.deepEqual(svc.status().direct, { state: 'warn', reason: 'firewall_shields_up', detail: 'Public' });
+    assert.equal(states[states.length - 1].direct.reason, 'firewall_shields_up');
+    assert.equal(srv.state.presence[srv.state.presence.length - 1].listening, false);
+  });
+
+  it('firewall repaired: listening is reported', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const listener = new GateDropListener({ log, port: 0, bindAddresses: ['127.0.0.1'], isAllowedPeer: () => true });
+    const firewall = { ensure: async () => ({ checked: true, issues: [], repaired: ['removed'] }) };
+    const { svc } = await make(srv, { listener, firewall });
+    assert.equal(svc.status().direct.state, 'on');
+    assert.equal(srv.state.presence[srv.state.presence.length - 1].listening, true);
   });
 });
 
