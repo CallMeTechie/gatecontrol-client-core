@@ -56,6 +56,8 @@ const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+
 const PORTAL_PATH_RE = /^\/(?!\/)[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]{0,300}$/;
 const TOPIC_RE = /^(?:security|devices|services|system|admin_notice|plugin:[a-z0-9]+(?:-[a-z0-9]+)*:[a-z][a-z0-9_-]{0,31})$/;
 const MAX_ITEMS = 100;
+const ACTION_TYPES = ['open_app_route', 'open_portal', 'mute_1h', 'ack', 'done', 'callback'];
+const ACTED_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
 const MUTE_MS = 60 * 60 * 1000;
 const MAX_TOASTS = 50; // toast references kept for close() (Action Center)
 const QUIET_PORTAL_TARGET = '/portal#benachrichtigungen'; // portal tab "Meine Benachrichtigungen"
@@ -91,10 +93,17 @@ function normalizeEntry(n, extra = {}) {
     state,
     received_at: isoOrNull(extra.received_at || n.received_at) || new Date().toISOString(),
     via: (extra.via || n.via) === 'tunnel' ? 'tunnel' : (extra.via || n.via) === 'direct' ? 'direct' : null,
+    // the answer given here (callback / ack button) — local only, the server inbox does not carry it
+    acted: ACTED_RE.test(String(extra.acted || n.acted || '')) ? String(extra.acted || n.acted) : null,
   };
 }
 
-/** Actions of an entry that the client can perform (fixed list). */
+/**
+ * Actions of an entry that the client can perform (fixed list). `callback`
+ * (GateControl plugin pushes, e.g. Fahrtenbuch "Privat" / "Geschäftlich"):
+ * a plain answer button — the ack carries its id and the server hands it to
+ * the sending plugin.
+ */
 function entryActions(entry) {
   const list = entry && entry.data && Array.isArray(entry.data.actions) ? entry.data.actions : [];
   const out = [];
@@ -105,7 +114,7 @@ function entryActions(entry) {
     if (!/^[A-Za-z0-9_.:-]{1,40}$/.test(id)) continue;
     if (type === 'open_app_route' && !APP_ROUTE_RE.test(String(a.target || ''))) continue;
     if (type === 'open_portal' && !PORTAL_PATH_RE.test(String(a.target || ''))) continue;
-    if (!['open_app_route', 'open_portal', 'mute_1h', 'ack', 'done'].includes(type)) continue;
+    if (!ACTION_TYPES.includes(type)) continue;
     out.push({ id, type, label: str(a.label, 40) || id, target: a.target != null ? String(a.target) : null });
   }
   return out;
@@ -466,7 +475,7 @@ class NotificationCenter extends EventEmitter {
     const items = [];
     for (const raw of r.items) {
       const k = known.get(Number(raw && raw.id));
-      const e = normalizeEntry(raw, k ? { received_at: k.received_at, via: k.via } : { received_at: raw && raw.created_at });
+      const e = normalizeEntry(raw, k ? { received_at: k.received_at, via: k.via, acted: k.acted } : { received_at: raw && raw.created_at });
       if (!e) continue;
       const pending = this._pendingRead.get(e.seq);
       if (pending) e.state = pending.state;
@@ -609,7 +618,12 @@ class NotificationCenter extends EventEmitter {
         if (entry.topic) this.muteTopic(entry.topic, MUTE_MS);
         break;
       default:
-        break; // ack / done: only the confirmation below
+        break; // ack / done / callback: only the confirmation below
+    }
+    if (action.type === 'callback' || action.type === 'ack') {
+      // remembered here so the inbox can show the answer that was given
+      entry.acted = action.id;
+      this._saveInbox();
     }
     this.emit('action', { id: entry.id, seq: entry.seq, action: action.id, type: action.type });
     const r = await this.markRead([entry.id], { state: action.type === 'done' ? 'dismissed' : 'read', action: action.id });
