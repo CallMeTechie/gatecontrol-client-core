@@ -218,6 +218,15 @@ describe('GateDrop answers', () => {
     assert.deepEqual(gd.parsePushData({ gatedrop: { link: 'abcdefghijklmnopqrstuv', send: 'b'.repeat(24) } }), { kind: 'link', token: 'abcdefghijklmnopqrstuv', sendId: 'b'.repeat(24) });
     const tr = gd.transferOf({ transfer: { id: 'a'.repeat(24), sendId: 'b'.repeat(24), side: 'receiver', mode: 'pull', status: 'open', from: { userId: 2, deviceId: '42', deviceName: 'Pixel' }, candidates: [], key: KEY_B64, ticket: 'tkt_abcdefghijkl', items: [{ index: 0, name: 'a.jpg', bytes: 3, mime: 'image/jpeg' }] } }, 'a'.repeat(24));
     assert.deepEqual([tr.transferId, tr.sendId, tr.side, tr.items.length], ['a'.repeat(24), 'b'.repeat(24), 'receiver', 1]);
+    // an ended transfer has no key and ticket any more: transferOf() is null, transferStatusOf() tells why
+    const ended = { transfer: { id: 'a'.repeat(24), side: 'sender', mode: 'pull', status: 'failed', key: null, ticket: null, peer: { ok: false, error: 'pull_failed' } } };
+    assert.equal(gd.transferOf(ended, 'a'.repeat(24)), null);
+    assert.deepEqual(gd.transferStatusOf(ended), { status: 'failed', side: 'sender', peer: { ok: false, error: 'pull_failed' } });
+    // older plugin (no peer), odd values
+    assert.deepEqual(gd.transferStatusOf({ transfer: { id: 'x', status: 'open' } }), { status: 'open', side: null, peer: null });
+    assert.deepEqual(gd.transferStatusOf({ transfer: { id: 'x', status: 'weird', peer: { ok: false, error: 'Bad Code!' } } }), { status: null, side: null, peer: { ok: false, error: null } });
+    assert.equal(gd.transferStatusOf(null), null);
+    assert.equal(gd.transferStatusOf({ ok: true }), null);
     // send items of the plugin: only available ones with a mediaId can be downloaded
     const items = gd.normalizeItems([{ index: 0, mediaId: 'c'.repeat(32), name: 'x', bytes: 1, local: false, available: true }, { index: 1, mediaId: null, name: 'y', bytes: 1, local: true, available: false }]);
     assert.deepEqual(items.map((i) => [i.index, i.available, i.local]), [[0, true, false], [1, false, true]]);

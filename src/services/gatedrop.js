@@ -42,6 +42,11 @@
  * (record), 'changed' ({ kind }), 'navigate' ({ tab, sendId }).
  * Phases out: upload → sent → direct / failed (direct failed, the server takes
  * over) → done | error; in: download / direct → done | failed.
+ *
+ * Waiting for the other end of a direct transfer (a device pulls from us, or
+ * pushes to us) GET transfers/<id> is asked every few seconds: when that end
+ * reported a failure (or the plugin let the ticket expire) the wait ends at
+ * once and the server path takes over — no minute of "Wird gesendet".
  */
 
 const EventEmitter = require('events');
@@ -67,7 +72,10 @@ const DEFAULT_TIMING = {
   networkCheckMs: 30 * 1000,
   targetsTtlMs: 30 * 1000,
   inboxTtlMs: 30 * 1000,
-  pullStartMs: 60 * 1000,      // a device that should pull from us: first request within 1 min
+  pullStartMs: 15 * 1000,      // a device that should pull from us: first request within 15 s
+  directPollMs: 2000,          // waiting for the other end of a direct transfer: GET transfers/<id> every 2 s …
+  directPollFastForMs: 30 * 1000, // … for the first 30 s,
+  directPollSlowMs: 10 * 1000, // then every 10 s (it gave up → the server path right away)
   preparedTtlMs: 60 * 60 * 1000,
   pendingDebounceMs: 2000,     // GET pending: triggers close together → one poll
   resumeDelayMs: 5000,         // after resume from sleep: give the network a moment
@@ -761,11 +769,51 @@ class GateDropService extends EventEmitter {
     return null;
   }
 
+  /**
+   * While this PC waits for the other end of a direct transfer: GET transfers/<id>
+   * every directPollMs (directPollSlowMs after directPollFastForMs). The other end
+   * reported a failure, or the ticket expired (status failed / expired) → onEnd({ status, side, peer })
+   * once. Errors of the poll are ignored (the wait has its own limits). → stop()
+   */
+  _watchTransfer(transferId, onEnd) {
+    let stopped = false;
+    let timer = null;
+    const since = this.now();
+    const schedule = () => {
+      if (stopped) return;
+      const fast = this.now() - since < this.timing.directPollFastForMs;
+      timer = setTimeout(tick, fast ? this.timing.directPollMs : this.timing.directPollSlowMs);
+      if (timer.unref) timer.unref();
+    };
+    const tick = async () => {
+      timer = null;
+      if (stopped) return;
+      let st = null;
+      try { st = await this.api.transferStatus(transferId); } catch (err) { this.log.debug(`GateDrop transfer status: ${err.code || err.message}`); }
+      if (stopped) return;
+      if (st && (st.status === 'failed' || st.status === 'expired')) {
+        stopped = true;
+        try { onEnd(st); } catch (err) { this.log.warn(`GateDrop: ${err.message}`); }
+        return;
+      }
+      schedule();
+    };
+    schedule();
+    return () => { stopped = true; clearTimeout(timer); };
+  }
+
+  /** "receiver_failed: pull_failed" — what the other end reported (GateDrop 1.2.1+), for the log. */
+  static _why(code, st) {
+    const peer = st && st.peer && st.peer.error ? st.peer.error : st && st.status === 'expired' ? 'expired' : null;
+    return peer ? `${code}: ${peer}` : code;
+  }
+
   async _sendDirect(d, list, sendId, upload, jobId, total, { local = true } = {}) {
     const progress = (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'direct', sent, total, deviceId: d.deviceId });
     let ok = false;
     let bytes = 0;
     let error = null;
+    let peer = null; // the receiver gave up (pull): GET transfers/<id>
     try {
       if (d.mode === 'push') {
         const r = await this.direct.pushTo({
@@ -782,6 +830,11 @@ class GateDropService extends EventEmitter {
           items: list.map((f) => ({ path: f.path, name: f.name, size: f.size })),
         });
         const startTimer = setTimeout(() => { if (!offer.started()) this.listener.cancelOutgoing(d.transferId, 'not_fetched'); }, this.timing.pullStartMs);
+        // The device reports a failed fetch to the plugin right away: stop waiting then.
+        const stopWatch = this._watchTransfer(d.transferId, (st) => {
+          peer = st;
+          this.listener.cancelOutgoing(d.transferId, 'receiver_failed');
+        });
         try {
           const r = await offer.done;
           ok = true;
@@ -789,11 +842,12 @@ class GateDropService extends EventEmitter {
           progress(total);
         } finally {
           clearTimeout(startTimer);
+          stopWatch();
         }
       }
     } catch (err) {
       error = err.code || err.message || 'failed';
-      this.log.info(`GateDrop direct to ${d.deviceId || 'device'} failed (${error}) – server path`);
+      this.log.info(`GateDrop direct to ${d.deviceId || 'device'} failed (${GateDropService._why(error, peer)}) – server path`);
     }
     const answer = await this._report(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
     if (ok) return { ok: true, via: 'direct' };
@@ -865,17 +919,25 @@ class GateDropService extends EventEmitter {
     const progress = (sent) => this.emit('progress', { id: jobId, dir: 'in', phase: 'direct', sent, total });
     let saved = [];
     let error = null;
+    let peer = null; // the sender gave up (push): GET transfers/<id>
     try {
       if (p.mode === 'push') {
         if (!this.listener || !this.listener.listening) throw Object.assign(new Error('not listening'), { code: 'not_listening' });
         const onItem = (e) => { if (e.transferId === p.transferId) progress(e.bytes); };
         this.listener.on('incoming-item', onItem);
+        const waiting = this.listener.expectIncoming({
+          transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, expiresAt: p.expiresAt,
+          sink: (meta) => this._sink(meta),
+        });
+        // The sender reports a failed push to the plugin right away: stop waiting then (not 10 minutes).
+        const stopWatch = this._watchTransfer(p.transferId, (st) => {
+          peer = st;
+          this.listener.cancelIncoming(p.transferId, 'sender_failed');
+        });
         try {
-          saved = await this.listener.expectIncoming({
-            transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, expiresAt: p.expiresAt,
-            sink: (meta) => this._sink(meta),
-          });
+          saved = await waiting;
         } finally {
+          stopWatch();
           this.listener.removeListener('incoming-item', onItem);
         }
       } else {
@@ -899,7 +961,7 @@ class GateDropService extends EventEmitter {
       this.log.warn(`GateDrop transfer result failed: ${err.code || err.message}`);
     }
     if (error) {
-      this.log.info(`GateDrop direct receive failed (${error}) – the server path follows`);
+      this.log.info(`GateDrop direct receive failed (${GateDropService._why(error, peer)}) – the server path follows`);
       this.emit('progress', { id: jobId, dir: 'in', phase: 'failed', sent: 0, total });
       return { ok: false, error };
     }
