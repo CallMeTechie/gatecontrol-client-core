@@ -289,6 +289,14 @@ function mergeNetworks(networks, bss = []) {
 let native = null;
 
 /**
+ * Copies n bytes of native memory into a Buffer. koffi.decode copies; koffi.view would wrap
+ * the memory in an external ArrayBuffer, which Electron's V8 sandbox forbids (the app crashes).
+ */
+function copyNative(koffi, ptr, n) {
+  return n > 0 ? Buffer.from(koffi.decode(ptr, 'uint8_t', n)) : Buffer.alloc(0);
+}
+
+/**
  * Binds wlanapi.dll. Each method throws WifiScanError on a non-zero result;
  * lists come back as copied Buffers (the API's memory is freed right away).
  */
@@ -311,7 +319,7 @@ function loadNative() {
   /** Copies a list the API allocated (size from its header), then frees it. */
   const take = (ptr, size) => {
     try {
-      return Buffer.from(new Uint8Array(koffi.view(ptr, size(ptr))));
+      return copyNative(koffi, ptr, size(ptr));
     } finally {
       f.free(ptr);
     }
@@ -441,6 +449,7 @@ module.exports = {
   WifiScanError,
   SECURITY,
   // pure parts (tests)
+  copyNative,
   errorCode,
   decodeSsid,
   kindsOfAuth,
