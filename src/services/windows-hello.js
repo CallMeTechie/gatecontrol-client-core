@@ -27,7 +27,9 @@
  * Electron main thread keeps pumping messages while the dialog is open); no
  * COM callback object is needed. koffi and the DLLs load on the first call
  * on Windows only, so requiring this module is safe anywhere. The COM layer
- * takes { koffi, api } so test/windows-hello.test.js runs it against fake
+ * Native memory is only ever copied (koffi.decode / encode), never viewed:
+ * Electron's V8 sandbox forbids external ArrayBuffers (koffi.view). The COM
+ * layer takes { koffi, api } so test/windows-hello.test.js runs it against fake
  * COM objects (koffi callbacks) on any platform; test/windows-hello.win.test.js
  * runs the real one on Windows (no prompt: availability, buffers, OpenAsync
  * of a name that does not exist).
@@ -321,9 +323,11 @@ class WinRt {
     if (data[0] == null) return Buffer.alloc(0);
     try {
       if (size[0] > MAX_BLOB) throw new WinRtError('buffer too large');
-      const view = new Uint8Array(this.koffi.view(data[0], size[0]));
-      const copy = Buffer.from(view);
-      view.fill(0);
+      if (!size[0]) return Buffer.alloc(0);
+      // copied out and zeroed through koffi.decode / encode: Electron's V8 sandbox forbids external
+      // ArrayBuffers (koffi.view) over native memory
+      const copy = Buffer.from(this.koffi.decode(data[0], 'uint8_t', size[0]));
+      this.koffi.encode(data[0], 'uint8_t', new Uint8Array(size[0]), size[0]);
       return copy;
     } finally {
       this.api.CoTaskMemFree(data[0]);
