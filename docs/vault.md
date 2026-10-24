@@ -235,8 +235,10 @@ Rejected alternatives:
   `unsupported_os` (not Windows, no KeyCredentialManager), `remote_session`
   (Remote Desktop — Hello does not work there), `not_set_up` (no Windows
   Hello / PIN for this user), `no_protect` (DPAPI unavailable), `error`. The
-  apps hide the option or disable it with the reason; a Hello unlock that is
-  already on keeps its record and offers the master password meanwhile.
+  apps hide the option or disable it with the reason (for `not_set_up` with a
+  button to Windows' sign-in options: `shell:open-external` allows exactly
+  `ms-settings:signinoptions`); a Hello unlock that is already on keeps its
+  record and offers the master password meanwhile.
 - Logged: statuses, codes and HRESULTs only — never a signature, key or the
   challenge.
 
