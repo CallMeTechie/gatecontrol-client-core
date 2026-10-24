@@ -639,6 +639,31 @@ function transferOf(raw, transferId) {
   return { ...p, side: t.side === 'sender' || t.side === 'receiver' ? t.side : null, status: typeof t.status === 'string' ? t.status : null };
 }
 
+const TRANSFER_STATUS = ['open', 'done', 'failed', 'expired'];
+const ERROR_CODE_RE = /^[a-z0-9_.-]{1,64}$/;
+
+/**
+ * GET transfers/<id> → where the transfer stands, also once it ended (then
+ * key and ticket are gone, so transferOf() has nothing): { status, side, peer }
+ *   status: 'open' | 'done' | 'failed' | 'expired' (null: unknown)
+ *   peer:   what the other end reported (GateDrop 1.2.1+): { ok, error } or null
+ * or null when the answer is no transfer.
+ */
+function transferStatusOf(raw) {
+  const r = obj(raw);
+  const t = r && (obj(r.transfer) || r);
+  if (!t || (t.status === undefined && t.id === undefined)) return null;
+  const p = obj(t.peer);
+  const peer = p && typeof p.ok === 'boolean'
+    ? { ok: p.ok, error: !p.ok && typeof p.error === 'string' && ERROR_CODE_RE.test(p.error) ? p.error : null }
+    : null;
+  return {
+    status: TRANSFER_STATUS.includes(t.status) ? t.status : null,
+    side: t.side === 'sender' || t.side === 'receiver' ? t.side : null,
+    peer,
+  };
+}
+
 // ── Requests ───────────────────────────────────────────────
 
 /**
@@ -697,5 +722,5 @@ module.exports = {
   encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, lanScan, parseCandidate, ipv4ToInt, DIRECT_REASONS, directState,
   normalizeTargets, normalizeDeviceAccess, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
-  normalizeInbox, normalizePending, parsePushData, transferOf, linkOf, sendTargets, linkArg, isGateDropPush,
+  normalizeInbox, normalizePending, parsePushData, transferOf, transferStatusOf, linkOf, sendTargets, linkArg, isGateDropPush,
 };

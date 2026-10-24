@@ -149,6 +149,33 @@ describe('GateDrop listener', () => {
     assert.equal(r.status, 403);
   });
 
+  it('a pull that started and broke off ends with the ticket (the sender does not wait for ever)', async () => {
+    let now = 1000;
+    l.now = () => now;
+    const src = path.join(dir, 'two.bin');
+    fs.writeFileSync(src, Buffer.alloc(10, 1));
+    const offer = l.offerOutgoing({ transferId: 'tr_half', ticket: TICKET, key: KEY, items: [{ path: src, name: 'a', size: 10 }, { path: src, name: 'b', size: 10 }] });
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'gd-half-'));
+    // the device fetches item 0, never item 1
+    await direct.pullFrom({ candidates: [`127.0.0.1:${port}`], transferId: 'tr_half', ticket: TICKET, key: KEY, items: [{ index: 0, name: 'a', bytes: 10 }], sink: sinkTo(out), resolveCandidate: loopback });
+    assert.equal(offer.started(), true);
+    l.sweep();
+    now += gd.TICKET_TTL_MS + 1;
+    l.sweep();
+    await assert.rejects(offer.done, (e) => e.code === 'broken_off');
+    fs.rmSync(out, { recursive: true, force: true });
+  });
+
+  it('logs who reached it and why a request was refused (diagnosis)', async () => {
+    const lines = [];
+    l.log = { ...log, info: (m) => lines.push(m) };
+    l.expectIncoming({ transferId: 'tr_log', ticket: TICKET, key: KEY, items: [{ index: 0, name: 'a', bytes: 1 }], sink: sinkTo(dir) }).catch(() => {});
+    assert.equal((await post(port, 'tr_log', { ticket: 'tkt_wrongwrongwrong', size: 1, body: Buffer.alloc(17) })).status, 403);
+    assert.ok(lines.some((m) => /POST from 127\.0\.0\.1 refused \(403 forbidden\)/.test(m)), lines.join('\n'));
+    assert.equal((await post(port, 'tr_log', { size: 1, body: c.encryptBuffer(KEY, 'tr_log', Buffer.from('a')) })).status, 200);
+    assert.ok(lines.some((m) => /127\.0\.0\.1 sends transfer tr_log/.test(m)), lines.join('\n'));
+  });
+
   it('only private IPv4 peers by default', async () => {
     const strict = new GateDropListener({ log, port: 0, bindAddresses: ['127.0.0.1'] });
     await strict.start();
