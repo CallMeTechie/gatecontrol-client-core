@@ -163,6 +163,8 @@ describe('shell:open-external', () => {
     assert.equal(isSafeExternalUrl('ms-settings:privacy-location'), false);
     assert.equal(isAllowedSettingsUri('ms-settings:privacy-location'), true);
     assert.equal(isAllowedSettingsUri(' ms-settings:privacy-location '), true);
+    assert.equal(isAllowedSettingsUri('ms-settings:signinoptions'), true, 'Windows Hello setup (Vault)');
+    assert.equal(isAllowedSettingsUri('ms-settings:signinoptions-launchfaceenrollment'), false);
     assert.equal(isAllowedSettingsUri(null), false);
   });
 });

@@ -8,7 +8,8 @@
  *
  * shell:open-external additionally opens a short list of Windows settings
  * pages, matched exactly (isAllowedSettingsUri): the location privacy page
- * that Vault's Wi-Fi scan points to when Windows denies scan results.
+ * that Vault's Wi-Fi scan points to when Windows denies scan results, and
+ * the sign-in options (set up Windows Hello for Vault's Hello unlock).
  *
  * Pure — no Electron — so it is unit-testable.
  */
@@ -28,7 +29,7 @@ function isSafeExternalUrl(raw) {
 }
 
 /** Windows settings pages the renderer may open, exact URIs only (no other ms-settings: page, no arguments). */
-const SETTINGS_URIS = Object.freeze(['ms-settings:privacy-location']);
+const SETTINGS_URIS = Object.freeze(['ms-settings:privacy-location', 'ms-settings:signinoptions']);
 
 /** true for exactly one of SETTINGS_URIS. */
 function isAllowedSettingsUri(raw) {

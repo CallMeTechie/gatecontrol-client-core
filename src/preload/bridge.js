@@ -315,6 +315,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       cancelSetup:      () => ipcRenderer.invoke('vault:setup:cancel'),
       unlock:           (password) => ipcRenderer.invoke('vault:unlock', { password }),
       unlockRemembered: () => ipcRenderer.invoke('vault:unlockRemembered'),
+      // Windows Hello: unlock (prompt), check (no prompt), on (master password, then the prompt) / off
+      unlockHello:      () => ipcRenderer.invoke('vault:unlockHello'),
+      helloCheck:       () => ipcRenderer.invoke('vault:hello:check'),
+      setHello:         (on, password) => ipcRenderer.invoke('vault:hello:set', on === true ? { on: true, password } : { on: false }),
       lock:             () => ipcRenderer.invoke('vault:lock'),
       recover:          (recoveryKey) => ipcRenderer.invoke('vault:recover', { recoveryKey }),
       completeRecovery: (password) => ipcRenderer.invoke('vault:completeRecovery', { password }),

@@ -18,6 +18,10 @@
  *   vault:setup:cancel     () → { ok }
  *   vault:unlock           ({ password }) → { ok, status }
  *   vault:unlockRemembered () → { ok, status }
+ *   vault:unlockHello      () → { ok, status }                                  (Windows Hello prompt; codes hello_off,
+ *                          hello_blocked, hello_cancelled, hello_locked, hello_unavailable, hello_failed, hello_invalid)
+ *   vault:hello:check      () → { ok, available, reason }                       (asks Windows again, no prompt)
+ *   vault:hello:set        ({ on: true, password } | { on: false }) → { ok, …settings }   (on: unlocked, then the prompt)
  *   vault:lock             () → { ok, status }
  *   vault:recover          ({ recoveryKey }) → { ok, status }                   (then completeRecovery)
  *   vault:completeRecovery ({ password }) → { ok, recoveryKey }
@@ -48,7 +52,8 @@
  *   vault:generate         ({ words?, length?, upper?, digits?, symbols?, avoidAmbiguous?, wordCount? }) → { ok, password, strength, bits }
  *   vault:strength         ({ password }) → { ok, strength, bits, good, words }
  *   vault:totp             ({ id, emergencyId? } | { uri }) → { ok, code, secondsLeft, period, digits }
- *   vault:settings:get     () → { ok, autoLockMinutes, choices, remember, rememberAvailable }
+ *   vault:settings:get     () → { ok, autoLockMinutes, choices, remember, rememberAvailable, hello, helloAvailable,
+ *                          helloReason, helloBlocked }
  *   vault:settings:set     ({ autoLockMinutes?, remember? }) → same
  *   vault:copy             ({ id, field, emergencyId? } | { text }) → { ok, clearsInMs }
  *   vault:wifi-scan        () → { ok, networks: [{ ssid, security, signal, connected }] }   (unlocked; Windows, takes ~4 s;
@@ -118,6 +123,13 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:setup:cancel', wrap(async () => { s.cancelSetup(); }));
   handle('vault:unlock', withStatus(async (a) => (secret(a.password) ? s.unlock({ password: a.password }) : invalid())));
   handle('vault:unlockRemembered', withStatus(() => s.unlockRemembered()));
+  handle('vault:unlockHello', withStatus(() => s.unlockHello()));
+  handle('vault:hello:check', wrap(() => s.checkHello(), passive));
+  handle('vault:hello:set', wrap(async (a) => {
+    if (a.on === false) return s.setHello({ on: false });
+    if (a.on !== true || !secret(a.password)) return invalid();
+    return s.setHello({ on: true, password: a.password });
+  }));
   handle('vault:lock', withStatus(async () => s.lock('manual')));
   handle('vault:recover', withStatus(async (a) => (typeof a.recoveryKey === 'string' && a.recoveryKey.length <= 200 ? s.recover({ recoveryKey: a.recoveryKey }) : invalid())));
   handle('vault:completeRecovery', wrap(async (a) => (secret(a.password) ? s.completeRecovery({ password: a.password }) : invalid())));

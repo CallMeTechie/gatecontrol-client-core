@@ -75,12 +75,12 @@ describe('createBridgeApi', () => {
       'update:policy',
       'vault:addMember', 'vault:changePassword', 'vault:check', 'vault:completeRecovery', 'vault:copy', 'vault:createVault',
       'vault:deleteAccount', 'vault:deleteVault', 'vault:emergency', 'vault:emergencyAdd', 'vault:emergencyOpen',
-      'vault:emergencyRemove', 'vault:emergencyStep', 'vault:entries', 'vault:entry', 'vault:generate', 'vault:history',
-      'vault:import:parse', 'vault:import:save', 'vault:lock', 'vault:match', 'vault:notices:clear', 'vault:people', 'vault:purge',
+      'vault:emergencyRemove', 'vault:emergencyStep', 'vault:entries', 'vault:entry', 'vault:generate', 'vault:hello:check',
+      'vault:hello:set', 'vault:history', 'vault:import:parse', 'vault:import:save', 'vault:lock', 'vault:match', 'vault:notices:clear', 'vault:people', 'vault:purge',
       'vault:recover', 'vault:removeMember', 'vault:renameVault', 'vault:restore', 'vault:save', 'vault:setRole',
       'vault:settings:get', 'vault:settings:set', 'vault:setup', 'vault:setup:cancel', 'vault:setup:confirm', 'vault:status',
-      'vault:strength', 'vault:sync', 'vault:totp', 'vault:totp-qr', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockRemembered',
-      'vault:vaults', 'vault:wifi-scan',
+      'vault:strength', 'vault:sync', 'vault:totp', 'vault:totp-qr', 'vault:touch', 'vault:trash', 'vault:unlock', 'vault:unlockHello',
+      'vault:unlockRemembered', 'vault:vaults', 'vault:wifi-scan',
       'wireguard:check',
     ]);
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
