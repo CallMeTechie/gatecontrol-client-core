@@ -31,6 +31,12 @@
  * - "Remember unlock" (Windows: DPAPI through Electron safeStorage): the
  *   user key protected by `opts.protect` in `<dir>/remember-<owner>.bin` —
  *   only when the person turns it on; turned off, the file goes.
+ * - "Mit Windows Hello entsperren" (opts.hello, services/windows-hello.js):
+ *   the user key wrapped by a key derived from a Windows Hello signature
+ *   (utils/vault-hello.js), the record DPAPI-protected in
+ *   `<dir>/hello-<owner>.bin`. Turning it on needs the vault unlocked and the
+ *   master password; it replaces "remember unlock". After MAX_FAILS failed or
+ *   cancelled Hello unlocks only the master password opens (until it did).
  * - Clipboard: copy() writes a secret and clears it after 30 s when it is
  *   still the same text.
  * - Availability like Schule: the page exists while GET /api/v1/client/plugins
@@ -44,7 +50,9 @@
  * (`network`, `timeout`, `not_configured`, `http_<status>`), and this
  * service's own: `locked`, `wrong_password`, `recovery_key`, `weak_password`,
  * `read_only`, `too_large`, `no_setup`, `not_remembered`, `remember_failed`,
- * `unsupported`, `empty`, `import_encrypted`, `import_unknown`, `invalid_answer`; wifiScan(): `no_adapter`,
+ * `unsupported`, `empty`, `import_encrypted`, `import_unknown`, `invalid_answer`, `hello_on` (remember while Windows
+ * Hello is on); Windows Hello: `hello_unavailable`, `hello_off`, `hello_cancelled`, `hello_locked`, `hello_failed`,
+ * `hello_invalid` (the Hello key is gone or changed: turned off), `hello_blocked` (too many tries); wifiScan(): `no_adapter`,
  * `service_off`, `radio_off`, `location_denied`, `failed`; totpQr(): `none_found`, `hotp`, `invalid_code`,
  * `no_image`, `unsupported`, `cancelled`, `failed`.
  *
@@ -59,6 +67,7 @@ const MessengerApi = require('./messenger-api');
 const { PLUGINS_PATH } = require('../utils/messenger');
 const vc = require('../utils/vault-crypto');
 const vault = require('../utils/vault');
+const vh = require('../utils/vault-hello');
 const { t } = require('../i18n');
 
 const { MessengerError } = MessengerApi;
@@ -80,6 +89,11 @@ const QR_CODES = ['none_found', 'hotp', 'invalid_code', 'no_image', 'unsupported
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
 const fail = (code, status = null) => new MessengerError(code, { code, status });
+
+/** Zeroes a Buffer / Uint8Array in place (key material from Windows Hello). */
+function wipeBytes(b) {
+  if (b instanceof Uint8Array) b.fill(0);
+}
 
 async function atomicWrite(file, data) {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -105,6 +119,9 @@ class VaultService extends EventEmitter {
    * @param {object} [opts.log]
    * @param {Function} [opts.wifiScan] - Wi-Fi scan for Wi-Fi entries (default: services/wifi-scan.js scanWifi; tests)
    * @param {Function} [opts.totpQr] - QR code reader for 2FA keys (default: services/totp-qr.js scanTotpQr; tests)
+   * @param {object} [opts.hello] - Windows Hello provider (services/windows-hello.js createWindowsHello(), or a fake):
+   *   { available(), create(name, challenge), sign(name, challenge), remove(name) }; without it Hello is off
+   * @param {string} [opts.helloName] - prefix of the Windows Hello key's name (one key per app and login)
    * @param {object} [opts.api] - MessengerApi-compatible transport (tests)
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
@@ -112,7 +129,7 @@ class VaultService extends EventEmitter {
   constructor({
     apiClient, log, dir = null, protect = null, clipboard = null, notificationCenter = null, pushClient = null,
     powerMonitor = null, deviceName = null, kdf = null, api = null, timing = {}, now = Date.now, wifiScan = null,
-    totpQr = null,
+    totpQr = null, hello = null, helloName = 'GateControl Vault',
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -130,6 +147,13 @@ class VaultService extends EventEmitter {
     this._wifiScan = typeof wifiScan === 'function' ? wifiScan : null;
     this._totpQr = typeof totpQr === 'function' ? totpQr : null;
     this._qrRun = null;
+    this.hello = hello && typeof hello.sign === 'function' ? hello : null;
+    this.helloName = helloName;
+    this._helloOn = false;
+    this._helloAvail = { available: false, reason: this.hello ? 'unknown' : 'unsupported_os' };
+    this._helloChecking = null;
+    this._helloRun = null;
+    this._helloFails = 0;
 
     this._ready = vc.ready();
     this._sodium = false;
@@ -213,6 +237,7 @@ class VaultService extends EventEmitter {
     }, this.timing.syncMs);
     if (this._syncTimer.unref) this._syncTimer.unref();
     this.check().then(() => { if (this._state.account) this.syncSoon(); }).catch(() => {});
+    if (this.hello) this.checkHello().catch(() => {});
   }
 
   stop() {
@@ -262,6 +287,9 @@ class VaultService extends EventEmitter {
    *   pending (saves not yet on the server), unreadable (entries that could not be decrypted),
    *   dataRev (changes whenever entries / vaults change: fetch them again),
    *   myUserId, safetyNumber (own, compare with others), autoLockMinutes, remember, rememberAvailable,
+   *   hello (Windows Hello unlock on), helloAvailable, helloReason (null | 'unknown' | 'unsupported_os' |
+   *   'remote_session' | 'not_set_up' | 'no_protect' | 'error'), helloBlocked (too many tries: master password),
+   *   helloBusy (a Hello prompt is open),
    *   lastLock: { reason, at } | null, notices: [{ code: 'conflict'|'limit'|'refused', at }]
    * }
    */
@@ -288,6 +316,8 @@ class VaultService extends EventEmitter {
       autoLockMinutes: this._settings.autoLockMinutes,
       remember: this._rememberOn,
       rememberAvailable: this._protectAvailable(),
+      ...this._helloStatus(),
+      helloBusy: !!this._helloRun,
       lastLock: this._lastLock ? { ...this._lastLock } : null,
       notices: this._notices.map((n) => ({ ...n })),
     };
@@ -387,6 +417,8 @@ class VaultService extends EventEmitter {
 
   _rememberFile(owner) { return path.join(this.dir, `remember-${owner}.bin`); }
 
+  _helloFile(owner) { return path.join(this.dir, `hello-${owner}.bin`); }
+
   _ensureLoaded() {
     const owner = vault.ownerKey(this._scopeNow());
     if (this._loaded && owner === this._owner) return Promise.resolve();
@@ -410,6 +442,8 @@ class VaultService extends EventEmitter {
       this._state = st || vault.emptyState();
       this._loaded = true;
       this._rememberOn = !!(owner && this.dir && fs.existsSync(this._rememberFile(owner)));
+      this._helloOn = !!(this.hello && owner && this.dir && fs.existsSync(this._helloFile(owner)));
+      this._helloFails = 0;
       this._rebuild();
       this._emit();
     })().finally(() => { if (this._loading && this._loading.p === p) this._loading = null; });
@@ -451,6 +485,7 @@ class VaultService extends EventEmitter {
       try { await fs.promises.rm(f, { force: true }); } catch (err) { this.log.warn(`Vault: ${path.basename(f)} not removed (${err.code})`); }
     }
     if (owner === this._owner) this._rememberOn = false;
+    await this._forgetHello(owner);
   }
 
   // ── Settings ─────────────────────────────────────────────
@@ -472,13 +507,14 @@ class VaultService extends EventEmitter {
     try { return !!(this.protect && typeof this.protect.available === 'function' && this.protect.available()); } catch { return false; }
   }
 
-  /** { autoLockMinutes, choices, remember, rememberAvailable } */
+  /** { autoLockMinutes, choices, remember, rememberAvailable, hello, helloAvailable, helloReason, helloBlocked } */
   settings() {
     return {
       autoLockMinutes: this._settings.autoLockMinutes,
       choices: [...vault.AUTO_LOCK_CHOICES],
       remember: this._rememberOn,
       rememberAvailable: this._protectAvailable(),
+      ...this._helloStatus(),
     };
   }
 
@@ -498,6 +534,8 @@ class VaultService extends EventEmitter {
     if (remember === true) {
       if (!this._keys) throw fail('locked');
       if (!this._protectAvailable() || !this._owner || !this.dir) throw fail('unsupported');
+      // Windows Hello asks for the person; a kept key would open without them
+      if (this._helloOn) throw fail('hello_on');
       const plain = Buffer.from(this._keys.userKey);
       try {
         const blob = this.protect.encrypt(plain);
@@ -572,6 +610,7 @@ class VaultService extends EventEmitter {
     this._keys = keys;
     this._recovering = recovering;
     this._lastLock = null;
+    this._helloFails = 0;
     this._rebuild();
     this.touch();
     this._emit();
@@ -770,6 +809,7 @@ class VaultService extends EventEmitter {
     if (had && this._owner && this.dir) {
       fs.promises.rm(this._rememberFile(this._owner), { force: true }).catch(() => {});
       this._rememberOn = false;
+      this._forgetHello(this._owner).catch(() => {});
     }
     this._rebuild();
     this._emit();
@@ -878,6 +918,253 @@ class VaultService extends EventEmitter {
       await this.setSettings({ remember: false }).catch(() => {});
       throw fail('remember_failed');
     }
+    return this.status();
+  }
+
+  // ── Windows Hello ────────────────────────────────────────
+
+  _helloStatus() {
+    let reason = this._helloAvail.reason;
+    let available = this._helloAvail.available;
+    if (available && !this._protectAvailable()) {
+      available = false;
+      reason = 'no_protect';
+    }
+    return {
+      hello: this._helloOn,
+      helloAvailable: available,
+      helloReason: available ? null : reason,
+      helloBlocked: this._helloOn && this._helloFails >= vh.MAX_FAILS,
+    };
+  }
+
+  _helloKeyName(owner = this._owner) {
+    return vh.keyName(this.helloName, owner);
+  }
+
+  /** Is Windows Hello usable here (set up, not in a remote session)? Asks Windows again → { available, reason }. */
+  checkHello() {
+    if (!this.hello) return Promise.resolve({ available: false, reason: 'unsupported_os' });
+    if (this._helloChecking) return this._helloChecking;
+    this._helloChecking = (async () => {
+      let a;
+      try {
+        a = await this.hello.available();
+      } catch (err) {
+        this.log.warn(`Vault: Windows Hello check failed (${err && err.message})`);
+        a = null;
+      }
+      this._helloAvail = a && typeof a === 'object'
+        ? { available: a.available === true, reason: a.available === true ? null : String(a.reason || 'error') }
+        : { available: false, reason: 'error' };
+      this._emit();
+      const s = this._helloStatus();
+      return { available: s.helloAvailable, reason: s.helloReason };
+    })().finally(() => { this._helloChecking = null; });
+    return this._helloChecking;
+  }
+
+  /** The record of this login (DPAPI-opened), or null. */
+  async _readHello(owner) {
+    let raw;
+    try {
+      raw = await fs.promises.readFile(this._helloFile(owner));
+    } catch {
+      return null;
+    }
+    try {
+      return vh.parseRecord(this.protect.decrypt(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Hello off for `owner`: the record goes, and the Windows Hello key (best effort, no prompt). */
+  async _forgetHello(owner) {
+    if (!owner || !this.dir) return;
+    const had = fs.existsSync(this._helloFile(owner));
+    try { await fs.promises.rm(this._helloFile(owner), { force: true }); } catch (err) { this.log.warn(`Vault: Windows Hello record not removed (${err.code})`); }
+    if (this.hello && had) {
+      try { await this.hello.remove(this._helloKeyName(owner)); } catch { /* the key stays unused */ }
+    }
+    if (owner === this._owner && this._helloOn) {
+      this._helloOn = false;
+      this._helloFails = 0;
+      this._emit();
+    }
+  }
+
+  _helloFail(status) {
+    const map = { cancelled: 'hello_cancelled', prefers_password: 'hello_cancelled', locked: 'hello_locked', unavailable: 'hello_unavailable' };
+    return map[status] || 'hello_failed';
+  }
+
+  /**
+   * Windows Hello unlock on / off. On: { on: true, password } — needs the vault unlocked and the master password
+   * (checked again: the key Hello guards is the one this password opens); Windows asks for face, fingerprint or PIN
+   * (creating the key, then signing). Replaces "remember unlock". Off: { on: false } — the record and the Hello key go
+   * (works locked, too). → settings()
+   */
+  async setHello({ on, password } = {}) {
+    await this._ensureLoaded();
+    if (on === false) {
+      await this._forgetHello(this._owner);
+      this._emit();
+      return this.settings();
+    }
+    if (on !== true) throw fail('invalid');
+    const keys = this._needKeys();
+    if (!this.hello || !this._owner || !this.dir) throw fail('unsupported');
+    if (!this._protectAvailable()) throw fail('unsupported');
+    if (typeof password !== 'string' || !password) throw fail('invalid');
+    await this._ready;
+    let check;
+    try {
+      check = vc.unlock(this._state.account, password);
+    } catch {
+      throw fail('wrong_password');
+    }
+    const same = this._keys === keys && check.userKey.length === keys.userKey.length && Buffer.from(check.userKey).equals(Buffer.from(keys.userKey));
+    vc.wipe(check);
+    if (!same) throw fail('locked');
+    // already on: nothing to do (a new key would replace the one the record needs)
+    if (this._helloOn) return this.settings();
+    const a = await this.checkHello();
+    if (!a.available) throw fail('hello_unavailable');
+
+    const owner = this._owner;
+    const name = this._helloKeyName(owner);
+    const challenge = vh.newChallenge();
+    const made = await this.hello.create(name, challenge);
+    if (!made || made.status !== 'ok' || !made.signature || !made.publicKey) {
+      const status = made ? made.status : 'failed';
+      this.log.info(`Vault: Windows Hello not turned on (${status})`);
+      // cancelled after the key was made (at the signature): it stays unused
+      if (status !== 'unavailable') { try { await this.hello.remove(name); } catch { /* unused */ } }
+      if (made) wipeBytes(made.signature);
+      throw fail(this._helloFail(status));
+    }
+    const signature = Buffer.from(made.signature);
+    const wipeSig = () => { signature.fill(0); wipeBytes(made.signature); };
+    let mode = 'pkcs1';
+    try {
+      if (!vh.verifies(made.publicKey, challenge, signature)) {
+        // not the expected scheme: usable only when it signs the same bytes again
+        const again = await this.hello.sign(name, challenge);
+        const equal = again && again.status === 'ok' && again.signature && Buffer.from(again.signature).equals(signature);
+        if (again) wipeBytes(again.signature);
+        if (!equal) {
+          this.log.warn('Vault: Windows Hello signature is not stable, not turned on');
+          try { await this.hello.remove(name); } catch { /* unused */ }
+          throw fail(again && again.status !== 'ok' ? this._helloFail(again.status) : 'hello_failed');
+        }
+        mode = 'repeat';
+      }
+      // locked, another login or Hello turned on elsewhere meanwhile: nothing is written
+      if (!this._keys || this._keys !== keys || this._owner !== owner) {
+        try { await this.hello.remove(name); } catch { /* unused */ }
+        throw fail('locked');
+      }
+      let record;
+      try {
+        record = vh.seal({ keyName: name, challenge, publicKey: made.publicKey, signature, check: mode, userKey: keys.userKey });
+      } catch (err) {
+        this.log.warn(`Vault: Windows Hello key not usable (${err && err.code}), not turned on`);
+        try { await this.hello.remove(name); } catch { /* unused */ }
+        throw fail('hello_failed');
+      }
+      const plain = vh.encodeRecord(record);
+      try {
+        await atomicWrite(this._helloFile(owner), Buffer.from(this.protect.encrypt(plain)));
+      } finally {
+        plain.fill(0);
+      }
+    } finally {
+      wipeSig();
+    }
+    if (this._rememberOn) {
+      await fs.promises.rm(this._rememberFile(owner), { force: true }).catch(() => {});
+      this._rememberOn = false;
+    }
+    this._helloOn = true;
+    this._helloFails = 0;
+    this.log.info(`Vault: Windows Hello unlock turned on (${mode})`);
+    this._emit();
+    return this.settings();
+  }
+
+  /**
+   * Windows Hello → unlocked. One prompt at a time (a second call shares it). Failed / cancelled tries count;
+   * after MAX_FAILS only the master password (status().helloBlocked). A key that is gone or changed (Hello reset,
+   * PIN removed, another account) turns Hello off: `hello_invalid`.
+   */
+  unlockHello() {
+    if (this._helloRun) return this._helloRun;
+    this._helloRun = this._unlockHello().finally(() => {
+      this._helloRun = null;
+      this._emit();
+    });
+    this._emit();
+    return this._helloRun;
+  }
+
+  async _unlockHello() {
+    const account = await this._accountForUnlock();
+    if (!this.hello || !this._helloOn || !this._owner || !this.dir) throw fail('hello_off');
+    if (this._keys) return this.status();
+    if (this._helloFails >= vh.MAX_FAILS) throw fail('hello_blocked');
+    if (!this._protectAvailable()) throw fail('hello_unavailable');
+    const owner = this._owner;
+    const record = await this._readHello(owner);
+    if (!record || record.keyName !== this._helloKeyName(owner)) {
+      this.log.warn('Vault: Windows Hello record unreadable, turned off');
+      await this._forgetHello(owner);
+      throw fail('hello_invalid');
+    }
+    const res = await this.hello.sign(record.keyName, Buffer.from(record.challenge, 'base64url'));
+    if (this._owner !== owner) {
+      if (res) wipeBytes(res.signature);
+      throw fail('locked');
+    }
+    if (!res || res.status !== 'ok' || !res.signature) {
+      const status = res ? res.status : 'failed';
+      this.log.info(`Vault: Windows Hello unlock: ${status}`);
+      if (status === 'not_found') {
+        await this._forgetHello(owner);
+        throw fail('hello_invalid');
+      }
+      if (status === 'unavailable') {
+        this.checkHello().catch(() => {});
+        throw fail('hello_unavailable');
+      }
+      this._helloFails = status === 'prefers_password' ? vh.MAX_FAILS : this._helloFails + 1;
+      throw fail(this._helloFail(status));
+    }
+    if (this._keys) {
+      // opened with the password meanwhile
+      wipeBytes(res.signature);
+      return this.status();
+    }
+    let userKey;
+    try {
+      userKey = vh.open(record, res.signature);
+    } catch (err) {
+      this.log.warn(`Vault: Windows Hello key does not open the vault (${err && err.code}), turned off`);
+      await this._forgetHello(owner);
+      throw fail('hello_invalid');
+    } finally {
+      wipeBytes(res.signature);
+    }
+    let keys;
+    try {
+      keys = vc.keysFrom(account, userKey);
+    } catch {
+      vc.wipe(userKey);
+      this.log.warn('Vault: Windows Hello key belongs to another account, turned off');
+      await this._forgetHello(owner);
+      throw fail('hello_invalid');
+    }
+    this._opened(keys);
     return this.status();
   }
 
