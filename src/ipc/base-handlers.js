@@ -88,7 +88,8 @@ const NOTIFY_EVENTS = {
  *   (with `next`: on that portal tab, already validated by portalNext)
  *   (fresh one-time login link, falling back to the portal URL — see
  *   utils/portal.js). Registers portal:open when given.
- * @param {Function} ctx.installUpdate - async () => boolean
+ * @param {Function} ctx.installUpdate - async () => { ok, code?, message? } (update:install;
+ *   ok:false with code not_ready | busy | verify_failed | launch_failed | exited)
  * @param {Function} ctx.getTunnelState - () => tunnelState object
  * @param {string} ctx.wgConfigFile - Path to the WireGuard config file
  * @param {Iterable<string>} [ctx.extraWritableKeys] - additional config keys

@@ -72,6 +72,46 @@ describe('GateDrop LAN', () => {
     assert.equal(gd.sameSubnet('192.168.178.20', '192.168.1.99', 24), false);
   });
 
+  it('LAN scan says which adapters were left out and why', () => {
+    const scan = gd.lanScan({
+      WLAN: [{ family: 'IPv4', address: '169.254.10.20', netmask: '255.255.0.0', internal: false }],
+      'vEthernet (Default Switch)': [{ family: 'IPv4', address: '172.26.80.1', netmask: '255.255.240.0', internal: false }],
+      'GateControl Pro': [{ family: 'IPv4', address: '10.8.0.6', netmask: '255.255.255.0', internal: false }],
+      Mobile: [{ family: 'IPv4', address: '80.1.2.3', netmask: '255.255.255.0', internal: false }],
+    });
+    assert.deepEqual(scan.addresses, []);
+    assert.deepEqual(scan.skipped.map((x) => [x.name, x.why]), [
+      ['WLAN', 'link_local'], ['vEthernet (Default Switch)', 'virtual'], ['GateControl Pro', 'virtual'], ['Mobile', 'public'],
+    ]);
+  });
+
+  it('Hyper-V external switch: the vEthernet adapter carries the LAN when no other adapter does', () => {
+    const ext = { 'vEthernet (WLAN extern)': [{ family: 'IPv4', address: '192.168.2.20', netmask: '255.255.255.0', internal: false }] };
+    const nat = { 'vEthernet (Default Switch)': [{ family: 'IPv4', address: '172.26.80.1', netmask: '255.255.240.0', internal: false }],
+      'vEthernet (WSL (Hyper-V firewall))': [{ family: 'IPv4', address: '172.30.1.1', netmask: '255.255.240.0', internal: false }] };
+    assert.deepEqual(gd.lanAddresses({ ...ext, ...nat }).map((a) => [a.ip, a.prefix, a.name]), [['192.168.2.20', 24, 'vEthernet (WLAN extern)']]);
+    // with a normal LAN adapter the virtual switch stays out
+    const both = gd.lanScan({ ...ext, Ethernet: [{ family: 'IPv4', address: '192.168.178.5', netmask: '255.255.255.0', internal: false }] });
+    assert.deepEqual(both.addresses.map((a) => a.ip), ['192.168.178.5']);
+    assert.deepEqual(both.skipped.map((x) => x.name), ['vEthernet (WLAN extern)']);
+    // only NAT switches: no LAN
+    assert.deepEqual(gd.lanAddresses(nat), []);
+  });
+
+  it('directState: why direct receiving is off or at risk', () => {
+    const on = { listening: true, started: true, addresses: [{ ip: '192.168.2.20' }], skipped: [], bindErrors: [] };
+    assert.deepEqual(gd.directState({ available: false, listener: on }), { state: 'off', reason: 'unavailable', detail: null });
+    assert.deepEqual(gd.directState({ available: true, listener: on }), { state: 'on', reason: null, detail: null });
+    assert.deepEqual(gd.directState({ available: true, listener: { listening: false, started: false } }), { state: 'off', reason: 'starting', detail: null });
+    assert.deepEqual(gd.directState({ available: true, listener: { listening: false, started: true, addresses: [], skipped: [{ name: 'vEthernet (Default Switch)', ip: '172.26.80.1', why: 'virtual' }], bindErrors: [] } }),
+      { state: 'off', reason: 'no_lan', detail: 'vEthernet (Default Switch) (172.26.80.1)' });
+    assert.deepEqual(gd.directState({ available: true, listener: { listening: false, started: true, addresses: [], skipped: [], bindErrors: [{ ip: '192.168.2.20', code: 'EADDRINUSE' }] } }),
+      { state: 'off', reason: 'bind_failed', detail: '192.168.2.20: EADDRINUSE' });
+    assert.deepEqual(gd.directState({ available: true, listener: on, firewall: { issues: [{ code: 'firewall_rule', detail: 'x' }, { code: 'firewall_blocked', detail: 'GateControl Pro Client' }] } }),
+      { state: 'warn', reason: 'firewall_blocked', detail: 'GateControl Pro Client' });
+    assert.equal(gd.directState({ available: true, listener: on, firewall: { issues: [{ code: 'firewall_unknown' }] } }).state, 'on');
+  });
+
   it('candidates: private ip:port only', () => {
     assert.deepEqual(gd.parseCandidate('192.168.1.5:47731'), { host: '192.168.1.5', port: 47731 });
     assert.equal(gd.parseCandidate('8.8.8.8:47731'), null);

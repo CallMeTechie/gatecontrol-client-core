@@ -99,7 +99,17 @@
     "channelBeta": "Beta",
     "channelUnknown": "Unknown",
     "channelHint": "Assigned by the server",
-    "installRequired": "Update required: install v{{ version }}"
+    "installRequired": "Update required: install v{{ version }}",
+    "installStarting": "Starting the installer …",
+    "installFailed": "The update could not be installed",
+    "installVpnRestored": "The VPN connection was restored.",
+    "installError": {
+      "not_ready": "The update is no longer ready. Please check for updates again.",
+      "verify_failed": "The downloaded file is damaged or was changed. It is downloaded again.",
+      "launch_failed": "The installer could not be started.",
+      "exited": "The installer quit right away.",
+      "busy": "The installation is already starting."
+    }
   },
   "peer": {
     "expired": "Peer certificate expired",
@@ -1213,6 +1223,17 @@
     },
     "listening": "Ready to receive directly over Wi-Fi",
     "notListening": "Direct Wi-Fi receiving is off – files come through the server",
+    "listeningWarn": "Direct Wi-Fi receiving is blocked – files come through the server",
+    "directWhy": {
+      "unavailable": "GateDrop cannot be reached right now.",
+      "starting": "Starting …",
+      "no_lan": "No Wi-Fi or LAN adapter with a home network address found.",
+      "bind_failed": "Port 47731 could not be opened (in use or reserved by Windows).",
+      "firewall_shields_up": "Windows Firewall blocks all incoming connections. Windows Security › Firewall & network protection › network profile › turn off “Blocks all incoming connections”.",
+      "firewall_blocked": "A Windows Firewall rule blocks GateControl.",
+      "firewall_rule": "The firewall rule for TCP 47731 is missing – please reinstall GateControl.",
+      "firewall_unknown": "The firewall rule could not be checked."
+    },
     "stale": "No connection – you see the last loaded state.",
     "retry": "Try again",
     "loading": "Loading …",

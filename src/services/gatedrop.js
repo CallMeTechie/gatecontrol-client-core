@@ -95,6 +95,8 @@ class GateDropService extends EventEmitter {
    * @param {object} [opts.pushClient] - PushClient ('hello' → ask again, presence)
    * @param {object} [opts.api] - GateDropApi (tests)
    * @param {object|false} [opts.listener] - GateDropListener; false: no listener
+   * @param {object|null} [opts.firewall] - GateDropFirewall (Windows): checks / repairs the
+   *   inbound rule for the listener once it runs; null: not checked (tests, other platforms)
    * @param {() => string} [opts.downloadsDir] - default %USERPROFILE%\Downloads\GateControl
    * @param {object} [opts.shell] - Electron shell (openPath, showItemInFolder, openExternal)
    * @param {object} [opts.clipboard] - Electron clipboard (writeText)
@@ -117,7 +119,7 @@ class GateDropService extends EventEmitter {
     downloadsDir = defaultDownloadsDir, shell = null, clipboard = null, Notification = null, platform = process.platform,
     protocol = null, toastImagePath = null, showWindow = null, direct = null, resolveCandidate = gd.parseCandidate,
     getInterfaces = () => os.networkInterfaces(), timing = {}, now = Date.now, storeKey = 'gatedropSaved',
-    handledKey = 'gatedropHandled', powerMonitor,
+    handledKey = 'gatedropHandled', powerMonitor, firewall = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -131,6 +133,13 @@ class GateDropService extends EventEmitter {
     this.getInterfaces = getInterfaces;
     this.listener = listener === false ? null : (listener || new GateDropListener({ log: this.log, getInterfaces }));
     if (this.listener && !this.listener.resolveIncoming) this.listener.resolveIncoming = (id) => this._resolveIncoming(id);
+    // The listener binds after the availability check: its state (listening,
+    // why not) reaches the window only through this event.
+    if (this.listener && typeof this.listener.on === 'function') this.listener.on('state', () => this._directChanged());
+    this.firewall = firewall && typeof firewall.ensure === 'function' ? firewall : null;
+    this._firewall = null;       // last GateDropFirewall result { checked, issues }
+    this._firewallChecking = null;
+    this._directKey = null;
     this.downloadsDir = typeof downloadsDir === 'function' ? downloadsDir : () => downloadsDir;
     this.shell = shell;
     this.clipboard = clipboard;
@@ -264,14 +273,56 @@ class GateDropService extends EventEmitter {
   // ── Availability ─────────────────────────────────────────
 
   status() {
-    const l = this.listener ? this.listener.status() : { listening: false, port: gd.PORT, addresses: [] };
+    const l = this._listenerStatus();
     return {
       ...this._state,
       listening: l.listening,
       port: l.port,
       addresses: l.addresses.map((a) => ({ ip: a.ip, prefix: a.prefix })),
+      // Why direct receiving is off / at risk ({ state: on|warn|off, reason, detail }).
+      direct: gd.directState({ available: this.available(), listener: l, firewall: this._firewall }),
       folder: this.downloadsDir(),
     };
+  }
+
+  _listenerStatus() {
+    return this.listener ? this.listener.status() : { listening: false, port: gd.PORT, addresses: [], started: false, skipped: [], bindErrors: [] };
+  }
+
+  /** The firewall drops what the listener would get: do not offer direct transfers. */
+  _firewallBlocks() {
+    const issues = (this._firewall && this._firewall.issues) || [];
+    return issues.some((i) => i.code === 'firewall_shields_up' || i.code === 'firewall_blocked' || i.code === 'firewall_rule');
+  }
+
+  /** Listener or firewall state changed: tell the window (and the log) when "direct" changed. */
+  _directChanged() {
+    const d = this.status().direct;
+    const key = JSON.stringify([d.state, d.reason, d.detail, this._listenerStatus().listening]);
+    if (key === this._directKey) return;
+    const first = this._directKey === null;
+    this._directKey = key;
+    if (!first || d.state !== 'off' || d.reason !== 'unavailable') {
+      this.log.info(`GateDrop direct receive: ${d.state}${d.reason ? ` (${d.reason}${d.detail ? `: ${d.detail}` : ''})` : ''}`);
+    }
+    this.emit('state', this.status());
+  }
+
+  /** Windows Firewall: check / repair the inbound rule (one run at a time). */
+  checkFirewall() {
+    if (!this.firewall) return Promise.resolve(null);
+    if (this._firewallChecking) return this._firewallChecking;
+    this._firewallChecking = (async () => {
+      try {
+        this._firewall = await this.firewall.ensure();
+      } catch (err) {
+        this._firewall = { checked: false, issues: [{ code: 'firewall_unknown', detail: err.message }] };
+      }
+      this._directChanged();
+      await this.reportPresence().catch(() => {});
+      return this._firewall;
+    })().finally(() => { this._firewallChecking = null; });
+    return this._firewallChecking;
   }
 
   available() {
@@ -326,6 +377,7 @@ class GateDropService extends EventEmitter {
       }
       this._lanKey = this._lanSignature();
       await this.reportPresence().catch(() => {});
+      if (this.firewall && !this._firewall && this.listener.listening) this._job(this.checkFirewall());
     } else if (this._state.state === 'unavailable' && this.listener.listening) {
       await this.listener.stop().catch(() => {});
     }
@@ -363,14 +415,18 @@ class GateDropService extends EventEmitter {
     await this.reportPresence({ force: true }).catch(() => {});
     this.emit('state', this.status());
     this.schedulePending();
+    // Another network can have another firewall profile (Public / Private).
+    if (this.firewall && this.listener && this.listener.listening) this._job(this.checkFirewall());
   }
 
   /** PUT presence (skipped when nothing changed, unless force). */
   async reportPresence({ force = false } = {}) {
     if (!this.available()) return null;
-    const l = this.listener ? this.listener.status() : { listening: false, addresses: [] };
+    const l = this._listenerStatus();
     const lan = l.listening ? l.addresses.map((a) => ({ ip: a.ip, prefix: a.prefix })) : gd.lanAddresses(this.getInterfaces()).map((a) => ({ ip: a.ip, prefix: a.prefix }));
-    const body = { lan, port: gd.PORT, listening: l.listening };
+    // Listening but the Windows Firewall drops the connections: a device
+    // would only run into the 2 s connect timeout — let the server deliver.
+    const body = { lan, port: gd.PORT, listening: l.listening && !this._firewallBlocks() };
     const key = JSON.stringify(body);
     if (!force && key === this._lastPresence) return null;
     try {
