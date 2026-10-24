@@ -47,7 +47,7 @@ const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
 const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
-const { updateMenuItems, mandatoryNotice } = require('./utils/update-notice');
+const { updateMenuItems, mandatoryNotice, updateToast } = require('./utils/update-notice');
 const { createUpdateInstaller, installErrorText } = require('./utils/update-install');
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
@@ -132,6 +132,7 @@ module.exports = {
   formatBytesShort,
   updateMenuItems,
   mandatoryNotice,
+  updateToast,
   createUpdateInstaller,
   installErrorText,
   clientPolicy,
