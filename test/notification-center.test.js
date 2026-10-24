@@ -301,6 +301,34 @@ describe('NotificationCenter actions', () => {
     assert.deepEqual(b.events.portal, [{ path: '/portal/notify' }]);
   });
 
+  it('callback buttons of a plugin push (Fahrtenbuch): offered, acked with their id and remembered', async () => {
+    const data = { trip: { id: 7 }, actions: [
+      { type: 'callback', id: 'private', label: 'Privat' },
+      { type: 'callback', id: 'business', label: 'Geschäftlich' },
+      { type: 'callback', id: 'Bad Id!', label: 'x' },
+    ] };
+    const push = fakePush();
+    const { center, events, store } = setup({ push });
+    center.handleNotification(note(1, { topic: 'plugin:gatecontrol-skoda:trip', data }));
+    const entry = center.get(1001);
+    assert.deepEqual(entry.actions.map((a) => [a.id, a.type, a.label]), [['private', 'callback', 'Privat'], ['business', 'callback', 'Geschäftlich']]);
+    assert.equal(entry.acted, null);
+    assert.deepEqual(await center.performAction(1001, 'business'), { ok: true });
+    assert.deepEqual(push.acks.at(-1), { seqs: [1], state: 'read', action: 'business' });
+    assert.deepEqual(events.action.at(-1), { id: 1001, seq: 1, action: 'business', type: 'callback' });
+    assert.equal(center.get(1001).acted, 'business');
+    // a second answer replaces the first and is sent again
+    assert.deepEqual(await center.performAction(1001, 'private'), { ok: true });
+    assert.deepEqual(push.acks.at(-1), { seqs: [1], state: 'read', action: 'private' });
+    assert.equal(center.get(1001).acted, 'private');
+    // kept across a server refresh (the server inbox does not carry it) and a restart
+    push.inbox = [{ ...note(1, { topic: 'plugin:gatecontrol-skoda:trip', data }), state: 'read' }];
+    await center.refresh();
+    assert.equal(center.get(1001).acted, 'private');
+    const again = setup({ store });
+    assert.equal(again.center.get(1001).acted, 'private');
+  });
+
   it('openInbox() shows the window on the inbox', () => {
     const { center, shown, events } = setup();
     center.openInbox();
