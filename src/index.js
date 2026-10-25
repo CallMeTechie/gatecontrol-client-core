@@ -43,6 +43,8 @@ const { SseParser } = require('./utils/sse-parser');
 const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const { isSafeExternalUrl } = require('./utils/external-url');
+const windowGuard = require('./utils/window-guard');
+const autostartTask = require('./utils/autostart-task');
 const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
 const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
@@ -120,6 +122,9 @@ module.exports = {
   E2EEHandler,
   enrollment,
   isSafeExternalUrl,
+  windowGuard,
+  installWindowGuard: windowGuard.installWindowGuard,
+  autostartTask,
   reconnectDelay,
   shouldOpenPortal,
   createPortalOpener,
