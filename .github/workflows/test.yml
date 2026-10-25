@@ -25,7 +25,7 @@ jobs:
 
   # Windows Hello (Vault unlock) against the real Windows Runtime: availability detection, the WinRT layout
   # (buffers, KeyCredentialManager, async operations) — no prompt, runners have no Hello. Plus the Hello / koffi
-  # unit tests on Windows' ABI.
+  # unit tests on Windows' ABI. And the autostart task against the real Task Scheduler (schtasks /XML).
   windows-hello:
     name: Windows Hello (WinRT, no prompt)
     runs-on: windows-latest
@@ -35,4 +35,4 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node --test test/windows-hello.win.test.js test/windows-hello.test.js test/vault-hello.test.js
+      - run: node --test test/windows-hello.win.test.js test/windows-hello.test.js test/vault-hello.test.js test/autostart-task.test.js test/autostart-task.win.test.js
