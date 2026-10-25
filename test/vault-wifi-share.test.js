@@ -89,6 +89,39 @@ describe('utils/vault: Wi-Fi QR code and share copy', () => {
   });
 });
 
+/** An SVG of utils/qr-image.js → the text jsQR reads from it (the path's modules painted 4 px each). */
+function readSvg(svg) {
+  const jsQR = require('jsqr');
+  const n = Number(/viewBox="0 0 (\d+) /.exec(svg)[1]);
+  const s = 4;
+  const px = new Uint8ClampedArray(n * s * n * s * 4).fill(255);
+  for (const m of svg.matchAll(/M(\d+) (\d+)h1v1h-1z/g)) {
+    const x = Number(m[1]);
+    const y = Number(m[2]);
+    for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) {
+      const i = (((y * s + dy) * n * s) + x * s + dx) * 4;
+      px[i] = px[i + 1] = px[i + 2] = 0;
+    }
+  }
+  const r = jsQR(px, n * s, n * s);
+  return r && r.data;
+}
+
+describe('utils/qr-image: the QR code as a picture', () => {
+  const qr = require('../src/utils/qr-image');
+  it('an SVG with fixed markup only, black on white with a quiet zone; reads back as the text', () => {
+    const text = v.wifiText({ ssid: 'Gäste;WLAN', security: 'WPA', password: 'Korrekt:Pferd', hidden: true });
+    const svg = qr.qrSvg(text);
+    assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 \d+ \d+" shape-rendering="crispEdges"><rect width="\d+" height="\d+" fill="#ffffff"\/><path d="[Mhvz0-9 -]+" fill="#000000"\/><\/svg>$/);
+    assert.ok(!svg.includes('Korrekt'), 'never the text');
+    assert.equal(readSvg(svg), text);
+    const url = qr.qrDataUrl(text);
+    assert.match(url, /^data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+$/);
+    assert.equal(Buffer.from(url.split(',')[1], 'base64').toString('utf8'), svg);
+    assert.equal(qr.qrSvg('x'.repeat(5000)), null, 'too long for a QR code');
+  });
+});
+
 describe('VaultService: Wi-Fi shares', () => {
   it('share, list, keep after a change, end — the copy built in main; the renderer never gets the password', async () => {
     const srv = vaultServer();
@@ -134,7 +167,20 @@ describe('VaultService: Wi-Fi shares', () => {
     list = await call('vault:wifi-shares', { id });
     assert.deepEqual(list.shares.map((x) => x.target), ['portal']);
 
+    // the QR code as a picture built in main: no text (with the password) for the page
+    const q = await call('vault:wifi-qr', { id });
+    assert.equal(q.ok, true, JSON.stringify(q));
+    assert.deepEqual([q.ssid, q.hidden], ['Gäste;WLAN', false]);
+    assert.match(q.image, /^data:image\/svg\+xml;base64,/);
+    assert.ok(!JSON.stringify(q).includes('Neues:Passwort'));
+    assert.equal(readSvg(Buffer.from(q.image.split(',')[1], 'base64').toString('utf8')), 'WIFI:T:WPA;S:Gäste' + BS + ';WLAN;P:Neues' + BS + ':Passwort;;');
+    await s.save({ id, vaultId, data: wifiEntry({ password: 'Neues:Passwort', hidden: 'true' }) });
+    assert.equal((await call('vault:wifi-qr', { id })).hidden, true);
+    assert.equal((await call('vault:wifi-qr', { id: login })).code, 'invalid', 'only Wi-Fi entries');
+    assert.equal((await call('vault:wifi-qr', { id: 'x' })).code, 'invalid');
+
     s.lock('manual');
+    assert.equal((await call('vault:wifi-qr', { id })).code, 'locked');
     assert.equal((await call('vault:wifi-shares', { id })).code, 'locked');
     assert.equal((await call('vault:wifi-share', { id, target: 'portal', duration: '1h' })).code, 'locked');
   });
