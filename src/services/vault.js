@@ -2047,6 +2047,21 @@ class VaultService extends EventEmitter {
     return { share: { id: share.id, target: share.target, expiresAt: share.expiresAt } };
   }
 
+  /**
+   * The Wi-Fi QR code of an entry as a picture for the page → { image: 'data:image/svg+xml;base64,…', ssid, hidden }.
+   * Built here from the decrypted entry: the page never gets the code's text (it holds the password). Also for an
+   * opened emergency access (emergencyId).
+   */
+  async wifiQr(id, { emergencyId = null } = {}) {
+    await this._ensureLoaded();
+    const e = this._find(id, emergencyId);
+    const w = e.data && e.data.type === 'wifi' ? vault.wifiOf(e.data) : null;
+    if (!w) throw fail('invalid');
+    const image = require('../utils/qr-image').qrDataUrl(vault.wifiText(w));
+    if (!image) throw fail('too_large');
+    return { image, ssid: w.ssid, hidden: w.hidden };
+  }
+
   /** End a share now (write role in its vault). */
   async wifiShareEnd(shareId) {
     await this._ensureLoaded();

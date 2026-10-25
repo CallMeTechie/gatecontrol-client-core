@@ -66,6 +66,8 @@
  *                          (main decrypts the entry and sends the copy; codes forbidden, conflict, no_wall, unavailable,
  *                          limit, rate_limited)
  *   vault:wifi-share-end   ({ shareId }) → { ok }
+ *   vault:wifi-qr          ({ id, emergencyId? }) → { ok, image: 'data:image/svg+xml;base64,…', ssid, hidden }
+ *                          (the Wi-Fi QR code as a picture built in main — never its text, which holds the password)
  *   vault:touch            () → { ok }
  *   vault:notices:clear    () → { ok }
  *
@@ -230,6 +232,7 @@ function registerVaultHandlers(handle, { vault: s, getMainWindow, log }) {
   handle('vault:wifi-shares', wrap(async (a) => (vault.isId(a.id) ? s.wifiShares(a.id) : invalid()), passive));
   handle('vault:wifi-share', wrap(async (a) => (vault.isId(a.id) && vault.SHARE_TARGETS.includes(a.target)
     && (vault.SHARE_DURATIONS.includes(a.duration) || a.duration === 'keep') ? s.wifiShare(a.id, a.target, a.duration) : invalid())));
+  handle('vault:wifi-qr', wrap(async (a) => (vault.isId(a.id) && optEmergency(a.emergencyId) ? s.wifiQr(a.id, { emergencyId: a.emergencyId || null }) : invalid()), passive));
   handle('vault:wifi-share-end', wrap(async (a) => (emergencyId(a.shareId) ? s.wifiShareEnd(a.shareId) : invalid())));
   // 2FA key from a QR code (screen, clipboard image, image file): activity, needs the vault unlocked
   handle('vault:totp-qr', wrap(async (a) => (QR_SOURCES.includes(a.source)

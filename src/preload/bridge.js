@@ -368,6 +368,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // target: 'wall' | 'portal'; duration: '5m' | '1h' | '24h' | 'forever' | 'keep'
       wifiShare:        (id, target, duration) => ipcRenderer.invoke('vault:wifi-share', { id, target, duration }),
       wifiShareEnd:     (shareId) => ipcRenderer.invoke('vault:wifi-share-end', { shareId }),
+      // the Wi-Fi QR code as a picture (built in main): { id, emergencyId? } → { ok, image, ssid, hidden }
+      wifiQr:           (arg) => ipcRenderer.invoke('vault:wifi-qr', arg && typeof arg === 'object' ? arg : {}),
       // 2FA key from a QR code: 'screen' | 'clipboard' | 'file' → { ok, uris: ['otpauth://totp/…'] } | { ok: false, code }
       totpQr:           (source) => ipcRenderer.invoke('vault:totp-qr', { source: typeof source === 'string' ? source : '' }),
       touch:            () => ipcRenderer.invoke('vault:touch'),
