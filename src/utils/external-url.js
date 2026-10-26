@@ -11,7 +11,9 @@
  * that Vault's Wi-Fi scan points to when Windows denies scan results, and
  * the sign-in options (set up Windows Hello for Vault's Hello unlock).
  *
- * Pure — no Electron — so it is unit-testable.
+ * openExternalSafely() is the one way main hands a URL to the browser
+ * (shell:open-external, the company sign-in): the filter above, then
+ * shell.openExternal. The shell is passed in, so it stays unit-testable.
  */
 
 'use strict';
@@ -36,4 +38,27 @@ function isAllowedSettingsUri(raw) {
   return typeof raw === 'string' && SETTINGS_URIS.includes(raw.trim());
 }
 
-module.exports = { isSafeExternalUrl, isAllowedSettingsUri, SETTINGS_URIS };
+/**
+ * Opens an http(s) URL (with allowSettings also one of SETTINGS_URIS) in the
+ * system's default handler. Anything else is refused. Never throws.
+ *
+ * @param {{ openExternal: (url: string) => Promise<void> }} shell - Electron shell
+ * @param {unknown} raw
+ * @param {{ log?: object, allowSettings?: boolean, label?: string }} [opts]
+ * @returns {Promise<boolean>} true when handed to the shell
+ */
+async function openExternalSafely(shell, raw, { log = null, allowSettings = false, label = 'openExternal' } = {}) {
+  if (!isSafeExternalUrl(raw) && !(allowSettings && isAllowedSettingsUri(raw))) {
+    if (log) log.warn(`${label} rejected a non-http(s) URL`);
+    return false;
+  }
+  try {
+    await shell.openExternal(raw.trim());
+    return true;
+  } catch (err) {
+    if (log) log.warn(`${label} failed:`, err && err.message);
+    return false;
+  }
+}
+
+module.exports = { isSafeExternalUrl, isAllowedSettingsUri, openExternalSafely, SETTINGS_URIS };

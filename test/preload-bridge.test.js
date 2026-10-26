@@ -70,7 +70,8 @@ describe('createBridgeApi', () => {
       'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test',
       'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
       'school:absences', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',
-      'server:setup', 'server:test', 'services:list', 'shell:open-external', 'support:send', 'traffic:stats',
+      'server:setup', 'server:test', 'services:list', 'shell:open-external',
+      'signin:cancel', 'signin:methods', 'signin:microsoft', 'signin:password', 'support:send', 'traffic:stats',
       'tunnel:connect', 'tunnel:disconnect', 'tunnel:reconnect', 'tunnel:status', 'update:check', 'update:install',
       'update:policy',
       'vault:addMember', 'vault:changePassword', 'vault:check', 'vault:completeRecovery', 'vault:copy', 'vault:createVault',
@@ -120,6 +121,21 @@ describe('createBridgeApi', () => {
     assert.deepEqual(ipc.calls.invoke, [
       ['notify:read', { ids: [4, 5] }], ['notify:read', { all: true }], ['notify:read', { ids: [7] }],
       ['notify:action', { id: 4, action: 'details' }], ['notify:dnd'], ['notify:dnd', null],
+    ]);
+  });
+
+  it('signin passes only its known fields', () => {
+    const ipc = fakeIpcRenderer();
+    const api = createBridgeApi(ipc, i18n);
+    api.signin.methods('https://gate.example.com');
+    api.signin.password({ url: 'u', username: 'a', password: 'p', totp: '123456', extra: 'x' });
+    api.signin.microsoft({ url: 'u', id: 3, extra: 'x' });
+    api.signin.cancel();
+    assert.deepEqual(ipc.calls.invoke, [
+      ['signin:methods', { url: 'https://gate.example.com' }],
+      ['signin:password', { url: 'u', username: 'a', password: 'p', totp: '123456' }],
+      ['signin:microsoft', { url: 'u', id: 3 }],
+      ['signin:cancel'],
     ]);
   });
 

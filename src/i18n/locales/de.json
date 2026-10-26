@@ -163,7 +163,29 @@
     "enrollFingerprint": "Der Server verlangt eine Gerätebindung, aber das Gerät konnte nicht erkannt werden.",
     "enrollRateLimited": "Zu viele Versuche. Bitte in ein paar Minuten erneut versuchen.",
     "enrollFailed": "Einrichtung fehlgeschlagen: {{ error }}",
-    "enrolled": "Gerät eingerichtet (Peer-ID: {{ peerId }})"
+    "enrolled": "Gerät eingerichtet (Peer-ID: {{ peerId }})",
+    "signin": {
+      "invalidInput": "Bitte Benutzername und Passwort eingeben (Bestätigungscode: 6 Ziffern).",
+      "invalidCredentials": "Benutzername oder Passwort stimmt nicht.",
+      "totpRequired": "Bitte gib den Bestätigungscode aus deiner Authenticator-App ein.",
+      "totpInvalid": "Der Bestätigungscode stimmt nicht.",
+      "enrollNotAllowed": "Dein Konto darf keine Geräte selbst einrichten. Bitte frag deinen Administrator nach einem Einrichtungscode.",
+      "userDisabled": "Dein Konto ist gesperrt.",
+      "limitReached": "Du hast schon die höchste Zahl an Geräten.",
+      "rateLimited": "Zu viele Versuche. Bitte warte {{ n }} Minuten.",
+      "rateLimitedOne": "Zu viele Versuche. Bitte warte 1 Minute.",
+      "rateLimitedSoon": "Zu viele Versuche. Bitte warte ein paar Minuten.",
+      "accessDenied": "Die Anmeldung bei Microsoft wurde abgebrochen.",
+      "notLinked": "Dieses Microsoft-Konto gehört zu keinem GateControl-Konto. Bitte frag deinen Administrator.",
+      "microsoftFailed": "Die Anmeldung bei Microsoft hat nicht geklappt. Bitte versuch es noch einmal.",
+      "expired": "Die Anmeldung ist abgelaufen. Bitte versuch es noch einmal.",
+      "timeout": "Die Anmeldung im Browser hat zu lange gedauert. Bitte versuch es noch einmal.",
+      "stateMismatch": "Die Antwort aus dem Browser gehört nicht zu dieser Anmeldung. Bitte versuch es noch einmal.",
+      "browserFailed": "Der Browser konnte nicht geöffnet werden.",
+      "notSupported": "Dieser Server bietet keine Anmeldung mit Firmenkonto an. Bitte nutze einen Einrichtungscode.",
+      "unreachable": "Der Server ist nicht erreichbar.",
+      "failedCode": "Die Anmeldung hat nicht geklappt ({{ error }})."
+    }
   },
   "split": {
     "activateOnReconnect": "Split-Tunnel wird beim Neuverbinden aktiviert",

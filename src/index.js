@@ -30,6 +30,8 @@ const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
 const GateDropFirewall = require('./services/gatedrop-firewall');
+const { AppSignin, SigninError } = require('./services/app-signin');
+const { startLoopbackListener } = require('./services/signin-loopback');
 
 // ── Utils ───────────────────────────────────────────────────
 const validation = require('./utils/validation');
@@ -42,7 +44,8 @@ const { notifyMenuItems } = require('./utils/notify-menu');
 const { SseParser } = require('./utils/sse-parser');
 const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
-const { isSafeExternalUrl } = require('./utils/external-url');
+const appSigninUtil = require('./utils/app-signin');
+const { isSafeExternalUrl, openExternalSafely } = require('./utils/external-url');
 const windowGuard = require('./utils/window-guard');
 const autostartTask = require('./utils/autostart-task');
 const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
@@ -104,6 +107,9 @@ module.exports = {
   GateDropApi,
   GateDropListener,
   GateDropFirewall,
+  AppSignin,
+  SigninError,
+  startLoopbackListener,
 
   // Utils
   validation,
@@ -121,7 +127,9 @@ module.exports = {
   SseParser,
   E2EEHandler,
   enrollment,
+  appSigninUtil,
   isSafeExternalUrl,
+  openExternalSafely,
   windowGuard,
   installWindowGuard: windowGuard.installWindowGuard,
   autostartTask,
