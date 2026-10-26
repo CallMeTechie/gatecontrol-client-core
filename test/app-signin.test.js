@@ -129,6 +129,9 @@ describe('error texts', () => {
     assert.equal(util.signinErrorMessage(t, { code: 'enroll_not_allowed' }), 'Dein Konto darf keine Geräte selbst einrichten. Bitte frag deinen Administrator nach einem Einrichtungscode.');
     assert.equal(util.signinErrorMessage(t, { code: 'limit_reached' }), 'Du hast schon die höchste Zahl an Geräten.');
     assert.equal(util.signinErrorMessage(t, { code: 'user_disabled' }), 'Dein Konto ist gesperrt.');
+    assert.equal(util.signinErrorMessage(t, { code: 'password_change_required' }), 'Du musst dein Passwort zuerst einmal im Browser ändern. Melde dich dafür im Portal an.');
+    assert.equal(util.signinErrorMessage(t, { code: 'directory_unavailable' }), 'Der Anmeldedienst deiner Firma ist gerade nicht erreichbar. Bitte versuch es später noch einmal.');
+    assert.equal(util.signinErrorMessage(t, { code: 'something_new' }), 'Die Anmeldung hat nicht geklappt (something_new).');
     assert.equal(util.signinErrorMessage(t, { code: 'locked', retryAfter: 900 }), 'Zu viele Versuche. Bitte warte 15 Minuten.');
     assert.equal(util.signinErrorMessage(t, { code: 'rate_limited', retryAfter: 61 }), 'Zu viele Versuche. Bitte warte 2 Minuten.');
     assert.equal(util.signinErrorMessage(t, { code: 'rate_limited', retryAfter: 30 }), 'Zu viele Versuche. Bitte warte 1 Minute.');
@@ -322,6 +325,8 @@ describe('AppSignin.password', () => {
       [403, { ok: false, error: 'limit_reached' }, 'limit_reached'],
       [429, { ok: false, error: 'locked', retryAfter: 600 }, 'locked'],
       [429, { ok: false, error: 'rate_limited', retryAfter: 60 }, 'rate_limited'],
+      [403, { ok: false, error: 'password_change_required' }, 'password_change_required'],
+      [503, { ok: false, error: 'directory_unavailable' }, 'directory_unavailable'],
       [404, { ok: false }, 'not_supported'],
       [500, 'Internal Server Error', 'http_500'],
     ];

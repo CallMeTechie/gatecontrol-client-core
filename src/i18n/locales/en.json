@@ -172,6 +172,8 @@
       "enrollNotAllowed": "Your account may not set up devices itself. Please ask your administrator for a setup code.",
       "userDisabled": "Your account is disabled.",
       "limitReached": "You already have the maximum number of devices.",
+      "passwordChangeRequired": "You have to change your password once in the browser first. Sign in to the portal to do so.",
+      "directoryUnavailable": "Your company's sign-in service cannot be reached right now. Please try again later.",
       "rateLimited": "Too many attempts. Please wait {{ n }} minutes.",
       "rateLimitedOne": "Too many attempts. Please wait 1 minute.",
       "rateLimitedSoon": "Too many attempts. Please wait a few minutes.",

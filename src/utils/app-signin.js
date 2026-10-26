@@ -159,6 +159,8 @@ const ERROR_KEYS = {
   enroll_not_allowed: 'server.signin.enrollNotAllowed',
   user_disabled: 'server.signin.userDisabled',
   limit_reached: 'server.signin.limitReached',
+  password_change_required: 'server.signin.passwordChangeRequired',
+  directory_unavailable: 'server.signin.directoryUnavailable',
   access_denied: 'server.signin.accessDenied',
   not_linked: 'server.signin.notLinked',
   failed: 'server.signin.microsoftFailed',

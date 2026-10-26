@@ -172,6 +172,8 @@
       "enrollNotAllowed": "Dein Konto darf keine Geräte selbst einrichten. Bitte frag deinen Administrator nach einem Einrichtungscode.",
       "userDisabled": "Dein Konto ist gesperrt.",
       "limitReached": "Du hast schon die höchste Zahl an Geräten.",
+      "passwordChangeRequired": "Du musst dein Passwort zuerst einmal im Browser ändern. Melde dich dafür im Portal an.",
+      "directoryUnavailable": "Der Anmeldedienst deiner Firma ist gerade nicht erreichbar. Bitte versuch es später noch einmal.",
       "rateLimited": "Zu viele Versuche. Bitte warte {{ n }} Minuten.",
       "rateLimitedOne": "Zu viele Versuche. Bitte warte 1 Minute.",
       "rateLimitedSoon": "Zu viele Versuche. Bitte warte ein paar Minuten.",
