@@ -44,6 +44,17 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       test:  (opts) => ipcRenderer.invoke('server:test', opts),
     },
 
+    // ── Company sign-in ("Mit Firmenkonto anmelden") ────────
+    // methods(url) → { available, password: { enabled, hint }, microsoft: [{ id, label }] }
+    // password({ url, username, password, totp? }) / microsoft({ url, id })
+    //   → like server.setup: { success, peerId, enrolled } | { success: false, error, code?, totpRequired?, cancelled? }
+    signin: {
+      methods:   (url) => ipcRenderer.invoke('signin:methods', { url }),
+      password:  ({ url, username, password, totp } = {}) => ipcRenderer.invoke('signin:password', { url, username, password, totp }),
+      microsoft: ({ url, id } = {}) => ipcRenderer.invoke('signin:microsoft', { url, id }),
+      cancel:    () => ipcRenderer.invoke('signin:cancel'),
+    },
+
     // ── Config ───────────────────────────────────────────
     config: {
       get:        (key)        => ipcRenderer.invoke('config:get', key),

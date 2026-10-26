@@ -14,7 +14,9 @@ const { t, getLocale } = require('../i18n');
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
 const ApiClient = require('../services/api-client');
 const { normalizeCode, toServerOrigin, parseEnrollmentLink } = require('../utils/enrollment');
-const { isSafeExternalUrl, isAllowedSettingsUri } = require('../utils/external-url');
+const { openExternalSafely } = require('../utils/external-url');
+const { AppSignin } = require('../services/app-signin');
+const { signinErrorMessage, isDirectoryId } = require('../utils/app-signin');
 const { portalNext } = require('../utils/portal');
 const clientPolicyUtil = require('../utils/client-policy');
 const { createSupportBundleSender } = require('../support/sender');
@@ -42,6 +44,41 @@ function enrollErrorMessage(err) {
   const code = (err && err.response && err.response.data && err.response.data.error) || (err && err.code);
   const key = ENROLL_ERRORS[code];
   return key ? t(key) : t('server.enrollFailed', { error: (err && err.message) || String(code) });
+}
+
+// ── Company sign-in: renderer input ─────────────────────────
+// Everything from the renderer is checked here before it reaches the network.
+
+const SIGNIN_MAX_URL = 2048;
+const SIGNIN_MAX_USER = 256;
+const SIGNIN_MAX_PASSWORD = 1024;
+
+/** https origin of opts.url, or null. */
+function signinServer(opts) {
+  if (!opts || typeof opts !== 'object' || typeof opts.url !== 'string' || opts.url.length > SIGNIN_MAX_URL) return null;
+  return toServerOrigin(opts.url);
+}
+
+/**
+ * { username, password, totp? } from the renderer, or null when anything is
+ * missing, too long or of the wrong type. The password is passed on as typed.
+ */
+function readSigninCredentials(opts) {
+  if (!opts || typeof opts !== 'object') return null;
+  const { username, password, totp } = opts;
+  if (typeof username !== 'string' || typeof password !== 'string') return null;
+  const user = username.trim();
+  // eslint-disable-next-line no-control-regex
+  if (!user || user.length > SIGNIN_MAX_USER || /[\u0000-\u001f\u007f]/.test(user)) return null;
+  if (!password || password.length > SIGNIN_MAX_PASSWORD) return null;
+  const creds = { username: user, password };
+  if (totp !== undefined && totp !== null && totp !== '') {
+    if (typeof totp !== 'string') return null;
+    const digits = totp.replace(/\s/g, '');
+    if (!/^\d{6}$/.test(digits)) return null;
+    creds.totp = digits;
+  }
+  return creds;
 }
 
 // Config keys the renderer is allowed to write
@@ -101,10 +138,14 @@ const NOTIFY_EVENTS = {
  *   registered exactly once.
  * @param {Iterable<string>} [ctx.skip] - core channels not to register at all
  * @param {object} [ctx.shell] - Electron shell (injectable for tests)
+ * @param {object} [ctx.appSignin] - AppSignin (services/app-signin.js) for
+ *   signin:methods / signin:password / signin:microsoft / signin:cancel
+ *   ("Mit Firmenkonto anmelden"); created here when missing
  * @param {object} [ctx.clientPolicy] - ClientPolicyService; when given, the
  *   policy guards below apply to the core handler AND to client overrides of
  *   the same channel (config:set, killswitch:toggle, autostart:set,
- *   tunnel:disconnect, server:setup, config:import-file, config:import-qr);
+ *   tunnel:disconnect, server:setup, signin:methods, signin:password,
+ *   signin:microsoft, config:import-file, config:import-qr);
  *   policy:get / policy:refresh answer with its state (unrestricted without).
  * @param {object} [ctx.supportBundle] - sender from createSupportBundleSender
  *   (shared with the connection monitor for admin requests); created here
@@ -383,6 +424,68 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
+  // ── Company sign-in ("Mit Firmenkonto anmelden") ────────
+  // GateControl ≥ 1.201.0 (services/app-signin.js). Password or Microsoft
+  // sign-in answers with a one-shot setup code that goes through
+  // enrollWithCode() above, unchanged. The renderer never sees the code,
+  // the handoff or the PKCE verifier; the password is only passed on.
+  const appSignin = ctx.appSignin || new AppSignin({
+    log,
+    openExternal: (url) => openExternalSafely(getShell(), url, { log, label: 'Company sign-in' }),
+    clientPlatform: () => (apiClient && apiClient.clientPlatform) || 'windows',
+  });
+
+  handle('signin:methods', async (_, opts) => {
+    const serverUrl = signinServer(opts);
+    if (!serverUrl) return { available: false, password: { enabled: false, hint: null }, microsoft: [] };
+    return appSignin.methods(serverUrl);
+  });
+
+  handle('signin:password', async (_, opts) => {
+    const serverUrl = signinServer(opts);
+    if (!serverUrl) return { success: false, error: t('server.enrollHttps') };
+    const creds = readSigninCredentials(opts);
+    if (!creds) return { success: false, error: t('server.signin.invalidInput') };
+    let result;
+    try {
+      result = await appSignin.password(serverUrl, creds);
+    } catch (err) {
+      return signinFailure(err, 'password');
+    }
+    log.info('Company sign-in (password) succeeded, redeeming the setup code');
+    return enrollWithCode(serverUrl, result.code);
+  });
+
+  handle('signin:microsoft', async (_, opts) => {
+    const serverUrl = signinServer(opts);
+    if (!serverUrl) return { success: false, error: t('server.enrollHttps') };
+    const id = opts && typeof opts === 'object' ? opts.id : undefined;
+    if (!isDirectoryId(id)) return { success: false, error: t('server.signin.invalidInput') };
+    let result;
+    try {
+      result = await appSignin.microsoft(serverUrl, id);
+    } catch (err) {
+      return signinFailure(err, 'microsoft');
+    }
+    log.info('Company sign-in (Microsoft) succeeded, redeeming the setup code');
+    return enrollWithCode(serverUrl, result.code);
+  });
+
+  handle('signin:cancel', () => appSignin.cancel());
+
+  function signinFailure(err, kind) {
+    const code = (err && err.code) || 'failed';
+    if (code === 'cancelled') return { success: false, cancelled: true, code };
+    // Only the code (and HTTP status): never credentials or one-time values.
+    log.warn(`Company sign-in (${kind}) failed: ${code}${err && err.status ? ` (HTTP ${err.status})` : ''}`);
+    return {
+      success: false,
+      code,
+      totpRequired: code === 'totp_required' || code === 'totp_invalid',
+      error: signinErrorMessage(t, err),
+    };
+  }
+
   // ── Config Import ───────────────────────────────────────
   handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
@@ -510,20 +613,8 @@ function registerBaseHandlers(ipcMain, ctx) {
   }
 
   // ── Shell ───────────────────────────────────────────────
-  handle('shell:open-external', async (_, url) => {
-    // http(s) links, or exactly one of the allowed Windows settings pages (ms-settings:privacy-location)
-    if (!isSafeExternalUrl(url) && !isAllowedSettingsUri(url)) {
-      log.warn('shell:open-external rejected a non-http(s) URL');
-      return false;
-    }
-    try {
-      await getShell().openExternal(url.trim());
-      return true;
-    } catch (err) {
-      log.warn('shell:open-external failed:', err.message);
-      return false;
-    }
-  });
+  // http(s) links, or exactly one of the allowed Windows settings pages (ms-settings:privacy-location)
+  handle('shell:open-external', (_, url) => openExternalSafely(getShell(), url, { log, allowSettings: true, label: 'shell:open-external' }));
 
   // ── Logs ────────────────────────────────────────────────
   // opts.period: 'all' | '1h' | '12h' | '24h'.
@@ -788,6 +879,13 @@ function createPolicyGuards({ clientPolicy, store, log }) {
       return impl(...args);
     },
     'server:setup': (impl) => serverLocked('server:setup', impl),
+    // Company sign-in sets the device up like server:setup.
+    'signin:methods': (impl) => async (...args) => {
+      if (locks().server) return { available: false, password: { enabled: false, hint: null }, microsoft: [], policyLocked: true };
+      return impl(...args);
+    },
+    'signin:password': (impl) => serverLocked('signin:password', impl),
+    'signin:microsoft': (impl) => serverLocked('signin:microsoft', impl),
     'config:import-file': (impl) => serverLocked('config:import-file', impl),
     'config:import-qr': (impl) => serverLocked('config:import-qr', impl),
   };
@@ -817,4 +915,4 @@ function applyPolicyToStore(store, policy, log) {
   return changed;
 }
 
-module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore, CONFIG_WRITABLE_KEYS, NOTIFY_EVENTS };
+module.exports = { registerBaseHandlers, createPolicyGuards, applyPolicyToStore, readSigninCredentials, CONFIG_WRITABLE_KEYS, NOTIFY_EVENTS };

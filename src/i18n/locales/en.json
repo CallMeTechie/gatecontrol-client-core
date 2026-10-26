@@ -163,7 +163,31 @@
     "enrollFingerprint": "The server requires device binding, but this device could not be identified.",
     "enrollRateLimited": "Too many attempts. Please try again in a few minutes.",
     "enrollFailed": "Setup failed: {{ error }}",
-    "enrolled": "Device set up (peer ID: {{ peerId }})"
+    "enrolled": "Device set up (peer ID: {{ peerId }})",
+    "signin": {
+      "invalidInput": "Please enter username and password (verification code: 6 digits).",
+      "invalidCredentials": "Username or password is incorrect.",
+      "totpRequired": "Please enter the verification code from your authenticator app.",
+      "totpInvalid": "The verification code is incorrect.",
+      "enrollNotAllowed": "Your account may not set up devices itself. Please ask your administrator for a setup code.",
+      "userDisabled": "Your account is disabled.",
+      "limitReached": "You already have the maximum number of devices.",
+      "passwordChangeRequired": "You have to change your password once in the browser first. Sign in to the portal to do so.",
+      "directoryUnavailable": "Your company's sign-in service cannot be reached right now. Please try again later.",
+      "rateLimited": "Too many attempts. Please wait {{ n }} minutes.",
+      "rateLimitedOne": "Too many attempts. Please wait 1 minute.",
+      "rateLimitedSoon": "Too many attempts. Please wait a few minutes.",
+      "accessDenied": "The Microsoft sign-in was cancelled.",
+      "notLinked": "This Microsoft account does not belong to a GateControl account. Please ask your administrator.",
+      "microsoftFailed": "The Microsoft sign-in did not work. Please try again.",
+      "expired": "The sign-in has expired. Please try again.",
+      "timeout": "The sign-in in the browser took too long. Please try again.",
+      "stateMismatch": "The answer from the browser does not belong to this sign-in. Please try again.",
+      "browserFailed": "The browser could not be opened.",
+      "notSupported": "This server does not offer company sign-in. Please use a setup code.",
+      "unreachable": "The server cannot be reached.",
+      "failedCode": "The sign-in did not work ({{ error }})."
+    }
   },
   "split": {
     "activateOnReconnect": "Split tunnel will be activated on reconnect",
