@@ -507,10 +507,17 @@ class DriveService extends EventEmitter {
         return;
       }
     }
-    const up = await this.api.upload({ path: job.path, size: job.size, mime: guessMime(job.name) }, {
-      onProgress: (sent) => this._set(job.id, { sent }, { progress: true }),
-    });
-    const r = await this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, name: job.name, mtime: job.mtime, onConflict: job.choice || 'rename' });
+    let r;
+    if (!job.size) {
+      // GateControl takes no empty media; Drive 1.5 ('emptyFiles') makes an empty file without one
+      if (!(await this.api.has('emptyFiles').catch(() => false))) throw new DriveError('empty file', { code: 'empty_file' });
+      r = await this.api.commit({ empty: true, parentId: job.folderId, name: job.name, mtime: job.mtime, onConflict: job.choice || 'rename' });
+    } else {
+      const up = await this.api.upload({ path: job.path, size: job.size, mime: guessMime(job.name) }, {
+        onProgress: (sent) => this._set(job.id, { sent }, { progress: true }),
+      });
+      r = await this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, name: job.name, mtime: job.mtime, onConflict: job.choice || 'rename' });
+    }
     this._jobs.delete(job.id);
     this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name: r.node.name });
     this.emit('changed', { folderId: job.folderId });
@@ -524,7 +531,9 @@ class DriveService extends EventEmitter {
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     const out = fs.createWriteStream(part);
     try {
-      await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+      // Drive 1.5: an empty file has no media
+      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
+      else await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
       await fs.promises.rm(file, { force: true });
       await fs.promises.rename(part, file);
     } catch (err) {

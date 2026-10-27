@@ -108,7 +108,7 @@ describe('utils/drive-sync', () => {
 
   it('cleans settings, folders and the config', () => {
     const s = S.normalizeSettings({ upKBs: '512', downKBs: -3, maxFileBytes: 5, homeNets: ['zz', 'a'.repeat(32)], skipDev: 'no', paused: true, extra: 1 });
-    assert.deepEqual(s, { deviceName: null, paused: true, skipDev: true, maxFileBytes: 5, upKBs: 512, downKBs: 0, homeOnly: false, homeNets: ['a'.repeat(32)], vpnOnly: false });
+    assert.deepEqual(s, { deviceName: null, deviceId: null, paused: true, skipDev: true, maxFileBytes: 5, upKBs: 512, downKBs: 0, homeOnly: false, homeNets: ['a'.repeat(32)], vpnOnly: false });
     const cfg = S.normalizeConfig({
       settings: { deviceName: 'Büro:PC' },
       folders: [
@@ -331,7 +331,7 @@ describe('Drive API for the sync', () => {
 
 // ── The service ────────────────────────────────────────────
 
-async function syncSetup({ now = () => Date.now(), timing = {}, store = createMemoryStore(), dir = null, srv = null, ifaces = {}, vpn = true } = {}) {
+async function syncSetup({ now = () => Date.now(), timing = {}, store = createMemoryStore(), dir = null, srv = null, ifaces = {}, vpn = true, extra = {} } = {}) {
   if (!srv) {
     srv = await driveServer();
     cleanup.push(() => srv.close());
@@ -350,6 +350,7 @@ async function syncSetup({ now = () => Date.now(), timing = {}, store = createMe
     isVpnUp: () => vpn,
     trashItem: async (p) => { trashed.push(p); await fs.promises.rm(p, { recursive: true, force: true }); },
     timing: { watch: false, settleMs: 0, emitMs: 0, ...timing },
+    ...extra,
   });
   cleanup.push(() => sync.stop());
   return { srv, svc, api, sync, store, stateDir, trashed };
@@ -749,6 +750,91 @@ describe('DriveSync: "Abgleichen"', () => {
     await assert.rejects(sync.addFolder({ path: path.join(root, 'innen'), mode: 'backup' }), (e) => e.code === 'overlap');
     const other = tmpDir('pc-check2-');
     await assert.rejects(sync.addFolder({ path: other, mode: 'sync', targetId: 10 }), (e) => e.code === 'target_taken');
+    await sync.idle();
+  });
+});
+
+describe('DriveSync: Drive 1.5 (devices, empty files)', () => {
+  it('registers the PC and backs up below its own device folder; a second PC of the same name gets its own', async () => {
+    const srv = await driveServer({ features: ['devices', 'deleteAfter', 'emptyFiles'] });
+    cleanup.push(() => srv.close());
+    const a = await syncSetup({ srv, extra: { appVersion: '1.50.0' } });
+    const root = path.join(tmpDir('pc-dev-'), 'Bilder');
+    write(root, 'Urlaub.jpg', 'jpg');
+    write(root, 'leer.txt', '');
+    const { folder } = await a.sync.addFolder({ path: root, mode: 'backup' });
+    await a.sync.idle();
+    const dev = srv.state.devices.get('pc-ab12cd34');
+    assert.ok(dev, 'device registered with its own id');
+    assert.equal(dev.name, 'Desktop-PC');
+    assert.equal(dev.version, '1.50.0');
+    assert.equal(dev.platform, 'windows');
+    const top = childNamed(srv, dev.folderId, 'Bilder');
+    assert.ok(top && top.isDir, 'below the device folder');
+    assert.ok(childNamed(srv, top.id, 'Urlaub.jpg'));
+    // an empty file goes up without media
+    const leer = childNamed(srv, top.id, 'leer.txt');
+    assert.ok(leer && leer.size === 0 && leer.mediaId === null);
+    assert.equal(a.sync.status().folders[0].target.label, 'Meine Dateien › Geräte › Desktop-PC › Bilder');
+    // the folders of this PC for the portal
+    assert.deepEqual(dev.folders.map((f) => [f.localPath, f.mode, f.nodeId]), [[root, 'backup', top.id]]);
+    assert.ok(dev.folders[0].lastBackup);
+    // a second PC with the same host name: "Desktop-PC (2)", its own folder
+    const b = await syncSetup({ srv, extra: { getDeviceKey: () => 'ffee0011' } });
+    const root2 = path.join(tmpDir('pc-dev2-'), 'Bilder');
+    write(root2, 'Andere.jpg', 'jpg2');
+    await b.sync.addFolder({ path: root2, mode: 'backup' });
+    await b.sync.idle();
+    const dev2 = srv.state.devices.get('pc-ffee0011');
+    assert.equal(dev2.name, 'Desktop-PC (2)');
+    assert.notEqual(dev2.folderId, dev.folderId);
+    assert.ok(childNamed(srv, childNamed(srv, dev2.folderId, 'Bilder').id, 'Andere.jpg'));
+    assert.equal(childNamed(srv, top.id, 'Andere.jpg'), undefined);
+    // removing a folder reports the shorter list
+    await a.sync.removeFolder(folder.id);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(srv.state.devices.get('pc-ab12cd34').folders, []);
+  });
+
+  it('"Abgleichen" brings an empty file from Drive as an empty file', async () => {
+    const srv = await driveServer({ features: ['emptyFiles'] });
+    cleanup.push(() => srv.close());
+    const env = await syncSetup({ srv });
+    const up = await env.api.commit({ empty: true, parentId: 10, name: 'Notiz.txt' });
+    assert.equal(up.node.size, 0);
+    const root = tmpDir('pc-sync-empty-');
+    await env.sync.addFolder({ path: root, mode: 'sync', targetId: 10 });
+    await env.sync.idle();
+    assert.equal(read(root, 'Notiz.txt'), '');
+    assert.equal(env.sync.status().folders[0].state, 'idle');
+    // and an empty file of the PC goes up
+    write(root, 'Leer.md', '');
+    env.sync.sync(env.sync.status().folders[0].id);
+    await env.sync.idle();
+    assert.equal(childNamed(srv, 10, 'Leer.md').size, 0);
+  });
+
+  it('an older Drive: no device, empty files are left out', async () => {
+    const env = await syncSetup();
+    const root = path.join(tmpDir('pc-old-'), 'Alt');
+    write(root, 'leer.txt', '');
+    write(root, 'voll.txt', 'x');
+    await env.sync.addFolder({ path: root, mode: 'backup' });
+    await env.sync.idle();
+    assert.equal(env.srv.state.requests.filter((r) => r.path.includes('/devices/')).length, 0);
+    const pc = childNamed(env.srv, childNamed(env.srv, 1, 'Geräte').id, 'Desktop-PC');
+    const top = childNamed(env.srv, pc.id, 'Alt');
+    assert.ok(childNamed(env.srv, top.id, 'voll.txt'));
+    assert.equal(childNamed(env.srv, top.id, 'leer.txt'), undefined);
+  });
+
+  it('does not take a folder that lies in Drive itself ("GateControl Drive" of files on demand)', async () => {
+    const drv = tmpDir('gc-drive-root-');
+    fs.mkdirSync(path.join(drv, 'Meine Dateien'));
+    const { sync } = await syncSetup({ extra: { blockedPaths: () => [drv] } });
+    await assert.rejects(sync.addFolder({ path: path.join(drv, 'Meine Dateien'), mode: 'backup' }), (e) => e.code === 'in_drive');
+    await assert.rejects(sync.addFolder({ path: drv, mode: 'backup' }), (e) => e.code === 'in_drive');
+    assert.equal((await sync.addFolder({ path: tmpDir('pc-ok-'), mode: 'backup' })).ok, true);
     await sync.idle();
   });
 });

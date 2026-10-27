@@ -100,7 +100,23 @@ class DriveApi {
 
   // ── Who, where ───────────────────────────────────────────
 
-  async me() { return drive.normalizeMe(await this.api('GET', 'me')); }
+  async me() {
+    const m = drive.normalizeMe(await this.api('GET', 'me'));
+    this._features = { list: m.features, at: Date.now() };
+    return m;
+  }
+
+  /**
+   * Drive 1.5: can this Drive do `name` ('devices', 'deleteAfter', 'emptyFiles')?
+   * From the last `me` (asked again after 10 min); false for older Drives.
+   */
+  async has(name) {
+    const f = this._features;
+    if (!f || Date.now() - f.at > 10 * 60 * 1000) {
+      try { await this.me(); } catch { return !!(f && f.list.includes(name)); }
+    }
+    return this._features.list.includes(name);
+  }
 
   async areas() { return drive.normalizeAreas(await this.api('GET', 'areas')); }
 
@@ -277,9 +293,10 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null }) {
-    if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
-    const body = { mediaId, parentId: this._id(parentId), name };
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false }) {
+    // Drive 1.5 ('emptyFiles'): an empty file goes without media as `size: 0`
+    if (!empty && !drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    const body = empty ? { parentId: this._id(parentId), name, size: 0 } : { mediaId, parentId: this._id(parentId), name };
     if (onConflict !== null) body.onConflict = drive.ON_CONFLICT.includes(onConflict) ? onConflict : 'rename';
     if (drive.count(baseRev) !== null) body.baseRev = baseRev;
     if (Number.isFinite(mtime) && mtime > 0) body.mtime = Math.round(mtime);
@@ -297,6 +314,35 @@ class DriveApi {
     const c = drive.normalizeContent(await this.api('GET', p));
     if (!c) throw new DriveError('bad content answer', { code: 'bad_response' });
     return c;
+  }
+
+  // ── Devices (Drive 1.5, 'devices') ───────────────────────
+
+  /**
+   * PUT devices/<id> { name, platform, version } → { id, name, platform, folder }: registers this PC
+   * (or updates "last seen"); the Drive gives it its folder Meine Dateien › Geräte › <Name>
+   * (names are unique per person: a second "PC" becomes "PC (2)").
+   */
+  async putDevice(id, { name, platform = 'windows', version = '' } = {}) {
+    if (typeof id !== 'string' || !drive.DEVICE_ID_RE.test(id)) throw new DriveError('invalid device id', { code: 'invalid' });
+    const body = { name: String(name || 'PC').slice(0, 100), platform: String(platform).slice(0, 20) };
+    if (version) body.version = String(version).slice(0, 40);
+    const d = drive.normalizeDevice(await this.api('PUT', `devices/${encodeURIComponent(id)}`, { body }));
+    if (!d) throw new DriveError('bad device answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** PUT devices/<id>/folders [{ localPath, mode, nodeId, lastBackup }]: the folders this PC backs up / syncs (portal "Geräte"). */
+  async putDeviceFolders(id, folders) {
+    if (typeof id !== 'string' || !drive.DEVICE_ID_RE.test(id)) throw new DriveError('invalid device id', { code: 'invalid' });
+    const list = (Array.isArray(folders) ? folders : []).slice(0, 100).map((f) => ({
+      localPath: String(f.localPath || '').slice(0, 1000),
+      mode: f.mode === 'sync' ? 'sync' : 'backup',
+      nodeId: drive.posId(f.nodeId),
+      lastBackup: Number.isFinite(f.lastBackup) && f.lastBackup > 0 ? new Date(f.lastBackup).toISOString() : null,
+    }));
+    await this.api('PUT', `devices/${encodeURIComponent(id)}/folders`, { body: { folders: list } });
+    return { ok: true };
   }
 
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */

@@ -147,6 +147,7 @@ function deviceName(raw) {
 
 const DEFAULT_SETTINGS = Object.freeze({
   deviceName: null,     // set when the first folder is added (the host name)
+  deviceId: null,       // Drive 1.5 'devices': this PC's own stable id (PUT devices/<id>)
   paused: false,        // all folders
   skipDev: true,        // node_modules and .git
   maxFileBytes: DEFAULT_MAX_BYTES,
@@ -168,6 +169,7 @@ function normalizeSettings(raw) {
   const max = Number(r.maxFileBytes);
   return {
     deviceName: typeof r.deviceName === 'string' && drive.safeName(r.deviceName) ? deviceName(r.deviceName) : null,
+    deviceId: typeof r.deviceId === 'string' && drive.DEVICE_ID_RE.test(r.deviceId) ? r.deviceId : null,
     paused: bool(r.paused, false),
     skipDev: bool(r.skipDev, true),
     maxFileBytes: Number.isSafeInteger(max) && max >= 0 ? Math.min(max, drive.MAX_FILE_BYTES) : DEFAULT_MAX_BYTES,
