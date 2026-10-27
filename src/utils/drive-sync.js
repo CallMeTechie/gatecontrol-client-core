@@ -511,8 +511,9 @@ const ORDER = { mkdirRemote: 0, mkdirLocal: 0, record: 1, upload: 2, merge: 2, d
  * @param {Map} o.local
  * @param {Map} o.remote
  * @param {boolean} [o.restoreDeleted] - files deleted on the PC come back from Drive (the answer "Wiederherstellen")
- * @returns {{ actions: object[], deletes: number, files: number }}
+ * @returns {{ actions: object[], deletes: number, driveDeletes: number, files: number }}
  *   deletes: files that leave Drive because they were deleted on the PC (the mass-delete guard),
+ *   driveDeletes: files that leave the PC because they were deleted in Drive (the same guard, other way),
  *   files: files of the base (its size)
  *
  * Actions: mkdirRemote { key, path } · mkdirLocal { key, path, nodeId, rev } · upload { key, path, nodeId, baseRev }
@@ -528,6 +529,7 @@ function plan({ mode, base, local, remote, restoreDeleted = false }) {
   const sorted = [...keys].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
   const backup = mode === 'backup';
   let deletes = 0;
+  let driveDeletes = 0;
   const files = Object.values(base).filter((e) => !e.dir).length;
   const covered = (k) => { for (const d of done) if (under(k, d)) return true; return false; };
 
@@ -558,7 +560,13 @@ function plan({ mode, base, local, remote, restoreDeleted = false }) {
         if (!b || backup) { actions.push({ op: 'mkdirRemote', key: k, path: l.path }); continue; }
         // gone in Drive: the PC lets it go too, unless something below changed on the PC
         const changed = below(local, k).some((x) => lChanged(x));
-        if (!changed) { actions.push({ op: 'deleteLocal', key: k, path: l.path, dir: true }); done.add(k); continue; }
+        if (!changed && !restoreDeleted) {
+          const n = below(local, k).filter((x) => !local.get(x).dir).length;
+          driveDeletes += n;
+          actions.push({ op: 'deleteLocal', key: k, path: l.path, dir: true, files: n });
+          done.add(k);
+          continue;
+        }
         actions.push({ op: 'mkdirRemote', key: k, path: l.path });
         continue;
       }
@@ -605,8 +613,9 @@ function plan({ mode, base, local, remote, restoreDeleted = false }) {
       continue;
     }
     if (l && !r) {
-      if (!b || backup || lChanged(k)) { actions.push({ op: 'upload', key: k, path: l.path, nodeId: null, baseRev: null }); continue; }
-      actions.push({ op: 'deleteLocal', key: k, path: l.path, dir: false });
+      if (!b || backup || lChanged(k) || restoreDeleted) { actions.push({ op: 'upload', key: k, path: l.path, nodeId: null, baseRev: null }); continue; }
+      driveDeletes += 1;
+      actions.push({ op: 'deleteLocal', key: k, path: l.path, dir: false, files: 1 });
       continue;
     }
     if (!l && r) {
@@ -625,7 +634,7 @@ function plan({ mode, base, local, remote, restoreDeleted = false }) {
     if (b) actions.push({ op: 'forget', key: k });
   }
   actions.sort((a, b) => (ORDER[a.op] ?? 2) - (ORDER[b.op] ?? 2) || ((a.op === 'deleteLocal' || a.op === 'trashRemote') ? depth(b.key) - depth(a.key) : depth(a.key) - depth(b.key)));
-  return { actions, deletes, files };
+  return { actions, deletes, driveDeletes, files };
 }
 
 module.exports = {

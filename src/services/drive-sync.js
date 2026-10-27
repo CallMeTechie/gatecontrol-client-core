@@ -915,10 +915,15 @@ class DriveSync extends EventEmitter {
     let actions = p.actions;
     const isDelete = (a) => a.op === 'trashRemote' || (a.op === 'pendingDelete' && !st.pending[a.key]);
     const deletes = actions.filter(isDelete).reduce((n, a) => n + (a.files || 0), 0);
-    if (!rt.allowDeletes && !rt.restore && S.massDelete(deletes, p.files)) {
-      actions = actions.filter((a) => !isDelete(a));
-      rt.confirm = { count: deletes, total: p.files };
-      this.log.info(`Drive sync: ${deletes} of ${p.files} files deleted on this PC at once — waiting for the person`);
+    // The same guard the other way: many files gone in Drive at once (or a Drive answer that lost a
+    // folder) must not empty the PC folder without asking.
+    const driveDeletes = actions.filter((a) => a.op === 'deleteLocal').reduce((n, a) => n + (a.files || 0), 0);
+    const massPc = S.massDelete(deletes, p.files);
+    const massDrive = S.massDelete(driveDeletes, p.files);
+    if (!rt.allowDeletes && !rt.restore && (massPc || massDrive)) {
+      actions = actions.filter((a) => !isDelete(a) && a.op !== 'deleteLocal');
+      rt.confirm = massDrive && !massPc ? { count: driveDeletes, total: p.files, from: 'drive' } : { count: deletes, total: p.files, from: 'pc' };
+      this.log.info(`Drive sync: ${rt.confirm.count} of ${p.files} files deleted ${rt.confirm.from === 'drive' ? 'in Drive' : 'on this PC'} at once — waiting for the person`);
     } else {
       rt.confirm = null;
     }

@@ -452,7 +452,7 @@ describe('DriveSync: "Nur sichern"', () => {
     await sync.idle();
     let f = sync.status().folders[0];
     assert.equal(f.state, 'confirm');
-    assert.deepEqual(f.confirm, { count: 12, total: 12 });
+    assert.deepEqual(f.confirm, { count: 12, total: 12, from: 'pc' });
     assert.equal(f.pendingDeletes, 0);
     sync.confirmDeletes(folder.id, 'restore');
     await sync.idle();
@@ -535,6 +535,40 @@ describe('DriveSync: "Abgleichen"', () => {
     await env.sync.idle();
     return { ...env, root, folder };
   }
+
+  it('asks before many files deleted in Drive leave the PC; "Wiederherstellen" uploads them again', async () => {
+    const { srv, sync, root, folder } = await synced();
+    for (let i = 0; i < 12; i++) write(root, `g${i}.txt`, `datei ${i}`);
+    sync.sync(folder.id);
+    await sync.idle();
+    const ids = [];
+    for (let i = 0; i < 12; i++) ids.push(childNamed(srv, 10, `g${i}.txt`).id);
+    for (const id of ids) srv.mutate.remove(id);
+    sync.sync(folder.id, { full: false, remote: true });
+    await sync.idle();
+    let f = sync.status().folders[0];
+    assert.equal(f.state, 'confirm');
+    assert.equal(f.confirm.from, 'drive');
+    assert.equal(f.confirm.count, 12);
+    assert.equal(read(root, 'g4.txt'), 'datei 4'); // nothing left the PC yet
+    sync.confirmDeletes(folder.id, 'restore');
+    await sync.idle();
+    assert.equal(sync.status().folders[0].state, 'idle');
+    assert.equal(read(root, 'g4.txt'), 'datei 4');
+    const back = childNamed(srv, 10, 'g4.txt');
+    assert.ok(back && !back.deleted);
+
+    for (let i = 0; i < 12; i++) srv.mutate.remove(childNamed(srv, 10, `g${i}.txt`).id);
+    sync.sync(folder.id, { full: false, remote: true });
+    await sync.idle();
+    assert.equal(sync.status().folders[0].state, 'confirm');
+    sync.confirmDeletes(folder.id, 'apply');
+    await sync.idle();
+    f = sync.status().folders[0];
+    assert.equal(f.state, 'idle');
+    assert.equal(exists(root, 'g4.txt'), false);
+    assert.equal(read(root, 'Lokal.txt'), 'vom PC');
+  });
 
   it('merges both sides on the first run and follows the change log of Drive', async () => {
     const { srv, sync, root, folder } = await synced();
