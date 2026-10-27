@@ -340,6 +340,36 @@ describe('DriveService', () => {
     assert.equal(cancelled.cancelled, true);
   });
 
+  it('empty files (Drive 1.5 emptyFiles): up without media, open and save as an empty file; older Drives refuse', async () => {
+    const opened = [];
+    const shell = { openPath: async (p) => { opened.push(p); return ''; } };
+    const { svc, srv } = await setup({ features: ['emptyFiles'] }, { shell });
+    const dir = tmpDir('drive-empty-');
+    const leer = path.join(dir, 'Leer.txt');
+    fs.writeFileSync(leer, '');
+    const r = await svc.upload(10, [leer]);
+    await until(() => svc.transfers().every((t) => !['queued', 'running'].includes(t.state)));
+    assert.equal(svc.transfers().find((t) => t.id === r.queued[0]).state, 'done');
+    const body = srv.state.requests.filter((x) => x.path.endsWith('uploads/commit')).at(-1).body;
+    assert.equal(body.size, 0);
+    assert.equal('mediaId' in body, false);
+    assert.equal(srv.state.uploadCalls.length, 0, 'no media upload');
+    const n = [...srv.state.nodes.values()].find((x) => x.name === 'Leer.txt');
+    assert.equal(n.size, 0);
+    const o = await svc.open(n.id);
+    assert.equal(o.ok, true);
+    assert.equal(fs.readFileSync(o.path, 'utf8'), '');
+
+    const old = await setup();
+    const q = await old.svc.upload(10, [leer]);
+    await until(() => old.svc.transfers().every((t) => !['queued', 'running'].includes(t.state)));
+    assert.deepEqual(old.svc.transfers().filter((t) => t.id === q.queued[0]).map((t) => [t.state, t.code]), [['failed', 'empty_file']]);
+    assert.deepEqual(drive.normalizeMe({ features: ['devices', 'bad key', 7] }).features, ['devices']);
+    assert.deepEqual(drive.normalizeContent({ empty: true, name: 'x' }), { mediaId: null, name: 'x', mime: null, size: 0, empty: true });
+    assert.equal(drive.normalizeDevice({ device: { id: 'pc-1', name: 'PC', folder: { id: 5, name: 'PC' } } }).folder.id, 5);
+    assert.equal(drive.normalizeDevice({ device: { id: 'bad id!' } }), null);
+  });
+
   it('previews: cached by mediaId; still being made → preview_pending', async () => {
     const { svc, srv } = await setup();
     const p = await svc.preview('photoMedia000001');

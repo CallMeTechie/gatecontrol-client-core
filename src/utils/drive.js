@@ -242,6 +242,8 @@ function normalizeMe(raw) {
       deviceId: line(me.deviceId, 128),
     },
     licence: { valid: bool(lic.valid), tier: line(lic.tier, 20) },
+    // Drive 1.5: what this Drive can ('devices', 'deleteAfter', 'emptyFiles', …); older ones send none
+    features: arr(r.features).slice(0, 50).filter((f) => typeof f === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(f)),
     areas: sortAreas(arr(r.areas).slice(0, 500).map(normalizeArea).filter(Boolean)),
     latest: count(r.latest) || 0,
     settings: { trashDays: count(st.trashDays), versionsDays: count(st.versionsDays) },
@@ -314,11 +316,33 @@ function normalizeChanges(raw) {
   return { changes, next: Math.max(count(r.next) || 0, last), more: bool(r.more) };
 }
 
-/** GET nodes/<id>/content → { mediaId, name, mime, size } or null. */
+/**
+ * GET nodes/<id>/content → { mediaId, name, mime, size, empty } or null.
+ * Drive 1.5: an empty file has no media (`empty: true`, `mediaId: null`) – write an empty file.
+ */
 function normalizeContent(raw) {
   const r = obj(raw) || {};
+  if (r.empty === true) return { mediaId: null, name: line(r.name, NAME_MAX), mime: line(r.mime, 100), size: 0, empty: true };
   if (!isMediaId(r.mediaId)) return null;
-  return { mediaId: r.mediaId, name: line(r.name, NAME_MAX), mime: line(r.mime, 100), size: count(r.size) };
+  return { mediaId: r.mediaId, name: line(r.name, NAME_MAX), mime: line(r.mime, 100), size: count(r.size), empty: false };
+}
+
+const DEVICE_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** Drive 1.5 PUT devices/<id> → { id, name, platform, folder: { id, name, areaId, path, where } | null } or null. */
+function normalizeDevice(raw) {
+  const r = obj(raw) || {};
+  const d = obj(r.device) || r;
+  const id = typeof d.id === 'string' && DEVICE_ID_RE.test(d.id) ? d.id : null;
+  if (!id) return null;
+  const f = obj(d.folder);
+  const fid = f && posId(f.id);
+  return {
+    id,
+    name: line(d.name, 100),
+    platform: line(d.platform, 20),
+    folder: fid ? { id: fid, name: line(f.name, NAME_MAX), areaId: areaIdOf(f.areaId), path: line(f.path, 2000), where: line(f.where, 2000) } : null,
+  };
 }
 
 /** A shared link → clean object or null. */
@@ -393,6 +417,8 @@ function errorCode(err) {
 }
 
 module.exports = {
+  DEVICE_ID_RE,
+  normalizeDevice,
   PLUGIN_ID,
   APP_ROUTE,
   PLUGINS_PATH,

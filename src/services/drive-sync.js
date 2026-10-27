@@ -25,8 +25,11 @@
  *   being written (changed in the last 2 s) wait for the next run.
  * - Left out: temporary files (~$*, *.tmp, Thumbs.db, desktop.ini,
  *   .DS_Store), node_modules and .git (switch, on by default), files over a
- *   size (10 GB by default), empty files (the media upload takes no empty
- *   body) and names Drive does not take.
+ *   size (10 GB by default), empty files on Drives before 1.5 (the media upload
+ *   takes no empty body; Drive 1.5 'emptyFiles': they go up as `size: 0`
+ *   without media and come down as empty files) and names Drive does not take.
+ *   A folder that lies in Drive itself (`blockedPaths`: the folder
+ *   "GateControl Drive" of the Pro app's files on demand) is not taken (`in_drive`).
  * - Guard: deleting more than 500 files at once, or more than 20 % of a
  *   folder (at least 10 files), waits for the person ("Löschen übertragen" /
  *   "Wiederherstellen").
@@ -38,8 +41,12 @@
  * - The device: the plugin knows it by the app's device token (me.deviceId,
  *   kept for the page); its name in Drive is the folder Geräte › <PC> (the
  *   host name when the first folder is added); the page also shows the PC's
- *   stable short id (getDeviceKey). Drive has no API to register a device by
- *   name or to list its folders yet.
+ *   stable short id (getDeviceKey). Drive 1.5 ('devices' in me.features):
+ *   the PC registers itself (PUT devices/<id>, id 'pc-' + the short id, kept
+ *   in the settings) and gets its own folder Meine Dateien › Geräte › <Name>
+ *   (unique per person: a second "PC" is "PC (2)"); "Nur sichern" goes below
+ *   it, and the folder list goes to Drive (PUT devices/<id>/folders) for the
+ *   portal page "Geräte". Older Drives: the folder Geräte › <PC> by name.
  *
  * Stored: the folder list and the settings in the electron-store key
  * `driveSync` (no tokens), the state of each folder (the last agreed files
@@ -106,6 +113,9 @@ class DriveSync extends EventEmitter {
    * @param {() => boolean} [opts.isVpnUp]
    * @param {() => string|null} [opts.getDeviceKey] - the PC's stable short id (Pro: first 8 hex of the machine fingerprint)
    * @param {() => Array<{ key: string, path: string }>} [opts.knownFolders] - Desktop, Dokumente, Bilder …
+   * @param {() => string[]} [opts.blockedPaths] - folders that cannot be added (Pro: the folder
+   *   "GateControl Drive" of "Dateien bei Bedarf" – it is Drive itself)
+   * @param {string} [opts.appVersion] - sent with the device (Drive 1.5 'devices')
    * @param {object} [opts.pushClient] - live events of the plugin (changed)
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
@@ -113,7 +123,7 @@ class DriveSync extends EventEmitter {
   constructor({
     drive: driveSvc, api = null, store, dir, log, trashItem = null, dialog = null, shell = null, getMainWindow = null,
     hostname = () => os.hostname(), getInterfaces = () => os.networkInterfaces(), getGateways = null, isVpnUp = null, getDeviceKey = null,
-    knownFolders = null, pushClient = null, timing = {}, now = Date.now,
+    knownFolders = null, blockedPaths = null, appVersion = '', pushClient = null, timing = {}, now = Date.now,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -131,6 +141,10 @@ class DriveSync extends EventEmitter {
     this.isVpnUp = typeof isVpnUp === 'function' ? isVpnUp : () => true;
     this.getDeviceKey = typeof getDeviceKey === 'function' ? getDeviceKey : () => null;
     this.knownFolders = typeof knownFolders === 'function' ? knownFolders : () => [];
+    this.blockedPaths = typeof blockedPaths === 'function' ? blockedPaths : () => [];
+    this.appVersion = typeof appVersion === 'string' ? appVersion.slice(0, 40) : '';
+    this._devReg = null;           // Drive 1.5: { device, at } of the last PUT devices/<id>
+    this._devReport = { key: '', at: 0 };
     this.pushClient = pushClient;
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this.now = now;
@@ -413,6 +427,9 @@ class DriveSync extends EventEmitter {
     if (this._cfg.folders.length >= S.MAX_FOLDERS) throw new DriveError('too many folders', { code: 'too_many' });
     if (S.overlaps(abs, this._cfg.folders, path.sep)) throw new DriveError('overlaps a folder', { code: 'overlap' });
     if (this.dir && S.overlaps(abs, [{ path: this.dir }], path.sep)) throw new DriveError('the app folder', { code: 'overlap' });
+    let blocked = [];
+    try { blocked = (this.blockedPaths() || []).filter((b) => typeof b === 'string' && b); } catch { blocked = []; }
+    if (blocked.length && S.overlaps(abs, blocked.map((b) => ({ path: b })), path.sep)) throw new DriveError('lies in Drive itself', { code: 'in_drive' });
     const s = this._cfg.settings;
     if (!s.deviceName) s.deviceName = S.deviceName(this._host());
     const folder = { id: crypto.randomBytes(8).toString('hex'), path: abs, mode, remoteName: null, target: { nodeId: null, areaId: null, label: null }, scope: this._scopeKey(), paused: false, addedAt: this.now(), lastSyncAt: null };
@@ -459,6 +476,7 @@ class DriveSync extends EventEmitter {
     this._states.delete(id);
     if (this.dir) await fs.promises.rm(this._statePath(id), { force: true }).catch(() => {});
     this._emit(true);
+    this._reportFolders({ force: true });
     return { ok: true };
   }
 
@@ -585,6 +603,7 @@ class DriveSync extends EventEmitter {
       this._pumping = false;
       this._emit(true);
     }
+    await this._reportFolders();
   }
 
   _retryLater() {
@@ -676,6 +695,8 @@ class DriveSync extends EventEmitter {
       await this._ensureLocal(ctx);
       // seat, licence and the device's id: on the first run and every 30 minutes
       if (!this._meAt || this.now() - this._meAt > 30 * 60 * 1000) await this._me(ctx);
+      // Drive 1.5: empty files go up without media (older Drives: they are left out)
+      ctx.emptyOk = await this._has('emptyFiles');
       await this._ensureTarget(ctx);
       const touched = await this._pullRemote(ctx);
       if (q.remote && !q.full && !touched && !rt.dirty && rt.watching && st.base && Object.keys(st.base).length) {
@@ -733,6 +754,58 @@ class DriveSync extends EventEmitter {
     return m;
   }
 
+  /** Can this Drive do `name` (Drive 1.5 features)? false on older Drives or errors. */
+  async _has(name) {
+    if (!this.api || typeof this.api.has !== 'function') return false;
+    try { return !!(await this.api.has(name)); } catch { return false; }
+  }
+
+  /** This PC's own device id for Drive 1.5 ('pc-' + the short device key, or random), kept in the settings. */
+  _deviceId() {
+    const s = this._cfg.settings;
+    if (s.deviceId) return s.deviceId;
+    const key = this._deviceKey();
+    s.deviceId = key && /^[A-Za-z0-9]{4,32}$/.test(key) ? `pc-${key.toLowerCase()}` : `pc-${crypto.randomBytes(8).toString('hex')}`;
+    this._save();
+    return s.deviceId;
+  }
+
+  /**
+   * Drive 1.5 ('devices'): PUT devices/<id> → the device with its folder Meine Dateien ›
+   * Geräte › <Name> (Drive makes it and keeps names unique per person). At most every 30 minutes.
+   * null on older Drives.
+   */
+  async _registerDevice() {
+    if (!(await this._has('devices'))) return null;
+    if (this._devReg && this.now() - this._devReg.at < 30 * 60 * 1000 && this._devReg.device.folder) return this._devReg.device;
+    const s = this._cfg.settings;
+    const device = await this.api.putDevice(this._deviceId(), { name: s.deviceName || S.deviceName(this._host()), platform: 'windows', version: this.appVersion });
+    this._devReg = { device, at: this.now() };
+    return device;
+  }
+
+  /**
+   * Drive 1.5 ('devices'): tells Drive the folders of this PC (portal "Geräte") – when the list
+   * changed, else at most every 30 minutes. Failures only go to the log.
+   */
+  async _reportFolders({ force = false } = {}) {
+    try {
+      if (!this._cfg.folders.length && !force) return;
+      if (!(await this._has('devices'))) return;
+      const scope = this._scopeKey();
+      const list = this._cfg.folders.filter((f) => !f.scope || f.scope === scope)
+        .map((f) => ({ localPath: f.path, mode: f.mode, nodeId: f.target.nodeId || null, lastBackup: f.lastSyncAt || null }));
+      const key = JSON.stringify(list.map((f) => [f.localPath, f.mode, f.nodeId]));
+      if (!force && key === this._devReport.key && this.now() - this._devReport.at < 30 * 60 * 1000) return;
+      const dev = await this._registerDevice();
+      if (!dev) return;
+      await this.api.putDeviceFolders(dev.id, list);
+      this._devReport = { key, at: this.now() };
+    } catch (err) {
+      this.log.info(`Drive devices: folders not reported (${drive.errorCode(err)})`);
+    }
+  }
+
   /** The Drive folder: "Abgleichen" — the one picked; "Nur sichern" — Meine Dateien › Geräte › <PC> › <name> (made). */
   async _ensureTarget(ctx) {
     const { f, st } = ctx;
@@ -756,6 +829,29 @@ class DriveSync extends EventEmitter {
       } catch (err) {
         if (!(err && err.status === 404)) throw err;
       }
+    }
+    // Drive 1.5: below the device's own folder (Meine Dateien › Geräte › <Name>, unique per person)
+    const dev = await this._registerDevice().catch((err) => {
+      this.log.info(`Drive devices: not registered (${drive.errorCode(err)}) – the folder is made by name`);
+      return null;
+    });
+    if (dev && dev.folder) {
+      const leaf = f.remoteName || 'Ordner';
+      const find = async () => (await this.api.childrenAll(dev.folder.id)).find((n) => n.isDir && !n.deleted && S.keyOf(n.name) === S.keyOf(leaf)) || null;
+      let n = await find();
+      if (!n) {
+        try {
+          n = await this.api.mkdir(dev.folder.id, leaf, { rename: false });
+        } catch (err) {
+          if (!(err && err.status === 409)) throw err;
+          n = await find();
+        }
+      }
+      if (!n || !n.isDir) throw new DriveError('a file is in the way', { code: 'exists' });
+      f.target = { nodeId: n.id, areaId: n.areaId || dev.folder.areaId, label: ['Meine Dateien', S.DEVICES_FOLDER, dev.name || dev.folder.name, leaf].join(' › ') };
+      this._save();
+      Object.assign(st, freshState(st.scope), { rootId: n.id, base: st.rootId ? {} : st.base });
+      return;
     }
     // Made (again): Meine Dateien › Geräte › <PC> › <name>
     const m = await this._me(ctx);
@@ -858,7 +954,7 @@ class DriveSync extends EventEmitter {
         } else if (e.isFile()) {
           let s;
           try { s = await fs.promises.stat(path.join(abs, e.name)); } catch { continue; }
-          const why = S.excluded(r, { dir: false, size: s.size }, settings) || (s.size === 0 ? 'empty' : null);
+          const why = S.excluded(r, { dir: false, size: s.size }, settings) || (s.size === 0 && !ctx.emptyOk ? 'empty' : null);
           if (why) { if (why !== 'temp') skipped++; continue; }
           files++;
           bytes += s.size;
@@ -886,7 +982,7 @@ class DriveSync extends EventEmitter {
     }
     const remote = new Map();
     for (const [k, r] of S.remoteByPath(st.tree, st.rootId)) {
-      if (S.excluded(r.path, { dir: r.dir, size: r.size }, settings) || (!r.dir && !r.size)) continue;
+      if (S.excluded(r.path, { dir: r.dir, size: r.size }, settings) || (!r.dir && !r.size && !ctx.emptyOk)) continue;
       remote.set(k, r);
     }
     return { base, local, remote };
@@ -1069,6 +1165,8 @@ class DriveSync extends EventEmitter {
   }
 
   async _uploadMedia(ctx, abs, size, name) {
+    // Drive 1.5 ('emptyFiles'): no media for an empty file – commit with `empty`
+    if (!size) return { mediaId: null, empty: true };
     ctx.rt.reason = 'transfer';
     ctx.rt.current = { name, sent: 0, total: size };
     this._emit();
@@ -1079,7 +1177,7 @@ class DriveSync extends EventEmitter {
     const { f, st } = ctx;
     const abs = this._abs(ctx, a.path);
     const s = await this._stat(abs);
-    if (!s || !s.isFile() || !s.size) return;
+    if (!s || !s.isFile() || (!s.size && !ctx.emptyOk)) return;
     if (this._settling(ctx, s, a.key)) return;
     const name = S.baseName(a.path);
     const parentId = await this._ensureParent(ctx, a.key, a.path);
@@ -1106,11 +1204,11 @@ class DriveSync extends EventEmitter {
       : { onConflict: null, baseRev: a.nodeId ? a.baseRev : null };
     let res;
     try {
-      res = await this.api.commit({ mediaId: up.mediaId, parentId, name, mtime, ...opts });
+      res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, ...opts });
     } catch (err) {
       if (err && err.status === 409 && err.code === 'conflict') {
         const cur = drive.normalizeNode(err.body && err.body.current);
-        return this._conflict(ctx, a, { mediaId: up.mediaId, sha, size: s.size, mtime, parentId, cur });
+        return this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur });
       }
       throw err;
     }
@@ -1123,7 +1221,7 @@ class DriveSync extends EventEmitter {
    * "Name (Konflikt <PC> <Datum>).ext" next to the file — in Drive and on the PC —
    * and Drive's file comes to its place on the PC.
    */
-  async _conflict(ctx, a, { mediaId, sha, size, mtime, parentId, cur }) {
+  async _conflict(ctx, a, { mediaId, empty = false, sha, size, mtime, parentId, cur }) {
     const { st, rt } = ctx;
     if (cur && sha && cur.sha256 === sha) {
       this._tree(ctx, cur);
@@ -1141,7 +1239,7 @@ class DriveSync extends EventEmitter {
     await fs.promises.rename(from, to);
     let res;
     try {
-      res = await this.api.commit({ mediaId, parentId, name: cname, mtime, onConflict: 'rename' });
+      res = await this.api.commit({ mediaId, empty, parentId, name: cname, mtime, onConflict: 'rename' });
     } catch (err) {
       await fs.promises.rename(to, from).catch(() => {});
       throw err;
@@ -1181,14 +1279,14 @@ class DriveSync extends EventEmitter {
     const up = await this._uploadMedia(ctx, abs, s.size, name);
     if (f.mode === 'backup') {
       // "Nur sichern": the PC's file is the new version (Drive keeps the old one as a version)
-      const res = await this.api.commit({ mediaId: up.mediaId, parentId, name, mtime, onConflict: 'version' });
+      const res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, onConflict: 'version' });
       this._tree(ctx, res.node);
       this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev });
       return;
     }
     const tree = ctx.st.tree && ctx.st.tree[a.nodeId];
     const cur = tree ? { id: tree.id, isDir: false, rev: tree.rev, size: tree.size, mtime: tree.mtime, sha256: tree.sha256, name: tree.name, parentId: tree.parentId } : null;
-    await this._conflict(ctx, a, { mediaId: up.mediaId, sha, size: s.size, mtime, parentId, cur });
+    await this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur });
   }
 
   async _download(ctx, a, { force = false } = {}) {
@@ -1210,7 +1308,9 @@ class DriveSync extends EventEmitter {
     this._emit();
     const out = fs.createWriteStream(tmp);
     try {
-      await this.api.download(c.mediaId, out, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
+      // Drive 1.5: an empty file has no media
+      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
+      else await this.api.download(c.mediaId, out, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
       if (Number.isFinite(a.mtime) && a.mtime > 0) await fs.promises.utimes(tmp, new Date(), new Date(a.mtime));
       await fs.promises.rename(tmp, abs);
     } catch (err) {
