@@ -9,6 +9,8 @@
 //   const srv = await driveServer({ plugin, seat, licence });
 //   srv.url, srv.state (requests, nodes, media, uploadCalls, links),
 //   srv.state.fail = { '<METHOD> <route>': { status, code } } — refuse a route,
+//   srv.state.log — the change log (GET changes?since=): every create / update / move / delete / restore / purge,
+//   srv.mutate.* — changes made "by another device" (create a file or folder, change, rename / move, delete),
 //   srv.close()
 
 const http = require('node:http');
@@ -33,7 +35,11 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     nodes: new Map(),
     versions: new Map(), // nodeId → [{ id, rev, size, at, by, mediaId }]
     pending: new Set(),  // mediaIds whose preview is still being made
+    log: [],             // { seq, op, areaId, nodeId, device }
+    seq: 9,
   };
+  const logChange = (op, n, device = '42', areaId = n.areaId) => { state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device }); };
+  const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
   const areas = [
     { id: 'mine:2', kind: 'mine', label: 'Meine Dateien', role: 'manage', via: 'owner', rootId: 1, owner: 2, archived: false, storage: { bytes: 1024, quota: 0, form: 'readable', target: { kind: 'local', label: 'Dieser Server' }, state: 'ok' } },
     { id: 'family:1', kind: 'family', label: 'Familie Muster', role: 'write', via: 'member', rootId: 2, owner: null, archived: false },
@@ -63,7 +69,56 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.media.set(toolMedia, { data: Buffer.from('MZ'), mime: 'application/x-msdownload' });
   node({ id: 13, areaId: 'mine:2', parentId: 1, name: 'setup.exe', size: 2, mime: 'application/x-msdownload', mediaId: toolMedia });
 
-  const srv = { state, cutUploadAfter: null };
+  const srv = { state, cutUploadAfter: null, pageMax: 1000 };
+  // nodes below `id` (all, also deleted ones)
+  srv.below = (id) => {
+    const out = [];
+    const stack = [id];
+    while (stack.length) {
+      const x = stack.pop();
+      for (const n of state.nodes.values()) if (n.parentId === x) { out.push(n); stack.push(n.id); }
+    }
+    return out;
+  };
+  // Changes "by another device" (they land in the change log with device '77').
+  srv.mutate = {
+    file(parentId, name, content, { mtime = Date.now() } = {}) {
+      const data = Buffer.from(content);
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data, mime: 'application/octet-stream' });
+      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mediaId, sha256: sha(data), mtime: iso(mtime) });
+      logChange('create', n, '77');
+      return n;
+    },
+    dir(parentId, name) {
+      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, isDir: true });
+      logChange('create', n, '77');
+      return n;
+    },
+    change(id, content, { mtime = Date.now() } = {}) {
+      const n = state.nodes.get(id);
+      const data = Buffer.from(content);
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data, mime: 'application/octet-stream' });
+      Object.assign(n, { mediaId, size: data.length, sha256: sha(data), rev: n.rev + 1, mtime: iso(mtime) });
+      logChange('update', n, '77');
+      return n;
+    },
+    place(id, { name, parentId } = {}) {
+      const n = state.nodes.get(id);
+      if (name) n.name = name;
+      if (parentId) n.parentId = parentId;
+      logChange('move', n, '77');
+      return n;
+    },
+    remove(id) {
+      const n = state.nodes.get(id);
+      n.deleted = true;
+      for (const d of srv.below(id)) d.deleted = true;
+      logChange('delete', n, '77');
+      return n;
+    },
+  };
 
   const json = (res, status, body) => {
     const data = Buffer.from(JSON.stringify(body));
@@ -181,7 +236,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     if (req.method === 'GET' && route === 'me') {
       return json(res, 200, {
         ok: true, me: { id: 2, name: 'Marc', seat: seat || null, deviceId: '42' }, licence: { valid: licence, tier: 'combo' },
-        areas: seat ? areas : [], latest: 9, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
+        areas: seat ? areas : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
       });
     }
@@ -192,13 +247,36 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (q === 'miete') items.push({ ...view(state.nodes.get(12)), path: 'Dokumente', match: 'text', snippet: '… die Miete für Oktober …' });
       return json(res, 200, { ok: true, items });
     }
+    if (req.method === 'GET' && route === 'changes') {
+      const since = Number(url.searchParams.get('since') || 0);
+      const limit = Math.min(1000, Number(url.searchParams.get('limit') || 500));
+      const rows = state.log.filter((c) => c.seq > since);
+      const page = rows.slice(0, limit);
+      const changes = page.map((c) => {
+        const n = state.nodes.get(c.nodeId);
+        return { seq: c.seq, op: c.op, areaId: c.areaId, nodeId: c.nodeId, at: iso(c.at), by: 2, device: c.device, node: n && n.areaId === c.areaId ? view(n) : null };
+      });
+      return json(res, 200, { ok: true, changes, next: page.length ? page[page.length - 1].seq : Math.max(since, state.seq), more: rows.length > limit });
+    }
+    if (req.method === 'GET' && route === 'nodes/by-path') {
+      const area = areas.find((a) => a.id === url.searchParams.get('area'));
+      if (!area) return refuse(res, 404, 'not_found');
+      let cur = state.nodes.get(area.rootId);
+      for (const s of String(url.searchParams.get('path') || '').split('/').filter(Boolean)) {
+        cur = taken(cur.id, s);
+        if (!cur) return refuse(res, 404, 'not_found');
+      }
+      return json(res, 200, { ok: true, node: { ...view(cur), crumbs: crumbs(cur).slice(0, -1), role: area.role } });
+    }
     if (seg[0] === 'nodes') {
       if (seg.length === 1 && req.method === 'POST') {
         const parent = get(body.parentId);
         if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
         if (!writable(parent)) return refuse(res, 403, 'forbidden');
         if (taken(parent.id, body.name) && !body.rename) return refuse(res, 409, 'exists');
-        return json(res, 200, { ok: true, node: view(node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), isDir: true })) });
+        const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), isDir: true });
+        logChange('create', made);
+        return json(res, 200, { ok: true, node: view(made) });
       }
       const n = get(seg[1]);
       if (!n) return refuse(res, 404, 'not_found');
@@ -216,17 +294,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
           if (taken(n.parentId, body.name) && taken(n.parentId, body.name) !== n) return refuse(res, 409, 'exists');
           n.name = body.name;
         }
+        logChange('move', n);
         return json(res, 200, { ok: true, node: view(n) });
       }
       if (seg.length === 2 && req.method === 'DELETE') {
         if (!writable(n)) return refuse(res, 403, 'forbidden');
         n.deleted = true;
         n.deletedAt = iso(Date.now());
+        for (const d of srv.below(n.id)) { d.deleted = true; d.deletedAt = n.deletedAt; }
+        logChange('delete', n);
         return json(res, 200, { ok: true, id: n.id, trashed: true });
       }
       if (seg[2] === 'children' && req.method === 'GET') {
-        const items = children(n.id).map(view);
-        return json(res, 200, { ok: true, items, total: items.length, next: null, role: areaOf(n).role });
+        const all = children(n.id).map(view);
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const limit = Math.min(srv.pageMax, Number(url.searchParams.get('limit') || 200));
+        const items = all.slice(offset, offset + limit);
+        return json(res, 200, { ok: true, items, total: all.length, next: offset + limit < all.length ? offset + limit : null, role: areaOf(n).role });
       }
       if (seg[2] === 'content' && req.method === 'GET') return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId });
       if (seg[2] === 'versions') {
@@ -253,15 +337,24 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (!writable(parent)) return refuse(res, 403, 'forbidden');
       const md = state.media.get(body.mediaId);
       if (!md) return refuse(res, 409, 'upload_invalid');
+      if (state.claimed && state.claimed.has(body.mediaId)) return refuse(res, 409, 'upload_invalid');
       const t = taken(parent.id, body.name);
-      if (t && body.onConflict === 'version') {
+      const mtime = body.mtime ? iso(Number(body.mtime)) : null;
+      if (t && !t.isDir && ((body.baseRev != null && body.baseRev === t.rev) || body.onConflict === 'version')) {
+        (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
         t.mediaId = body.mediaId;
         t.size = md.data.length;
+        t.sha256 = sha(md.data);
+        t.mtime = mtime;
         t.rev += 1;
+        (state.claimed || (state.claimed = new Set())).add(body.mediaId);
+        logChange('update', t);
         return json(res, 200, { ok: true, node: view(t), created: false });
       }
-      if (t && body.onConflict !== 'rename') return json(res, 409, { ok: false, code: 'conflict', error: 'conflict', current: view(t) });
-      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: body.mediaId, sha256: crypto.createHash('sha256').update(md.data).digest('hex') });
+      if (t && body.onConflict !== 'rename') return json(res, 409, { ok: false, code: t.isDir ? 'exists' : 'conflict', error: 'conflict', current: view(t) });
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: body.mediaId, sha256: sha(md.data), mtime });
+      (state.claimed || (state.claimed = new Set())).add(body.mediaId);
+      logChange('create', n);
       return json(res, 200, { ok: true, node: view(n), created: true });
     }
     if (seg[0] === 'trash') {
@@ -273,9 +366,11 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (seg[2] === 'restore' && req.method === 'POST') {
         n.deleted = false;
         n.name = freeName(n.parentId, n.name);
+        logChange('restore', n);
         return json(res, 200, { ok: true, node: view(n) });
       }
       if (seg.length === 2 && req.method === 'DELETE') {
+        logChange('purge', n);
         state.nodes.delete(n.id);
         return json(res, 200, { ok: true, id: n.id, files: 1 });
       }

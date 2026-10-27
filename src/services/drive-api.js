@@ -11,6 +11,8 @@
  *   GET    …/gatecontrol-drive/api/me                            seat, licence, areas
  *   GET    …/api/areas                                           areas with their storage
  *   GET    …/api/nodes/<id>  +  …/nodes/<id>/children            a folder (crumbs, role, content)
+ *   GET    …/api/nodes/by-path?area&path                         a node by its path in an area
+ *   GET    …/api/changes?since&limit                             the change log (folder sync)
  *   POST   …/api/nodes { parentId, name, rename? }               new folder
  *   PATCH  …/api/nodes/<id> { name?, parentId? }                 rename / move
  *   DELETE …/api/nodes/<id>                                      into the trash
@@ -19,7 +21,8 @@
  *   GET    …/api/nodes/<id>/versions/<vid>/content
  *   POST   …/api/nodes/<id>/versions/<vid>/restore
  *   POST   …/api/uploads/check { parentId, name, sha256?, size? }
- *   POST   …/api/uploads/commit { mediaId, parentId, name, mtime?, onConflict }
+ *   POST   …/api/uploads/commit { mediaId, parentId, name, baseRev?, mtime?, onConflict? }
+ *          (no onConflict and a baseRev that is not the file's rev: 409 conflict { current })
  *   GET    …/api/trash · POST trash/<id>/restore · DELETE trash/<id>
  *   GET    …/api/search?q&area
  *   POST   …/api/links · GET links?nodeId · DELETE links/<token>
@@ -113,6 +116,50 @@ class DriveApi {
     return f;
   }
 
+  /**
+   * One page of a folder's content (raw order of the plugin: folders first, by name)
+   * → { items, total, next } (next: the offset of the following page, or null).
+   */
+  async children(id, { offset = 0, limit = 1000 } = {}) {
+    const r = await this.api('GET', `nodes/${this._id(id)}/children`, { params: drive.childrenQuery({ sort: 'name', order: 'asc', offset, limit }) });
+    if (!r || !Array.isArray(r.items)) throw new DriveError('bad children answer', { code: 'bad_response' });
+    return { items: drive.normalizeItems(r, 1000), total: drive.count(r.total), next: drive.count(r.next), role: drive.ROLES.includes(r.role) ? r.role : null };
+  }
+
+  /** Every child of a folder (all pages, at most `max`). */
+  async childrenAll(id, { max = 100000 } = {}) {
+    const out = [];
+    let offset = 0;
+    for (;;) {
+      const page = await this.children(id, { offset, limit: 1000 });
+      out.push(...page.items);
+      if (page.next === null || page.next <= offset || out.length >= max) break;
+      offset = page.next;
+    }
+    return out;
+  }
+
+  /** GET nodes/by-path?area=&path= → the node, or null when nothing is there (404). */
+  async byPath(area, p) {
+    const a = drive.areaIdOf(area);
+    if (!a || typeof p !== 'string') throw new DriveError('invalid path', { code: 'invalid' });
+    try {
+      return await this._nodeAnswer(this.api('GET', 'nodes/by-path', { params: { area: a, path: p } }));
+    } catch (err) {
+      if (err && err.status === 404 && err.code === 'not_found') return null;
+      throw err;
+    }
+  }
+
+  /** GET changes?since=&limit= → { changes, next, more } (utils/drive.js normalizeChanges). */
+  async changes(since, { limit = 500 } = {}) {
+    const s = drive.count(since) || 0;
+    const r = drive.normalizeChanges(await this.api('GET', 'changes', { params: { since: s, limit: Math.min(1000, Math.max(1, limit)) } }));
+    if (!r) throw new DriveError('bad changes answer', { code: 'bad_response' });
+    if (r.next < s) r.next = s;
+    return r;
+  }
+
   async node(id) {
     const node = drive.normalizeNode((await this.api('GET', `nodes/${this._id(id)}`)).node);
     if (!node) throw new DriveError('bad node answer', { code: 'bad_response' });
@@ -125,9 +172,9 @@ class DriveApi {
     return node;
   }
 
-  /** A new folder; a taken name gets a free one (`rename`). */
-  mkdir(parentId, name) {
-    return this._nodeAnswer(this.api('POST', 'nodes', { body: { parentId: this._id(parentId), name, rename: true } }));
+  /** A new folder; a taken name gets a free one (`rename`), else 409 exists. */
+  mkdir(parentId, name, { rename = true } = {}) {
+    return this._nodeAnswer(this.api('POST', 'nodes', { body: { parentId: this._id(parentId), name, rename: rename !== false } }));
   }
 
   rename(id, name) {
@@ -136,6 +183,14 @@ class DriveApi {
 
   move(id, parentId) {
     return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body: { parentId: this._id(parentId) } }));
+  }
+
+  /** Rename and / or move in one call (PATCH nodes/<id> { name?, parentId? }). */
+  place(id, { name = null, parentId = null } = {}) {
+    const body = {};
+    if (name) body.name = name;
+    if (parentId) body.parentId = this._id(parentId);
+    return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body }));
   }
 
   /** Into the trash → { id, trashed }. */
@@ -218,9 +273,15 @@ class DriveApi {
     return c;
   }
 
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename' }) {
+  /**
+   * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
+   * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
+   */
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null }) {
     if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
-    const body = { mediaId, parentId: this._id(parentId), name, onConflict: drive.ON_CONFLICT.includes(onConflict) ? onConflict : 'rename' };
+    const body = { mediaId, parentId: this._id(parentId), name };
+    if (onConflict !== null) body.onConflict = drive.ON_CONFLICT.includes(onConflict) ? onConflict : 'rename';
+    if (drive.count(baseRev) !== null) body.baseRev = baseRev;
     if (Number.isFinite(mtime) && mtime > 0) body.mtime = Math.round(mtime);
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });

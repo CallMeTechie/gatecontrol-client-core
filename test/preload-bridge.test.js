@@ -64,6 +64,8 @@ describe('createBridgeApi', () => {
       'drive:areas', 'drive:check', 'drive:folder', 'drive:last-folder', 'drive:last-folder:set', 'drive:link:create', 'drive:link:end',
       'drive:links', 'drive:me', 'drive:mkdir', 'drive:move', 'drive:open', 'drive:pick', 'drive:preview', 'drive:purge',
       'drive:remove', 'drive:rename', 'drive:restore', 'drive:save-as', 'drive:search', 'drive:show', 'drive:status',
+      'drive:sync:add', 'drive:sync:deletes', 'drive:sync:home', 'drive:sync:open', 'drive:sync:pause', 'drive:sync:pick',
+      'drive:sync:remove', 'drive:sync:run', 'drive:sync:settings', 'drive:sync:status',
       'drive:transfers', 'drive:transfers:clear', 'drive:trash', 'drive:upload', 'drive:upload:resolve', 'drive:version:restore',
       'drive:versions',
       'gatedrop:access', 'gatedrop:access:set', 'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:inbox',
@@ -94,7 +96,7 @@ describe('createBridgeApi', () => {
     assert.deepEqual(events, [
       'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:typing', 'chat:unread',
-      'drive:changed', 'drive:state', 'drive:transfers',
+      'drive:changed', 'drive:state', 'drive:sync', 'drive:transfers',
       'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
       'locale:changed', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
@@ -180,6 +182,7 @@ describe('createBridgeApi', () => {
       gatedrop: { on() {} },
       vault: { on() {} },
       drive: { on() {} },
+      driveSync: { on() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });
