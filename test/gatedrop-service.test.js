@@ -96,6 +96,22 @@ describe('GateDropService', () => {
     await assert.rejects(svc.send({ text: 'x', to: { people: [8] } }), (e) => e.code === 'unavailable');
   });
 
+  it('"Mein Drive" (GateDrop 1.3): files go up and to.drive goes along; text only is refused; Drive gone → drive_unavailable', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const { svc } = await setup(srv);
+    const dir = tmpDir('gd-drive-');
+    const prep = await svc.prepareFiles([writeFile(dir, 'Rechnung.pdf', Buffer.from('%PDF'))]);
+    const r = await svc.send({ files: prep.files.map((f) => f.id), to: { drive: { folderId: 12 } } });
+    assert.equal(r.ok, true);
+    assert.deepEqual(srv.state.sends.get(r.id).to, { people: [], devices: [], nas: [], drive: { folderId: 12 } });
+    assert.equal(srv.state.sends.get(r.id).items.length, 1);
+    await assert.rejects(svc.send({ text: 'nur Text', to: { drive: true } }), (e) => e.code === 'drive_needs_files');
+    srv.state.failCreate = { status: 409, code: 'unavailable' };
+    const again = await svc.prepareFiles([writeFile(dir, 'Foto.jpg', Buffer.from('jpg'))]);
+    await assert.rejects(svc.send({ files: again.files.map((f) => f.id), to: { drive: true } }), (e) => e.code === 'drive_unavailable');
+  });
+
   it('sends through the server: upload (resumable after a cut), then POST sends', async () => {
     const srv = await gatedropServer();
     cleanup.push(() => srv.close());

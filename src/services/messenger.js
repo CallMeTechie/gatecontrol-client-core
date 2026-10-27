@@ -70,6 +70,7 @@ const {
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
 } = require('../utils/messenger');
+const { savedOf: driveSavedOf } = require('../utils/drive');
 
 const { MessengerError } = MessengerApi;
 const CACHE_KEY = 'messengerCache';
@@ -322,7 +323,7 @@ class MessengerService extends EventEmitter {
       prefs: this._normalizePrefs(m.prefs),
       features: normalizeFeatures(m.features),
       // 1.4.0: what the Familie plugin offers right now (to-list, to-calendar, places)
-      integrations: { familie: familieOf(m) },
+      integrations: { familie: familieOf(m), drive: !!(m.integrations && m.integrations.drive === true) },
       limits: m.limits && typeof m.limits === 'object' ? { ...m.limits } : {},
       license: m.license && typeof m.license === 'object' ? { ...m.license } : null,
     };
@@ -1435,6 +1436,15 @@ class MessengerService extends EventEmitter {
     if (typeof place === 'string' && place.trim()) body.place = place.trim().slice(0, 120);
     const r = await this.api.toCalendar(messageId, body);
     return { eventId: r.eventId == null ? null : r.eventId };
+  }
+
+  /**
+   * "In Drive speichern" (Messenger 1.10, `GET me` → integrations.drive): the
+   * picture / voice message / file of a message into Drive → { nodeId, name, where }.
+   */
+  async toDrive(messageId, folderId = null) {
+    const r = await this.api.toDrive(messageId, folderId);
+    return driveSavedOf(r);
   }
 
   /** Familie places (event place, arrival destination) → [{ id, name, lat, lon, radiusM }]. */

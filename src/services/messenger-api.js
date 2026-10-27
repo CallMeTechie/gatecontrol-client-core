@@ -256,6 +256,17 @@ class MessengerApi {
 
   async familiePlaces() { return this.api('GET', 'familie/places'); }
 
+  /**
+   * Messenger 1.10: the file of a message into the person's Drive
+   * (`folderId`: a folder picked with Drive's own API; without: Meine Dateien › Messenger)
+   * → { saved: { nodeId, name, where } }. Drive's codes: no_seat, not_licensed, forbidden,
+   * not_found, quota, drive_unavailable, rate_limited, …
+   */
+  async toDrive(messageId, folderId = null) {
+    const body = folderId ? { folderId: this._id(folderId) } : {};
+    return this.api('POST', `messages/${this._id(messageId)}/to-drive`, { body, timeout: 60000 });
+  }
+
   // ── Messenger 1.4.0: polls, events, live arrival ─────────
 
   async vote(messageId, optionIds) { return this.api('POST', `messages/${this._id(messageId)}/vote`, { body: { optionIds } }); }

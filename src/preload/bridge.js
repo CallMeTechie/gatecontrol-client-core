@@ -231,6 +231,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       suggest:       (id) => ipcRenderer.invoke('chat:suggest', { id }),
       toList:        (id, items, list) => ipcRenderer.invoke('chat:to-list', { id, items, list }),
       toCalendar:    (id, ev) => ipcRenderer.invoke('chat:to-calendar', { ...(ev || {}), id }),
+      // Messenger 1.10: the file of a message into Drive (folderId: a folder picked, else Meine Dateien › Messenger)
+      toDrive:       (id, folderId) => ipcRenderer.invoke('chat:to-drive', { id, folderId: folderId || null }),
       places:        () => ipcRenderer.invoke('chat:places'),
       poll:          (id, op, args) => ipcRenderer.invoke('chat:poll', { ...(args || {}), id, op }),
       event:         (id, op, args) => ipcRenderer.invoke('chat:event', { ...(args || {}), id, op }),
@@ -265,6 +267,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       messages:  (days, opts) => ipcRenderer.invoke('school:messages', { days, refresh: !!(opts && opts.refresh) }),
       absences:  (days, opts) => ipcRenderer.invoke('school:absences', { days, refresh: !!(opts && opts.refresh) }),
       avatar:    (url) => ipcRenderer.invoke('school:avatar', { url }),
+      // Schule 1.7: an attachment into Drive (folderId: a folder picked, else the family area › Schule)
+      attachmentToDrive: (messageId, attachmentId, folderId) => ipcRenderer.invoke('school:attachment:drive', { messageId, attachmentId, folderId: folderId || null }),
       onState:   (cb) => subscribe('school:state', cb),
       onPush:    (cb) => subscribe('school:push', cb),
     },
@@ -387,6 +391,59 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       clearNotices:     () => ipcRenderer.invoke('vault:notices:clear'),
       onState:          (cb) => subscribe('vault:state', cb),
       onPush:           (cb) => subscribe('vault:push', cb),
+    },
+
+    // ── Drive (plugin gatecontrol-drive) ─────────────────
+    // Served when the app passes a DriveService to registerBaseHandlers
+    // (ipc/drive-handlers.js lists arguments and answers).
+    drive: {
+      status:       () => ipcRenderer.invoke('drive:status'),
+      check:        () => ipcRenderer.invoke('drive:check'),
+      me:           () => ipcRenderer.invoke('drive:me'),
+      areas:        () => ipcRenderer.invoke('drive:areas'),
+      // opts: { sort: 'name' | 'mtime' | 'size' | 'updated', order: 'asc' | 'desc', offset, limit }
+      folder:       (id, opts) => ipcRenderer.invoke('drive:folder', { ...(opts || {}), id }),
+      search:       (q, area) => ipcRenderer.invoke('drive:search', { q, area: area || null }),
+      mkdir:        (parentId, name) => ipcRenderer.invoke('drive:mkdir', { parentId, name }),
+      rename:       (id, name) => ipcRenderer.invoke('drive:rename', { id, name }),
+      move:         (id, parentId) => ipcRenderer.invoke('drive:move', { id, parentId }),
+      remove:       (id) => ipcRenderer.invoke('drive:remove', { id }),
+      trash:        (area) => ipcRenderer.invoke('drive:trash', { area: area || null }),
+      restore:      (id) => ipcRenderer.invoke('drive:restore', { id }),
+      purge:        (id) => ipcRenderer.invoke('drive:purge', { id }),
+      versions:     (id) => ipcRenderer.invoke('drive:versions', { id }),
+      restoreVersion: (id, versionId) => ipcRenderer.invoke('drive:version:restore', { id, versionId }),
+      links:        (nodeId) => ipcRenderer.invoke('drive:links', { nodeId: nodeId || null }),
+      // { nodeId, mode: 'view' | 'download' | 'upload', expires: '1d' | '7d' | '30d' | 'never', pin? }
+      createLink:   (opts) => ipcRenderer.invoke('drive:link:create', { ...(opts || {}) }),
+      endLink:      (token) => ipcRenderer.invoke('drive:link:end', { token }),
+      preview:      (mediaId, opts) => ipcRenderer.invoke('drive:preview', { mediaId, large: !!(opts && opts.large) }),
+      // file dialog → { ok, paths }; then upload(parentId, paths)
+      pick:         () => ipcRenderer.invoke('drive:pick'),
+      upload:       (parentId, paths) => ipcRenderer.invoke('drive:upload', { parentId, paths }),
+      // dropped File objects (drag & drop) → the same as upload()
+      uploadDropped: (parentId, fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
+          if (p) paths.push(p);
+        }
+        return ipcRenderer.invoke('drive:upload', { parentId, paths });
+      },
+      // a taken name: 'version' | 'rename' (keep both) | null (skip)
+      resolve:      (id, choice) => ipcRenderer.invoke('drive:upload:resolve', { id, choice: choice || null }),
+      transfers:    () => ipcRenderer.invoke('drive:transfers'),
+      clearTransfers: () => ipcRenderer.invoke('drive:transfers:clear'),
+      open:         (id, versionId) => ipcRenderer.invoke('drive:open', { id, versionId: versionId || null }),
+      saveAs:       (id, versionId) => ipcRenderer.invoke('drive:save-as', { id, versionId: versionId || null }),
+      showItem:     (path) => ipcRenderer.invoke('drive:show', { path }),
+      // the folder last picked in "In Drive speichern"
+      lastFolder:   () => ipcRenderer.invoke('drive:last-folder'),
+      setLastFolder: (folderId) => ipcRenderer.invoke('drive:last-folder:set', { folderId }),
+      onState:      (cb) => subscribe('drive:state', cb),
+      onTransfers:  (cb) => subscribe('drive:transfers', cb),
+      onChanged:    (cb) => subscribe('drive:changed', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

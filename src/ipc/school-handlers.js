@@ -12,6 +12,8 @@
  *   school:messages   ({ days?, refresh? }) → { ok, messages, … } | code 'unsupported' (plugin < 1.4.0)
  *   school:absences   ({ days?, refresh? }) → { ok, absences, … } | code 'unsupported' (plugin < 1.4.0)
  *   school:avatar     ({ url }) → { ok, mime, data: Uint8Array }
+ *   school:attachment:drive ({ messageId, attachmentId, folderId? }) → { ok, saved: { nodeId, name, where } }
+ *                     (plugin 1.7.0, Drive's codes: no_seat, not_licensed, quota, forbidden, drive_unavailable, …)
  *
  * Events to the main window: school:state (status()), school:push (context
  * of a Schule push message: { kind, studentId, date, messageId, notificationId }).
@@ -57,6 +59,11 @@ function registerSchoolHandlers(handle, { school: s, getMainWindow, log }) {
   handle('school:changes', wrap(async (a) => s.changes({ days: a.days, refresh: refresh(a) })));
   handle('school:messages', wrap(async (a) => s.messages({ days: a.days, refresh: refresh(a) })));
   handle('school:absences', wrap(async (a) => s.absences({ days: a.days, refresh: refresh(a) })));
+  handle('school:attachment:drive', wrap(async (a) => {
+    const id = (v) => (typeof v === 'string' && v.length <= 64) || (Number.isSafeInteger(v) && v > 0);
+    if (!id(a.messageId) || !id(a.attachmentId) || !(a.folderId === undefined || a.folderId === null || (Number.isSafeInteger(a.folderId) && a.folderId > 0))) return invalid();
+    return s.attachmentToDrive({ messageId: a.messageId, attachmentId: a.attachmentId, folderId: a.folderId || null });
+  }));
   handle('school:avatar', wrap(async (a) => {
     if (!isAvatarPath(a.url)) return invalid();
     const r = await s.avatar(a.url);

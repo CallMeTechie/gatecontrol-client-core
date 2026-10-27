@@ -346,7 +346,7 @@ function normalizeDeviceAccess(raw) {
 }
 
 /**
- * GET targets → { me, people, devices, peopleDevices, nas, links, messenger, limits, storage }
+ * GET targets → { me, people, devices, peopleDevices, nas, links, messenger, drive, limits, storage }
  * (unknown entries dropped; peopleDevices: [{ …device, owner: { id, name } }], [] before GateDrop 1.2.0).
  */
 function normalizeTargets(raw) {
@@ -400,6 +400,8 @@ function normalizeTargets(raw) {
     nas,
     links: { enabled: bool(links.enabled) },
     messenger: bool(r.messenger),
+    // GateDrop 1.3.0: "Mein Drive" is offered (Drive there, the person has a seat with a writable own area)
+    drive: bool(r.drive),
     limits: {
       maxItems: posOr(l.maxItems, MAX_ITEMS, MAX_ITEMS),
       maxBytes: posOr(l.maxBytes, MAX_FILE_BYTES, MAX_FILE_BYTES),
@@ -455,10 +457,12 @@ function normalizeItems(list) {
 function normalizeDelivery(d) {
   const o = obj(d);
   if (!o) return null;
-  const kind = ['device', 'person', 'nas', 'link'].includes(o.kind) ? o.kind : null;
+  const kind = ['device', 'person', 'nas', 'link', 'drive'].includes(o.kind) ? o.kind : null;
   if (!kind) return null;
   return {
     kind,
+    // Drive (GateDrop 1.3.0): where the files landed ("Meine Dateien › GateDrop › Foto.jpg")
+    ...(kind === 'drive' ? { where: arr(o.where).map((w) => str(w, 600)).filter(Boolean).slice(0, MAX_ITEMS) } : {}),
     target: str(typeof o.target === 'number' ? String(o.target) : o.target, 200),
     targetName: str(o.label || o.targetName || o.name, 120) || null,
     status: DELIVERY_STATUS.includes(o.status) ? o.status : 'pending',
@@ -668,7 +672,9 @@ function transferStatusOf(raw) {
 
 /**
  * Checked `to` of POST sends: { people: [ids|'family'], devices: [ids],
- * nas: [{ id, path? }], link?: { expires, pin } } or null when empty / invalid.
+ * nas: [{ id, path? }], link?: { expires, pin }, drive?: true | { folderId } }
+ * or null when empty / invalid. drive (GateDrop 1.3.0): the sender's own Drive
+ * (Meine Dateien › GateDrop) or a folder picked there.
  */
 function sendTargets(to) {
   const o = obj(to) || {};
@@ -689,7 +695,16 @@ function sendTargets(to) {
     if (!LINK_EXPIRES.includes(link.expires)) return null;
     out.link = { expires: link.expires, pin: link.pin === true };
   }
-  if (!out.people.length && !out.devices.length && !out.nas.length && !out.link) return null;
+  if (o.drive === true) out.drive = true;
+  else if (obj(o.drive)) {
+    if (o.drive.folderId == null) out.drive = true;
+    else {
+      const folderId = nonNegInt(o.drive.folderId);
+      if (!folderId) return null;
+      out.drive = { folderId };
+    }
+  } else if (o.drive != null && o.drive !== false) return null;
+  if (!out.people.length && !out.devices.length && !out.nas.length && !out.link && !out.drive) return null;
   return out;
 }
 
@@ -719,7 +734,7 @@ module.exports = {
   PORT, BLOCK_SIZE, TAG_SIZE, MAX_FILE_BYTES, MAX_ITEMS, MAX_TEXT, MAX_NOTE, MAX_LINK,
   RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS, RECEIVE_FROM,
   idOf, nonNegInt, timeOf, isTransferId, isTicket, isMediaId, isLinkToken, decodeKey,
-  encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize,
+  encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize, normalizeDelivery,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, lanScan, parseCandidate, ipv4ToInt, DIRECT_REASONS, directState,
   normalizeTargets, normalizeDeviceAccess, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
   normalizeInbox, normalizePending, parsePushData, transferOf, transferStatusOf, linkOf, sendTargets, linkArg, isGateDropPush,

@@ -647,6 +647,8 @@ class GateDropService extends EventEmitter {
     body.to = gd.sendTargets(to);
     if (!body.to) throw new GateDropError('no target', { code: 'no_target' });
     if (body.to.link && !list.length) throw new GateDropError('a link needs files', { code: 'invalid' });
+    // Drive takes files only (a text, a link or a note stay in GateDrop).
+    if (body.to.drive && !list.length) throw new GateDropError('Drive needs files', { code: 'drive_needs_files' });
 
     // Fresh files: changed or gone since they were picked?
     for (const f of list) {
@@ -678,7 +680,8 @@ class GateDropService extends EventEmitter {
     } catch (err) {
       // 409 unavailable (GateDrop 1.2.0): another person's device was closed for others meanwhile.
       if (err && err.status === 409 && err.code === 'unavailable') {
-        err.code = 'target_unavailable';
+        // GateDrop 1.3: Drive alone was picked and is gone (not installed, no seat, no licence).
+        err.code = body.to.drive && !body.to.devices.length ? 'drive_unavailable' : 'target_unavailable';
         this._targets = null;
       }
       end('error', { code: (err && err.code) || 'failed' });
@@ -711,7 +714,7 @@ class GateDropService extends EventEmitter {
    * for everyone (peopleDevices) — → items may go `local`.
    */
   async _allDirect(to) {
-    if (!to.devices.length || to.people.length || to.nas.length || to.link) return false;
+    if (!to.devices.length || to.people.length || to.nas.length || to.link || to.drive) return false;
     let targets;
     try { targets = await this.targets(); } catch { return false; }
     const all = [...(targets.devices || []), ...(targets.peopleDevices || [])];
