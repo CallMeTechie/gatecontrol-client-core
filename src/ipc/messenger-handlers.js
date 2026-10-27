@@ -61,6 +61,7 @@
  *   chat:reminder:delete ({ id }) → { ok }
  *   chat:suggest         ({ id }) → { ok, items, dates }
  *   chat:to-list         ({ id, items, list? }) → { ok, listId, listName, added, skipped }
+ *   chat:to-drive        ({ id, folderId? }) → { ok, saved: { nodeId, name, where } } (Messenger 1.10, Drive)
  *   chat:to-calendar     ({ id, title, startsAt, endsAt?, allDay?, place? }) → { ok, eventId }
  *   chat:places          () → { ok, places }                                     Familie places
  *   chat:poll            ({ id, op: 'vote'|'option'|'close'|'nudge', optionIds?, text? }) → { ok, message, nudged? }
@@ -359,6 +360,10 @@ function registerMessengerHandlers(handle, {
   handle('chat:to-calendar', wrap(async (a) => {
     if (!posInt(a.id) || typeof a.title !== 'string' || typeof a.startsAt !== 'string') return invalid();
     return { ok: true, ...(await m.toCalendar(posInt(a.id), { title: a.title.slice(0, 200), startsAt: a.startsAt.slice(0, 40), endsAt: str(a.endsAt, 40), allDay: a.allDay === true, place: str(a.place, 200) })) };
+  }));
+  handle('chat:to-drive', wrap(async (a) => {
+    if (!posInt(a.id) || !(a.folderId === undefined || a.folderId === null || posInt(a.folderId))) return invalid();
+    return { ok: true, saved: await m.toDrive(posInt(a.id), posInt(a.folderId) || null) };
   }));
   handle('chat:places', wrap(async () => ({ ok: true, places: await m.places() })));
   handle('chat:poll', wrap(async (a) => {

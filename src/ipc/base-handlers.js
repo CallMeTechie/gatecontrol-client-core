@@ -26,6 +26,7 @@ const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
+const { registerDriveHandlers } = require('./drive-handlers');
 const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -175,6 +176,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.vault] - VaultService (opt-in, "Vault"): registers the
  *   vault:* channels (ipc/vault-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.drive] - DriveService (opt-in, "Drive"): registers the
+ *   drive:* channels (ipc/drive-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @returns {string[]} the channels registered via ipcMain.handle
@@ -198,6 +202,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const schoolSvc = ctx.school || null;
   const gatedropSvc = ctx.gatedrop || null;
   const vaultSvc = ctx.vault || null;
+  const driveSvc = ctx.drive || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -237,6 +242,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Vault: lock; the copy, availability and account belong to the old server / login.
     if (vaultSvc) {
       Promise.resolve().then(() => vaultSvc.resetForNewServer()).catch((err) => log.warn(`Vault reset failed: ${err.message}`));
+    }
+    // Drive: availability, previews and queued uploads belong to the old server.
+    if (driveSvc) {
+      Promise.resolve().then(() => driveSvc.resetForNewServer()).catch((err) => log.warn(`Drive reset failed: ${err.message}`));
     }
   }
 
@@ -712,6 +721,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Vault (plugin gatecontrol-vault, opt-in) ────────────
   if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
+
+  // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
+  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

@@ -35,6 +35,7 @@ const EventEmitter = require('events');
 const MessengerApi = require('./messenger-api');
 const { PLUGINS_PATH } = require('../utils/messenger');
 const school = require('../utils/school');
+const { savedOf } = require('../utils/drive');
 
 const { MessengerError } = MessengerApi;
 
@@ -44,6 +45,7 @@ const DEFAULT_TIMING = {
   retryMaxMs: 5 * 60 * 1000,    // … 5 min
   cacheTtlMs: 60 * 1000,        // answers younger than this are served from memory
   avatarCache: 40,              // pictures kept
+  driveTimeoutMs: 90 * 1000,    // "In Drive speichern": fetch from WebUntis + Drive's copy
 };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
@@ -290,6 +292,31 @@ class SchoolService extends EventEmitter {
     })();
     this._inflight.set(key, run);
     return run;
+  }
+
+  /**
+   * "In Drive speichern" (plugin 1.7.0, `drive: true` in app/messages): an
+   * attachment into Drive → { ok, saved: { nodeId, name, where } }. Without
+   * `folderId` the plugin picks the family area › Schule › <child> (else
+   * Meine Dateien). Slow: the attachment may have to be fetched from WebUntis
+   * first, then Drive copies it — its own timeout.
+   */
+  async attachmentToDrive({ messageId, attachmentId, folderId = null } = {}) {
+    const p = school.attachmentDrivePath(messageId, attachmentId);
+    if (!p) throw new MessengerError('invalid attachment', { code: 'invalid' });
+    const body = {};
+    if (folderId !== null && folderId !== undefined) {
+      const f = Number.isSafeInteger(folderId) && folderId > 0 ? folderId : null;
+      if (!f) throw new MessengerError('invalid folder', { code: 'invalid' });
+      body.folderId = f;
+    }
+    this._ensureScope();
+    try {
+      const r = await this.api._call('POST', school.API_BASE + p, { body, timeout: this.timing.driveTimeoutMs });
+      return { ok: true, saved: savedOf(r) };
+    } catch (err) {
+      throw err instanceof MessengerError ? err : MessengerApi.toMessengerError(err);
+    }
   }
 
   _copy(data) {

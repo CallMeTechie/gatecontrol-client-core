@@ -65,7 +65,7 @@ describe('Messenger 1.4.0 – me, prefs, feature gates', () => {
   it('keeps prefs sections and integrations; PUT prefs sends only known keys', async () => {
     const { srv, m, ipc } = await setup();
     const st = m.status();
-    assert.deepEqual(st.me.integrations, { familie: { lists: true, calendar: true, places: true } });
+    assert.deepEqual(st.me.integrations, { familie: { lists: true, calendar: true, places: true }, drive: false });
     assert.equal(st.updateHint, null, 'all 1.4.0 keys are known');
     const r = await ipc('chat:prefs', { privacy: { lastSeen: 'family', bogus: 1, avatar: 'everyone' }, notify: { eventReminderMin: 15 }, chats: { keepArchived: false } });
     assert.equal(r.ok, true);

@@ -30,6 +30,8 @@ const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
 const GateDropFirewall = require('./services/gatedrop-firewall');
+const DriveService = require('./services/drive');
+const DriveApi = require('./services/drive-api');
 const { AppSignin, SigninError } = require('./services/app-signin');
 const { startLoopbackListener } = require('./services/signin-loopback');
 
@@ -61,6 +63,7 @@ const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
 const gatedropShell = require('./utils/gatedrop-shell');
 const vaultUtil = require('./utils/vault');
+const driveUtil = require('./utils/drive');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -107,6 +110,8 @@ module.exports = {
   GateDropApi,
   GateDropListener,
   GateDropFirewall,
+  DriveService,
+  DriveApi,
   AppSignin,
   SigninError,
   startLoopbackListener,
@@ -155,6 +160,7 @@ module.exports = {
   gatedropUtil,
   gatedropShell,
   vaultUtil,
+  driveUtil,
 
   // Support bundle
   collectSupportBundle,

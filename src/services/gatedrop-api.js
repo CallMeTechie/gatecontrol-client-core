@@ -68,14 +68,24 @@ class GateDropApi {
    * @param {() => Promise<void>} [opts.sleep]
    * @param {number} [opts.resumableFrom] - uploads above this size are resumable (50 MB)
    * @param {number} [opts.partSize] - resumable part size (8 MiB, a multiple of 64 KiB)
+   * @param {string} [opts.mediaPath] - the plugin's media route (another plugin's, e.g. Drive, reuses the
+   *   upload / download code here: same core media routes, same resumable protocol)
+   * @param {number} [opts.maxFileBytes] - largest file the plugin takes (GateDrop: 2 GB)
+   * @param {string} [opts.label] - name in log lines
    */
-  constructor({ apiClient, log, http = null, sleep = null, resumableFrom = gd.RESUMABLE_FROM, partSize = PART_SIZE } = {}) {
+  constructor({
+    apiClient, log, http = null, sleep = null, resumableFrom = gd.RESUMABLE_FROM, partSize = PART_SIZE,
+    mediaPath = gd.MEDIA_PATH, maxFileBytes = gd.MAX_FILE_BYTES, label = 'GateDrop',
+  } = {}) {
     this.log = log || noopLog();
     this.http = http || new MessengerApi({ apiClient, log: this.log });
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.resumableFrom = resumableFrom;
     this.partSize = partSize; // multiple of 64 KiB
     this.resumable = null; // null = try, false = the server refused the resumable parameters
+    this.mediaPath = mediaPath;
+    this.maxFileBytes = maxFileBytes;
+    this.label = label;
   }
 
   scope() {
@@ -222,7 +232,7 @@ class GateDropApi {
   async upload(file, { onProgress } = {}) {
     const size = file && file.size;
     if (!file || typeof file.path !== 'string' || !Number.isSafeInteger(size) || size <= 0) throw new GateDropError('empty file', { code: 'length_required' });
-    if (size > gd.MAX_FILE_BYTES) throw new GateDropError('file too large', { code: 'too_large' });
+    if (size > this.maxFileBytes) throw new GateDropError('file too large', { code: 'too_large' });
     const mime = typeof file.mime === 'string' && file.mime ? file.mime : 'application/octet-stream';
     const progress = typeof onProgress === 'function' ? onProgress : () => {};
     if (size <= this.resumableFrom || this.resumable === false) {
@@ -243,7 +253,7 @@ class GateDropApi {
         await this.sleep(Math.min(30000, 1000 * 2 ** (failures - 1)));
         const at = await this.uploadOffset(uploadId).catch(() => null);
         if (at !== null && at <= size) offset = at;
-        this.log.info(`GateDrop upload continues at ${offset} of ${size} bytes`);
+        this.log.info(`${this.label} upload continues at ${offset} of ${size} bytes`);
         continue;
       }
       const d = r.data || {};
@@ -299,7 +309,7 @@ class GateDropApi {
     try {
       const res = await client.request({
         method: 'PUT',
-        url: gd.MEDIA_PATH,
+        url: this.mediaPath,
         params,
         data: body,
         headers,
@@ -320,7 +330,7 @@ class GateDropApi {
   /** Bytes the server already holds of a resumable upload (GET media/uploads/<id>), or null. */
   async uploadOffset(uploadId) {
     try {
-      const r = await this.http._call('GET', `${gd.MEDIA_PATH}/uploads/${encodeURIComponent(uploadId)}`);
+      const r = await this.http._call('GET', `${this.mediaPath}/uploads/${encodeURIComponent(uploadId)}`);
       return gd.nonNegInt(r.offset);
     } catch (err) {
       if (err.status === 404) return 0;
@@ -351,6 +361,18 @@ class GateDropApi {
     }
     const r = await this._stream(url, dest, { onProgress, maxBytes });
     return { ...r, item };
+  }
+
+  /**
+   * Stream a file of this plugin's media route (`url` below it) into `dest`
+   * (writable stream) → { bytes, mime }; cut-off or oversize downloads throw
+   * with `streamed: true`.
+   */
+  streamTo(url, dest, { onProgress, maxBytes = this.maxFileBytes } = {}) {
+    if (typeof url !== 'string' || !url.startsWith(`${this.mediaPath}/`) || url.includes('..')) {
+      return Promise.reject(new GateDropError('invalid media path', { code: 'invalid' }));
+    }
+    return this._stream(url, dest, { onProgress, maxBytes });
   }
 
   async _stream(url, dest, { onProgress, maxBytes }) {

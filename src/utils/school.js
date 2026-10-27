@@ -277,15 +277,36 @@ function normalizeMessage(m) {
     sentAt: msOf(m.sentAt),
     hasAttachments: bool(m.hasAttachments),
     isNew: bool(m.isNew),
+    // 1.5.0: the attachments ({ id, name, size, mime }; size / mime null when unknown)
+    attachments: list(m.attachments, 30).map(normalizeAttachment).filter(Boolean),
   };
 }
 
-/** app/messages (1.4.0) → { messages } (newest first) */
+function normalizeAttachment(a) {
+  if (!a || typeof a !== 'object') return null;
+  const id = idOf(a.id);
+  if (id === null) return null;
+  const size = Number.isSafeInteger(a.size) && a.size >= 0 ? a.size : null;
+  return { id, name: line(a.name, 255) || String(id), size, mime: line(a.mime, 100) };
+}
+
+/**
+ * app/messages (1.4.0) → { messages, drive } (newest first; drive: 1.7.0 offers
+ * "In Drive speichern" for the attachments — Drive is reachable)
+ */
 function normalizeMessages(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   const messages = list(r.messages, 300).map(normalizeMessage).filter(Boolean);
   messages.sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0));
-  return { messages };
+  return { messages, drive: bool(r.drive) };
+}
+
+/** Path of POST app/messages/<id>/attachments/<attId>/drive (1.7.0), or null for bad ids. */
+function attachmentDrivePath(messageId, attachmentId) {
+  const m = idOf(messageId);
+  const a = idOf(attachmentId);
+  if (m === null || a === null) return null;
+  return `app/messages/${encodeURIComponent(String(m))}/attachments/${encodeURIComponent(String(a))}/drive`;
 }
 
 function normalizeAbsence(a) {
@@ -361,6 +382,7 @@ module.exports = {
   normalizeTimetable,
   normalizeChanges,
   normalizeMessages,
+  attachmentDrivePath,
   normalizeAbsences,
   pushContext,
 };
