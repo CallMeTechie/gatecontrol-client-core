@@ -34,6 +34,8 @@ const ON_CONFLICT = Object.freeze(['rename', 'version']);
 const LINK_MODES = Object.freeze(['view', 'download', 'upload']);
 const LINK_EXPIRES = Object.freeze(['1d', '7d', '30d', 'never']);
 const LINK_KINDS = Object.freeze(['files', 'folder', 'upload']);
+const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge']);
+const CHANGES_MAX = 1000;
 
 const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
 const AREA_ID_RE = /^[A-Za-z0-9:_-]{1,80}$/;
@@ -171,6 +173,7 @@ function normalizeNode(v) {
     updatedAt: msOf(o.updatedAt),
     updatedBy: posId(o.updatedBy),
     createdAt: msOf(o.createdAt),
+    deleted: bool(o.deleted),
     sha256: sha256Of(o.sha256),
     // A preview picture exists (or is being made); the app loads it by mediaId.
     preview: !isDir && !!mediaId && !!obj(o.preview),
@@ -281,6 +284,36 @@ function normalizeCommit(raw) {
   return node ? { node, created: r.created !== false } : null;
 }
 
+/**
+ * GET changes?since= → { changes: [{ seq, op, areaId, nodeId, at, by, device, node }], next, more } or null.
+ * `node`: the node as it is now (null once purged, or when it moved to another area: then the
+ * change is a `delete` in the old area); `device`: the device that made the change ('nas' for
+ * the NAS, a plugin's id for its services). Rows without a seq or a node id are dropped.
+ */
+function normalizeChanges(raw) {
+  const r = obj(raw);
+  if (!r || !Array.isArray(r.changes)) return null;
+  const changes = r.changes.slice(0, CHANGES_MAX).map((c) => {
+    const o = obj(c);
+    const seq = o && posId(o.seq);
+    const nodeId = o && posId(o.nodeId);
+    if (!seq || !nodeId || !CHANGE_OPS.includes(o.op)) return null;
+    return {
+      seq,
+      op: o.op,
+      areaId: areaIdOf(o.areaId),
+      nodeId,
+      at: msOf(o.at),
+      by: posId(o.by),
+      device: line(o.device, 128),
+      node: normalizeNode(o.node),
+    };
+  }).filter(Boolean);
+  changes.sort((a, b) => a.seq - b.seq);
+  const last = changes.length ? changes[changes.length - 1].seq : 0;
+  return { changes, next: Math.max(count(r.next) || 0, last), more: bool(r.more) };
+}
+
 /** GET nodes/<id>/content → { mediaId, name, mime, size } or null. */
 function normalizeContent(raw) {
   const r = obj(raw) || {};
@@ -378,6 +411,7 @@ module.exports = {
   LINK_MODES,
   LINK_EXPIRES,
   LINK_KINDS,
+  CHANGE_OPS,
   line,
   posId,
   count,
@@ -398,6 +432,7 @@ module.exports = {
   normalizeVersions,
   normalizeUploadCheck,
   normalizeCommit,
+  normalizeChanges,
   normalizeContent,
   normalizeLink,
   normalizeLinks,

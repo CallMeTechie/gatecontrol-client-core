@@ -267,6 +267,7 @@ describe('DriveService', () => {
     const commit = srv.state.requests.filter((x) => x.path.endsWith('uploads/commit')).at(-1);
     assert.equal(commit.body.onConflict, 'version');
 
+    fs.writeFileSync(other, 'newer photo bytes');
     const q2 = await svc.upload(1, [other]);
     await until(() => svc.transfers().find((t) => t.id === q2.queued[0] && t.state === 'conflict'));
     svc.resolve(q2.queued[0], null);

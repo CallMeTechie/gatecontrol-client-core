@@ -179,6 +179,8 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.drive] - DriveService (opt-in, "Drive"): registers the
  *   drive:* channels (ipc/drive-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.driveSync] - DriveSync (opt-in with ctx.drive, "Ordner sichern"):
+ *   registers drive:sync:*, forwards its events, resets it after server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @returns {string[]} the channels registered via ipcMain.handle
@@ -203,6 +205,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const gatedropSvc = ctx.gatedrop || null;
   const vaultSvc = ctx.vault || null;
   const driveSvc = ctx.drive || null;
+  const driveSync = (driveSvc && ctx.driveSync) || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -246,6 +249,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Drive: availability, previews and queued uploads belong to the old server.
     if (driveSvc) {
       Promise.resolve().then(() => driveSvc.resetForNewServer()).catch((err) => log.warn(`Drive reset failed: ${err.message}`));
+    }
+    // "Ordner sichern": the runs of the old server stop; its folders wait ("anderer Server").
+    if (driveSync) {
+      Promise.resolve().then(() => driveSync.resetForNewServer()).catch((err) => log.warn(`Drive sync reset failed: ${err.message}`));
     }
   }
 
@@ -723,7 +730,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
-  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, getMainWindow, log });
+  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

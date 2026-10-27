@@ -35,7 +35,20 @@
  *   drive:last-folder     () → { ok, folderId }
  *   drive:last-folder:set ({ folderId }) → { ok, folderId }
  *
- * Events to the main window: drive:state, drive:transfers, drive:changed.
+ *
+ * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
+ *   drive:sync:status     () → { ok, settings, device, network, state, folders, known, … }
+ *   drive:sync:pick       () → folder dialog → { ok, path } | { ok: false, code: 'cancelled' }
+ *   drive:sync:add        ({ path, mode: 'backup' | 'sync', targetId? }) → { ok, folder }
+ *   drive:sync:remove     ({ id }) → { ok }                    stops; deletes nothing
+ *   drive:sync:pause      ({ id?, paused }) → status            id null: all folders
+ *   drive:sync:settings   ({ skipDev?, maxFileBytes?, upKBs?, downKBs?, homeOnly?, vpnOnly?, paused? }) → status
+ *   drive:sync:home       ({ on }) → status                     this network is a home network / forget them
+ *   drive:sync:run        ({ id? }) → { ok }                    a run now (all folders without id)
+ *   drive:sync:deletes    ({ id, decision: 'apply' | 'restore' }) → status
+ *   drive:sync:open       ({ id }) → { ok }                     the folder in the Explorer
+ *
+ * Events to the main window: drive:state, drive:transfers, drive:changed, drive:sync.
  */
 
 const DRIVE_EVENTS = {
@@ -53,15 +66,26 @@ const invalid = () => ({ ok: false, code: 'invalid', error: 'invalid argument', 
 const isId = (v) => Number.isSafeInteger(v) && v > 0;
 const optId = (v) => v === undefined || v === null || isId(v);
 const isStr = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
+const isFolderId = (v) => typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v);
+const SYNC_SETTINGS = {
+  skipDev: (v) => typeof v === 'boolean',
+  homeOnly: (v) => typeof v === 'boolean',
+  vpnOnly: (v) => typeof v === 'boolean',
+  paused: (v) => typeof v === 'boolean',
+  maxFileBytes: (v) => Number.isSafeInteger(v) && v >= 0,
+  upKBs: (v) => Number.isSafeInteger(v) && v >= 0,
+  downKBs: (v) => Number.isSafeInteger(v) && v >= 0,
+};
 
 /**
  * @param {Function} handle - registerBaseHandlers' handle(channel, fn)
  * @param {object} deps
  * @param {object} deps.drive - DriveService
+ * @param {object} [deps.sync] - DriveSync ("Ordner sichern")
  * @param {Function} deps.getMainWindow
  * @param {object} deps.log
  */
-function registerDriveHandlers(handle, { drive: s, getMainWindow, log }) {
+function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, log }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
       return await fn(obj(arg));
@@ -117,12 +141,44 @@ function registerDriveHandlers(handle, { drive: s, getMainWindow, log }) {
   handle('drive:last-folder', wrap(async () => s.lastFolder()));
   handle('drive:last-folder:set', wrap(async (a) => (isId(a.folderId) ? s.rememberFolder(a.folderId) : invalid())));
 
+  if (sync) {
+    handle('drive:sync:status', () => sync.status());
+    handle('drive:sync:pick', wrap(async () => sync.pickFolder()));
+    handle('drive:sync:add', wrap(async (a) => {
+      if (!isStr(a.path, 4096) || (a.mode !== 'backup' && a.mode !== 'sync')) return invalid();
+      if (a.mode === 'sync' && !isId(a.targetId)) return invalid();
+      return sync.addFolder({ path: a.path, mode: a.mode, ...(a.mode === 'sync' ? { targetId: a.targetId } : {}) });
+    }));
+    handle('drive:sync:remove', wrap(async (a) => (isFolderId(a.id) ? sync.removeFolder(a.id) : invalid())));
+    handle('drive:sync:pause', wrap(async (a) => {
+      if (!(a.id === undefined || a.id === null || isFolderId(a.id)) || typeof a.paused !== 'boolean') return invalid();
+      return sync.setPaused(a.id || null, a.paused);
+    }));
+    handle('drive:sync:settings', wrap(async (a) => {
+      const patch = {};
+      for (const [k, ok] of Object.entries(SYNC_SETTINGS)) {
+        if (a[k] === undefined) continue;
+        if (!ok(a[k])) return invalid();
+        patch[k] = a[k];
+      }
+      return sync.setSettings(patch);
+    }));
+    handle('drive:sync:home', wrap(async (a) => (typeof a.on === 'boolean' ? sync.setHome(a.on) : invalid())));
+    handle('drive:sync:run', wrap(async (a) => {
+      if (a.id === undefined || a.id === null) return sync.syncAll({ full: true });
+      return isFolderId(a.id) ? sync.sync(a.id, { full: true }) : invalid();
+    }));
+    handle('drive:sync:deletes', wrap(async (a) => (isFolderId(a.id) && (a.decision === 'apply' || a.decision === 'restore') ? sync.confirmDeletes(a.id, a.decision) : invalid())));
+    handle('drive:sync:open', wrap(async (a) => (isFolderId(a.id) ? sync.openFolder(a.id) : invalid())));
+  }
+
   const send = (channel, payload) => {
     const win = getMainWindow && getMainWindow();
     if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win.webContents) return;
     try { win.webContents.send(channel, payload); } catch (err) { log.debug(`${channel} not delivered: ${err.message}`); }
   };
   for (const [event, channel] of Object.entries(DRIVE_EVENTS)) s.on(event, (payload) => send(channel, payload));
+  if (sync) sync.on('change', (payload) => send('drive:sync', payload));
 }
 
 module.exports = { registerDriveHandlers, DRIVE_EVENTS };

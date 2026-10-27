@@ -444,6 +444,20 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onState:      (cb) => subscribe('drive:state', cb),
       onTransfers:  (cb) => subscribe('drive:transfers', cb),
       onChanged:    (cb) => subscribe('drive:changed', cb),
+      // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
+      sync: {
+        status:   () => ipcRenderer.invoke('drive:sync:status'),
+        pick:     () => ipcRenderer.invoke('drive:sync:pick'),
+        add:      ({ path, mode, targetId } = {}) => ipcRenderer.invoke('drive:sync:add', { path, mode, targetId: targetId || null }),
+        remove:   (id) => ipcRenderer.invoke('drive:sync:remove', { id }),
+        pause:    (id, paused) => ipcRenderer.invoke('drive:sync:pause', { id: id || null, paused: !!paused }),
+        settings: (patch) => ipcRenderer.invoke('drive:sync:settings', { ...(patch || {}) }),
+        home:     (on) => ipcRenderer.invoke('drive:sync:home', { on: !!on }),
+        run:      (id) => ipcRenderer.invoke('drive:sync:run', { id: id || null }),
+        deletes:  (id, decision) => ipcRenderer.invoke('drive:sync:deletes', { id, decision }),
+        open:     (id) => ipcRenderer.invoke('drive:sync:open', { id }),
+        onChange: (cb) => subscribe('drive:sync', cb),
+      },
     },
 
     // ── Shell ────────────────────────────────────────────

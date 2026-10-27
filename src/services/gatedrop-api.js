@@ -227,16 +227,17 @@ class GateDropApi {
    * and a broken part continues where the server stands (GET media/uploads/<id>
    * → { offset, total, mime }); up to 5 failures in a row.
    * @param {{ path: string, size: number, mime: string }} file
-   * @param {{ onProgress?: (sent: number, total: number) => void }} [opts]
+   * @param {{ onProgress?: (sent: number, total: number) => void, throttle?: () => import('stream').Transform }} [opts]
+   *   throttle: a pass-through stream per request that keeps a bandwidth limit (utils/throttle.js)
    */
-  async upload(file, { onProgress } = {}) {
+  async upload(file, { onProgress, throttle = null } = {}) {
     const size = file && file.size;
     if (!file || typeof file.path !== 'string' || !Number.isSafeInteger(size) || size <= 0) throw new GateDropError('empty file', { code: 'length_required' });
     if (size > this.maxFileBytes) throw new GateDropError('file too large', { code: 'too_large' });
     const mime = typeof file.mime === 'string' && file.mime ? file.mime : 'application/octet-stream';
     const progress = typeof onProgress === 'function' ? onProgress : () => {};
     if (size <= this.resumableFrom || this.resumable === false) {
-      const r = await this._put(file.path, { mime, size, start: 0, end: size, progress });
+      const r = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle });
       return this._media(r, mime, size);
     }
 
@@ -247,7 +248,7 @@ class GateDropApi {
       const end = Math.min(size, offset + this.partSize);
       let r;
       try {
-        r = await this._put(file.path, { mime, size, start: offset, end, progress, uploadId });
+        r = await this._put(file.path, { mime, size, start: offset, end, progress, uploadId, throttle });
       } catch (err) {
         if (!err.transient || ++failures >= RESUME_ATTEMPTS) throw err;
         await this.sleep(Math.min(30000, 1000 * 2 ** (failures - 1)));
@@ -274,7 +275,7 @@ class GateDropApi {
         if (offset === 0 && end < size && d.complete !== true) {
           // A server without resumable uploads took the first part as a file: whole file in one.
           this.resumable = false;
-          const whole = await this._put(file.path, { mime, size, start: 0, end: size, progress });
+          const whole = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle });
           return this._media(whole, mime, size);
         }
         return this._media(r, mime, size);
@@ -293,7 +294,7 @@ class GateDropApi {
   }
 
   /** One PUT of bytes [start, end) → axios response (200, or 409 for resumable parts). */
-  async _put(filePath, { mime, size, start, end, progress, uploadId = null }) {
+  async _put(filePath, { mime, size, start, end, progress, uploadId = null, throttle = null }) {
     const client = this._client();
     const params = {};
     const headers = { 'Content-Type': mime, 'Content-Length': String(end - start) };
@@ -304,8 +305,10 @@ class GateDropApi {
     }
     let sent = start;
     const src = fs.createReadStream(filePath, { start, end: end - 1 });
-    const body = src.pipe(counter((n) => { sent += n; progress(sent, size); }));
+    const limit = typeof throttle === 'function' ? throttle() : null;
+    const body = (limit ? src.pipe(limit) : src).pipe(counter((n) => { sent += n; progress(sent, size); }));
     src.on('error', (e) => body.destroy(e));
+    if (limit) limit.on('error', (e) => body.destroy(e));
     try {
       const res = await client.request({
         method: 'PUT',
@@ -368,14 +371,14 @@ class GateDropApi {
    * (writable stream) → { bytes, mime }; cut-off or oversize downloads throw
    * with `streamed: true`.
    */
-  streamTo(url, dest, { onProgress, maxBytes = this.maxFileBytes } = {}) {
+  streamTo(url, dest, { onProgress, maxBytes = this.maxFileBytes, throttle = null } = {}) {
     if (typeof url !== 'string' || !url.startsWith(`${this.mediaPath}/`) || url.includes('..')) {
       return Promise.reject(new GateDropError('invalid media path', { code: 'invalid' }));
     }
-    return this._stream(url, dest, { onProgress, maxBytes });
+    return this._stream(url, dest, { onProgress, maxBytes, throttle });
   }
 
-  async _stream(url, dest, { onProgress, maxBytes }) {
+  async _stream(url, dest, { onProgress, maxBytes, throttle = null }) {
     const client = this._client();
     let res;
     try {
@@ -399,7 +402,9 @@ class GateDropApi {
       if (typeof onProgress === 'function') onProgress(got, total);
     });
     try {
-      await pipeline(res.data, tap, dest);
+      const limit = typeof throttle === 'function' ? throttle() : null;
+      if (limit) await pipeline(res.data, limit, tap, dest);
+      else await pipeline(res.data, tap, dest);
     } catch (err) {
       const e = err instanceof GateDropError ? err : toMessengerError(err);
       e.streamed = true;
