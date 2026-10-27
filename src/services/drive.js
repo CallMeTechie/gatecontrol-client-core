@@ -43,7 +43,7 @@ const path = require('path');
 const DriveApi = require('./drive-api');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
-const { unsafeToOpen } = require('../utils/messenger');
+const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 
 const { MessengerError: DriveError } = MessengerApi;
@@ -554,7 +554,8 @@ class DriveService extends EventEmitter {
       const name = drive.safeName(node.name) || 'Datei';
       if (unsafeToOpen(name, node.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
       const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
-      const file = path.join(dir, name);
+      // Windows device names (CON, NUL, COM1 …) cannot be files: open a renamed local copy.
+      const file = path.join(dir, safeFileName(name, 'Datei'));
       let have = false;
       if (!versionId) {
         try { have = (await fs.promises.stat(file)).size === node.size && node.size > 0; } catch { have = false; }

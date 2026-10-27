@@ -302,6 +302,17 @@ describe('DriveService', () => {
     assert.equal(svc.transfers()[0].code, 'quota');
   });
 
+  it('opens a file named like a Windows device under a renamed local copy', async () => {
+    const opened = [];
+    const shell = { openPath: async (p) => { opened.push(p); return ''; } };
+    const { svc, srv, temp } = await setup({}, { shell });
+    srv.state.nodes.get(12).name = 'CON.pdf';
+    const r = await svc.open(12);
+    assert.equal(r.ok, true);
+    assert.equal(r.path, path.join(temp, '12-1', '_CON.pdf'));
+    assert.deepEqual(opened, [r.path]);
+  });
+
   it('opens a file from the temp folder, never an executable; save as', async () => {
     const opened = [];
     const shell = { openPath: async (p) => { opened.push(p); return ''; }, showItemInFolder: (p) => opened.push(`show:${p}`) };
