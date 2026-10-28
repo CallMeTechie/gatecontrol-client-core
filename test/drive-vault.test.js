@@ -209,13 +209,12 @@ describe('DriveService: vault folders', () => {
     assert.ok(Buffer.from(rec.enc, 'base64').subarray(0, 6).equals(Buffer.from('DPAPI:')));
     assert.equal(JSON.stringify(store.get('driveVault')).includes(made.recoveryKey), false);
 
-    // the listing shows the vault by its name
+    // Drive 1.11: not among the files any more — only the menu's "Tresore" (vaults()) shows it, by its name
     const root = await svc.folder(1);
-    const row = root.items.find((n) => n.id === made.node.id);
-    assert.equal(row.name, 'Steuer 2025');
-    assert.equal(row.vaultRoot, true);
-    assert.equal(row.locked, false);
+    assert.equal(root.items.some((n) => n.id === made.node.id), false);
     assert.equal(root.vault, null);
+    const listed = (await svc.vaults()).vaults;
+    assert.deepEqual(listed.map((v) => [v.nodeId, v.name, v.state]), [[made.node.id, 'Steuer 2025', 'open']]);
 
     // an upload into the vault: ciphertext only, no text / takenAt / entropy
     const src = tmpDir('dv-src-');
@@ -303,10 +302,9 @@ describe('DriveService: vault folders', () => {
     const made = await svc.vaultCreate(1, 'Familie');
     const other = await service(srv, { name: 'Laptop' });
     // the other PC sees the vault locked and may ask
-    const list = await other.svc.folder(1);
-    const row = list.items.find((n) => n.id === made.node.id);
-    assert.equal(row.locked, true);
-    assert.equal(row.vaultState, 'none');
+    const locked = await other.svc.folder(made.node.id);
+    assert.equal(locked.node.locked, true);
+    assert.equal(locked.vault.state, 'none');
     const vs = await other.svc.vaults();
     assert.equal(vs.vaults[0].state, 'none');
     assert.equal(vs.vaults[0].name, null);
@@ -324,7 +322,7 @@ describe('DriveService: vault folders', () => {
     const ok = await svc.vaultApprove(made.vault.id, req.deviceId, req.safetyNumber);
     assert.equal(ok.device.state, 'approved');
     assert.equal((await other.svc.vaultOpen(made.vault.id)).state, 'open');
-    assert.equal((await other.svc.folder(1)).items.find((n) => n.id === made.node.id).name, 'Familie');
+    assert.equal((await other.svc.folder(made.node.id)).node.name, 'Familie');
 
     // a third device: declined
     const third = await service(srv, { name: 'Tablet' });
@@ -340,7 +338,7 @@ describe('DriveService: vault folders', () => {
     const approveReq = srv.state.requests.filter((x) => x.path.endsWith('/approve')).pop();
     assert.equal(approveReq.body.via, 'recovery');
     assert.equal(approveReq.body.recoveryAuth.length, 43);
-    assert.equal((await fourth.svc.folder(1)).items.find((n) => n.id === made.node.id).name, 'Familie');
+    assert.equal((await fourth.svc.folder(made.node.id)).node.name, 'Familie');
   });
 
   it('a stale key (another device made a new one): the keys again, then the upload; a new key with a new recovery key', async () => {
@@ -420,6 +418,9 @@ describe('DriveSync: vault folders are left out', () => {
     cleanup.push(async () => { sync.stop(); await sync.idle(); });
     const target = srv.mutate.dir(1, 'Abgleich');
     const made = await svc.vaultCreate(target.id, 'Geheim');
+    // Drive 1.11 puts a new vault into the area's top folder; one made by an older app may still lie in a synced folder
+    assert.equal(srv.state.nodes.get(made.node.id).parentId, 1);
+    srv.state.nodes.get(made.node.id).parentId = target.id;
     const src = tmpDir('dv-src-');
     fs.writeFileSync(path.join(src, 'a.txt'), 'a');
     await svc.upload(made.node.id, [path.join(src, 'a.txt')]);

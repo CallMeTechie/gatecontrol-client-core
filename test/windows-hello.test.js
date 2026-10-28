@@ -198,3 +198,102 @@ describe('windows-hello: keys', () => {
     clean(rt);
   });
 });
+
+// ── UserConsentVerifier (Drive vault folders: "Mit Windows Hello öffnen") ──
+
+const { createConsentVerifier, pinterfaceIid, hwndOf, IID, CONSENT_RESULT, CONSENT_AVAILABILITY } = require('../src/services/windows-hello');
+
+function setupConsent(opts = {}) {
+  const rt = fakeWinRt(koffi, opts);
+  runtimes.push(rt);
+  const consent = createConsentVerifier({ platform: 'win32', koffi, api: rt.api, timing: { pollMs: 1, quickMs: 2000, promptMs: 2000, focusMs: 2000 } });
+  return { rt, consent };
+}
+
+describe('windows-hello: UserConsentVerifier', () => {
+  it('parameterized IIDs as Windows computes them (IAsyncOperation<bool>, <HSTRING>, <UserConsentVerificationResult>)', () => {
+    const op = '{9fc2b0bb-e446-44e2-aa61-9cab8f636af2}';
+    assert.equal(pinterfaceIid(`pinterface(${op};b1)`), 'CDB5EFB3-5788-509D-9BE1-71CCB8A3362A');
+    assert.equal(pinterfaceIid(`pinterface(${op};string)`), '3E1FE603-F897-5263-B328-0806426B8A79');
+    assert.equal(IID.IAsyncVerificationResult, 'FD596FFD-2318-558F-9DBE-D21DF43764A5');
+    assert.deepEqual(CONSENT_AVAILABILITY, ['available', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy']);
+    assert.deepEqual(CONSENT_RESULT, ['verified', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy', 'retries_exhausted', 'cancelled']);
+  });
+
+  it('a window handle from getNativeWindowHandle(), a BigInt or a number; anything else → null', () => {
+    const b = Buffer.alloc(8);
+    b.writeBigUInt64LE(0x1a2b3cn);
+    assert.equal(hwndOf(b), 0x1a2b3cn);
+    assert.equal(hwndOf(7n), 7n);
+    assert.equal(hwndOf(9), 9n);
+    for (const x of [null, undefined, 0, -1, 0n, 'x', Buffer.alloc(3), Buffer.alloc(8)]) assert.equal(hwndOf(x), null);
+  });
+
+  it('not Windows: unsupported_os / unavailable without loading anything', async () => {
+    const consent = createConsentVerifier({ platform: 'linux', koffi: { load() { throw new Error('must not load'); } } });
+    assert.deepEqual(await consent.available(), { available: false, reason: 'unsupported_os' });
+    assert.deepEqual(await consent.verify('Tresor öffnen'), { status: 'unavailable' });
+  });
+
+  it('availability: available, not set up, disabled by policy — no prompt', async () => {
+    const { rt, consent } = setupConsent();
+    assert.deepEqual(await consent.available(), { available: true, reason: null });
+    rt.consent.avail = 'not_set_up';
+    assert.deepEqual(await consent.available(), { available: false, reason: 'not_set_up' });
+    rt.consent.avail = 'disabled_by_policy';
+    assert.deepEqual(await consent.available(), { available: false, reason: 'disabled_by_policy' });
+    assert.equal(rt.consentPrompts.length, 0);
+    clean(rt);
+  });
+
+  it('verify with the app window: the dialog owned by it (interop); the answers come back', async () => {
+    const { rt, consent } = setupConsent();
+    const hwnd = Buffer.alloc(8);
+    hwnd.writeBigUInt64LE(0x4242n);
+    assert.deepEqual(await consent.verify('GateControl Drive: Tresore entsperren', { window: hwnd }), { status: 'verified' });
+    assert.deepEqual(rt.consentPrompts[0], { kind: 'window', message: 'GateControl Drive: Tresore entsperren', hwnd: 0x4242n });
+    rt.consent.next = 'cancelled';
+    assert.deepEqual(await consent.verify('x', { window: hwnd }), { status: 'cancelled' });
+    rt.consent.next = 'retries_exhausted';
+    assert.deepEqual(await consent.verify('x', { window: hwnd }), { status: 'retries_exhausted' });
+    clean(rt);
+  });
+
+  it('without a window, without the interop or when the window is refused: the plain call, dialog to the front', async () => {
+    const { rt, consent } = setupConsent();
+    rt.dialog = 0x77n;
+    assert.deepEqual(await consent.verify('Tresor'), { status: 'verified' });
+    assert.equal(rt.consentPrompts[0].kind, 'plain');
+    assert.ok(rt.focused.length >= 1);
+    rt.consent.windowFails = true;
+    assert.deepEqual(await consent.verify('Tresor', { window: 5n }), { status: 'verified' });
+    assert.equal(rt.consentPrompts[1].kind, 'plain');
+    clean(rt);
+    const b = setupConsent();
+    b.rt.consent.interop = false;
+    assert.deepEqual(await b.consent.verify('Tresor', { window: 5n }), { status: 'verified' });
+    assert.equal(b.rt.consentPrompts[0].kind, 'plain');
+    clean(b.rt);
+  });
+
+  it('not set up: no dialog, the reason; an async error → failed; empty message never reaches Windows', async () => {
+    const { rt, consent } = setupConsent();
+    rt.consent.avail = 'not_set_up';
+    assert.deepEqual(await consent.verify('Tresor', { window: 5n }), { status: 'not_set_up' });
+    assert.equal(rt.consentPrompts.length, 0);
+    rt.consent.avail = 'available';
+    rt.asyncError = 0x80004005 | 0;
+    assert.deepEqual(await consent.verify('Tresor', { window: 5n }), { status: 'failed' });
+    assert.deepEqual(await consent.verify('   '), { status: 'failed' });
+    clean(rt);
+  });
+
+  it('one dialog at a time', async () => {
+    const { rt, consent } = setupConsent();
+    rt.consent.next = ['verified', 'cancelled'];
+    const [a, b] = await Promise.all([consent.verify('a', { window: 5n }), consent.verify('b', { window: 5n })]);
+    assert.deepEqual([a.status, b.status], ['verified', 'cancelled']);
+    assert.deepEqual(rt.consentPrompts.map((p) => p.message), ['a', 'b']);
+    clean(rt);
+  });
+});

@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
-const { createWindowsHello, WinRt, loadApi } = require('../src/services/windows-hello');
+const { createWindowsHello, createConsentVerifier, WinRt, loadApi, IID, SLOT } = require('../src/services/windows-hello');
 
 const win = process.platform === 'win32';
 
@@ -43,5 +43,24 @@ describe('windows-hello on Windows (no prompt)', { skip: win ? false : 'Windows 
     const hello = createWindowsHello();
     const r = await hello.remove(`GateControl CI ${crypto.randomBytes(8).toString('hex')}`);
     assert.ok(['not_found', 'failed', 'unavailable'].includes(r.status), JSON.stringify(r));
+  });
+
+  it('UserConsentVerifier (Drive vaults): availability with a known answer, the interop for a window, our IIDs', async () => {
+    const consent = createConsentVerifier();
+    const a = await consent.available();
+    assert.equal(typeof a.available, 'boolean');
+    assert.ok(a.available ? a.reason === null : ['not_set_up', 'device_not_present', 'disabled_by_policy', 'device_busy', 'unsupported_os', 'error'].includes(a.reason), JSON.stringify(a));
+    console.log(`UserConsentVerifier here: ${JSON.stringify(a)}`);
+    const koffi = require('koffi');
+    const rt = new WinRt({ koffi, api: loadApi(koffi), timing: { pollMs: 20 } });
+    assert.ok(rt.consentStatics(), 'UserConsentVerifier activation factory (IUserConsentVerifierStatics)');
+    assert.ok(rt.consentInterop(), 'IUserConsentVerifierInterop on the factory');
+    // the parameterized IID computed here is the one Windows answers to (QueryInterface on the real operation)
+    const op = [null];
+    rt.check(rt.invoke(rt.consentStatics(), SLOT.consentAvailability, rt.P.outPtr, op), 'CheckAvailabilityAsync');
+    const same = rt.queryInterface(op[0], IID.IAsyncAvailability);
+    rt.release(same);
+    const v = await rt.finish(op[0], (o) => rt._i32Result(o));
+    assert.ok(Number.isInteger(v) && v >= 0 && v <= 4, String(v));
   });
 });

@@ -31,6 +31,9 @@
 // Drive 1.9: 'office' (POST nodes/<id>/office → an https URL; 409 encrypted / office_unavailable), 'vault' (vaults,
 // keys, recovery, devices, approve, revoke, rotate; nodes, uploads/commit and PATCH with encrypted / nameCipher /
 // keyVersion; 409 stale_key; no links, search or office in a vault; srv.state.vaults).
+// Drive 1.11: 'vaultsApart' (children leave out vault folders — `vaults=1` keeps them —, `children?dirs=1` lists
+// folders only with `hasDirs`, POST vaults puts the vault into the top folder of the parent's area, a vault folder
+// cannot be moved: 400 invalid parentId).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -510,10 +513,12 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const authHash = (a) => crypto.createHash('sha256').update(Buffer.from(String(a || ''), 'base64url')).digest('hex');
       const wrapOk = (w) => typeof w === 'string' && Buffer.from(w, 'base64url').length === 81 && Buffer.from(w, 'base64url')[0] === 1;
       if (seg.length === 1 && req.method === 'POST') {
-        const parent = get(body.parentId);
+        let parent = get(body.parentId);
         if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
         if (!writable(parent)) return refuse(res, 403, 'forbidden');
         if (parent.vaultId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
+        // Drive 1.11: parentId only names the area; the vault goes into its top folder
+        if (has('vaultsApart')) parent = state.nodes.get(areaOf(parent).rootId);
         if (!/^[A-Za-z0-9_-]{22}$/.test(String(body.id)) || !wrapOk(body.wrap) || !wrapOk(body.recoveryWrap) || !body.device || !body.nameCipher || kvOf(body.nameCipher) !== 1) return refuse(res, 400, 'invalid');
         const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), isDir: true, encrypted: true, vaultId: body.id, nameCipher: body.nameCipher, keyVersion: 1 });
         logChange('create', made);
@@ -784,6 +789,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         }
         if (body.nameCipher !== undefined || n.encrypted) {
           const v = vaultOfNode(n);
+          if (has('vaultsApart') && v && v.nodeId === n.id && body.parentId && body.parentId !== n.parentId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
           if (!v || (body.name && body.name !== n.name) || (body.parentId && (get(body.parentId) || {}).vaultId !== n.vaultId)) return json(res, 400, { ok: false, code: 'invalid', field: 'nameCipher', error: 'invalid' });
           if (body.nameCipher) {
             if (kvOf(body.nameCipher) !== v.keyVersion) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
@@ -824,7 +830,13 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, id: n.id, trashed: true });
       }
       if (seg[2] === 'children' && req.method === 'GET') {
-        const all = children(n.id).map(view);
+        let kids = children(n.id);
+        // Drive 1.11 'vaultsApart': no vault folders outside a vault (vaults=1: as before); dirs=1: folders with hasDirs
+        if (has('vaultsApart') && !n.encrypted && url.searchParams.get('vaults') !== '1') kids = kids.filter((k) => !k.encrypted);
+        const dirs = has('vaultsApart') && url.searchParams.get('dirs') === '1';
+        if (dirs) kids = kids.filter((k) => k.isDir && !k.encrypted).sort((a, b) => a.name.localeCompare(b.name));
+        state.dirCalls = (state.dirCalls || 0) + (dirs ? 1 : 0);
+        const all = kids.map((k) => (dirs ? { ...view(k), hasDirs: children(k.id).some((c) => c.isDir && !c.encrypted) } : view(k)));
         const offset = Number(url.searchParams.get('offset') || 0);
         const limit = Math.min(srv.pageMax, Number(url.searchParams.get('limit') || 200));
         const items = all.slice(offset, offset + limit);

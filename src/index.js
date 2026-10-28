@@ -197,6 +197,7 @@ Object.defineProperties(module.exports, {
   totpQr: { enumerable: true, get: () => require('./services/totp-qr') },
   totpQrUtil: { enumerable: true, get: () => require('./utils/totp-qr') },
   // Windows Hello for Vault's unlock (WinRT KeyCredentialManager via koffi, loaded on the first call):
-  // new VaultService({ …, hello: windowsHello.createWindowsHello({ log }) })
+  // new VaultService({ …, hello: windowsHello.createWindowsHello({ log }) });
+  // Drive 1.11 vault lock: new DriveService({ …, consent: windowsHello.createConsentVerifier({ log }) })
   windowsHello: { enumerable: true, get: () => require('./services/windows-hello') },
 });

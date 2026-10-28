@@ -485,11 +485,16 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       openImport:   () => ipcRenderer.invoke('drive:import'),
       // Drive 1.9 'office': "Im Browser bearbeiten / ansehen"
       office:       (id) => ipcRenderer.invoke('drive:office', { id }),
+      // Drive 1.11: the menu's folder tree, the cache on this PC
+      tree:         (id) => ipcRenderer.invoke('drive:tree', { id }),
+      cache:        () => ipcRenderer.invoke('drive:cache'),
+      clearCache:   () => ipcRenderer.invoke('drive:cache:clear'),
       // Drive 1.9 'vault': end-to-end encrypted folders (keys stay in the main process)
       vault: {
         status:   () => ipcRenderer.invoke('drive:vault:status'),
         list:     () => ipcRenderer.invoke('drive:vaults'),
-        create:   (parentId, name) => ipcRenderer.invoke('drive:vault:create', { parentId, name }),
+        // Drive 1.11: create(name, { areaId }) — always in the top folder of that area; create(parentId, name) as before
+        create:   (a, b) => ipcRenderer.invoke('drive:vault:create', typeof a === 'string' ? { name: a, areaId: (b && b.areaId) || null } : { parentId: a, name: b }),
         open:     (vaultId) => ipcRenderer.invoke('drive:vault:open', { vaultId }),
         request:  (vaultId) => ipcRenderer.invoke('drive:vault:request', { vaultId }),
         devices:  (vaultId) => ipcRenderer.invoke('drive:vault:devices', { vaultId }),
@@ -498,6 +503,14 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         recover:  (vaultId, recoveryKey) => ipcRenderer.invoke('drive:vault:recover', { vaultId, recoveryKey }),
         rotate:   (vaultId) => ipcRenderer.invoke('drive:vault:rotate', { vaultId }),
         onEvent:  (cb) => subscribe('drive:vault', cb),
+        // Drive 1.11: the vault lock (Windows Hello first)
+        lockStatus:   () => ipcRenderer.invoke('drive:vault:lock-status'),
+        unlock:       (vaultId) => ipcRenderer.invoke('drive:vault:unlock', { vaultId: vaultId || null }),
+        lock:         () => ipcRenderer.invoke('drive:vault:lock'),
+        lockSettings: (patch) => ipcRenderer.invoke('drive:vault:lock-settings', { ...(patch || {}) }),
+        touch:        () => ipcRenderer.invoke('drive:vault:touch'),
+        helloSettings: () => ipcRenderer.invoke('drive:hello-settings'),
+        onLock:       (cb) => subscribe('drive:vault-lock', cb),
       },
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {

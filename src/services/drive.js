@@ -77,13 +77,22 @@
  *   VAULT_OPEN_KEEP_MS (later while the file is in use), at stop and at the next
  *   start; renaming and new folders send the encrypted name. No previews, text,
  *   takenAt, entropy, links, office or AI for them.
+ * - Drive 1.11 (the menu): the folder tree of the menu (tree(): folders only, `hasDirs`; with 'vaultsApart' the
+ *   server's `children?dirs=1`, else the plain children filtered here); vault folders are left out of every folder
+ *   listing and the search (only the menu's "Tresore" shows them, from vaults()); a new vault always goes into the
+ *   top folder of the area picked. The vault lock (services/drive-vault-lock.js): the vault keys are unwrapped only
+ *   after Windows Hello (vaultUnlock()); after a time without use, when the window is hidden, when Windows locks or
+ *   sleeps the keys are wiped, the decrypted names forgotten and the decrypted copies removed (event 'vaultLock').
+ *   The cache on this PC (opened files, previews; never vault keys or uploads still running): cacheInfo() /
+ *   clearCache().
  *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
  * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
  * 'timetravel' ({ folderId, at, before }) after a time travel, 'vault'
  * ({ vault, event, device, keyVersion }) a request / approval / new key of a
- * vault folder (live event `vault`).
+ * vault folder (live event `vault`), 'vaultLock' ({ locked, reason }) the vaults
+ * locked / unlocked (Drive 1.11).
  */
 
 const EventEmitter = require('events');
@@ -93,6 +102,7 @@ const os = require('os');
 const path = require('path');
 const DriveApi = require('./drive-api');
 const DriveVault = require('./drive-vault');
+const DriveVaultLock = require('./drive-vault-lock');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
@@ -113,6 +123,7 @@ const DEFAULT_TIMING = {
   progressMs: 250,         // transfer list updates at most every 250 ms while bytes move
   previewCache: 300,       // pictures kept in memory
   keepTransfers: 50,       // finished rows kept in the list
+  minuteMs: 60 * 1000,     // Drive 1.11: the vault lock's minutes
 };
 const STORE_KEY = 'driveLastFolder';
 const MAX_PATHS = 200;
@@ -147,11 +158,15 @@ class DriveService extends EventEmitter {
    *   without it this PC cannot keep a device key (DriveService.safeStorageProtect(safeStorage))
    * @param {object} [opts.notificationCenter] - a click on a deadline / vault push opens the page
    * @param {() => string} [opts.deviceName] - this PC's name for vault requests
+   * @param {object|null} [opts.consent] - Drive 1.11: Windows Hello as the confirmation before the vaults unlock
+   *   (windowsHello.createConsentVerifier()); null: none here (the vaults open only with "Mit Windows Hello öffnen"
+   *   switched off); left out: not enforced (as before Drive 1.11)
+   * @param {object} [opts.powerMonitor] - Electron powerMonitor: the vaults lock when Windows locks or sleeps
    */
   constructor({
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
     tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
-    protect = null, notificationCenter = null, deviceName = null,
+    protect = null, notificationCenter = null, deviceName = null, consent, powerMonitor = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -169,7 +184,20 @@ class DriveService extends EventEmitter {
     this.pushClient = pushClient;
     this.notificationCenter = notificationCenter;
     this.timing = { ...DEFAULT_TIMING, ...timing };
-    this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now });
+    // Drive 1.11: the vault lock (Windows Hello first; locks after a time without use, when hidden, when Windows locks)
+    this.vaultLock = new DriveVaultLock({
+      consent, store, powerMonitor, getLang, log: this.log, timing: { minuteMs: this.timing.minuteMs },
+      getWindow: () => {
+        const w = this.getMainWindow();
+        return w && !(typeof w.isDestroyed === 'function' && w.isDestroyed()) && typeof w.getNativeWindowHandle === 'function' ? w.getNativeWindowHandle() : null;
+      },
+      busy: () => this._vaultActive > 0 || [...this._jobs.values()].some((j) => j.vault && !j.waiting),
+      hasKeys: () => this.vault.hasKeys(),
+    });
+    this.vaultLock.on('lock', (e) => this._onVaultLock(e));
+    this.vaultLock.on('unlock', () => this.emit('vaultLock', { locked: false, reason: null }));
+    this._vaultActive = 0;          // vault uploads / downloads running (the lock's time without use waits)
+    this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now, isUnlocked: () => this.vaultLock.isUnlocked() });
     this._vaultOpened = new Map();  // a decrypted file's folder → its removal timer
     this._vaultSweep = null;        // the running sweep of the vault's temp folders (_sweepVaultTemp)
     this._vaultRoots = new Map();   // vault id → the node id of its folder
@@ -226,6 +254,7 @@ class DriveService extends EventEmitter {
       // Drive 1.8 / 1.9: a deadline reminder opens its file, a vault request the vault on the page
       this._unsub.push(nc.addClickRoute(drive.APP_ROUTE, (entry) => this.clickContext(entry)));
     }
+    this.vaultLock.start();
     // decrypted files a crash left behind
     this._sweepVaultTemp().catch(() => {});
     this.check().catch(() => {});
@@ -238,6 +267,7 @@ class DriveService extends EventEmitter {
     clearTimeout(this._emitTimer);
     this._emitTimer = null;
     for (const off of this._unsub.splice(0)) { try { off(); } catch { /* gone */ } }
+    this.vaultLock.stop();
     this.vault.clear();
     for (const t of this._vaultOpened.values()) clearTimeout(t);
     this._vaultOpened.clear();
@@ -269,6 +299,7 @@ class DriveService extends EventEmitter {
     this._previews.clear();
     this._mediaOf.clear();
     this._inflight.clear();
+    this.vaultLock.lock('server');
     this.vault.clear();
     this._vaultRoots.clear();
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
@@ -495,7 +526,14 @@ class DriveService extends EventEmitter {
   async folder(id, query = {}) {
     return this._run(async () => {
       const f = await this.api.folder(id, query);
+      // Drive 1.11: vault folders only in the menu ("Tresore"); an older Drive lists them, they are left out here
+      if (!f.node.encrypted) {
+        const before = f.items.length;
+        f.items = drive.withoutVaults(f.items);
+        if (f.items.length !== before && Number.isFinite(f.total)) f.total = Math.max(f.items.length, f.total - (before - f.items.length));
+      }
       await this._vaultDecorate(f.items, { inVault: f.node.encrypted });
+      if (f.node.encrypted) this.vaultLock.touch();
       let vault = null;
       if (f.node.encrypted && f.node.vaultId) {
         await this.vault.tryOpen(f.node.vaultId);
@@ -584,16 +622,94 @@ class DriveService extends EventEmitter {
     });
   }
 
-  /** A new vault folder → { ok, vault, node, recoveryKey } (recoveryKey: shown once). */
-  async vaultCreate(parentId, name) {
+  /**
+   * A new vault folder → { ok, vault, node, recoveryKey } (recoveryKey: shown once). Drive 1.11: it always goes into
+   * the top folder of an area — `areaId` (the area picked in "Wer darf ihn öffnen?") or the area of `parentId`
+   * (older callers); a Drive with 'vaultsApart' does the same itself.
+   */
+  async vaultCreate(parentId, name, { areaId = null } = {}) {
     const n = this._name(name);
     return this._run(async () => {
       await this._feature('vault');
-      const r = await this.vault.create(drive.posId(parentId), n);
+      const { areas } = await this.api.areas();
+      let area = areaId ? areas.find((a) => a.id === areaId) : null;
+      if (!area && !areaId && drive.posId(parentId)) {
+        const p = await this.api.node(parentId);
+        area = areas.find((a) => a.id === p.areaId) || null;
+      }
+      if (!area) throw new DriveError('no such area', { code: 'not_found' });
+      if (!area.writable) throw new DriveError('read only', { code: 'forbidden' });
+      const r = await this.vault.create(area.rootId, n);
+      // its key stays until the next lock (time without use, window hidden, Windows locked)
+      this.vaultLock.touch();
       this._vaultRoots.set(r.vault.id, r.node.id);
-      this.emit('changed', { folderId: drive.posId(parentId) });
+      this.emit('changed', { folderId: area.rootId });
       return { ok: true, ...r };
     });
+  }
+
+  // ── Vault lock (Drive 1.11) ──────────────────────────────
+
+  /** { ok, enforced, unlocked, settings: { hello, autoLockMinutes, lockOnLeave }, hello: { available, reason }, choices, lastLock } */
+  async vaultLockStatus() {
+    return { ok: true, ...(await this.vaultLock.status()) };
+  }
+
+  /**
+   * Windows Hello, then the vaults of this PC unlock → { ok, unlocked, state? } — with `vaultId` that vault is opened
+   * right away (its state). Refused: { ok: false, code: 'hello_cancelled' | 'hello_not_set_up' | … }.
+   */
+  async vaultUnlock(vaultId = null) {
+    return this._run(async () => {
+      await this.vaultLock.unlock();
+      const out = { ok: true, unlocked: true };
+      if (vaultId) out.state = (await this.vault.open(vaultId, { fresh: true })).state;
+      return out;
+    });
+  }
+
+  /** "Jetzt sperren" → { ok, unlocked: false } */
+  vaultLockNow() {
+    this.vaultLock.lock('manual');
+    return { ok: true, unlocked: false };
+  }
+
+  /** { hello?, autoLockMinutes?, lockOnLeave? } → the lock's status (switching Hello off asks Windows Hello first). */
+  async vaultLockSettings(patch) {
+    return { ok: true, ...(await this.vaultLock.setSettings(patch)) };
+  }
+
+  /** Activity on the page while a vault is open: its time without use starts again. */
+  vaultTouch() {
+    this.vaultLock.touch();
+    return { ok: true };
+  }
+
+  /** The main window was minimized / hidden into the tray ("Beim Verlassen sperren"). */
+  windowHidden() {
+    this.vaultLock.windowHidden();
+  }
+
+  /** Windows' sign-in options (to set up Windows Hello). */
+  async openHelloSettings() {
+    if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+    await this.shell.openExternal('ms-settings:signinoptions');
+    return { ok: true };
+  }
+
+  /** The vaults locked: keys wiped, names forgotten, the decrypted copies removed (later while a program holds one). */
+  _onVaultLock({ reason = 'manual' } = {}) {
+    this.vault.forget();
+    for (const t of this._vaultOpened.values()) clearTimeout(t);
+    this._vaultOpened.clear();
+    const dir = path.join(this.tempDir(), 'vault');
+    fs.promises.readdir(dir).then((names) => {
+      for (const n of names) {
+        const d = path.join(dir, n);
+        fs.promises.rm(d, { recursive: true, force: true }).catch(() => this._forgetOpened(d, VAULT_OPEN_RETRY_MS));
+      }
+    }).catch(() => {});
+    this.emit('vaultLock', { locked: true, reason });
   }
 
   /** Opens a vault on this PC → { ok, state: 'open' | 'pending' | 'none' | 'revoked' } */
@@ -641,7 +757,9 @@ class DriveService extends EventEmitter {
   async vaultRecover(vaultId, text) {
     return this._run(async () => {
       await this._feature('vault');
-      return { ok: true, ...(await this.vault.recover(vaultId, text)) };
+      const r = await this.vault.recover(vaultId, text);
+      this.vaultLock.touch();
+      return { ok: true, ...r };
     });
   }
 
@@ -701,6 +819,16 @@ class DriveService extends EventEmitter {
 
   /** The ciphertext of a vault file (or a version) decrypted into `file` → node content info. */
   async _vaultFetchTo(node, versionId, file, row) {
+    this._vaultActive++;
+    try {
+      return await this._vaultFetch(node, versionId, file, row);
+    } finally {
+      this._vaultActive--;
+      this.vaultLock.touch();
+    }
+  }
+
+  async _vaultFetch(node, versionId, file, row) {
     const keys = this.vault.keys(node.vaultId);
     const c = await this.api.content(node.id, versionId);
     if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
@@ -731,10 +859,92 @@ class DriveService extends EventEmitter {
     }
   }
 
+  // ── The menu's folder tree (Drive 1.11) ──────────────────
+
+  /**
+   * The subfolders of folder `id` for the menu → { ok, items: [{ id, name, hasDirs }], more } — never a vault folder;
+   * hasDirs null: an older Drive does not say (known once that folder is opened). At most 5000.
+   */
+  async tree(id) {
+    return this._run(async () => {
+      const apart = await this.api.has('vaultsApart').catch(() => false);
+      const items = [];
+      let offset = 0;
+      let more = false;
+      for (;;) {
+        const page = await this.api.dirs(id, { offset, limit: 1000, apart });
+        items.push(...page.items);
+        if (page.next === null || page.next <= offset) break;
+        if (items.length >= 5000) { more = true; break; }
+        offset = page.next;
+      }
+      return { ok: true, items, more };
+    });
+  }
+
+  // ── The cache on this PC (Drive 1.11 settings) ───────────
+
+  /** What a clear removes: the opened files' copies, previews in memory → { ok, bytes, files }. */
+  async cacheInfo() {
+    let bytes = 0;
+    let files = 0;
+    const walk = async (d, depth) => {
+      let entries;
+      try { entries = await fs.promises.readdir(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) { if (depth < 6) await walk(p, depth + 1); continue; }
+        try { const st = await fs.promises.stat(p); bytes += st.size; files++; } catch { /* gone */ }
+      }
+    };
+    for (const e of await this._cacheEntries()) {
+      if (e.dir) await walk(e.path, 0);
+      else { bytes += e.size; files++; }
+    }
+    for (const p of this._previews.values()) if (p && p.data) bytes += p.data.length;
+    return { ok: true, bytes, files, previews: this._previews.size };
+  }
+
+  /** The cached entries of the temp folder: never uploads in progress (vault-up / vault-dl), never a file being loaded. */
+  async _cacheEntries() {
+    const root = this.tempDir();
+    let entries;
+    try { entries = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return []; }
+    const out = [];
+    for (const e of entries) {
+      if (e.name === 'vault-up' || e.name === 'vault-dl') continue;
+      const p = path.join(root, e.name);
+      if (e.isDirectory()) out.push({ path: p, dir: true });
+      else { try { out.push({ path: p, dir: false, size: (await fs.promises.stat(p)).size }); } catch { /* gone */ } }
+    }
+    return out;
+  }
+
+  /** "Zwischenspeicher leeren" → { ok, removed, kept } (kept: copies a program still holds open). */
+  async clearCache() {
+    this._previews.clear();
+    this._mediaOf.clear();
+    let removed = 0;
+    let kept = 0;
+    const running = this._transfers.some((r) => r.dir === 'down' && r.state === 'running');
+    for (const e of await this._cacheEntries()) {
+      // a download running right now writes its .part there: that folder stays until it is done
+      if (running && e.dir && (await fs.promises.readdir(e.path).catch(() => [])).some((n) => n.endsWith('.part'))) { kept++; continue; }
+      try {
+        await fs.promises.rm(e.path, { recursive: true, force: true, maxRetries: 1 });
+        removed++;
+      } catch {
+        kept++;
+      }
+    }
+    return { ok: true, removed, kept };
+  }
+
   async search(q, area = null) {
     const text = typeof q === 'string' ? q.trim() : '';
     if (text.length < 2 || text.length > 100) throw new DriveError('search needs 2 to 100 characters', { code: 'invalid' });
-    return this._run(async () => ({ ok: true, items: await this.api.search(text, area) }));
+    // Drive 1.11: never a vault's node (the plugin leaves them out already; an older one, too — checked here again)
+    return this._run(async () => ({ ok: true, items: drive.withoutVaults(await this.api.search(text, area)) }));
   }
 
   async trashList(area = null) {
@@ -1206,7 +1416,7 @@ class DriveService extends EventEmitter {
             const child = vaultId ? await this._run(() => this._vaultMkdir(vaultId, nodeId, name)) : await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
               if (!(err && err.status === 409)) throw err;
               const kids = await this.api.childrenAll(nodeId);
-              const have = kids.find((k) => k.isDir && S.keyOf(k.name) === S.keyOf(name));
+              const have = kids.find((k) => k.isDir && !k.encrypted && S.keyOf(k.name) === S.keyOf(name));
               if (!have) throw err;
               return have;
             });
@@ -1346,6 +1556,16 @@ class DriveService extends EventEmitter {
    * (a new version: the file's opaque name with onConflict 'version'). A stale key: the keys again, once.
    */
   async _runVaultUpload(job) {
+    this._vaultActive++;
+    try {
+      return await this._vaultUpload(job);
+    } finally {
+      this._vaultActive--;
+      this.vaultLock.touch();
+    }
+  }
+
+  async _vaultUpload(job) {
     const vaultId = job.vault;
     this.vault.keys(vaultId);
     const siblings = await this._vaultSiblings(job.folderId, vaultId);

@@ -891,6 +891,31 @@ function childrenQuery({ sort, order, offset, limit } = {}) {
   return { sort: s, order: o, offset: off, limit: lim };
 }
 
+/**
+ * Drive 1.11 ('vaultsApart'): vault folders are not part of the files any more (only the menu "Tresore" shows them).
+ * Without the feature the app leaves them out itself: in a folder outside a vault every encrypted node is a vault's
+ * own folder (or lies in one) → the list without them.
+ */
+function withoutVaults(items, { inVault = false } = {}) {
+  const list = arr(items);
+  return inVault ? list : list.filter((n) => !(n && n.encrypted));
+}
+
+/**
+ * The folder tree of the menu: `GET nodes/<id>/children?dirs=1` (Drive 1.11: folders only, no vaults, each with
+ * `hasDirs`) or a plain children page (older Drives: hasDirs unknown → null) → { items: [{ id, name, hasDirs }], next }.
+ */
+function normalizeDirs(raw, max = 1000) {
+  const r = obj(raw) || {};
+  const items = [];
+  for (const v of arr(r.items).slice(0, max)) {
+    const n = normalizeNode(v);
+    if (!n || !n.isDir || n.deleted || n.encrypted) continue;
+    items.push({ id: n.id, name: n.name, hasDirs: typeof v.hasDirs === 'boolean' ? v.hasDirs : null });
+  }
+  return { items, next: count(r.next) };
+}
+
 /** Link body → { nodeId, mode, expires, pin? } or null when invalid. */
 function linkBody({ nodeId, mode, expires, pin } = {}) {
   const id = posId(nodeId);
@@ -995,6 +1020,8 @@ module.exports = {
   normalizeLinks,
   savedOf,
   childrenQuery,
+  withoutVaults,
+  normalizeDirs,
   linkBody,
   errorCode,
 };

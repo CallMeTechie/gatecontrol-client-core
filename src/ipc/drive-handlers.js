@@ -63,7 +63,8 @@
  *   drive:office          ({ id }) → { ok, mode, expiresAt }   "Im Browser bearbeiten" (Drive 1.9 'office')
  *   drive:vault:status    () → { ok, supported, protect, device }                  (Drive 1.9 'vault')
  *   drive:vaults          () → { ok, vaults }
- *   drive:vault:create    ({ parentId, name }) → { ok, vault, node, recoveryKey }   recoveryKey: shown once
+ *   drive:vault:create    ({ areaId? | parentId?, name }) → { ok, vault, node, recoveryKey }   recoveryKey: shown once;
+ *                         Drive 1.11: always in the top folder of the area (areaId, else the area of parentId)
  *   drive:vault:open      ({ vaultId }) → { ok, state }
  *   drive:vault:request   ({ vaultId }) → { ok, state, safetyNumber, deviceId }
  *   drive:vault:devices   ({ vaultId }) → { ok, devices, vault }
@@ -71,6 +72,15 @@
  *   drive:vault:decline   ({ vaultId, deviceId }) → { ok, device }
  *   drive:vault:recover   ({ vaultId, recoveryKey }) → { ok, state }
  *   drive:vault:rotate    ({ vaultId }) → { ok, vault, recoveryKey }
+ *   drive:tree            ({ id }) → { ok, items: [{ id, name, hasDirs }], more }    Drive 1.11: the menu's folder tree
+ *   drive:vault:lock-status () → { ok, enforced, unlocked, settings, hello: { available, reason }, choices, lastLock }
+ *   drive:vault:unlock    ({ vaultId? }) → { ok, unlocked, state? } | { ok: false, code: 'hello_cancelled' | 'hello_not_set_up' | … }
+ *   drive:vault:lock      () → { ok, unlocked: false }                              "Jetzt sperren"
+ *   drive:vault:lock-settings ({ hello?, autoLockMinutes?: 0|1|3|5|15, lockOnLeave? }) → like lock-status
+ *   drive:vault:touch     () → { ok }                                               activity while a vault is open
+ *   drive:hello-settings  () → { ok }                                               Windows' sign-in options
+ *   drive:cache           () → { ok, bytes, files, previews }                       the cache on this PC
+ *   drive:cache:clear     () → { ok, removed, kept }
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -88,7 +98,7 @@
  *
  * Events to the main window: drive:state, drive:transfers, drive:changed, drive:remote
  * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:vault ({ vault, event, device,
- * keyVersion }: a vault request / approval / new key), drive:sync.
+ * keyVersion }: a vault request / approval / new key), drive:vault-lock ({ locked, reason }: Drive 1.11), drive:sync.
  */
 
 const DRIVE_EVENTS = {
@@ -98,6 +108,7 @@ const DRIVE_EVENTS = {
   remote: 'drive:remote',
   guard: 'drive:guard',
   vault: 'drive:vault',
+  vaultLock: 'drive:vault-lock',
 };
 
 function fail(err) {
@@ -256,7 +267,10 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:office', byId(async (a) => s.office(a.id)));
   handle('drive:vault:status', wrap(async () => s.vaultStatus()));
   handle('drive:vaults', wrap(async () => s.vaults()));
-  handle('drive:vault:create', wrap(async (a) => (isId(a.parentId) && isStr(a.name, 255) ? s.vaultCreate(a.parentId, a.name) : invalid())));
+  handle('drive:vault:create', wrap(async (a) => {
+    if (!isStr(a.name, 255) || !(optArea(a.areaId) && optId(a.parentId)) || (!a.areaId && !isId(a.parentId))) return invalid();
+    return s.vaultCreate(a.parentId || null, a.name, { areaId: a.areaId || null });
+  }));
   const byVault = (fn) => wrap(async (a) => (isVaultId(a.vaultId) ? fn(a) : invalid()));
   handle('drive:vault:open', byVault(async (a) => s.vaultOpen(a.vaultId)));
   handle('drive:vault:request', byVault(async (a) => s.vaultRequest(a.vaultId)));
@@ -265,6 +279,22 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:vault:decline', byVault(async (a) => (isVaultId(a.deviceId) ? s.vaultDecline(a.vaultId, a.deviceId) : invalid())));
   handle('drive:vault:recover', byVault(async (a) => (isStr(a.recoveryKey, 200) ? s.vaultRecover(a.vaultId, a.recoveryKey) : invalid())));
   handle('drive:vault:rotate', byVault(async (a) => s.vaultRotate(a.vaultId)));
+  // ── Drive 1.11 ─────────────────────────────────────────
+  handle('drive:tree', byId(async (a) => s.tree(a.id)));
+  handle('drive:vault:lock-status', wrap(async () => s.vaultLockStatus()));
+  handle('drive:vault:unlock', wrap(async (a) => ((a.vaultId === undefined || a.vaultId === null || isVaultId(a.vaultId)) ? s.vaultUnlock(a.vaultId || null) : invalid())));
+  handle('drive:vault:lock', wrap(async () => s.vaultLockNow()));
+  handle('drive:vault:lock-settings', wrap(async (a) => {
+    const patch = {};
+    if (a.hello !== undefined) { if (typeof a.hello !== 'boolean') return invalid(); patch.hello = a.hello; }
+    if (a.lockOnLeave !== undefined) { if (typeof a.lockOnLeave !== 'boolean') return invalid(); patch.lockOnLeave = a.lockOnLeave; }
+    if (a.autoLockMinutes !== undefined) { if (![0, 1, 3, 5, 15].includes(a.autoLockMinutes)) return invalid(); patch.autoLockMinutes = a.autoLockMinutes; }
+    return Object.keys(patch).length ? s.vaultLockSettings(patch) : invalid();
+  }));
+  handle('drive:vault:touch', wrap(async () => s.vaultTouch()));
+  handle('drive:hello-settings', wrap(async () => s.openHelloSettings()));
+  handle('drive:cache', wrap(async () => s.cacheInfo()));
+  handle('drive:cache:clear', wrap(async () => s.clearCache()));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());
