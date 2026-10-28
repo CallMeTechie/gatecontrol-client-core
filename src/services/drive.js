@@ -171,6 +171,7 @@ class DriveService extends EventEmitter {
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now });
     this._vaultOpened = new Map();  // a decrypted file's folder → its removal timer
+    this._vaultSweep = null;        // the running sweep of the vault's temp folders (_sweepVaultTemp)
     this._vaultRoots = new Map();   // vault id → the node id of its folder
     this.now = now;
 
@@ -664,11 +665,23 @@ class DriveService extends EventEmitter {
     return { ...node, name: n, opaqueName: node.name, locked: false };
   }
 
-  /** Removes the folders of decrypted files (all of them: at stop / start). */
-  async _sweepVaultTemp() {
-    for (const d of ['vault', 'vault-dl', 'vault-up']) {
-      await fs.promises.rm(path.join(this.tempDir(), d), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
-    }
+  /**
+   * Removes the folders of decrypted files (all of them: at stop / start). What writes there next waits for it
+   * (_vaultTempReady): an upload or opening right after start() would else lose its file to the sweep.
+   */
+  _sweepVaultTemp() {
+    const run = async () => {
+      for (const d of ['vault', 'vault-dl', 'vault-up']) {
+        await fs.promises.rm(path.join(this.tempDir(), d), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      }
+    };
+    this._vaultSweep = Promise.resolve(this._vaultSweep).then(run, run);
+    return this._vaultSweep;
+  }
+
+  /** Resolves once no sweep of the vault's temp folders runs. */
+  async _vaultTempReady() {
+    await Promise.resolve(this._vaultSweep).catch(() => {});
   }
 
   /** The decrypted copy in `dir` goes after VAULT_OPEN_KEEP_MS — later while a program still holds it. */
@@ -691,6 +704,7 @@ class DriveService extends EventEmitter {
     const keys = this.vault.keys(node.vaultId);
     const c = await this.api.content(node.id, versionId);
     if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
+    await this._vaultTempReady();
     const tmpDir = path.join(this.tempDir(), 'vault-dl');
     await fs.promises.mkdir(tmpDir, { recursive: true });
     const enc = path.join(tmpDir, `${crypto.randomBytes(8).toString('hex')}.enc`);
@@ -1351,6 +1365,7 @@ class DriveService extends EventEmitter {
       if (hit) opaque = hit.node.name;
     }
     if (!opaque && siblings.some(same)) name = freeFileName(job.name, new Set(siblings.map((x) => S.keyOf(x.name))));
+    await this._vaultTempReady();
     const dir = path.join(this.tempDir(), 'vault-up');
     await fs.promises.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, `${job.id}-${crypto.randomBytes(6).toString('hex')}.enc`);
