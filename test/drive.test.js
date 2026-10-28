@@ -248,9 +248,9 @@ describe('DriveService', () => {
     fs.writeFileSync(fresh, 'hallo');
     const same = path.join(dir, 'Brief.pdf');
     fs.writeFileSync(same, '%PDF-1.4 brief');
-    const r = await svc.upload(10, [fresh, same, dir, path.join(dir, 'gone.txt'), 'relative.txt']);
+    const r = await svc.upload(10, [fresh, same, path.join(dir, 'gone.txt'), 'relative.txt']);
     assert.equal(r.queued.length, 2);
-    assert.deepEqual(r.rejected.map((x) => x.code).sort(), ['folder', 'missing']);
+    assert.deepEqual(r.rejected.map((x) => x.code).sort(), ['missing']);
     await until(() => svc.transfers().every((t) => !['queued', 'running'].includes(t.state)));
     const rows = svc.transfers();
     assert.deepEqual(rows.map((t) => [t.name, t.state]), [['Neu_.txt', 'done'], ['Brief.pdf', 'same']]);

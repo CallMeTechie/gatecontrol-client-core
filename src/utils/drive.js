@@ -34,7 +34,8 @@ const ON_CONFLICT = Object.freeze(['rename', 'version']);
 const LINK_MODES = Object.freeze(['view', 'download', 'upload']);
 const LINK_EXPIRES = Object.freeze(['1d', '7d', '30d', 'never']);
 const LINK_KINDS = Object.freeze(['files', 'folder', 'upload']);
-const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge']);
+// Drive 1.5: `mark` / `unmark` – a file is marked for a delayed delete (deleteAt) or no longer
+const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark']);
 const CHANGES_MAX = 1000;
 
 const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
@@ -185,6 +186,9 @@ function normalizeNode(v) {
     from: line(o.from, 2000),
     files: count(o.files),
     deletedAt: msOf(o.deletedAt),
+    // Drive 1.5 ('deleteAfter'): goes into the trash at this time (deleted on a device that backs it up)
+    deleteAt: msOf(o.deleteAt),
+    deletedOnDevice: line(o.deletedOnDevice, 128),
   };
 }
 
@@ -254,7 +258,96 @@ function normalizeMe(raw) {
       const name = o && line(o.name, 200);
       return id && name ? { id, name } : null;
     }).filter(Boolean),
+    // Drive 1.6 ('links'): direct links into the portal; ('guard'): the ransomware guard
+    links: normalizeLinks16(r.links),
+    guard: normalizeGuard(r.guard),
+    incidents: arr(r.incidents).slice(0, 50).map(normalizeIncident).filter(Boolean),
   };
+}
+
+// ── Drive 1.6: portal links, guard ─────────────────────────
+
+const LINK_URL_MAX = 2000;
+
+/** An https URL (no user / password), else null. */
+function httpsUrl(v) {
+  if (typeof v !== 'string' || !v || v.length > LINK_URL_MAX) return null;
+  let u;
+  try { u = new URL(v); } catch { return null; }
+  if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) return null;
+  return v;
+}
+
+/** me.links → { node: '…{id}…', drive } | null (the node template must hold `{id}`). */
+function normalizeLinks16(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const node = typeof o.node === 'string' && o.node.includes('{id}') && httpsUrl(o.node.split('{id}').join('1')) ? o.node : null;
+  const d = httpsUrl(o.drive);
+  return node || d ? { node, drive: d } : null;
+}
+
+/**
+ * The portal link of a node from the template `me.links.node` → https URL or null.
+ * `allowedHosts`: the host names the link may point to (the server, the portal).
+ */
+function nodeLink(template, id, allowedHosts = null) {
+  const n = posId(id);
+  if (!n || typeof template !== 'string' || !template.includes('{id}')) return null;
+  return allowedLink(template.split('{id}').join(String(n)), allowedHosts);
+}
+
+/** An https URL whose host is one of `allowedHosts` (null: any host) → the URL or null. */
+function allowedLink(raw, allowedHosts = null) {
+  const url = httpsUrl(raw);
+  if (!url) return null;
+  if (Array.isArray(allowedHosts)) {
+    const host = new URL(url).hostname.toLowerCase();
+    if (!allowedHosts.some((h) => typeof h === 'string' && h.toLowerCase() === host)) return null;
+  }
+  return url;
+}
+
+const INCIDENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A guard incident → { id, at, device, deviceName, files, sample: [string] } or null. */
+function normalizeIncident(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const id = posId(o.id) || (typeof o.id === 'string' && INCIDENT_ID_RE.test(o.id) ? o.id : null);
+  if (!id) return null;
+  const sample = arr(o.sample).slice(0, 10).map((x) => {
+    if (typeof x === 'string') return line(x, 1000);
+    const s = obj(x);
+    return s ? line(s.path || s.name, 1000) : null;
+  }).filter(Boolean);
+  return {
+    id,
+    at: msOf(o.at),
+    device: line(o.device, 128),
+    deviceName: line(o.deviceName, 100),
+    files: count(o.files) || 0,
+    sample,
+    state: line(o.state, 20),
+  };
+}
+
+/** me.guard → { locked, incident } | null */
+function normalizeGuard(v) {
+  const o = obj(v);
+  if (!o) return null;
+  return { locked: bool(o.locked), incident: normalizeIncident(o.incident) };
+}
+
+/** Is `id` a guard incident id (number or token)? */
+function incidentIdOf(v) {
+  return posId(v) || (typeof v === 'string' && INCIDENT_ID_RE.test(v) ? v : null);
+}
+
+/** POST guard/incidents/<id>/release|undo → { incident, restored, trashed } */
+function normalizeGuardAnswer(raw) {
+  const r = obj(raw) || {};
+  return { incident: normalizeIncident(r.incident), restored: count(r.restored) || 0, trashed: count(r.trashed) || 0 };
 }
 
 /** GET nodes/<id>/versions → { current, versions: [{ id, rev, size, at, by }] } or null. */
@@ -417,6 +510,13 @@ function errorCode(err) {
 }
 
 module.exports = {
+  normalizeLinks16,
+  nodeLink,
+  allowedLink,
+  normalizeIncident,
+  normalizeGuard,
+  normalizeGuardAnswer,
+  incidentIdOf,
   DEVICE_ID_RE,
   normalizeDevice,
   PLUGIN_ID,

@@ -8,9 +8,14 @@
  *
  * - "Nur sichern" (mode 'backup'): one way, PC → Drive, into
  *   Meine Dateien › Geräte › <PC> › <folder>. The folder stays complete on the
- *   PC. A file deleted on the PC stays in Drive for 30 days (kept in the
- *   folder's state as "pending"), then goes into Drive's trash. What changes
- *   in Drive is never written back to the PC.
+ *   PC. A file deleted on the PC stays in Drive for 30 days, then goes into
+ *   Drive's trash: Drive 1.5 ('deleteAfter') keeps the time itself
+ *   (DELETE nodes/<id>?after=2592000&device=<id>, the node gets `deleteAt`;
+ *   a file that is back on the PC calls it off: PATCH { deleteAt: null } or a
+ *   new version); older Drives: the folder's state keeps the list ("pending")
+ *   and the PC moves the files into the trash after 30 days. A list kept by
+ *   an older version goes to Drive on the first run with the time left. What
+ *   changes in Drive is never written back to the PC.
  * - "Abgleichen" (mode 'sync'): both ways with a Drive folder the person
  *   picked (writable); every file complete on each device. Drive's changes
  *   come from its change log (GET changes?since=, live event `changed` of the
@@ -33,6 +38,17 @@
  * - Guard: deleting more than 500 files at once, or more than 20 % of a
  *   folder (at least 10 files), waits for the person ("Löschen übertragen" /
  *   "Wiederherstellen").
+ * - Ransomware (utils/drive-guard.js): many existing files changed into
+ *   high-entropy content, or renamed to a ransomware extension (≥ 50, or ≥ 20 %
+ *   of a folder with ≥ 20 files): nothing goes up, the folder waits for the
+ *   person ("Hochladen" / "Pausiert lassen"). Every commit carries the entropy
+ *   of the first 64 KB (Drive 1.6 'guard'). Drive itself can stop this device
+ *   (423 `device_locked`, the live event `guard`, me.guard): every folder stops
+ *   at once ("Von Drive gestoppt") until the person decides on the page; after
+ *   "Rückgängig machen" the files of each folder come back from Drive – a PC
+ *   file that differs stays next to it as a conflict copy that is not
+ *   uploaded (with files new on the PC since then: "zurückgehalten").
+ * - PDFs with a text layer: their text goes with the commit (search).
  * - Control: pause all / a folder, upload / download limit (KB/s, shared by
  *   every transfer of a direction), "nur im Heimnetz" (networks marked as
  *   home: utils/drive-sync.js localNetworks + fingerprints), "nur mit VPN".
@@ -67,6 +83,8 @@ const DriveApi = require('./drive-api');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
+const G = require('../utils/drive-guard');
+const { pdfText, isPdf } = require('../utils/pdf-text');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
 
@@ -92,6 +110,8 @@ function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
 const isNetwork = (err) => !!err && (err.code === 'network' || err.code === 'timeout' || err.code === 'not_configured' || err.code === 'offline'
   || err.status === 502 || err.status === 503 || err.status === 504 || err.status === 429);
+// Drive 1.6 'guard': Drive stopped this device – the run ends at once
+const isLocked = (err) => !!err && err.status === 423 && err.code === 'device_locked';
 
 class SyncStop extends Error {}
 
@@ -119,14 +139,17 @@ class DriveSync extends EventEmitter {
    * @param {object} [opts.pushClient] - live events of the plugin (changed)
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
+   * @param {(file: string, o: object) => Promise<string|null>} [opts.readPdfText] - text layer of a PDF (tests)
    */
   constructor({
     drive: driveSvc, api = null, store, dir, log, trashItem = null, dialog = null, shell = null, getMainWindow = null,
     hostname = () => os.hostname(), getInterfaces = () => os.networkInterfaces(), getGateways = null, isVpnUp = null, getDeviceKey = null,
-    knownFolders = null, blockedPaths = null, appVersion = '', pushClient = null, timing = {}, now = Date.now,
+    knownFolders = null, blockedPaths = null, appVersion = '', pushClient = null, timing = {}, now = Date.now, readPdfText = null,
   } = {}) {
     super();
     this.log = log || noopLog();
+    this.readPdfText = typeof readPdfText === 'function' ? readPdfText : (file, o) => pdfText(file, { ...o, log: this.log });
+    this._guard = null;            // Drive 1.6: { locked, incident } – Drive stopped this device
     this.driveSvc = driveSvc || null;
     this.api = api || (driveSvc && driveSvc.api) || new DriveApi({ log: this.log });
     this.store = store;
@@ -200,8 +223,8 @@ class DriveSync extends EventEmitter {
       const fresh = !!f && !f.lastSyncAt;
       this._rt.set(id, {
         state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null,
-        confirm: null, allowDeletes: false, restore: false, files: null, bytes: null, skipped: 0, pendingDeletes: 0,
-        conflicts: 0, watching: false,
+        confirm: null, allowDeletes: false, restore: false, files: null, bytes: null, skipped: 0, pendingDeletes: 0, pendingUntil: null,
+        conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0,
       });
     }
     return this._rt.get(id);
@@ -215,8 +238,10 @@ class DriveSync extends EventEmitter {
     const d = this.driveSvc;
     if (d && typeof d.on === 'function') {
       const onState = (st) => { if (st && st.state === 'available') this.syncAll({ full: true }); else this._emit(); };
+      const onGuard = (g) => this._onGuard(g);
       d.on('state', onState);
-      this._unsub.push(() => d.removeListener('state', onState));
+      d.on('guard', onGuard);
+      this._unsub.push(() => { d.removeListener('state', onState); d.removeListener('guard', onGuard); });
     }
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
@@ -256,7 +281,8 @@ class DriveSync extends EventEmitter {
   resetForNewServer() {
     this._queue.clear();
     this._states.clear();
-    for (const rt of this._rt.values()) { rt.confirm = null; rt.allowDeletes = false; rt.restore = false; }
+    this._guard = null;
+    for (const rt of this._rt.values()) { rt.confirm = null; rt.allowDeletes = false; rt.restore = false; rt.suspect = null; rt.allowSuspect = false; rt.undo = false; }
     this._device = { id: null };
     this._meAt = 0;
     this._emit(true);
@@ -274,7 +300,7 @@ class DriveSync extends EventEmitter {
     const s = this._cfg.settings;
     const folders = this._cfg.folders.map((f) => this._view(f));
     const pick = (st) => folders.some((f) => f.state === st);
-    const state = !folders.length ? 'empty' : s.paused ? 'paused' : pick('confirm') ? 'confirm' : pick('syncing') ? 'syncing'
+    const state = !folders.length ? 'empty' : this._isLocked() ? 'locked' : s.paused ? 'paused' : pick('confirm') ? 'confirm' : pick('syncing') ? 'syncing'
       : pick('error') ? 'error' : pick('waiting') ? 'waiting' : folders.every((f) => f.state === 'paused') ? 'paused' : 'idle';
     const last = folders.reduce((m, f) => Math.max(m, f.lastSyncAt || 0), 0) || null;
     let known = [];
@@ -286,6 +312,8 @@ class DriveSync extends EventEmitter {
       network: { home: this._atHome(), known: s.homeNets.length },
       paused: s.paused,
       state,
+      // Drive 1.6 'guard': Drive stopped this device ({ locked, incident }) or null
+      guard: this._isLocked() ? { locked: true, incident: this._guard.incident || null } : null,
       lastSyncAt: last,
       folders,
       known: known.map((k) => {
@@ -300,7 +328,7 @@ class DriveSync extends EventEmitter {
     const scopeOk = !f.scope || f.scope === this._scopeKey();
     let state = rt.state;
     let reason = rt.reason;
-    if (!scopeOk) { state = 'error'; reason = 'other_server'; } else if (f.paused || this._cfg.settings.paused) { if (state !== 'syncing') { state = 'paused'; reason = this._cfg.settings.paused ? 'all' : 'folder'; } } else if (rt.confirm) { state = 'confirm'; reason = 'mass_delete'; }
+    if (!scopeOk) { state = 'error'; reason = 'other_server'; } else if (this._isLocked()) { state = 'locked'; reason = 'guard_locked'; } else if (f.paused || this._cfg.settings.paused) { if (state !== 'syncing') { state = 'paused'; reason = this._cfg.settings.paused ? 'all' : 'folder'; } } else if (rt.suspect) { state = 'confirm'; reason = 'suspect'; } else if (rt.confirm) { state = 'confirm'; reason = 'mass_delete'; }
     return {
       id: f.id,
       path: f.path,
@@ -316,10 +344,16 @@ class DriveSync extends EventEmitter {
       failed: rt.failed,
       failure: rt.failure,
       confirm: rt.confirm ? { ...rt.confirm } : null,
+      // "ungewöhnliche Änderungen": { count, sample, why: 'entropy' | 'extension' }
+      suspect: rt.suspect ? { ...rt.suspect, sample: rt.suspect.sample.slice() } : null,
       files: rt.files,
       bytes: rt.bytes,
       skipped: rt.skipped,
       pendingDeletes: rt.pendingDeletes,
+      // the first time one of them goes into Drive's trash (ms) or null
+      pendingUntil: rt.pendingUntil,
+      // files new / differing on the PC after "Rückgängig machen", not uploaded
+      held: rt.held,
       conflicts: rt.conflicts,
       watching: rt.watching,
       lastSyncAt: f.lastSyncAt,
@@ -468,6 +502,8 @@ class DriveSync extends EventEmitter {
   async removeFolder(id) {
     const f = this._folder(id);
     if (!f) throw new DriveError('no such folder', { code: 'not_found' });
+    // "deletes nothing": deletes Drive keeps the time of (Drive 1.5 'deleteAfter') are called off
+    await this._unmarkAll(f).catch((err) => this.log.info(`Drive sync: delayed deletes not called off (${drive.errorCode(err)})`));
     this._unwatch(id);
     this._queue.delete(id);
     this._cfg.folders = this._cfg.folders.filter((x) => x.id !== id);
@@ -504,6 +540,65 @@ class DriveSync extends EventEmitter {
     this._emit(true);
     this.sync(id, { full: true });
     return this.status();
+  }
+
+  /**
+   * The answer to "ungewöhnliche Änderungen" (many files changed into encrypted-looking content):
+   * 'upload' (they are the person's changes: upload them) | 'keep' (the folder stays paused).
+   */
+  confirmSuspect(id, decision) {
+    const f = this._folder(id);
+    const rt = f && this._rt.get(id);
+    if (!f || !rt || !rt.suspect) throw new DriveError('nothing to confirm', { code: 'not_found' });
+    if (decision !== 'upload' && decision !== 'keep') throw new DriveError('invalid decision', { code: 'invalid' });
+    rt.suspect = null;
+    if (decision === 'keep') {
+      f.paused = true;
+      rt.allowSuspect = false;
+      this._save();
+      this._emit(true);
+      return this.status();
+    }
+    rt.allowSuspect = true;
+    this._emit(true);
+    this.sync(id, { full: true });
+    return this.status();
+  }
+
+  // ── Guard (Drive 1.6) ────────────────────────────────────
+
+  _isLocked() {
+    return !!(this._guard && this._guard.locked);
+  }
+
+  /**
+   * The guard state of DriveService ('guard' event): locked → every folder stops; free again →
+   * every folder runs (after "Rückgängig machen" first bringing the files back from Drive).
+   */
+  _onGuard(g) {
+    if (!g || typeof g !== 'object') return;
+    const was = this._isLocked();
+    this._guard = g.locked ? { locked: true, incident: g.incident || null } : null;
+    if (g.decided === 'undo') {
+      for (const f of this._cfg.folders) this._runtime(f.id).undo = true;
+      this.log.info('Drive sync: Drive undid the changes of this PC – the files come back from Drive');
+    }
+    this._emit(true);
+    if ((was && !g.locked) || g.decided) {
+      this._retry = 0;
+      this.syncAll({ full: true });
+    }
+  }
+
+  /** A write was refused because Drive stopped this device (423 device_locked). */
+  _lockedBy(err) {
+    if (!(err && err.status === 423 && err.code === 'device_locked')) return false;
+    const inc = drive.normalizeIncident(err.body && err.body.incident);
+    this._guard = { locked: true, incident: inc || (this._guard && this._guard.incident) || null };
+    this.log.warn('Drive sync: Drive stopped this PC after unusual changes – nothing more goes up');
+    if (this.driveSvc && typeof this.driveSvc.guard === 'function') this.driveSvc.guard({ fresh: true }).catch(() => {});
+    this._emit(true);
+    return true;
   }
 
   /** Opens the local folder in the Explorer. */
@@ -620,6 +715,7 @@ class DriveSync extends EventEmitter {
   _blocked(f) {
     const s = this._cfg.settings;
     if (f.scope && f.scope !== this._scopeKey()) return { state: 'error', reason: 'other_server' };
+    if (this._isLocked()) return { state: 'locked', reason: 'guard_locked' };
     if (s.paused) return { state: 'paused', reason: 'all' };
     if (f.paused) return { state: 'paused', reason: 'folder' };
     const ds = this.driveSvc && typeof this.driveSvc.status === 'function' ? this.driveSvc.status() : { state: 'available' };
@@ -637,6 +733,13 @@ class DriveSync extends EventEmitter {
   _check(f) {
     const b = this._blocked(f);
     if (b) throw new SyncStop(b.reason);
+  }
+
+  /** While Drive keeps this device stopped: ask again now and then (a release in the portal without a live event). */
+  _recheckGuard() {
+    if (this._guardAsked && this.now() - this._guardAsked < 5 * 60 * 1000) return;
+    this._guardAsked = this.now();
+    if (this.driveSvc && typeof this.driveSvc.guard === 'function') this.driveSvc.guard({ fresh: true }).catch(() => {});
   }
 
   // ── State files ──────────────────────────────────────────
@@ -678,11 +781,12 @@ class DriveSync extends EventEmitter {
     if (blocked) {
       rt.state = blocked.state;
       rt.reason = blocked.reason;
+      if (blocked.reason === 'guard_locked') this._recheckGuard();
       this._emit();
       return;
     }
     const st = await this._state(f);
-    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0 };
+    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0, uploaded: new Set(), entropy: new Map() };
     rt.state = 'syncing';
     rt.reason = 'checking';
     rt.total = 0;
@@ -697,6 +801,9 @@ class DriveSync extends EventEmitter {
       if (!this._meAt || this.now() - this._meAt > 30 * 60 * 1000) await this._me(ctx);
       // Drive 1.5: empty files go up without media (older Drives: they are left out)
       ctx.emptyOk = await this._has('emptyFiles');
+      // Drive 1.5: Drive keeps the 30 days of "Nur sichern"; 1.6: the entropy goes with each commit
+      ctx.deleteAfter = await this._has('deleteAfter');
+      ctx.guard = await this._has('guard');
       await this._ensureTarget(ctx);
       const touched = await this._pullRemote(ctx);
       if (q.remote && !q.full && !touched && !rt.dirty && rt.watching && st.base && Object.keys(st.base).length) {
@@ -719,6 +826,9 @@ class DriveSync extends EventEmitter {
         const b = this._blocked(f) || { state: 'waiting', reason: err.message };
         rt.state = b.state;
         rt.reason = b.reason;
+      } else if (this._lockedBy(err)) {
+        rt.state = 'locked';
+        rt.reason = 'guard_locked';
       } else if (isNetwork(err)) {
         rt.state = 'waiting';
         rt.reason = 'offline';
@@ -751,6 +861,13 @@ class DriveSync extends EventEmitter {
     this._device.id = m.me.deviceId || null;
     this._meAt = this.now();
     ctx.me = m;
+    // Drive 1.6 'guard': Drive stopped this device – nothing goes up
+    if (m.guard && m.guard.locked) {
+      this._guard = { locked: true, incident: m.guard.incident || null };
+      this._emit(true);
+      this._recheckGuard(); // the page learns it too (DriveService 'guard')
+      throw new SyncStop('guard_locked');
+    }
     return m;
   }
 
@@ -985,12 +1102,26 @@ class DriveSync extends EventEmitter {
       if (S.excluded(r.path, { dir: r.dir, size: r.size }, settings) || (!r.dir && !r.size && !ctx.emptyOk)) continue;
       remote.set(k, r);
     }
-    return { base, local, remote };
+    // held back after "Rückgängig machen" (not uploaded while unchanged)
+    const view = new Map(local);
+    for (const [k, q] of Object.entries(st.quarantine || {})) {
+      const l = view.get(k);
+      if (!l || l.dir || l.size !== q.size || l.mtime !== q.mtime || st.base[k]) { delete st.quarantine[k]; continue; }
+      view.delete(k);
+    }
+    ctx.rt.held = Object.keys(st.quarantine || {}).length;
+    return { base, local: view, remote };
   }
 
   async _reconcile(ctx) {
     const { f, st, rt } = ctx;
     let { local, unreadable } = await this._scanLocal(ctx);
+    // after "Rückgängig machen" (Drive 1.6 'guard'): the files come back from Drive first
+    if (rt.undo) {
+      rt.undo = false;
+      await this._restoreAfterUndo(ctx, local);
+      ({ local, unreadable } = await this._scanLocal(ctx));
+    }
     // Moves first (as moves: nothing is uploaded or downloaded again)
     for (let round = 0; round < 50; round++) {
       const v = this._views(ctx, local, unreadable);
@@ -1026,6 +1157,22 @@ class DriveSync extends EventEmitter {
     rt.allowDeletes = false;
     rt.restore = false;
 
+    // Ransomware: many existing files changed into encrypted-looking content (or renamed to a
+    // ransomware extension) → nothing of this run goes to Drive; the person decides.
+    if (!rt.allowSuspect) {
+      const sus = await this._suspicious(ctx, actions, v);
+      if (sus.trip) {
+        rt.suspect = { count: sus.count, sample: sus.sample, why: sus.why };
+        rt.total = 0;
+        rt.done = 0;
+        this.log.warn(`Drive sync: ${sus.count} files changed in an unusual way (${sus.why}) — nothing uploaded, waiting for the person`);
+        rt.pendingDeletes = Object.keys(st.pending).length;
+        return;
+      }
+    }
+    rt.suspect = null;
+    rt.allowSuspect = false;
+
     const transfers = actions.filter((a) => a.op === 'upload' || a.op === 'download' || a.op === 'merge');
     rt.total = transfers.length;
     rt.done = 0;
@@ -1036,7 +1183,7 @@ class DriveSync extends EventEmitter {
       try {
         await this._do(ctx, a);
       } catch (err) {
-        if (err instanceof SyncStop || isNetwork(err)) throw err;
+        if (err instanceof SyncStop || isNetwork(err) || isLocked(err)) throw err;
         rt.failed++;
         rt.failure = { name: S.baseName(a.path || a.key), code: drive.errorCode(err) };
         this.log.info(`Drive sync: ${a.op} of a file failed (${rt.failure.code})`);
@@ -1045,6 +1192,97 @@ class DriveSync extends EventEmitter {
       if (++ctx.actions % this.timing.saveEvery === 0) await this._writeState(f.id).catch(() => {});
     }
     rt.pendingDeletes = Object.keys(st.pending).length;
+  }
+
+  /**
+   * The ransomware check of a run (utils/drive-guard.js): existing files changed into high-entropy
+   * content that was not high-entropy before, and new files named like a file that went plus a
+   * ransomware extension → { trip, count, sample, why }. The entropies are kept for the commits.
+   */
+  async _suspicious(ctx, actions, v) {
+    const { base, local } = v;
+    ctx.entropy = ctx.entropy || new Map();
+    const changed = actions.filter((a) => (a.op === 'upload' || a.op === 'merge') && base[a.key] && !base[a.key].dir);
+    const fresh = actions.filter((a) => a.op === 'upload' && !base[a.key]);
+    // fewer than 4 candidates can never reach a threshold (20 % of at least 20 files)
+    if (changed.length + fresh.length < 4) return { trip: false, count: 0, sample: [], why: null };
+    const gone = new Map(); // folder key → names of files that left the PC
+    for (const [k, b] of Object.entries(base)) {
+      if (b.dir || local.has(k)) continue;
+      const d = S.parentOf(k);
+      if (!gone.has(d)) gone.set(d, []);
+      gone.get(d).push(S.baseName(k));
+    }
+    const list = [];
+    let ent = 0;
+    let ext = 0;
+    for (const a of changed) {
+      const e = await G.fileEntropy(this._abs(ctx, a.path));
+      if (e !== null) ctx.entropy.set(a.key, e);
+      if (G.suspiciousChange(a.path, e, base[a.key].ent)) { list.push({ dir: S.parentOf(a.key), name: S.baseName(a.path) }); ent++; }
+    }
+    for (const a of fresh) {
+      if (G.ransomRename(S.baseName(a.key), gone.get(S.parentOf(a.key)))) { list.push({ dir: S.parentOf(a.key), name: S.baseName(a.path) }); ext++; }
+    }
+    const files = new Map();
+    for (const [k, b] of Object.entries(base)) if (!b.dir) files.set(S.parentOf(k), (files.get(S.parentOf(k)) || 0) + 1);
+    const r = G.guardTrips(list, (d) => files.get(d) || 0);
+    return { ...r, why: ext > ent ? 'extension' : 'entropy' };
+  }
+
+  /**
+   * After "Rückgängig machen": Drive has the files as they were before. Every file of the last
+   * agreed state that differs on the PC (or is gone there) comes back from Drive; the PC's
+   * differing bytes stay next to it as a conflict copy, held back (not uploaded) like files that
+   * are new on the PC since then. Nothing on the PC is overwritten without a copy.
+   */
+  async _restoreAfterUndo(ctx, local) {
+    const { st } = ctx;
+    st.quarantine = st.quarantine || {};
+    const remote = S.remoteByPath(st.tree, st.rootId);
+    const device = this._cfg.settings.deviceName || S.deviceName(this._host());
+    let back = 0;
+    for (const [k, b] of Object.entries(st.base)) {
+      if (b.dir) continue;
+      this._check(ctx.f);
+      const r = remote.get(k);
+      const l = local.get(k);
+      if (!r) {
+        // gone in Drive (a file the incident made, trashed by the undo): the PC's copy is held back
+        if (l && !l.dir) { st.quarantine[k] = { size: l.size, mtime: l.mtime }; delete st.base[k]; }
+        continue;
+      }
+      if (r.dir || (l && l.dir)) continue;
+      const lSame = !!l && l.size === b.size && l.mtime === b.mtime;
+      if (lSame && r.nodeId === b.nodeId && r.rev === b.rev) continue;
+      if (l) {
+        const abs = this._abs(ctx, l.path);
+        const sha = await this._hash(ctx, abs, l.size);
+        if (sha && r.sha256 && sha === r.sha256) {
+          this._record(ctx, k, { ...b, path: l.path, size: l.size, mtime: l.mtime, sha256: sha, nodeId: r.nodeId, rev: r.rev });
+          continue;
+        }
+        const crel = S.joinRel(S.parentOf(l.path), S.conflictName(S.baseName(l.path), device, this.now()));
+        if (await this._stat(this._abs(ctx, crel))) continue;
+        await fs.promises.rename(abs, this._abs(ctx, crel));
+        st.quarantine[S.keyOf(crel)] = { size: l.size, mtime: l.mtime };
+        ctx.rt.conflicts++;
+      }
+      try {
+        await this._download(ctx, { key: k, path: r.path, nodeId: r.nodeId, rev: r.rev, size: r.size, mtime: r.mtime, sha256: r.sha256 }, { force: true });
+        back++;
+      } catch (err) {
+        if (err instanceof SyncStop || isNetwork(err) || isLocked(err)) throw err;
+        this.log.info(`Drive sync: a file did not come back from Drive (${drive.errorCode(err)})`);
+      }
+    }
+    // files new on the PC (not in the last agreed state, not in Drive): held back
+    for (const [k, l] of local) {
+      if (l.dir || st.base[k] || remote.has(k)) continue;
+      st.quarantine[k] = { size: l.size, mtime: l.mtime };
+    }
+    ctx.rt.held = Object.keys(st.quarantine).length;
+    this.log.info(`Drive sync: ${back} files back from Drive, ${ctx.rt.held} held back`);
   }
 
   // ── Actions ──────────────────────────────────────────────
@@ -1102,11 +1340,48 @@ class DriveSync extends EventEmitter {
       case 'merge': return this._merge(ctx, a);
       case 'deleteLocal': return this._deleteLocal(ctx, a);
       case 'trashRemote': return this._trashRemote(ctx, a);
-      case 'pendingDelete':
-        if (!ctx.st.pending[a.key]) ctx.st.pending[a.key] = { at: this.now(), nodeId: a.nodeId, path: a.path, dir: !!a.dir };
-        return undefined;
+      case 'pendingDelete': return this._pendingDelete(ctx, a);
       case 'kindClash': return this._kindClash(ctx, a);
       default: return undefined;
+    }
+  }
+
+  /**
+   * "Nur sichern": a file (folder) deleted on the PC stays in Drive for 30 days. Drive 1.5
+   * ('deleteAfter') keeps the time (DELETE ?after=…&device=…); older Drives: the list here.
+   */
+  async _pendingDelete(ctx, a) {
+    if (ctx.st.pending[a.key]) return;
+    const p = { at: this.now(), nodeId: a.nodeId, path: a.path, dir: !!a.dir, server: false, deleteAt: null };
+    if (ctx.deleteAfter && a.nodeId) {
+      const r = await this._markRemote(a.nodeId, S.BACKUP_DELETE_DAYS * DAY / 1000);
+      if (r) Object.assign(p, { server: true, deleteAt: r.deleteAt || this.now() + S.BACKUP_DELETE_DAYS * DAY });
+    }
+    ctx.st.pending[a.key] = p;
+  }
+
+  /** DELETE nodes/<id>?after=<s>&device=<id> → { deleteAt } | null when the node is gone (404). */
+  async _markRemote(nodeId, seconds) {
+    const after = Math.max(60, Math.round(seconds));
+    try {
+      const r = await this.api.trash(nodeId, { after, device: this._deviceId() });
+      return { deleteAt: r.deleteAt || this.now() + after * 1000 };
+    } catch (err) {
+      if (err && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Calls off the delayed deletes Drive keeps for this folder (removing the folder deletes nothing). */
+  async _unmarkAll(f) {
+    if (!this.dir) return;
+    let st = this._states.get(f.id);
+    if (!st) {
+      try { st = parseState(JSON.parse(await fs.promises.readFile(this._statePath(f.id), 'utf8'))); } catch { st = null; }
+    }
+    const list = st ? Object.values(st.pending).filter((p) => p.server && p.nodeId) : [];
+    for (const p of list.slice(0, 5000)) {
+      try { await this.api.unmark(p.nodeId); } catch (err) { if (!(err && (err.status === 404 || err.status === 400))) throw err; }
     }
   }
 
@@ -1199,21 +1474,40 @@ class DriveSync extends EventEmitter {
       }
     }
     const up = await this._uploadMedia(ctx, abs, s.size, name);
+    const extra = await this._commitExtra(ctx, a.key, abs, name, s.size);
     const opts = f.mode === 'backup'
       ? { onConflict: 'version' }
       : { onConflict: null, baseRev: a.nodeId ? a.baseRev : null };
     let res;
     try {
-      res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, ...opts });
+      res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, ...opts, ...extra.send });
     } catch (err) {
       if (err && err.status === 409 && err.code === 'conflict') {
         const cur = drive.normalizeNode(err.body && err.body.current);
-        return this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur });
+        return this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur, extra });
       }
       throw err;
     }
     this._tree(ctx, res.node);
-    this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev });
+    this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev, ent: extra.ent });
+    if (ctx.uploaded) ctx.uploaded.add(a.key);
+  }
+
+  /**
+   * What goes with a commit: the text layer of a PDF (search), the entropy of the first 64 KB
+   * (sent to Drive 1.6 'guard', kept in the state as `ent` for the ransomware check).
+   * → { send: { text?, entropy? }, ent }
+   */
+  async _commitExtra(ctx, key, abs, name, size) {
+    const send = {};
+    let ent = ctx.entropy && ctx.entropy.has(key) ? ctx.entropy.get(key) : null;
+    if (size > 0 && ent === null) ent = await G.fileEntropy(abs);
+    if (ctx.guard && ent !== null) send.entropy = ent;
+    if (size > 0 && isPdf(name)) {
+      const text = await Promise.resolve(this.readPdfText(abs, { size })).catch(() => null);
+      if (text) send.text = text;
+    }
+    return { send, ent };
   }
 
   /**
@@ -1221,7 +1515,7 @@ class DriveSync extends EventEmitter {
    * "Name (Konflikt <PC> <Datum>).ext" next to the file — in Drive and on the PC —
    * and Drive's file comes to its place on the PC.
    */
-  async _conflict(ctx, a, { mediaId, empty = false, sha, size, mtime, parentId, cur }) {
+  async _conflict(ctx, a, { mediaId, empty = false, sha, size, mtime, parentId, cur, extra = null }) {
     const { st, rt } = ctx;
     if (cur && sha && cur.sha256 === sha) {
       this._tree(ctx, cur);
@@ -1239,7 +1533,7 @@ class DriveSync extends EventEmitter {
     await fs.promises.rename(from, to);
     let res;
     try {
-      res = await this.api.commit({ mediaId, empty, parentId, name: cname, mtime, onConflict: 'rename' });
+      res = await this.api.commit({ mediaId, empty, parentId, name: cname, mtime, onConflict: 'rename', ...(extra ? extra.send : {}) });
     } catch (err) {
       await fs.promises.rename(to, from).catch(() => {});
       throw err;
@@ -1251,7 +1545,7 @@ class DriveSync extends EventEmitter {
       }
     }
     this._tree(ctx, res.node);
-    this._record(ctx, S.keyOf(crel), { path: crel, dir: false, size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev });
+    this._record(ctx, S.keyOf(crel), { path: crel, dir: false, size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev, ent: extra ? extra.ent : null });
     delete st.base[a.key];
     rt.conflicts++;
     this.log.info('Drive sync: a conflict — the PC\'s copy is kept next to the file');
@@ -1277,16 +1571,18 @@ class DriveSync extends EventEmitter {
     if (!parentId) throw new DriveError('parent missing', { code: 'parent_missing' });
     const name = S.baseName(a.path);
     const up = await this._uploadMedia(ctx, abs, s.size, name);
+    const extra = await this._commitExtra(ctx, a.key, abs, name, s.size);
     if (f.mode === 'backup') {
       // "Nur sichern": the PC's file is the new version (Drive keeps the old one as a version)
-      const res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, onConflict: 'version' });
+      const res = await this.api.commit({ mediaId: up.mediaId, empty: !!up.empty, parentId, name, mtime, onConflict: 'version', ...extra.send });
       this._tree(ctx, res.node);
-      this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev });
+      this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime, sha256: sha || res.node.sha256, nodeId: res.node.id, rev: res.node.rev, ent: extra.ent });
+      if (ctx.uploaded) ctx.uploaded.add(a.key);
       return;
     }
     const tree = ctx.st.tree && ctx.st.tree[a.nodeId];
     const cur = tree ? { id: tree.id, isDir: false, rev: tree.rev, size: tree.size, mtime: tree.mtime, sha256: tree.sha256, name: tree.name, parentId: tree.parentId } : null;
-    await this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur });
+    await this._conflict(ctx, a, { mediaId: up.mediaId, empty: !!up.empty, sha, size: s.size, mtime, parentId, cur, extra });
   }
 
   async _download(ctx, a, { force = false } = {}) {
@@ -1319,7 +1615,8 @@ class DriveSync extends EventEmitter {
       throw err;
     }
     const s = await fs.promises.stat(abs);
-    this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime: Math.floor(s.mtimeMs), sha256: a.sha256 || null, nodeId: a.nodeId, rev: a.rev });
+    const ent = s.size > 0 ? await G.fileEntropy(abs) : null;
+    this._record(ctx, a.key, { path: a.path, dir: false, size: s.size, mtime: Math.floor(s.mtimeMs), sha256: a.sha256 || null, nodeId: a.nodeId, rev: a.rev, ent });
   }
 
   async _deleteLocal(ctx, a) {
@@ -1363,7 +1660,7 @@ class DriveSync extends EventEmitter {
     try {
       parentId = toParentKey === fromParentKey ? null : await this._ensureParent(ctx, m.toKey, m.to);
     } catch (err) {
-      if (isNetwork(err)) throw err;
+      if (isNetwork(err) || isLocked(err)) throw err;
       return false;
     }
     const name = S.baseName(m.to);
@@ -1371,7 +1668,7 @@ class DriveSync extends EventEmitter {
       const node = await this.api.place(m.nodeId, { name: name !== S.baseName(m.from) ? name : null, parentId });
       this._tree(ctx, node);
     } catch (err) {
-      if (isNetwork(err)) throw err;
+      if (isNetwork(err) || isLocked(err)) throw err;
       this.log.info(`Drive sync: a move in Drive failed (${drive.errorCode(err)}); delete and upload instead`);
       return false;
     }
@@ -1394,18 +1691,41 @@ class DriveSync extends EventEmitter {
     return true;
   }
 
-  /** "Nur sichern": files deleted on the PC 30 days ago go into Drive's trash. */
+  /**
+   * "Nur sichern": files deleted on the PC 30 days ago go into Drive's trash – Drive 1.5
+   * ('deleteAfter') does that itself (a list of an older version goes there with the time left);
+   * a file back on the PC calls the delete off.
+   */
   async _expirePending(ctx) {
     const { f, st } = ctx;
-    if (f.mode !== 'backup') { st.pending = {}; return; }
+    if (f.mode !== 'backup') { st.pending = {}; ctx.rt.pendingUntil = null; return; }
     const limit = S.BACKUP_DELETE_DAYS * DAY;
     const keys = Object.keys(st.pending).sort((a, b) => a.length - b.length);
     for (const k of keys) {
       const p = st.pending[k];
       if (!p) continue;
       const b = st.base[k];
-      if (!b || await this._stat(this._abs(ctx, b.path))) { delete st.pending[k]; continue; }
-      if (this.now() - p.at < limit) continue;
+      if (!b || await this._stat(this._abs(ctx, b.path))) {
+        // back on the PC: Drive calls its delete off (a new version did that already)
+        if (b && p.server && p.nodeId && !(ctx.uploaded && ctx.uploaded.has(k))) {
+          this._check(f);
+          try { await this.api.unmark(p.nodeId); } catch (err) { if (!(err && err.status === 404)) throw err; }
+        }
+        delete st.pending[k];
+        continue;
+      }
+      if (p.server) continue; // Drive moves it into the trash at deleteAt (change log: delete)
+      const left = limit - (this.now() - p.at);
+      if (left > 0) {
+        // an older version kept the list: Drive keeps the time from now on
+        if (ctx.deleteAfter && p.nodeId) {
+          this._check(f);
+          const r = await this._markRemote(p.nodeId, left / 1000);
+          if (r) Object.assign(p, { server: true, deleteAt: r.deleteAt });
+          else this._forget(ctx, k);
+        }
+        continue;
+      }
       this._check(f);
       const node = st.tree && st.tree[p.nodeId];
       if (node && (b.dir || node.rev === b.rev)) {
@@ -1414,7 +1734,9 @@ class DriveSync extends EventEmitter {
       }
       this._forget(ctx, k);
     }
-    ctx.rt.pendingDeletes = Object.keys(st.pending).length;
+    const all = Object.values(st.pending);
+    ctx.rt.pendingDeletes = all.length;
+    ctx.rt.pendingUntil = all.length ? Math.min(...all.map((p) => p.deleteAt || p.at + limit)) : null;
   }
 
   /** Another run soon (a file still being written, a conflict copy to upload). */
@@ -1427,8 +1749,10 @@ class DriveSync extends EventEmitter {
 }
 
 function freshState(scope) {
-  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, lastSyncAt: null };
+  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, quarantine: {}, lastSyncAt: null };
 }
+
+const entOf = (v) => (Number.isFinite(v) && v >= 0 && v <= 8 ? v : null);
 
 /** A state file → state, or null when it is not one. */
 function parseState(raw) {
@@ -1445,10 +1769,13 @@ function parseState(raw) {
   }
   for (const [k, e] of Object.entries(raw.base && typeof raw.base === 'object' ? raw.base : {})) {
     if (!e || typeof e.path !== 'string' || S.keyOf(e.path) !== k) continue;
-    st.base[k] = { path: e.path, dir: e.dir === true, size: drive.count(e.size) || 0, mtime: drive.count(e.mtime) || 0, sha256: drive.sha256Of(e.sha256), nodeId: drive.posId(e.nodeId), rev: drive.count(e.rev) || 0 };
+    st.base[k] = { path: e.path, dir: e.dir === true, size: drive.count(e.size) || 0, mtime: drive.count(e.mtime) || 0, sha256: drive.sha256Of(e.sha256), nodeId: drive.posId(e.nodeId), rev: drive.count(e.rev) || 0, ent: entOf(e.ent) };
   }
   for (const [k, p] of Object.entries(raw.pending && typeof raw.pending === 'object' ? raw.pending : {})) {
-    if (p && drive.msOf(p.at) && st.base[k]) st.pending[k] = { at: drive.msOf(p.at), nodeId: drive.posId(p.nodeId), path: st.base[k].path, dir: p.dir === true };
+    if (p && drive.msOf(p.at) && st.base[k]) st.pending[k] = { at: drive.msOf(p.at), nodeId: drive.posId(p.nodeId), path: st.base[k].path, dir: p.dir === true, server: p.server === true, deleteAt: drive.msOf(p.deleteAt) };
+  }
+  for (const [k, q] of Object.entries(raw.quarantine && typeof raw.quarantine === 'object' ? raw.quarantine : {})) {
+    if (q && drive.count(q.size) !== null && drive.count(q.mtime) !== null && k.length <= 4096) st.quarantine[k] = { size: q.size, mtime: q.mtime };
   }
   if (!st.rootId) { st.tree = null; st.cursor = null; }
   return st;
