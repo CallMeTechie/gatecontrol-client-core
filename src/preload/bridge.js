@@ -420,6 +420,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       preview:      (mediaId, opts) => ipcRenderer.invoke('drive:preview', { mediaId, large: !!(opts && opts.large) }),
       // file dialog → { ok, paths }; then upload(parentId, paths)
       pick:         () => ipcRenderer.invoke('drive:pick'),
+      // folder dialog ("Ordner hochladen") → { ok, paths }; then upload(parentId, paths)
+      pickFolders:  () => ipcRenderer.invoke('drive:pick-folders'),
       upload:       (parentId, paths) => ipcRenderer.invoke('drive:upload', { parentId, paths }),
       // dropped File objects (drag & drop) → the same as upload()
       uploadDropped: (parentId, fileList) => {
@@ -444,6 +446,14 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onState:      (cb) => subscribe('drive:state', cb),
       onTransfers:  (cb) => subscribe('drive:transfers', cb),
       onChanged:    (cb) => subscribe('drive:changed', cb),
+      // Drive changed elsewhere (push `changed`): { areas, seq }
+      onRemote:     (cb) => subscribe('drive:remote', cb),
+      // Drive 1.6 'links': the node (or Drive) in the portal
+      openInPortal: (id) => ipcRenderer.invoke('drive:portal', { id: id || null }),
+      // Drive 1.6 'guard'
+      guard:        (fresh) => ipcRenderer.invoke('drive:guard', { fresh: !!fresh }),
+      guardDecide:  (id, decision) => ipcRenderer.invoke('drive:guard:decide', { id, decision }),
+      onGuard:      (cb) => subscribe('drive:guard', cb),
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {
         status:   () => ipcRenderer.invoke('drive:sync:status'),
@@ -455,6 +465,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         home:     (on) => ipcRenderer.invoke('drive:sync:home', { on: !!on }),
         run:      (id) => ipcRenderer.invoke('drive:sync:run', { id: id || null }),
         deletes:  (id, decision) => ipcRenderer.invoke('drive:sync:deletes', { id, decision }),
+        // "ungewöhnliche Änderungen": 'upload' | 'keep' (paused)
+        suspect:  (id, decision) => ipcRenderer.invoke('drive:sync:suspect', { id, decision }),
         open:     (id) => ipcRenderer.invoke('drive:sync:open', { id }),
         onChange: (cb) => subscribe('drive:sync', cb),
       },

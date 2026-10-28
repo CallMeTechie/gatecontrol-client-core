@@ -25,7 +25,8 @@
  *   drive:link:end        ({ token }) → { ok, ended }
  *   drive:preview         ({ mediaId, large? }) → { ok, mime, data: Uint8Array }
  *   drive:pick            () → file dialog → { ok, paths } | { ok: false, code: 'cancelled' }
- *   drive:upload          ({ parentId, paths }) → { ok, queued, rejected }
+ *   drive:pick-folders    () → folder dialog ("Ordner hochladen") → { ok, paths } | { ok: false, code: 'cancelled' }
+ *   drive:upload          ({ parentId, paths }) → { ok, queued, rejected, folders, skipped }  (files and whole folders)
  *   drive:upload:resolve  ({ id, choice: 'version' | 'rename' | null }) → { ok }
  *   drive:transfers       () → { ok, transfers }
  *   drive:transfers:clear () → { ok, transfers }
@@ -34,6 +35,9 @@
  *   drive:show            ({ path }) → shows a loaded file in the Explorer
  *   drive:last-folder     () → { ok, folderId }
  *   drive:last-folder:set ({ folderId }) → { ok, folderId }
+ *   drive:portal          ({ id? }) → { ok } | { ok: false, code: 'unsupported' }   "Im Portal öffnen" (Drive 1.6 'links')
+ *   drive:guard           ({ fresh? }) → { ok, supported, locked, incident, incidents, portal }   (Drive 1.6 'guard')
+ *   drive:guard:decide    ({ id, decision: 'undo' | 'release' }) → { ok, decision, incident, restored, trashed, guard }
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -46,15 +50,19 @@
  *   drive:sync:home       ({ on }) → status                     this network is a home network / forget them
  *   drive:sync:run        ({ id? }) → { ok }                    a run now (all folders without id)
  *   drive:sync:deletes    ({ id, decision: 'apply' | 'restore' }) → status
+ *   drive:sync:suspect    ({ id, decision: 'upload' | 'keep' }) → status   the answer to "ungewöhnliche Änderungen"
  *   drive:sync:open       ({ id }) → { ok }                     the folder in the Explorer
  *
- * Events to the main window: drive:state, drive:transfers, drive:changed, drive:sync.
+ * Events to the main window: drive:state, drive:transfers, drive:changed, drive:remote
+ * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:sync.
  */
 
 const DRIVE_EVENTS = {
   state: 'drive:state',
   transfers: 'drive:transfers',
   changed: 'drive:changed',
+  remote: 'drive:remote',
+  guard: 'drive:guard',
 };
 
 function fail(err) {
@@ -125,6 +133,7 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
     return { ok: true, mime: r.mime, data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength) };
   }));
   handle('drive:pick', wrap(async () => s.pickFiles()));
+  handle('drive:pick-folders', wrap(async () => s.pickFolders()));
   handle('drive:upload', wrap(async (a) => {
     if (!isId(a.parentId) || !Array.isArray(a.paths) || a.paths.length > 200 || !a.paths.every((p) => isStr(p, 4096))) return invalid();
     return s.upload(a.parentId, a.paths);
@@ -140,6 +149,12 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:show', wrap(async (a) => (isStr(a.path, 4096) ? s.showItem(a.path) : invalid())));
   handle('drive:last-folder', wrap(async () => s.lastFolder()));
   handle('drive:last-folder:set', wrap(async (a) => (isId(a.folderId) ? s.rememberFolder(a.folderId) : invalid())));
+  handle('drive:portal', wrap(async (a) => (optId(a.id) ? s.openInPortal(a.id || null) : invalid())));
+  handle('drive:guard', wrap(async (a) => s.guard({ fresh: a.fresh === true })));
+  handle('drive:guard:decide', wrap(async (a) => {
+    const idOk = isId(a.id) || (typeof a.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(a.id));
+    return idOk && (a.decision === 'undo' || a.decision === 'release') ? s.guardDecide(a.id, a.decision) : invalid();
+  }));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());
@@ -170,6 +185,7 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
     }));
     handle('drive:sync:deletes', wrap(async (a) => (isFolderId(a.id) && (a.decision === 'apply' || a.decision === 'restore') ? sync.confirmDeletes(a.id, a.decision) : invalid())));
     handle('drive:sync:open', wrap(async (a) => (isFolderId(a.id) ? sync.openFolder(a.id) : invalid())));
+    handle('drive:sync:suspect', wrap(async (a) => (isFolderId(a.id) && (a.decision === 'upload' || a.decision === 'keep') ? sync.confirmSuspect(a.id, a.decision) : invalid())));
   }
 
   const send = (channel, payload) => {

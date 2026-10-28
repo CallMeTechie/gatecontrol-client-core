@@ -15,7 +15,8 @@
     "electron-store": "^11.0.2",
     "jsqr": "1.4.0",
     "koffi": "^3.3.3",
-    "libsodium-wrappers-sumo": "0.8.4"
+    "libsodium-wrappers-sumo": "0.8.4",
+    "unpdf": "1.8.1"
   },
   "devDependencies": {
     "qrcode-generator": "1.4.4"

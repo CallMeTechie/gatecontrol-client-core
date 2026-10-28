@@ -31,8 +31,27 @@
  * - The folder last picked in "In Drive speichern" (chat, GateDrop, Schule) is
  *   remembered per server (store key `driveLastFolder`).
  *
+ * - Whole folders (dropped, or "Ordner hochladen"): the structure is made
+ *   first (a taken top name gets a free one, "Fotos (2)"), the files go into
+ *   the queue; temporary files, node_modules / .git and names Drive does not
+ *   take are left out (like "Ordner sichern"); empty files only on Drives
+ *   with 'emptyFiles'.
+ * - PDFs with a text layer: their text goes with the commit (`text`, for the
+ *   search; utils/pdf-text.js, at most 50 MB / 10 s, failures ignored).
+ * - Drive 1.6 'links': "Im Portal öffnen" of a file / folder opens
+ *   `me.links.node` with its id – only https and only on the server's or the
+ *   portal's host.
+ * - Drive 1.6 'guard': the entropy of the first 64 KB goes with every commit;
+ *   a write refused with 423 `device_locked` (Drive stopped this device after
+ *   unusual changes), the live event `guard` and `me.guard` give the state
+ *   (guard()); "Rückgängig machen" / "War ich – freigeben" decide it
+ *   (guardDecide()).
+ * - Live: the plugin's push event `changed { areas, seq }` is passed on
+ *   ('remote'); the page reloads what it shows.
+ *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
- * 'changed' ({ folderId }) after an upload landed in a folder.
+ * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
+ * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state).
  */
 
 const EventEmitter = require('events');
@@ -43,8 +62,12 @@ const path = require('path');
 const DriveApi = require('./drive-api');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
+const S = require('../utils/drive-sync');
+const G = require('../utils/drive-guard');
+const { pdfText, isPdf } = require('../utils/pdf-text');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
+const { openExternalSafely } = require('../utils/external-url');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -58,6 +81,9 @@ const DEFAULT_TIMING = {
 };
 const STORE_KEY = 'driveLastFolder';
 const MAX_PATHS = 200;
+const FOLDER_MAX_FILES = 20000;   // a dropped folder: at most this many files …
+const FOLDER_MAX_DIRS = 5000;     // … and folders
+const ME_MAX_AGE = 10 * 60 * 1000;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -76,13 +102,20 @@ class DriveService extends EventEmitter {
    * @param {object} [opts.pushClient] - PushClient: a reconnect ('hello') asks for the plugin again
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
+   * @param {() => string[]} [opts.allowedHosts] - hosts "Im Portal öffnen" may open (default: the server's and the portal's)
+   * @param {(file: string, o: object) => Promise<string|null>} [opts.readPdfText] - text layer of a PDF (tests)
    */
   constructor({
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
-    tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now,
+    tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
   } = {}) {
     super();
     this.log = log || noopLog();
+    this.apiClient = apiClient || null;
+    this.allowedHosts = typeof allowedHosts === 'function' ? allowedHosts : () => this._defaultHosts();
+    this.readPdfText = typeof readPdfText === 'function' ? readPdfText : (file, o) => pdfText(file, { ...o, log: this.log });
+    this._meCache = null;          // { links, guard, incidents, features, at } of the last GET me
+    this._guardKey = '';
     this.api = api || new DriveApi({ apiClient, log: this.log, getLang });
     this.store = store;
     this.shell = shell;
@@ -119,8 +152,20 @@ class DriveService extends EventEmitter {
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
       const onHello = () => { if (this._state.state !== 'available') this.check().catch(() => {}); };
+      // the plugin's live events: `changed { areas, seq }` (the page reloads), `guard { incident }`
+      const onEvent = (ev) => {
+        if (!ev || ev.event !== 'plugin' || !ev.data || ev.data.plugin !== drive.PLUGIN_ID) return;
+        const d = ev.data.data && typeof ev.data.data === 'object' ? ev.data.data : ev.data;
+        if (ev.data.type === 'changed') {
+          const areas = Array.isArray(d.areas) ? d.areas.map(drive.areaIdOf).filter(Boolean).slice(0, 100) : null;
+          this.emit('remote', { areas, seq: drive.count(d.seq) });
+        } else if (ev.data.type === 'guard') {
+          this.guard({ fresh: true }).catch(() => {});
+        }
+      };
       pc.on('hello', onHello);
-      this._unsub.push(() => pc.removeListener('hello', onHello));
+      pc.on('event', onEvent);
+      this._unsub.push(() => { pc.removeListener('hello', onHello); pc.removeListener('event', onEvent); });
     }
     this.check().catch(() => {});
   }
@@ -136,6 +181,8 @@ class DriveService extends EventEmitter {
 
   /** server:setup: the old server's state goes (queued uploads are dropped), the new one is asked. */
   resetForNewServer() {
+    this._meCache = null;
+    this._guardKey = '';
     this._previews.clear();
     this._inflight.clear();
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
@@ -230,18 +277,122 @@ class DriveService extends EventEmitter {
     } catch (err) {
       const e = err instanceof DriveError ? err : MessengerApi.toMessengerError(err);
       if (e.status === 404 && /^http_/.test(e.code)) this.check().catch(() => {});
+      this._onWriteError(e);
       throw e;
     }
   }
 
   // ── Browse ───────────────────────────────────────────────
 
-  /** GET me → { ok, me, licence, areas, settings, limits, people, usable } */
+  /** GET me → { ok, me, licence, areas, settings, limits, people, usable, features, links, guard, incidents } */
   async me() {
     return this._run(async () => {
       const m = await this.api.me();
+      this._remember(m);
       return { ok: true, ...m, usable: m.licence.valid && !!m.me.seat };
     });
+  }
+
+  /** Keeps links / guard of a GET me; a change of the guard goes out as 'guard'. */
+  _remember(m) {
+    this._meCache = { features: m.features || [], links: m.links || null, guard: m.guard || null, incidents: m.incidents || [], at: this.now() };
+    const g = this._guardView();
+    const key = JSON.stringify([g.locked, g.incident && g.incident.id, g.incidents.map((i) => i.id)]);
+    if (key !== this._guardKey) {
+      this._guardKey = key;
+      this.emit('guard', g);
+    }
+  }
+
+  async _meFresh(fresh = false) {
+    if (!fresh && this._meCache && this.now() - this._meCache.at < ME_MAX_AGE) return this._meCache;
+    this._remember(await this.api.me());
+    return this._meCache;
+  }
+
+  // ── Guard (Drive 1.6, 'guard') ───────────────────────────
+
+  _guardView() {
+    const c = this._meCache || {};
+    const g = c.guard || { locked: false, incident: null };
+    return {
+      ok: true,
+      supported: (c.features || []).includes('guard'),
+      locked: !!g.locked,
+      incident: g.incident || null,
+      incidents: (c.incidents || []).slice(),
+      portal: !!(c.links && c.links.drive),
+    };
+  }
+
+  /**
+   * The guard of this device → { ok, supported, locked, incident, incidents, portal }.
+   * `fresh`: ask the server now (live event `guard`, a 423 of a write).
+   */
+  async guard({ fresh = false } = {}) {
+    return this._run(async () => {
+      await this._meFresh(fresh);
+      return this._guardView();
+    });
+  }
+
+  /** "Rückgängig machen" ('undo') / "War ich – freigeben" ('release') → { ok, decision, incident, restored, trashed, guard } */
+  async guardDecide(incidentId, decision) {
+    if (!drive.incidentIdOf(incidentId) || (decision !== 'undo' && decision !== 'release')) throw new DriveError('invalid', { code: 'invalid' });
+    return this._run(async () => {
+      const r = await this.api.guardDecide(incidentId, decision);
+      await this._meFresh(true).catch(() => null);
+      const g = this._guardView();
+      // "Ordner sichern" goes on (after an undo: the PC's files come back from Drive)
+      this.emit('guard', { ...g, decided: decision, decidedId: drive.incidentIdOf(incidentId) });
+      return { ok: true, decision, incident: r.incident, restored: r.restored, trashed: r.trashed, guard: g };
+    });
+  }
+
+  /** A write refused because Drive stopped this device: the guard is asked again. */
+  _onWriteError(err) {
+    if (err && err.status === 423 && err.code === 'device_locked') this.guard({ fresh: true }).catch(() => {});
+  }
+
+  // ── Portal links (Drive 1.6, 'links') ────────────────────
+
+  _defaultHosts() {
+    const out = [];
+    const a = this.apiClient || {};
+    for (const u of [a.serverUrl, a.portalUrl]) {
+      try { if (u) out.push(new URL(u).hostname.toLowerCase()); } catch { /* not a URL */ }
+    }
+    return out;
+  }
+
+  _hosts() {
+    let h = [];
+    try { h = this.allowedHosts() || []; } catch { h = []; }
+    return h.filter((x) => typeof x === 'string' && x);
+  }
+
+  /** The portal link of a node (or of Drive with id null) → { ok, url } | { ok: false, code: 'unsupported' }. */
+  async portalLink(nodeId = null) {
+    return this._run(async () => {
+      const c = await this._meFresh(false);
+      const links = c.links;
+      if (!links) return { ok: false, code: 'unsupported', error: 'no portal links' };
+      if (nodeId === null || nodeId === undefined) {
+        const url = drive.allowedLink(links.drive, this._hosts());
+        return url ? { ok: true, url } : { ok: false, code: 'unsupported', error: 'no portal link' };
+      }
+      const url = drive.nodeLink(links.node, nodeId, this._hosts());
+      return url ? { ok: true, url } : { ok: false, code: 'unsupported', error: 'no portal link' };
+    });
+  }
+
+  /** "Im Portal öffnen": the node's page in the portal in the browser → { ok } | { ok: false, code }. */
+  async openInPortal(nodeId = null) {
+    const r = await this.portalLink(nodeId);
+    if (!r.ok) return r;
+    if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+    const ok = await openExternalSafely(this.shell, r.url, { log: this.log, label: 'Drive portal link' });
+    return ok ? { ok: true } : { ok: false, code: 'open_failed', error: 'not opened' };
   }
 
   /** GET areas → { ok, areas } (sorted: mine, family, children, teams). */
@@ -414,36 +565,130 @@ class DriveService extends EventEmitter {
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
   }
 
+  /** Folder dialog ("Ordner hochladen") → { ok, paths } | { ok: false, code: 'cancelled' } */
+  async pickFolders() {
+    if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
+    const win = this.getMainWindow();
+    const opts = { properties: ['openDirectory', 'multiSelections', 'dontAddToRecent'] };
+    const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
+    if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
+    return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
+  }
+
   /**
-   * Queues files from disk for the folder `parentId` → { ok, queued, rejected }.
-   * Folders and unreadable paths are rejected ({ name, code }).
+   * Queues files (and whole folders) from disk for the folder `parentId`
+   * → { ok, queued, rejected, folders, skipped }. Unreadable paths are rejected ({ name, code });
+   * a folder is made in Drive with its structure (folders: how many), what is left out counts in skipped.
    */
   async upload(parentId, paths) {
     const folderId = drive.posId(parentId);
     if (!folderId) throw new DriveError('invalid folder', { code: 'invalid' });
     this._need();
     const list = Array.isArray(paths) ? paths.slice(0, MAX_PATHS) : [];
-    const queued = [];
-    const rejected = [];
+    const out = { queued: [], rejected: [], folders: 0, skipped: 0 };
     for (const p of list) {
       if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
       const base = path.basename(p);
       let st;
-      try { st = await fs.promises.stat(p); } catch { rejected.push({ name: base, code: 'missing' }); continue; }
-      if (st.isDirectory()) { rejected.push({ name: base, code: 'folder' }); continue; }
-      if (!st.isFile()) { rejected.push({ name: base, code: 'missing' }); continue; }
-      if (st.size > drive.MAX_FILE_BYTES) { rejected.push({ name: base, code: 'too_large' }); continue; }
-      const name = drive.safeName(base);
-      if (!name) { rejected.push({ name: base, code: 'invalid_name' }); continue; }
-      const id = `u${++this._nextId}`;
-      const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow() };
-      this._jobs.set(id, job);
-      this._queue.push(job);
-      this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now() });
-      queued.push(id);
+      try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
+      if (st.isDirectory()) { await this._queueFolder(folderId, p, out); continue; }
+      if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
+      this._queueFile(folderId, p, base, st, out);
     }
     this._pump();
-    return { ok: true, queued, rejected };
+    return { ok: true, ...out };
+  }
+
+  _queueFile(folderId, p, base, st, out) {
+    if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); return; }
+    const name = drive.safeName(base);
+    if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    const id = `u${++this._nextId}`;
+    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow() };
+    this._jobs.set(id, job);
+    this._queue.push(job);
+    this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now() });
+    out.queued.push(id);
+  }
+
+  /**
+   * A whole folder: its structure in Drive first (the top folder gets a free name when taken),
+   * then its files into the queue. Left out like "Ordner sichern": temporary files,
+   * node_modules / .git, names Drive does not take, links.
+   */
+  async _queueFolder(parentId, abs, out) {
+    const base = path.basename(abs);
+    const top = drive.safeName(base);
+    if (!top) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    const row = { id: `f${++this._nextId}`, dir: 'up', name: top, folderId: parentId, total: 0, sent: 0, state: 'running', code: null, at: this.now(), folder: true };
+    this._row(row);
+    const settings = { ...S.DEFAULT_SETTINGS, maxFileBytes: 0 };
+    let files = 0;
+    let dirs = 0;
+    try {
+      const made = await this._run(() => this.api.mkdir(parentId, top, { rename: true }));
+      dirs++;
+      const walk = async (dirAbs, nodeId, rel) => {
+        let entries;
+        try { entries = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { out.skipped++; return; }
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const e of entries) {
+          const name = e.name.normalize('NFC');
+          const r = S.joinRel(rel, name);
+          const p = path.join(dirAbs, e.name);
+          if (e.isSymbolicLink()) { out.skipped++; continue; }
+          if (e.isDirectory()) {
+            if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { out.skipped++; continue; }
+            const child = await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
+              if (!(err && err.status === 409)) throw err;
+              const kids = await this.api.childrenAll(nodeId);
+              const have = kids.find((k) => k.isDir && S.keyOf(k.name) === S.keyOf(name));
+              if (!have) throw err;
+              return have;
+            });
+            dirs++;
+            await walk(p, child.id, r);
+          } else if (e.isFile()) {
+            let st;
+            try { st = await fs.promises.stat(p); } catch { out.skipped++; continue; }
+            const why = S.excluded(r, { dir: false, size: st.size }, settings);
+            if (why) { if (why !== 'temp') out.skipped++; continue; }
+            // an empty file only goes to Drives that take them (1.5 'emptyFiles')
+            if (!st.size && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
+            if (files >= FOLDER_MAX_FILES) { out.skipped++; continue; }
+            files++;
+            this._queueFile(nodeId, p, name, st, out);
+          }
+        }
+      };
+      await walk(abs, made.id, '');
+      out.folders += dirs;
+      this._set(row.id, { state: 'done', nodeId: made.id, name: made.name, files });
+      this.emit('changed', { folderId: parentId });
+    } catch (err) {
+      out.folders += dirs;
+      this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+      this.log.info(`Drive upload of a folder failed: ${drive.errorCode(err)}`);
+    }
+  }
+
+  /** Drive stopped this device (guard): nothing goes up until it is decided. */
+  _locked() {
+    return !!(this._meCache && this._meCache.guard && this._meCache.guard.locked);
+  }
+
+  /** What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'). */
+  async _commitExtra(file, name, size) {
+    const extra = {};
+    if (size > 0 && isPdf(name)) {
+      const text = await Promise.resolve(this.readPdfText(file, { size })).catch(() => null);
+      if (text) extra.text = text;
+    }
+    if (size > 0 && await this.api.has('guard').catch(() => false)) {
+      const e = await G.fileEntropy(file);
+      if (e !== null) extra.entropy = e;
+    }
+    return extra;
   }
 
   /** The person's answer to a taken name: 'version' | 'rename' (keep both) | null (skip). */
@@ -473,6 +718,7 @@ class DriveService extends EventEmitter {
           await this._runUpload(job);
         } catch (err) {
           const code = drive.errorCode(err);
+          this._onWriteError(err);
           this.log.info(`Drive upload of a file failed: ${code}`);
           this._jobs.delete(job.id);
           this._set(job.id, { state: 'failed', code });
@@ -485,6 +731,7 @@ class DriveService extends EventEmitter {
 
   async _runUpload(job) {
     if (job.scope !== this._scopeNow()) throw new DriveError('server changed', { code: 'drive_unavailable' });
+    if (this._locked()) throw new DriveError('device locked', { code: 'device_locked' });
     this._set(job.id, { state: 'running', sent: 0 });
     let st;
     try { st = await fs.promises.stat(job.path); } catch { throw new DriveError('file gone', { code: 'missing' }); }
@@ -516,7 +763,8 @@ class DriveService extends EventEmitter {
       const up = await this.api.upload({ path: job.path, size: job.size, mime: guessMime(job.name) }, {
         onProgress: (sent) => this._set(job.id, { sent }, { progress: true }),
       });
-      r = await this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, name: job.name, mtime: job.mtime, onConflict: job.choice || 'rename' });
+      const extra = await this._commitExtra(job.path, job.name, job.size);
+      r = await this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, name: job.name, mtime: job.mtime, onConflict: job.choice || 'rename', ...extra });
     }
     this._jobs.delete(job.id);
     this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name: r.node.name });
@@ -636,5 +884,6 @@ function sha256File(p) {
 DriveService.DEFAULT_TIMING = DEFAULT_TIMING;
 DriveService.STORE_KEY = STORE_KEY;
 DriveService.sha256File = sha256File;
+DriveService.FOLDER_MAX_FILES = FOLDER_MAX_FILES;
 
 module.exports = DriveService;

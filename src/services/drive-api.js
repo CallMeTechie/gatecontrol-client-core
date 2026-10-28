@@ -16,12 +16,15 @@
  *   POST   …/api/nodes { parentId, name, rename? }               new folder
  *   PATCH  …/api/nodes/<id> { name?, parentId? }                 rename / move
  *   DELETE …/api/nodes/<id>                                      into the trash
+ *   DELETE …/api/nodes/<id>?after=<s>&device=<id>                Drive 1.5 'deleteAfter': into the trash later (deleteAt)
+ *   PATCH  …/api/nodes/<id> { deleteAt: null }                   Drive 1.5: not any more
+ *   POST   …/api/guard/incidents/<id>/release | undo             Drive 1.6 'guard': free this device / undo its changes
  *   GET    …/api/nodes/<id>/content                              → { mediaId, name, mime, size }
  *   GET    …/api/nodes/<id>/versions                             older versions
  *   GET    …/api/nodes/<id>/versions/<vid>/content
  *   POST   …/api/nodes/<id>/versions/<vid>/restore
  *   POST   …/api/uploads/check { parentId, name, sha256?, size? }
- *   POST   …/api/uploads/commit { mediaId, parentId, name, baseRev?, mtime?, onConflict? }
+ *   POST   …/api/uploads/commit { mediaId, parentId, name, baseRev?, mtime?, onConflict?, text?, entropy? }
  *          (no onConflict and a baseRev that is not the file's rev: 409 conflict { current })
  *   GET    …/api/trash · POST trash/<id>/restore · DELETE trash/<id>
  *   GET    …/api/search?q&area
@@ -209,10 +212,36 @@ class DriveApi {
     return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body }));
   }
 
-  /** Into the trash → { id, trashed }. */
-  async trash(id) {
-    const r = await this.api('DELETE', `nodes/${this._id(id)}`);
-    return { id: drive.posId(r.id), trashed: r.trashed !== false };
+  /**
+   * Into the trash → { id, trashed, deleteAt }.
+   * Drive 1.5 ('deleteAfter'): with `after` (seconds) the file stays and goes into the trash then
+   * (`deleteAt`); `device`: the device it was deleted on (its own folder id of PUT devices/<id>).
+   */
+  async trash(id, { after = null, device = null } = {}) {
+    const params = {};
+    if (Number.isSafeInteger(after) && after > 0) {
+      params.after = after;
+      if (typeof device === 'string' && drive.DEVICE_ID_RE.test(device)) params.device = device;
+    }
+    const r = await this.api('DELETE', `nodes/${this._id(id)}`, { params });
+    const deleteAt = drive.msOf(r.deleteAt) || (r.node && drive.msOf(r.node.deleteAt)) || null;
+    const out = { id: drive.posId(r.id) || this._id(id), trashed: params.after ? false : r.trashed !== false };
+    if (deleteAt) out.deleteAt = deleteAt;
+    return out;
+  }
+
+  /** Drive 1.5: a delayed delete is called off (PATCH nodes/<id> { deleteAt: null }) → node. */
+  unmark(id) {
+    return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body: { deleteAt: null } }));
+  }
+
+  // ── Guard (Drive 1.6, 'guard') ───────────────────────────
+
+  /** POST guard/incidents/<id>/<'release' | 'undo'> → { incident, restored, trashed } */
+  async guardDecide(incidentId, decision) {
+    const id = drive.incidentIdOf(incidentId);
+    if (!id || (decision !== 'release' && decision !== 'undo')) throw new DriveError('invalid incident', { code: 'invalid' });
+    return drive.normalizeGuardAnswer(await this.api('POST', `guard/incidents/${encodeURIComponent(id)}/${decision}`, { body: {}, timeout: 120000 }));
   }
 
   async search(q, area = null) {
@@ -293,13 +322,17 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false }) {
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null }) {
     // Drive 1.5 ('emptyFiles'): an empty file goes without media as `size: 0`
     if (!empty && !drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
     const body = empty ? { parentId: this._id(parentId), name, size: 0 } : { mediaId, parentId: this._id(parentId), name };
     if (onConflict !== null) body.onConflict = drive.ON_CONFLICT.includes(onConflict) ? onConflict : 'rename';
     if (drive.count(baseRev) !== null) body.baseRev = baseRev;
     if (Number.isFinite(mtime) && mtime > 0) body.mtime = Math.round(mtime);
+    // the text layer of a PDF for the search (like the Android app), ≤ 100 000 characters
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    // Drive 1.6 ('guard'): the entropy of the first 64 KB (the caller sends it only to such Drives)
+    if (Number.isFinite(entropy) && entropy >= 0 && entropy <= 8) body.entropy = Math.round(entropy * 1000) / 1000;
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
     return c;

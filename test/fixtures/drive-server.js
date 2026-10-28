@@ -15,7 +15,12 @@
 //
 // Drive 1.5 (`driveServer({ features: ['devices', 'emptyFiles'] })`): `me.features`,
 // PUT devices/<id> (folder Meine Dateien › Geräte › <name>, names unique), PUT devices/<id>/folders
-// (srv.state.devices), empty files (uploads/commit { size: 0 } without media, content { empty: true }).
+// (srv.state.devices), empty files (uploads/commit { size: 0 } without media, content { empty: true }),
+// 'deleteAfter': DELETE nodes/<id>?after=<s>&device=<id> marks the node (deleteAt, change `mark`),
+// PATCH { deleteAt: null } / a new version calls it off (`unmark`), srv.expireMarks() trashes what is due.
+// Drive 1.6: 'links' (me.links), 'guard' (me.guard / incidents; srv.lock({ snapshot: srv.snapshot() }) → every
+// write 423 device_locked; POST guard/incidents/<id>/release | undo – undo gives the files changed since the
+// snapshot their old bytes as a new version and trashes the files this device made since then).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -42,6 +47,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     log: [],             // { seq, op, areaId, nodeId, device }
     seq: 9,
     devices: new Map(),  // Drive 1.5: id → { id, name, platform, version, folderId, folders }
+    guard: { locked: false, incident: null, since: 0 },
+    incidents: [],
   };
   const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   const logChange = (op, n, device = '42', areaId = n.areaId) => { state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device }); };
@@ -87,6 +94,27 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     return out;
   };
   // Changes "by another device" (they land in the change log with device '77').
+  // Drive 1.5 'deleteAfter': marked nodes whose time has come go into the trash
+  srv.expireMarks = (now = Date.now()) => {
+    for (const n of [...state.nodes.values()]) {
+      if (!n.deleted && n.deleteAt && Date.parse(n.deleteAt) <= now) {
+        n.deleted = true;
+        n.deletedAt = iso(now);
+        n.deleteAt = null;
+        for (const d of srv.below(n.id)) { d.deleted = true; d.deletedAt = n.deletedAt; }
+        logChange('delete', n, 'nas');
+      }
+    }
+  };
+  // Drive 1.6 'guard': stops this device (writes → 423) with an incident
+  // the files as they are now (srv.lock({ snapshot }) – "Rückgängig machen" goes back to it)
+  srv.snapshot = () => ({ seq: state.seq, nodes: new Map([...state.nodes.values()].filter((n) => !n.isDir && !n.deleted).map((n) => [n.id, { mediaId: n.mediaId, size: n.size, sha256: n.sha256 }])) });
+  srv.lock = ({ snapshot = srv.snapshot(), files = 60, sample = ['Brief.docx', 'Steuer.xlsx'] } = {}) => {
+    const incident = { id: 7001 + state.incidents.length, at: iso(Date.now()), device: '42', deviceName: 'Desktop-PC', files, sample, state: 'open' };
+    state.incidents.push(incident);
+    state.guard = { locked: true, incident, since: snapshot.seq, snapshot: snapshot.nodes };
+    return incident;
+  };
   srv.mutate = {
     file(parentId, name, content, { mtime = Date.now() } = {}) {
       const data = Buffer.from(content);
@@ -245,7 +273,43 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         areas: seat ? areas : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
         ...(features ? { features } : {}),
+        ...(features && features.includes('links') ? { links: { node: 'https://gc.example.com/portal#plg-gatecontrol-drive/node/{id}', drive: 'https://gc.example.com/portal#plg-gatecontrol-drive' } } : {}),
+        ...(features && features.includes('guard') ? { guard: { locked: state.guard.locked, incident: state.guard.locked ? state.guard.incident : null }, incidents: state.incidents } : {}),
       });
+    }
+    // Drive 1.6 'guard': decide an incident
+    if (features && features.includes('guard') && seg[0] === 'guard' && seg[1] === 'incidents' && req.method === 'POST') {
+      const inc = state.incidents.find((i) => String(i.id) === seg[2]);
+      if (!inc) return refuse(res, 404, 'not_found');
+      let restored = 0;
+      let trashed = 0;
+      if (seg[3] === 'undo') {
+        // back to the snapshot taken when the incident began: changed files get their old bytes
+        // as a new version, files this device made since then go into the trash
+        const snap = state.guard.snapshot || new Map();
+        for (const n of state.nodes.values()) {
+          if (n.deleted || n.isDir) continue;
+          const was = snap.get(n.id);
+          if (was) {
+            if (was.mediaId === n.mediaId) continue;
+            Object.assign(n, { mediaId: was.mediaId, size: was.size, sha256: was.sha256, rev: n.rev + 1 });
+            logChange('update', n, 'nas');
+            restored++;
+          } else if (state.log.some((c) => c.nodeId === n.id && c.seq > state.guard.since && c.op === 'create' && c.device === '42')) {
+            n.deleted = true;
+            n.deletedAt = iso(Date.now());
+            logChange('delete', n, 'nas');
+            trashed++;
+          }
+        }
+      } else if (seg[3] !== 'release') return refuse(res, 404, 'not_found');
+      inc.state = seg[3] === 'undo' ? 'undone' : 'released';
+      state.guard = { locked: false, incident: null, since: 0, snapshot: null };
+      return json(res, 200, { ok: true, incident: inc, restored, trashed });
+    }
+    // Drive 1.6 'guard': a stopped device writes nothing
+    if (state.guard.locked && req.method !== 'GET' && !(seg[0] === 'uploads' && seg[1] === 'check')) {
+      return json(res, 423, { ok: false, code: 'device_locked', error: 'device locked', incident: state.guard.incident });
     }
     if (features && features.includes('devices') && seg[0] === 'devices' && seg[1] && req.method === 'PUT') {
       const id = decodeURIComponent(seg[1]);
@@ -317,6 +381,12 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, node: { ...view(n), crumbs: crumbs(n), role: areaOf(n).role, path: '' } });
       if (seg.length === 2 && req.method === 'PATCH') {
         if (!writable(n)) return refuse(res, 403, 'forbidden');
+        if (features && features.includes('deleteAfter') && Object.prototype.hasOwnProperty.call(body, 'deleteAt') && body.deleteAt === null) {
+          n.deleteAt = null;
+          n.deletedOnDevice = null;
+          logChange('unmark', n);
+          return json(res, 200, { ok: true, node: view(n) });
+        }
         if (body.parentId) {
           const target = get(body.parentId);
           if (!target || !target.isDir) return refuse(res, 404, 'not_found');
@@ -333,6 +403,13 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       if (seg.length === 2 && req.method === 'DELETE') {
         if (!writable(n)) return refuse(res, 403, 'forbidden');
+        const after = Number(url.searchParams.get('after') || 0);
+        if (after > 0 && features && features.includes('deleteAfter')) {
+          n.deleteAt = iso(Date.now() + after * 1000);
+          n.deletedOnDevice = url.searchParams.get('device') || null;
+          logChange('mark', n);
+          return json(res, 200, { ok: true, id: n.id, deleteAt: n.deleteAt });
+        }
         n.deleted = true;
         n.deletedAt = iso(Date.now());
         for (const d of srv.below(n.id)) { d.deleted = true; d.deletedAt = n.deletedAt; }
@@ -385,6 +462,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         t.sha256 = empty ? EMPTY_SHA : sha(md.data);
         t.mtime = mtime;
         t.rev += 1;
+        if (t.deleteAt) { t.deleteAt = null; t.deletedOnDevice = null; }
         if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
         logChange('update', t);
         return json(res, 200, { ok: true, node: view(t), created: false });
