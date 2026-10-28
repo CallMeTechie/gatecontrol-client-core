@@ -513,6 +513,8 @@ const ORDER = { mkdirRemote: 0, mkdirLocal: 0, record: 1, upload: 2, merge: 2, d
  * @param {Map} o.local
  * @param {Map} o.remote
  * @param {boolean} [o.restoreDeleted] - files deleted on the PC come back from Drive (the answer "Wiederherstellen")
+ * @param {boolean} [o.reassert] - backup after a time travel (Drive 1.7): a file changed in Drive only goes up
+ *   again from the PC (upload { …, sha256, reassert }) instead of only being recorded
  * @returns {{ actions: object[], deletes: number, driveDeletes: number, files: number }}
  *   deletes: files that leave Drive because they were deleted on the PC (the mass-delete guard),
  *   driveDeletes: files that leave the PC because they were deleted in Drive (the same guard, other way),
@@ -524,7 +526,7 @@ const ORDER = { mkdirRemote: 0, mkdirLocal: 0, record: 1, upload: 2, merge: 2, d
  *   · pendingDelete { key, path, nodeId, dir, files } (backup: in Drive after 30 days) · deleteLocal { key, path, dir }
  *   · record { key, entry } · forget { key }
  */
-function plan({ mode, base, local, remote, restoreDeleted = false }) {
+function plan({ mode, base, local, remote, restoreDeleted = false, reassert = false }) {
   const actions = [];
   const done = new Set();         // keys handled (a whole folder handled at once)
   const keys = new Set([...Object.keys(base), ...local.keys(), ...remote.keys()]);
@@ -607,6 +609,7 @@ function plan({ mode, base, local, remote, restoreDeleted = false }) {
       if (!lc && !rc) continue;
       if (lc && !rc) { actions.push({ op: 'upload', key: k, path: l.path, nodeId: r.nodeId, baseRev: r.rev }); continue; }
       if (!lc && rc) {
+        if (backup && reassert) { actions.push({ op: 'upload', key: k, path: l.path, nodeId: r.nodeId, baseRev: r.rev, sha256: r.sha256, reassert: true }); continue; }
         if (backup) { if (b.nodeId !== r.nodeId) actions.push({ op: 'record', key: k, entry: { ...b, nodeId: r.nodeId, rev: r.rev } }); else actions.push({ op: 'record', key: k, entry: { ...b, rev: r.rev } }); continue; }
         actions.push({ op: 'download', key: k, path: r.path, nodeId: r.nodeId, rev: r.rev, size: r.size, mtime: r.mtime, sha256: r.sha256 });
         continue;

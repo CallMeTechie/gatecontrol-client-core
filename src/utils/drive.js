@@ -189,6 +189,8 @@ function normalizeNode(v) {
     // Drive 1.5 ('deleteAfter'): goes into the trash at this time (deleted on a device that backs it up)
     deleteAt: msOf(o.deleteAt),
     deletedOnDevice: line(o.deletedOnDevice, 128),
+    // Drive 1.7 ('takenAt'): when a photo / video was taken (EXIF, else mtime) or null
+    takenAt: msOf(o.takenAt),
   };
 }
 
@@ -244,6 +246,8 @@ function normalizeMe(raw) {
       name: line(me.name, 200),
       seat: me.seat === 'family' || me.seat === 'business' ? me.seat : null,
       deviceId: line(me.deviceId, 128),
+      // an administrator of GateControl (Drive 1.7 'storage': "Alle")
+      admin: bool(me.admin),
     },
     licence: { valid: bool(lic.valid), tier: line(lic.tier, 20) },
     // Drive 1.5: what this Drive can ('devices', 'deleteAfter', 'emptyFiles', …); older ones send none
@@ -481,6 +485,197 @@ function savedOf(raw) {
   return { nodeId: posId(s.nodeId), name: line(s.name, NAME_MAX), where: line(s.where, 600) };
 }
 
+// ── Drive 1.7: time travel, photos, albums, storage ────────
+
+const TT_OPS = Object.freeze(['restore', 'revert', 'trash', 'move']);
+const CURSOR_RE = /^[A-Za-z0-9:._+|,-]{1,100}$/;
+const ALBUM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+/** An ISO time for a query (`at`, `before`): a Date, ms or an ISO string → ISO string, else null. */
+function isoOf(v) {
+  const ms = v instanceof Date ? v.getTime() : msOf(v);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const d = new Date(ms);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+/** A paging cursor of the plugin (kept as it came: a time or an opaque token) or null. */
+function cursorOf(v) {
+  if (Number.isFinite(v) && v > 0) return String(Math.round(v));
+  return typeof v === 'string' && CURSOR_RE.test(v) ? v : null;
+}
+
+/** An album id (number or token) or null. */
+function albumIdOf(v) {
+  return posId(v) || (typeof v === 'string' && ALBUM_ID_RE.test(v) ? v : null);
+}
+
+/**
+ * GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample: [{ op, name, path }], limited } or null.
+ */
+function normalizeTimeTravelPreview(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const n = (k) => count(r[k]) || 0;
+  const sample = arr(r.sample).slice(0, 50).map((x) => {
+    const o = obj(x);
+    const name = o && line(o.name, NAME_MAX);
+    if (!name) return null;
+    return { op: TT_OPS.includes(o.op) ? o.op : null, name, path: line(o.path, 2000) };
+  }).filter(Boolean);
+  const out = { at: msOf(r.at), historySince: msOf(r.historySince), restore: n('restore'), revert: n('revert'), trash: n('trash'), move: n('move'), sample, limited: bool(r.limited) };
+  out.total = out.restore + out.revert + out.trash + out.move;
+  return out;
+}
+
+/** POST nodes/<id>/timetravel → { at, before, restored, reverted, trashed, moved, failed } or null (`before`: ms, "Rückgängig"). */
+function normalizeTimeTravelResult(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const n = (k) => (Array.isArray(r[k]) ? r[k].length : count(r[k]) || 0);
+  return { at: msOf(r.at), before: msOf(r.before), restored: n('restored'), reverted: n('reverted'), trashed: n('trashed'), moved: n('moved'), failed: n('failed') };
+}
+
+/** A photo / video of GET photos, an album or memories → clean object or null. */
+function normalizePhoto(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const id = posId(o.id);
+  const name = line(o.name, NAME_MAX);
+  if (!id || !name) return null;
+  const mime = line(o.mime, 100);
+  const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
+  return {
+    id,
+    name,
+    mime,
+    kind: /^video\//i.test(mime || '') ? 'video' : 'image',
+    size: count(o.size) || 0,
+    takenAt: msOf(o.takenAt),
+    areaId: areaIdOf(o.areaId),
+    parentId: posId(o.parentId),
+    // Drive 1.7: a boolean (1.1.0 nodes: an object) – the picture is loaded by mediaId, or by the node
+    preview: o.preview === true || !!obj(o.preview),
+    mediaId,
+  };
+}
+
+function photoList(v, max) {
+  return arr(v).slice(0, max).map(normalizePhoto).filter(Boolean);
+}
+
+/** GET photos → { items, next } (next: the cursor for `before`, or null) */
+function normalizePhotos(raw) {
+  const r = obj(raw) || {};
+  return { items: photoList(r.items, 500), next: cursorOf(r.next) };
+}
+
+/** GET photos/months → { months: [{ month: 'YYYY-MM', count }] } (newest first) */
+function normalizeMonths(raw) {
+  const r = obj(raw) || {};
+  const months = arr(r.months).slice(0, 2400).map((m) => {
+    const o = obj(m);
+    return o && typeof o.month === 'string' && MONTH_RE.test(o.month) ? { month: o.month, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
+  months.sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0));
+  return { months };
+}
+
+/** GET photos/memories → { groups: [{ yearsAgo, date, items }] } (the closest year first) */
+function normalizeMemories(raw) {
+  const r = obj(raw) || {};
+  const groups = arr(r.groups).slice(0, 100).map((g) => {
+    const o = obj(g);
+    const yearsAgo = o && posId(o.yearsAgo);
+    if (!yearsAgo) return null;
+    const items = photoList(o.items, 30);
+    return items.length ? { yearsAgo, date: typeof o.date === 'string' && DATE_RE.test(o.date.slice(0, 10)) ? o.date.slice(0, 10) : null, items } : null;
+  }).filter(Boolean);
+  groups.sort((a, b) => a.yearsAgo - b.yearsAgo);
+  return { groups };
+}
+
+/** An album → { id, name, areaId, count, coverId, frame, updatedAt, canEdit } or null. */
+function normalizeAlbum(v) {
+  const o = obj(v);
+  const id = o && albumIdOf(o.id);
+  const name = o && line(o.name, 200);
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    areaId: areaIdOf(o.areaId),
+    count: count(o.count) || 0,
+    coverId: posId(o.coverId),
+    frame: bool(o.frame),
+    updatedAt: msOf(o.updatedAt),
+    canEdit: bool(o.canEdit),
+  };
+}
+
+/** GET albums → { albums } (by name) */
+function normalizeAlbums(raw) {
+  const r = obj(raw) || {};
+  const albums = arr(r.albums).slice(0, 1000).map(normalizeAlbum).filter(Boolean);
+  albums.sort((a, b) => a.name.localeCompare(b.name));
+  return { albums };
+}
+
+/** GET albums/<id> → { album, items, next } or null. */
+function normalizeAlbumPage(raw) {
+  const r = obj(raw) || {};
+  const album = normalizeAlbum(r.album);
+  if (!album) return null;
+  return { album, items: photoList(r.items, 500), next: cursorOf(r.next) };
+}
+
+function storageNode(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const name = o && line(o.name, NAME_MAX);
+  if (!id || !name) return null;
+  return { id, name, size: count(o.size) || 0, areaId: areaIdOf(o.areaId), parentId: posId(o.parentId), path: line(o.path, 2000), updatedAt: msOf(o.updatedAt), canDelete: bool(o.canDelete) };
+}
+
+/** GET storage → { total, limit, areas, people, largest, duplicates } or null. */
+function normalizeStorage(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const t = obj(r.total) || {};
+  const lim = obj(r.limit);
+  const nums = (o) => ({ bytes: count(o.bytes) || 0, files: count(o.files) || 0, versionsBytes: count(o.versionsBytes) || 0, trashBytes: count(o.trashBytes) || 0 });
+  const areas = arr(r.areas).slice(0, 500).map((a) => {
+    const o = obj(a);
+    const id = o && areaIdOf(o.id);
+    if (!id) return null;
+    return { id, label: line(o.label, 200) || id, kind: AREA_KINDS.includes(o.kind) ? o.kind : null, ...nums(o), quota: count(o.quota) || null };
+  }).filter(Boolean);
+  areas.sort((a, b) => b.bytes - a.bytes);
+  const people = arr(r.people).slice(0, 2000).map((p) => {
+    const o = obj(p);
+    const user = o && posId(o.user);
+    return user ? { user, name: line(o.name, 200), bytes: count(o.bytes) || 0, files: count(o.files) || 0 } : null;
+  }).filter(Boolean);
+  people.sort((a, b) => b.bytes - a.bytes);
+  const largest = arr(r.largest).slice(0, 100).map(storageNode).filter(Boolean);
+  const duplicates = arr(r.duplicates).slice(0, 100).map((d) => {
+    const o = obj(d);
+    const items = o ? arr(o.items).slice(0, 200).map(storageNode).filter(Boolean) : [];
+    if (items.length < 2) return null;
+    return { sha256: sha256Of(o.sha256), size: count(o.size) || 0, count: count(o.count) || items.length, wasted: count(o.wasted) || 0, items };
+  }).filter(Boolean);
+  return {
+    total: nums(t),
+    limit: lim && count(lim.maxBytes) ? { maxBytes: count(lim.maxBytes) } : null,
+    areas,
+    people,
+    largest,
+    duplicates,
+  };
+}
+
 // ── Requests ───────────────────────────────────────────────
 
 /** Children query: sort, order, offset, limit (≤ 1000) — unknown values fall back to name / asc. */
@@ -510,6 +705,19 @@ function errorCode(err) {
 }
 
 module.exports = {
+  isoOf,
+  cursorOf,
+  albumIdOf,
+  normalizeTimeTravelPreview,
+  normalizeTimeTravelResult,
+  normalizePhoto,
+  normalizePhotos,
+  normalizeMonths,
+  normalizeMemories,
+  normalizeAlbum,
+  normalizeAlbums,
+  normalizeAlbumPage,
+  normalizeStorage,
   normalizeLinks16,
   nodeLink,
   allowedLink,

@@ -48,10 +48,21 @@
  *   (guardDecide()).
  * - Live: the plugin's push event `changed { areas, seq }` is passed on
  *   ('remote'); the page reloads what it shows.
+ * - Drive 1.7 'takenAt': pictures and videos carry the time they were taken
+ *   (EXIF / the video's header, utils/taken-at.js) with the commit.
+ * - Drive 1.7 'timeTravel': a folder back to how it was at a time (preview
+ *   first; "Rückgängig" is a time travel to `before`). After it the event
+ *   'timetravel' { folderId, at, before } lets "Ordner sichern" run the
+ *   folders of this PC that lie there.
+ * - Drive 1.7 'photos' / 'albums' / 'frame' / 'storage': the timeline of
+ *   pictures, "Vor einem Jahr", albums (also for the photo frame) and the
+ *   storage overview (largest files, duplicates); the previews of photos
+ *   whose answer names no mediaId are loaded by the node.
  *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
- * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state).
+ * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
+ * 'timetravel' ({ folderId, at, before }) after a time travel.
  */
 
 const EventEmitter = require('events');
@@ -65,6 +76,7 @@ const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
+const { takenAt: readTakenAt, isMediaName } = require('../utils/taken-at');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
@@ -134,6 +146,7 @@ class DriveService extends EventEmitter {
     this._unsub = [];
     this._scope = this._scopeNow();
     this._previews = new Map();     // `${mediaId}|${size}` → { mime, data }
+    this._mediaOf = new Map();      // node id → mediaId (photos without a mediaId in the answer)
     this._inflight = new Map();
     this._transfers = [];           // rows of the transfer list (see _row)
     this._jobs = new Map();         // upload id → job (queued / waiting for a choice)
@@ -184,6 +197,7 @@ class DriveService extends EventEmitter {
     this._meCache = null;
     this._guardKey = '';
     this._previews.clear();
+    this._mediaOf.clear();
     this._inflight.clear();
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
     for (const [id, job] of this._jobs) if (job.waiting) this._set(id, { state: 'skipped' });
@@ -261,6 +275,7 @@ class DriveService extends EventEmitter {
     if (s === this._scope) return;
     this._scope = s;
     this._previews.clear();
+    this._mediaOf.clear();
   }
 
   /** Drive is not listed (any more): the call fails like the plugin would. */
@@ -466,6 +481,143 @@ class DriveService extends EventEmitter {
 
   async endLink(token) {
     return this._run(async () => ({ ok: true, ...(await this.api.endLink(token)) }));
+  }
+
+  // ── Drive 1.7: time travel, photos, albums, storage ──────
+
+  /** Throws 'unsupported' when this Drive does not report `name` in me.features. */
+  async _feature(name) {
+    if (!(await this.api.has(name).catch(() => false))) throw new DriveError(`Drive cannot do ${name}`, { code: 'unsupported' });
+  }
+
+  /** What a time travel of the folder `id` back to `at` would do → { ok, at, historySince, restore, revert, trash, move, total, sample, limited } */
+  async timeTravelPreview(id, at) {
+    return this._run(async () => {
+      await this._feature('timeTravel');
+      return { ok: true, ...(await this.api.timeTravelPreview(id, at)) };
+    });
+  }
+
+  /**
+   * The folder `id` back to how it was at `at` → { ok, at, before, restored, reverted, trashed, moved, failed }.
+   * Nothing is lost: new files go into the trash, replaced contents become older versions.
+   * "Rückgängig" is another time travel to `before`.
+   */
+  async timeTravel(id, at) {
+    return this._run(async () => {
+      await this._feature('timeTravel');
+      const folderId = drive.posId(id);
+      const r = await this.api.timeTravel(folderId, at);
+      this.emit('timetravel', { folderId, at: r.at, before: r.before });
+      this.emit('changed', { folderId });
+      return { ok: true, ...r };
+    });
+  }
+
+  /** GET photos → { ok, items, next } */
+  async photos({ area = null, before = null, limit = 100 } = {}) {
+    return this._run(async () => {
+      await this._feature('photos');
+      const r = await this.api.photos({ area, before, limit });
+      for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
+      return { ok: true, ...r };
+    });
+  }
+
+  async photoMonths(area = null) {
+    return this._run(async () => {
+      await this._feature('photos');
+      return { ok: true, ...(await this.api.photoMonths(area)) };
+    });
+  }
+
+  /** "Vor einem Jahr": photos of this day (± 1) of earlier years → { ok, groups } */
+  async memories(date = null) {
+    return this._run(async () => {
+      await this._feature('photos');
+      return { ok: true, ...(await this.api.memories(date)) };
+    });
+  }
+
+  async albums() {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, ...(await this.api.albums()) };
+    });
+  }
+
+  async album(id, { before = null, limit = 100 } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      const r = await this.api.album(id, { before, limit });
+      for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
+      return { ok: true, ...r };
+    });
+  }
+
+  async createAlbum({ name, areaId = null } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, album: await this.api.createAlbum({ name, areaId }) };
+    });
+  }
+
+  /** { name?, coverId?, frame? } – `frame` only on Drives with 'frame' */
+  async updateAlbum(id, patch = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      if (patch && patch.frame !== undefined) await this._feature('frame');
+      return { ok: true, album: await this.api.updateAlbum(id, patch || {}) };
+    });
+  }
+
+  async deleteAlbum(id) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return this.api.deleteAlbum(id);
+    });
+  }
+
+  /** Photos into an album (remove: out of it) → { ok, album } */
+  async albumItems(id, ids, { remove = false } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, album: await this.api.albumItems(id, ids, { remove }) };
+    });
+  }
+
+  /** The storage overview → { ok, total, limit, areas, people, largest, duplicates } (`all`: administrators) */
+  async storage({ all = false } = {}) {
+    return this._run(async () => {
+      await this._feature('storage');
+      return { ok: true, ...(await this.api.storage({ all })) };
+    });
+  }
+
+  async pruneVersions({ areaId, keep } = {}) {
+    return this._run(async () => {
+      await this._feature('storage');
+      return { ok: true, ...(await this.api.pruneVersions({ areaId, keep })) };
+    });
+  }
+
+  /**
+   * The preview of a photo by its node (Drive 1.7 photo answers without a mediaId): the node is
+   * asked once (GET nodes/<id>, it tells no one), then the preview of its media → { ok, mime, data }.
+   */
+  async previewOf(nodeId, { large = false } = {}) {
+    const id = drive.posId(nodeId);
+    if (!id) throw new DriveError('invalid id', { code: 'invalid' });
+    this._ensureScope();
+    let mediaId = this._mediaOf.get(id);
+    if (!mediaId) {
+      const node = await this._run(() => this.api.node(id));
+      if (!node.mediaId || node.isDir) throw new DriveError('no picture', { code: 'not_found' });
+      mediaId = node.mediaId;
+      this._mediaOf.set(id, mediaId);
+      while (this._mediaOf.size > 5000) this._mediaOf.delete(this._mediaOf.keys().next().value);
+    }
+    return this.preview(mediaId, { large });
   }
 
   // ── Previews ─────────────────────────────────────────────
@@ -677,9 +829,13 @@ class DriveService extends EventEmitter {
     return !!(this._meCache && this._meCache.guard && this._meCache.guard.locked);
   }
 
-  /** What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'). */
+  /** What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'), when a photo was taken (1.7 'takenAt'). */
   async _commitExtra(file, name, size) {
     const extra = {};
+    if (size > 0 && isMediaName(name) && await this.api.has('takenAt').catch(() => false)) {
+      const at = await readTakenAt(file, { name }).catch(() => null);
+      if (at) extra.takenAt = at;
+    }
     if (size > 0 && isPdf(name)) {
       const text = await Promise.resolve(this.readPdfText(file, { size })).catch(() => null);
       if (text) extra.text = text;

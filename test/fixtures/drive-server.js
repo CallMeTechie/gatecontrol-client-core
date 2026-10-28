@@ -21,6 +21,10 @@
 // Drive 1.6: 'links' (me.links), 'guard' (me.guard / incidents; srv.lock({ snapshot: srv.snapshot() }) → every
 // write 423 device_locked; POST guard/incidents/<id>/release | undo – undo gives the files changed since the
 // snapshot their old bytes as a new version and trashes the files this device made since then).
+// Drive 1.7: 'takenAt' (uploads/commit { takenAt } kept on the node), 'timeTravel' (GET / POST nodes/<id>/timetravel
+// against the history of every change: srv.state.history), 'photos' (photos, photos/months, photos/memories – items
+// without a mediaId unless srv.photoMediaIds), 'albums' / 'frame' (srv.state.albums), 'storage' (GET storage,
+// storage/versions/prune).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -51,7 +55,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     incidents: [],
   };
   const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-  const logChange = (op, n, device = '42', areaId = n.areaId) => { state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device }); };
+  // Drive 1.7 'timeTravel': how every node was after each change
+  state.history = [];
+  state.albums = new Map();
+  const snap = () => new Map([...state.nodes.values()].map((n) => [n.id, { name: n.name, parentId: n.parentId, isDir: n.isDir, deleted: !!n.deleted, mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime }]));
+  const logChange = (op, n, device = '42', areaId = n.areaId) => {
+    state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device });
+    if (features && features.includes('timeTravel')) state.history.push({ at: Date.now(), nodes: snap() });
+  };
   const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
   const areas = [
     { id: 'mine:2', kind: 'mine', label: 'Meine Dateien', role: 'manage', via: 'owner', rootId: 1, owner: 2, archived: false, storage: { bytes: 1024, quota: 0, form: 'readable', target: { kind: 'local', label: 'Dieser Server' }, state: 'ok' } },
@@ -82,7 +93,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.media.set(toolMedia, { data: Buffer.from('MZ'), mime: 'application/x-msdownload' });
   node({ id: 13, areaId: 'mine:2', parentId: 1, name: 'setup.exe', size: 2, mime: 'application/x-msdownload', mediaId: toolMedia });
 
-  const srv = { state, cutUploadAfter: null, pageMax: 1000 };
+  const srv = { state, cutUploadAfter: null, pageMax: 1000, photoMediaIds: false, startedAt: Date.now() };
+  state.history.push({ at: 0, nodes: snap() });
   // nodes below `id` (all, also deleted ones)
   srv.below = (id) => {
     const out = [];
@@ -92,6 +104,29 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       for (const n of state.nodes.values()) if (n.parentId === x) { out.push(n); stack.push(n.id); }
     }
     return out;
+  };
+  // Drive 1.7 'timeTravel': what going back to `at` changes below `folderId` → [{ op, id, then }]
+  srv.timeTravelPlan = (folderId, at) => {
+    const then = (state.history.filter((h) => h.at <= at).pop() || state.history[0]).nodes;
+    const isBelow = (map, id) => { for (let c = map.get(id); c; c = c.parentId ? map.get(c.parentId) : null) { if (c.deleted) return false; if (c.parentId === folderId) return true; } return false; };
+    const nowMap = new Map([...state.nodes.values()].map((n) => [n.id, n]));
+    const depth = (map, id) => { let d = 0; for (let c = map.get(id); c && c.parentId; c = map.get(c.parentId)) d++; return d; };
+    const out = [];
+    for (const [id, t] of then) {
+      if (t.deleted || !isBelow(then, id)) continue;
+      const n = state.nodes.get(id);
+      if (!n) continue; // purged: gone for good
+      if (n.deleted) out.push({ op: 'restore', id, then: t, d: depth(then, id) });
+      else if (!t.isDir && t.mediaId !== n.mediaId) out.push({ op: 'revert', id, then: t, d: depth(then, id) });
+      else if (t.name !== n.name || t.parentId !== n.parentId) out.push({ op: 'move', id, then: t, d: depth(then, id) });
+    }
+    for (const n of state.nodes.values()) {
+      if (n.deleted || !isBelow(nowMap, n.id)) continue;
+      const t = then.get(n.id);
+      if (!t || t.deleted) out.push({ op: 'trash', id: n.id, then: null, d: -depth(nowMap, n.id) });
+    }
+    // folders first when they come back, deepest first when they go
+    return out.sort((a, b) => (a.op === 'trash') - (b.op === 'trash') || a.d - b.d);
   };
   // Changes "by another device" (they land in the change log with device '77').
   // Drive 1.5 'deleteAfter': marked nodes whose time has come go into the trash
@@ -121,6 +156,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const mediaId = crypto.randomBytes(16).toString('hex');
       state.media.set(mediaId, { data, mime: 'application/octet-stream' });
       const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mediaId, sha256: sha(data), mtime: iso(mtime) });
+      logChange('create', n, '77');
+      return n;
+    },
+    // Drive 1.7: a picture (image/jpeg with a preview) taken at `takenAt`
+    photo(parentId, name, { takenAt = Date.now(), content = name, mime = 'image/jpeg' } = {}) {
+      const data = Buffer.from(content);
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data, mime });
+      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mime, mediaId, sha256: sha(data), takenAt: iso(takenAt), mtime: iso(takenAt) });
       logChange('create', n, '77');
       return n;
     },
@@ -339,6 +383,145 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, device: devView(d) });
     }
     if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas });
+    const has = (f) => !!(features && features.includes(f));
+    // ── Drive 1.7 ──
+    if (has('timeTravel') && seg[0] === 'nodes' && seg[2] === 'timetravel') {
+      const folder = get(seg[1]);
+      if (!folder || !folder.isDir) return refuse(res, 404, 'not_found');
+      const atRaw = req.method === 'GET' ? url.searchParams.get('at') : body.at;
+      const at = Date.parse(atRaw);
+      if (!Number.isFinite(at)) return refuse(res, 400, 'invalid');
+      if (req.method === 'POST' && !writable(folder)) return refuse(res, 403, 'forbidden');
+      const plan = srv.timeTravelPlan(folder.id, at);
+      const sample = plan.slice(0, 10).map((x) => ({ op: x.op, name: x.then ? x.then.name : state.nodes.get(x.id).name, path: '' }));
+      const count = (op) => plan.filter((x) => x.op === op).length;
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, at: iso(at), historySince: iso(srv.startedAt), restore: count('restore'), revert: count('revert'), trash: count('trash'), move: count('move'), sample, limited: at < srv.startedAt });
+      }
+      const before = Date.now() - 1;
+      for (const x of plan) {
+        const n = state.nodes.get(x.id);
+        if (x.op === 'trash') { n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); continue; }
+        if (x.op === 'restore') n.deleted = false;
+        if (x.op === 'revert' || (x.op === 'restore' && x.then.mediaId !== n.mediaId)) {
+          (state.versions.get(n.id) || state.versions.set(n.id, []).get(n.id)).push({ id: ++nextId, rev: n.rev, size: n.size, at: iso(Date.now()), by: 2, mediaId: n.mediaId });
+          Object.assign(n, { mediaId: x.then.mediaId, size: x.then.size, sha256: x.then.sha256, rev: n.rev + 1 });
+        }
+        if (x.then && (x.then.name !== n.name || x.then.parentId !== n.parentId)) { n.name = x.then.name; n.parentId = x.then.parentId; }
+        logChange(x.op === 'restore' ? 'restore' : x.op === 'move' ? 'move' : 'update', n);
+      }
+      return json(res, 200, { ok: true, at: iso(at), before: iso(before), restored: count('restore'), reverted: count('revert'), trashed: count('trash'), moved: count('move'), failed: 0 });
+    }
+    const isMedia = (n) => !n.isDir && !n.deleted && /^(image|video)\//.test(n.mime || '');
+    const when = (n) => Date.parse(n.takenAt || n.mtime || n.createdAt);
+    const photo = (n) => ({ id: n.id, name: n.name, mime: n.mime, size: n.size, takenAt: new Date(when(n)).toISOString(), areaId: n.areaId, parentId: n.parentId, preview: /^image\//.test(n.mime || ''), ...(srv.photoMediaIds ? { mediaId: n.mediaId } : {}) });
+    const photoList = (area) => [...state.nodes.values()].filter((n) => isMedia(n) && (!area || n.areaId === area)).sort((a, b) => when(b) - when(a) || b.id - a.id);
+    const pageOf = (list) => {
+      const before = url.searchParams.get('before');
+      const limit = Math.min(200, Number(url.searchParams.get('limit') || 100));
+      const rest = before ? list.filter((n) => when(n) < Date.parse(before)) : list;
+      const items = rest.slice(0, limit);
+      return { items: items.map(photo), next: rest.length > limit ? new Date(when(items[items.length - 1])).toISOString() : null };
+    };
+    if (has('photos') && req.method === 'GET' && route === 'photos') return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
+    if (has('photos') && req.method === 'GET' && route === 'photos/months') {
+      const m = new Map();
+      for (const n of photoList(url.searchParams.get('area'))) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
+      return json(res, 200, { ok: true, months: [...m].map(([month, count]) => ({ month, count })) });
+    }
+    if (has('photos') && req.method === 'GET' && route === 'photos/memories') {
+      const d = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const [y, mo, da] = d.split('-').map(Number);
+      const groups = new Map();
+      for (const n of photoList(null)) {
+        const t = new Date(when(n));
+        const ago = y - t.getUTCFullYear();
+        if (ago < 1) continue;
+        const same = Math.abs(Date.UTC(y, t.getUTCMonth(), t.getUTCDate()) - Date.UTC(y, mo - 1, da)) <= 86400000;
+        if (!same) continue;
+        if (!groups.has(ago)) groups.set(ago, { yearsAgo: ago, date: t.toISOString().slice(0, 10), items: [] });
+        groups.get(ago).items.push(photo(n));
+      }
+      return json(res, 200, { ok: true, groups: [...groups.values()] });
+    }
+    if (has('albums') && seg[0] === 'albums') {
+      const albumView = (a) => {
+        const ar = areas.find((x) => x.id === a.areaId);
+        const items = a.items.map((id) => state.nodes.get(id)).filter((n) => n && !n.deleted);
+        return { id: a.id, name: a.name, areaId: a.areaId, count: items.length, coverId: a.coverId || (items[0] ? items[0].id : null), frame: !!a.frame, updatedAt: iso(a.updatedAt), canEdit: !!ar && !ar.archived && (ar.role === 'write' || ar.role === 'manage') };
+      };
+      if (seg.length === 1 && req.method === 'GET') return json(res, 200, { ok: true, albums: [...state.albums.values()].map(albumView) });
+      if (seg.length === 1 && req.method === 'POST') {
+        const areaId = body.areaId || 'mine:2';
+        const ar = areas.find((x) => x.id === areaId);
+        if (!ar || !(ar.role === 'write' || ar.role === 'manage')) return refuse(res, 403, 'forbidden');
+        if (!String(body.name || '').trim()) return refuse(res, 400, 'invalid');
+        const a = { id: ++nextId, name: String(body.name).trim(), areaId, items: [], coverId: null, frame: false, updatedAt: Date.now() };
+        state.albums.set(a.id, a);
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+      const a = state.albums.get(Number(seg[1]));
+      if (!a) return refuse(res, 404, 'not_found');
+      const canEdit = albumView(a).canEdit;
+      if (seg.length === 2 && req.method === 'GET') {
+        const list = a.items.map((id) => state.nodes.get(id)).filter((n) => n && isMedia(n)).sort((x, y) => when(y) - when(x));
+        return json(res, 200, { ok: true, album: albumView(a), ...pageOf(list) });
+      }
+      if (req.method !== 'GET' && !canEdit) return refuse(res, 403, 'forbidden');
+      if (seg.length === 2 && req.method === 'PATCH') {
+        if (body.name !== undefined) a.name = String(body.name).trim();
+        if (body.coverId !== undefined) a.coverId = body.coverId;
+        if (body.frame !== undefined) { if (!has('frame')) return refuse(res, 400, 'invalid'); a.frame = body.frame === true; }
+        a.updatedAt = Date.now();
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+      if (seg.length === 2 && req.method === 'DELETE') { state.albums.delete(a.id); return json(res, 200, { ok: true }); }
+      if (seg[2] === 'items' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const ids = Array.isArray(body.ids) ? body.ids : [];
+        if (!ids.length || ids.length > 500) return refuse(res, 400, 'invalid');
+        if (req.method === 'POST') { for (const id of ids) { const n = state.nodes.get(id); if (n && isMedia(n) && !a.items.includes(id)) a.items.push(id); } } else a.items = a.items.filter((id) => !ids.includes(id));
+        a.updatedAt = Date.now();
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+    }
+    if (has('storage') && req.method === 'GET' && route === 'storage') {
+      const all = url.searchParams.get('all') === '1';
+      const files = [...state.nodes.values()].filter((n) => !n.isDir);
+      const live = files.filter((n) => !n.deleted);
+      const pathOf = (n) => crumbs(n).map((c) => c.name).join('/');
+      const sum = (list) => list.reduce((x, n) => x + (n.size || 0), 0);
+      const versionsOf = (list) => list.reduce((x, n) => x + (state.versions.get(n.id) || []).reduce((y, v) => y + v.size, 0), 0);
+      const byArea = areas.map((a) => {
+        const l = live.filter((n) => n.areaId === a.id);
+        const d = files.filter((n) => n.deleted && n.areaId === a.id);
+        return { id: a.id, label: a.label, kind: a.kind, bytes: sum(l), files: l.length, versionsBytes: versionsOf(l), trashBytes: sum(d), quota: null };
+      });
+      const groups = new Map();
+      for (const n of live) if (n.size > 0 && n.sha256) { const k = `${n.sha256}|${n.size}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(n); }
+      const item = (n) => ({ id: n.id, name: n.name, size: n.size, areaId: n.areaId, parentId: n.parentId, path: pathOf(n), updatedAt: n.updatedAt, canDelete: writable(n) });
+      const duplicates = [...groups.values()].filter((g) => g.length > 1).map((g) => ({ sha256: g[0].sha256, size: g[0].size, count: g.length, wasted: g[0].size * (g.length - 1), items: g.map(item) }))
+        .sort((x, y) => y.wasted - x.wasted).slice(0, 20);
+      return json(res, 200, {
+        ok: true,
+        total: { bytes: sum(live), files: live.length, versionsBytes: versionsOf(live), trashBytes: sum(files.filter((n) => n.deleted)) },
+        limit: { maxBytes: 107374182400 },
+        areas: byArea,
+        ...(all ? { people: [{ user: 2, name: 'Marc', bytes: sum(live), files: live.length }] } : {}),
+        largest: live.slice().sort((x, y) => y.size - x.size).slice(0, 20).map(item),
+        duplicates,
+      });
+    }
+    if (has('storage') && req.method === 'POST' && route === 'storage/versions/prune') {
+      let removed = 0;
+      let freedBytes = 0;
+      for (const [id, list] of state.versions) {
+        const n = state.nodes.get(id);
+        if (!n || n.areaId !== body.areaId) continue;
+        list.sort((x, y) => y.rev - x.rev);
+        for (const v of list.splice(Number(body.keep) || 0)) { removed++; freedBytes += v.size; }
+      }
+      return json(res, 200, { ok: true, removed, freedBytes });
+    }
     if (req.method === 'GET' && route === 'search') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
       const items = [...state.nodes.values()].filter((n) => !n.deleted && n.parentId && n.name.toLowerCase().includes(q)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
@@ -455,12 +638,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (state.claimed && state.claimed.has(body.mediaId)) return refuse(res, 409, 'upload_invalid');
       const t = taken(parent.id, body.name);
       const mtime = body.mtime ? iso(Number(body.mtime)) : null;
+      if (body.takenAt !== undefined && !Number.isFinite(Date.parse(body.takenAt))) return json(res, 400, { ok: false, code: 'invalid', field: 'takenAt', error: 'invalid' });
+      const takenAt = body.takenAt !== undefined && features && features.includes('takenAt') ? iso(Date.parse(body.takenAt)) : null;
       if (t && !t.isDir && ((body.baseRev != null && body.baseRev === t.rev) || body.onConflict === 'version')) {
         (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
         t.mediaId = empty ? null : body.mediaId;
         t.size = md.data.length;
         t.sha256 = empty ? EMPTY_SHA : sha(md.data);
         t.mtime = mtime;
+        t.takenAt = takenAt;
         t.rev += 1;
         if (t.deleteAt) { t.deleteAt = null; t.deletedOnDevice = null; }
         if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
@@ -468,7 +654,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, node: view(t), created: false });
       }
       if (t && body.onConflict !== 'rename') return json(res, 409, { ok: false, code: t.isDir ? 'exists' : 'conflict', error: 'conflict', current: view(t) });
-      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime });
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime, takenAt });
       if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
       logChange('create', n);
       return json(res, 200, { ok: true, node: view(n), created: true });

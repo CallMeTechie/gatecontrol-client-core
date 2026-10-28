@@ -48,7 +48,21 @@
  *   "Rückgängig machen" the files of each folder come back from Drive – a PC
  *   file that differs stays next to it as a conflict copy that is not
  *   uploaded (with files new on the PC since then: "zurückgehalten").
- * - PDFs with a text layer: their text goes with the commit (search).
+ * - PDFs with a text layer: their text goes with the commit (search);
+ *   pictures and videos carry when they were taken (Drive 1.7 'takenAt').
+ * - Time travel (Drive 1.7 'timeTravel', DriveService event 'timetravel'):
+ *   every folder of this PC whose Drive folder is the folder sent back in
+ *   time, lies in it or holds it runs at once.
+ *   "Abgleichen": what the time travel changed comes to the PC as any change
+ *   in Drive – a PC file changed since the last run is kept as a conflict
+ *   copy next to the file from Drive; files the time travel moved into the
+ *   trash go into the recycle bin (only while unchanged on the PC, the
+ *   mass-delete question is not asked for this one run).
+ *   "Nur sichern": the PC is never written. Drive stays the backup of the PC:
+ *   the next run uploads the PC's file again where Drive now has another one
+ *   (the time travel's file stays as an older version), files it moved into
+ *   the trash that the PC still has go up again; files it brought back that
+ *   the PC does not have stay in Drive (like anything only in Drive).
  * - Control: pause all / a folder, upload / download limit (KB/s, shared by
  *   every transfer of a direction), "nur im Heimnetz" (networks marked as
  *   home: utils/drive-sync.js localNetworks + fingerprints), "nur mit VPN".
@@ -85,6 +99,7 @@ const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
+const { takenAt: readTakenAt, isMediaName } = require('../utils/taken-at');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
 
@@ -224,7 +239,7 @@ class DriveSync extends EventEmitter {
       this._rt.set(id, {
         state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null,
         confirm: null, allowDeletes: false, restore: false, files: null, bytes: null, skipped: 0, pendingDeletes: 0, pendingUntil: null,
-        conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0,
+        conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0, timeTravel: 0,
       });
     }
     return this._rt.get(id);
@@ -239,9 +254,12 @@ class DriveSync extends EventEmitter {
     if (d && typeof d.on === 'function') {
       const onState = (st) => { if (st && st.state === 'available') this.syncAll({ full: true }); else this._emit(); };
       const onGuard = (g) => this._onGuard(g);
+      // Drive 1.7: a folder went back in time – the folders of this PC that lie there run now
+      const onTimeTravel = (e) => { this.afterTimeTravel(e && e.folderId).catch((err) => this.log.info(`Drive sync after a time travel: ${drive.errorCode(err)}`)); };
       d.on('state', onState);
       d.on('guard', onGuard);
-      this._unsub.push(() => { d.removeListener('state', onState); d.removeListener('guard', onGuard); });
+      d.on('timetravel', onTimeTravel);
+      this._unsub.push(() => { d.removeListener('state', onState); d.removeListener('guard', onGuard); d.removeListener('timetravel', onTimeTravel); });
     }
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
@@ -601,6 +619,61 @@ class DriveSync extends EventEmitter {
     return true;
   }
 
+  // ── Time travel (Drive 1.7) ──────────────────────────────
+
+  /**
+   * How the Drive folder `nodeId` relates to the folder `f` of this PC: 'same', 'inside' (it lies in
+   * f's Drive folder), 'contains' (it holds f's Drive folder) or null. Errors count as null.
+   */
+  async _relation(f, nodeId) {
+    const id = drive.posId(nodeId);
+    if (!id || !f.target || !f.target.nodeId || (f.scope && f.scope !== this._scopeKey())) return null;
+    if (f.target.nodeId === id) return 'same';
+    try {
+      const st = await this._state(f);
+      if (st.rootId === f.target.nodeId && st.tree && st.tree[id] && st.tree[id].isDir) return 'inside';
+    } catch { /* no state yet */ }
+    try {
+      const r = await this.api.folder(f.target.nodeId, { limit: 1 });
+      if (r.crumbs.some((c) => c.id === id)) return 'contains';
+    } catch { /* gone, offline */ }
+    return null;
+  }
+
+  /** The folders of this PC the Drive folder `nodeId` touches → [{ id, path, name, mode, relation }] (the time travel's preview). */
+  async linkedFolders(nodeId) {
+    const out = [];
+    for (const f of this._cfg.folders) {
+      const relation = await this._relation(f, nodeId);
+      if (relation) out.push({ id: f.id, path: f.path, name: path.win32.basename(f.path) || f.path, mode: f.mode, relation });
+    }
+    return out;
+  }
+
+  /**
+   * After a time travel of the Drive folder `nodeId`: the folders of this PC it touches run now.
+   * "Nur sichern" uploads the PC's files again where Drive has another one now (`reassert`, kept in
+   * the state until a run went through); "Abgleichen" takes Drive's changes without asking about
+   * mass deletes in this run. → [{ id, mode }]
+   */
+  async afterTimeTravel(nodeId) {
+    const out = [];
+    for (const f of this._cfg.folders) {
+      if (!(await this._relation(f, nodeId))) continue;
+      if (f.mode === 'backup') {
+        const st = await this._state(f);
+        st.reassert = true;
+        await this._writeState(f.id).catch((err) => this.log.warn(`Drive sync state not written: ${err.message}`));
+      } else {
+        this._runtime(f.id).timeTravel = this.now();
+      }
+      this.log.info(`Drive sync: a time travel in Drive touches a folder of this PC (${f.mode}) – it runs now`);
+      this.sync(f.id, { full: true });
+      out.push({ id: f.id, mode: f.mode });
+    }
+    return out;
+  }
+
   /** Opens the local folder in the Explorer. */
   async openFolder(id) {
     const f = this._folder(id);
@@ -786,7 +859,7 @@ class DriveSync extends EventEmitter {
       return;
     }
     const st = await this._state(f);
-    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0, uploaded: new Set(), entropy: new Map() };
+    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0, uploaded: new Set(), entropy: new Map(), started: this.now() };
     rt.state = 'syncing';
     rt.reason = 'checking';
     rt.total = 0;
@@ -804,6 +877,8 @@ class DriveSync extends EventEmitter {
       // Drive 1.5: Drive keeps the 30 days of "Nur sichern"; 1.6: the entropy goes with each commit
       ctx.deleteAfter = await this._has('deleteAfter');
       ctx.guard = await this._has('guard');
+      // Drive 1.7: when a photo / video was taken goes with its commit
+      ctx.takenAt = await this._has('takenAt');
       await this._ensureTarget(ctx);
       const touched = await this._pullRemote(ctx);
       if (q.remote && !q.full && !touched && !rt.dirty && rt.watching && st.base && Object.keys(st.base).length) {
@@ -1138,7 +1213,9 @@ class DriveSync extends EventEmitter {
     }
 
     const v = this._views(ctx, local, unreadable);
-    const p = S.plan({ mode: f.mode, base: v.base, local: v.local, remote: v.remote, restoreDeleted: rt.restore });
+    // after a time travel ("Nur sichern"): the PC's files go up again where Drive has another one now
+    const reassert = f.mode === 'backup' && st.reassert === true;
+    const p = S.plan({ mode: f.mode, base: v.base, local: v.local, remote: v.remote, restoreDeleted: rt.restore, reassert });
     let actions = p.actions;
     const isDelete = (a) => a.op === 'trashRemote' || (a.op === 'pendingDelete' && !st.pending[a.key]);
     const deletes = actions.filter(isDelete).reduce((n, a) => n + (a.files || 0), 0);
@@ -1147,7 +1224,10 @@ class DriveSync extends EventEmitter {
     const driveDeletes = actions.filter((a) => a.op === 'deleteLocal').reduce((n, a) => n + (a.files || 0), 0);
     const massPc = S.massDelete(deletes, p.files);
     const massDrive = S.massDelete(driveDeletes, p.files);
-    if (!rt.allowDeletes && !rt.restore && (massPc || massDrive)) {
+    // a time travel of this person (Drive 1.7) moved many files into Drive's trash: no question for that run
+    const tt = rt.timeTravel && ctx.started >= rt.timeTravel && this.now() - rt.timeTravel < 30 * 60 * 1000;
+    if (rt.timeTravel && ctx.started >= rt.timeTravel) rt.timeTravel = 0;
+    if (!rt.allowDeletes && !rt.restore && (massPc || (massDrive && !tt))) {
       actions = actions.filter((a) => !isDelete(a) && a.op !== 'deleteLocal');
       rt.confirm = massDrive && !massPc ? { count: driveDeletes, total: p.files, from: 'drive' } : { count: deletes, total: p.files, from: 'pc' };
       this.log.info(`Drive sync: ${rt.confirm.count} of ${p.files} files deleted ${rt.confirm.from === 'drive' ? 'in Drive' : 'on this PC'} at once — waiting for the person`);
@@ -1192,6 +1272,7 @@ class DriveSync extends EventEmitter {
       if (++ctx.actions % this.timing.saveEvery === 0) await this._writeState(f.id).catch(() => {});
     }
     rt.pendingDeletes = Object.keys(st.pending).length;
+    if (reassert && !rt.failed) st.reassert = false;
   }
 
   /**
@@ -1460,6 +1541,11 @@ class DriveSync extends EventEmitter {
     const mtime = Math.floor(s.mtimeMs);
     const sha = await this._hash(ctx, abs, s.size);
     const b = st.base[a.key];
+    // after a time travel ("Nur sichern", reassert): Drive has the PC's bytes already
+    if (a.reassert && sha && a.sha256 === sha && a.nodeId) {
+      this._record(ctx, a.key, { ...(b || {}), path: a.path, dir: false, size: s.size, mtime, sha256: sha, nodeId: a.nodeId, rev: a.baseRev });
+      return;
+    }
     // only the time changed: nothing to upload
     if (b && sha && b.sha256 === sha && a.nodeId && b.nodeId === a.nodeId && b.rev === a.baseRev) {
       this._record(ctx, a.key, { ...b, path: a.path, size: s.size, mtime });
@@ -1506,6 +1592,10 @@ class DriveSync extends EventEmitter {
     if (size > 0 && isPdf(name)) {
       const text = await Promise.resolve(this.readPdfText(abs, { size })).catch(() => null);
       if (text) send.text = text;
+    }
+    if (ctx.takenAt && size > 0 && isMediaName(name)) {
+      const at = await readTakenAt(abs, { name }).catch(() => null);
+      if (at) send.takenAt = at;
     }
     return { send, ent };
   }
@@ -1749,7 +1839,7 @@ class DriveSync extends EventEmitter {
 }
 
 function freshState(scope) {
-  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, quarantine: {}, lastSyncAt: null };
+  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, quarantine: {}, lastSyncAt: null, reassert: false };
 }
 
 const entOf = (v) => (Number.isFinite(v) && v >= 0 && v <= 8 ? v : null);
@@ -1761,6 +1851,7 @@ function parseState(raw) {
   st.rootId = drive.posId(raw.rootId);
   st.cursor = drive.count(raw.cursor);
   st.lastSyncAt = drive.msOf(raw.lastSyncAt);
+  st.reassert = raw.reassert === true;
   if (raw.tree && typeof raw.tree === 'object') {
     st.tree = {};
     for (const [id, n] of Object.entries(raw.tree)) {

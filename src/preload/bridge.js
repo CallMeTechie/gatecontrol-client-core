@@ -454,6 +454,25 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       guard:        (fresh) => ipcRenderer.invoke('drive:guard', { fresh: !!fresh }),
       guardDecide:  (id, decision) => ipcRenderer.invoke('drive:guard:decide', { id, decision }),
       onGuard:      (cb) => subscribe('drive:guard', cb),
+      // Drive 1.7 'timeTravel': a folder back to how it was at `at` (preview first; "Rückgängig": at = before)
+      timeTravelPreview: (id, at) => ipcRenderer.invoke('drive:timetravel:preview', { id, at }),
+      timeTravel:   (id, at) => ipcRenderer.invoke('drive:timetravel', { id, at }),
+      // Drive 1.7 'photos' / 'albums' / 'frame'
+      photos:       (opts) => ipcRenderer.invoke('drive:photos', { ...(opts || {}) }),
+      photoMonths:  (area) => ipcRenderer.invoke('drive:photos:months', { area: area || null }),
+      memories:     (date) => ipcRenderer.invoke('drive:photos:memories', { date: date || null }),
+      previewOf:    (id, opts) => ipcRenderer.invoke('drive:preview:node', { id, large: !!(opts && opts.large) }),
+      albums:       () => ipcRenderer.invoke('drive:albums'),
+      album:        (id, opts) => ipcRenderer.invoke('drive:album', { ...(opts || {}), id }),
+      createAlbum:  (name, areaId) => ipcRenderer.invoke('drive:album:create', { name, areaId: areaId || null }),
+      // patch: { name?, coverId?, frame? }
+      updateAlbum:  (id, patch) => ipcRenderer.invoke('drive:album:update', { ...(patch || {}), id }),
+      deleteAlbum:  (id) => ipcRenderer.invoke('drive:album:delete', { id }),
+      addToAlbum:   (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids }),
+      removeFromAlbum: (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids, remove: true }),
+      // Drive 1.7 'storage' (all: administrators)
+      storage:      (all) => ipcRenderer.invoke('drive:storage', { all: !!all }),
+      pruneVersions: (areaId, keep) => ipcRenderer.invoke('drive:storage:prune', { areaId, keep }),
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {
         status:   () => ipcRenderer.invoke('drive:sync:status'),

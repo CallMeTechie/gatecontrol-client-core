@@ -29,6 +29,12 @@
  *   GET    …/api/trash · POST trash/<id>/restore · DELETE trash/<id>
  *   GET    …/api/search?q&area
  *   POST   …/api/links · GET links?nodeId · DELETE links/<token>
+ *   GET    …/api/nodes/<id>/timetravel?at=<ISO>                  Drive 1.7 'timeTravel': what a time travel would do
+ *   POST   …/api/nodes/<id>/timetravel { at }                    … and doing it
+ *   GET    …/api/photos?area&before&limit · photos/months?area · photos/memories?date   Drive 1.7 'photos'
+ *   GET/POST …/api/albums · PATCH/DELETE albums/<id> · GET albums/<id>?before&limit
+ *   POST/DELETE …/api/albums/<id>/items { ids }                   Drive 1.7 'albums' ('frame': PATCH { frame })
+ *   GET    …/api/storage[?all=1] · POST storage/versions/prune { areaId, keep }   Drive 1.7 'storage'
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -322,7 +328,7 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null }) {
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null }) {
     // Drive 1.5 ('emptyFiles'): an empty file goes without media as `size: 0`
     if (!empty && !drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
     const body = empty ? { parentId: this._id(parentId), name, size: 0 } : { mediaId, parentId: this._id(parentId), name };
@@ -333,6 +339,8 @@ class DriveApi {
     if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
     // Drive 1.6 ('guard'): the entropy of the first 64 KB (the caller sends it only to such Drives)
     if (Number.isFinite(entropy) && entropy >= 0 && entropy <= 8) body.entropy = Math.round(entropy * 1000) / 1000;
+    // Drive 1.7 ('takenAt'): when the photo / video was taken (ISO with the offset; the caller sends it only to such Drives)
+    if (typeof takenAt === 'string' && takenAt.length <= 40 && Number.isFinite(Date.parse(takenAt))) body.takenAt = takenAt;
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
     return c;
@@ -376,6 +384,149 @@ class DriveApi {
     }));
     await this.api('PUT', `devices/${encodeURIComponent(id)}/folders`, { body: { folders: list } });
     return { ok: true };
+  }
+
+  // ── Time travel (Drive 1.7, 'timeTravel') ───────────────
+
+  _at(at) {
+    const iso = drive.isoOf(at);
+    if (!iso) throw new DriveError('invalid time', { code: 'invalid' });
+    return iso;
+  }
+
+  /** GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample, limited } (changes nothing) */
+  async timeTravelPreview(id, at) {
+    const r = drive.normalizeTimeTravelPreview(await this.api('GET', `nodes/${this._id(id)}/timetravel`, { params: { at: this._at(at) }, timeout: 120000 }));
+    if (!r) throw new DriveError('bad time travel answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST nodes/<id>/timetravel { at } → { at, before, restored, reverted, trashed, moved, failed } */
+  async timeTravel(id, at) {
+    const r = drive.normalizeTimeTravelResult(await this.api('POST', `nodes/${this._id(id)}/timetravel`, { body: { at: this._at(at) }, timeout: 300000 }));
+    if (!r) throw new DriveError('bad time travel answer', { code: 'bad_response' });
+    return r;
+  }
+
+  // ── Photos and albums (Drive 1.7, 'photos' / 'albums') ──
+
+  _area(area) {
+    if (area === null || area === undefined || area === '') return {};
+    const a = drive.areaIdOf(area);
+    if (!a) throw new DriveError('invalid area', { code: 'invalid' });
+    return { area: a };
+  }
+
+  _page({ before = null, limit = 100 } = {}) {
+    const params = { limit: Math.min(200, Math.max(1, drive.posId(limit) || 100)) };
+    if (before !== null && before !== undefined && before !== '') {
+      const c = drive.cursorOf(before);
+      if (!c) throw new DriveError('invalid cursor', { code: 'invalid' });
+      params.before = c;
+    }
+    return params;
+  }
+
+  _albumId(id) {
+    const a = drive.albumIdOf(id);
+    if (!a) throw new DriveError('invalid album', { code: 'invalid' });
+    return encodeURIComponent(String(a));
+  }
+
+  _ids(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.posId).filter(Boolean))];
+    if (!list.length || list.length > 500) throw new DriveError('invalid ids', { code: 'invalid' });
+    return list;
+  }
+
+  /** GET photos?area=&before=&limit= → { items, next } (newest first by takenAt) */
+  async photos({ area = null, before = null, limit = 100 } = {}) {
+    return drive.normalizePhotos(await this.api('GET', 'photos', { params: { ...this._area(area), ...this._page({ before, limit }) } }));
+  }
+
+  /** GET photos/months?area= → { months: [{ month, count }] } */
+  async photoMonths(area = null) {
+    return drive.normalizeMonths(await this.api('GET', 'photos/months', { params: this._area(area) }));
+  }
+
+  /** GET photos/memories?date=YYYY-MM-DD → { groups: [{ yearsAgo, date, items }] } */
+  async memories(date = null) {
+    const params = {};
+    if (date) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new DriveError('invalid date', { code: 'invalid' });
+      params.date = date;
+    }
+    return drive.normalizeMemories(await this.api('GET', 'photos/memories', { params }));
+  }
+
+  async albums() {
+    return drive.normalizeAlbums(await this.api('GET', 'albums'));
+  }
+
+  async _albumAnswer(promise) {
+    const a = drive.normalizeAlbum((await promise).album);
+    if (!a) throw new DriveError('bad album answer', { code: 'bad_response' });
+    return a;
+  }
+
+  /** POST albums { name, areaId? } → album */
+  createAlbum({ name, areaId = null } = {}) {
+    const body = { name: String(name || '').trim().slice(0, 200) };
+    if (!body.name) throw new DriveError('invalid name', { code: 'invalid_name' });
+    if (areaId) {
+      const a = drive.areaIdOf(areaId);
+      if (!a) throw new DriveError('invalid area', { code: 'invalid' });
+      body.areaId = a;
+    }
+    return this._albumAnswer(this.api('POST', 'albums', { body }));
+  }
+
+  /** PATCH albums/<id> { name?, coverId?, frame? } → album */
+  updateAlbum(id, { name, coverId, frame } = {}) {
+    const body = {};
+    if (name !== undefined) {
+      body.name = String(name || '').trim().slice(0, 200);
+      if (!body.name) throw new DriveError('invalid name', { code: 'invalid_name' });
+    }
+    if (coverId !== undefined) body.coverId = coverId === null ? null : this._id(coverId);
+    if (frame !== undefined) body.frame = frame === true;
+    if (!Object.keys(body).length) throw new DriveError('nothing to change', { code: 'invalid' });
+    return this._albumAnswer(this.api('PATCH', `albums/${this._albumId(id)}`, { body }));
+  }
+
+  async deleteAlbum(id) {
+    await this.api('DELETE', `albums/${this._albumId(id)}`);
+    return { ok: true };
+  }
+
+  /** GET albums/<id>?before=&limit= → { album, items, next } */
+  async album(id, { before = null, limit = 100 } = {}) {
+    const r = drive.normalizeAlbumPage(await this.api('GET', `albums/${this._albumId(id)}`, { params: this._page({ before, limit }) }));
+    if (!r) throw new DriveError('bad album answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST / DELETE albums/<id>/items { ids } (≤ 500, pictures and videos) → album */
+  albumItems(id, ids, { remove = false } = {}) {
+    return this._albumAnswer(this.api(remove ? 'DELETE' : 'POST', `albums/${this._albumId(id)}/items`, { body: { ids: this._ids(ids) } }));
+  }
+
+  // ── Storage (Drive 1.7, 'storage') ───────────────────────
+
+  /** GET storage[?all=1] → { total, limit, areas, people, largest, duplicates } */
+  async storage({ all = false } = {}) {
+    const r = drive.normalizeStorage(await this.api('GET', 'storage', { params: all ? { all: 1 } : {}, timeout: 120000 }));
+    if (!r) throw new DriveError('bad storage answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST storage/versions/prune { areaId, keep } → { removed, freedBytes } */
+  async pruneVersions({ areaId, keep } = {}) {
+    const a = drive.areaIdOf(areaId);
+    const k = drive.count(keep);
+    if (!a || k === null || k > 1000) throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('POST', 'storage/versions/prune', { body: { areaId: a, keep: k }, timeout: 300000 });
+    return { removed: drive.count(r.removed) || 0, freedBytes: drive.count(r.freedBytes) || 0 };
   }
 
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */
