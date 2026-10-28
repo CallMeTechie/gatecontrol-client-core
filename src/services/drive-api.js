@@ -35,6 +35,12 @@
  *   GET/POST …/api/albums · PATCH/DELETE albums/<id> · GET albums/<id>?before&limit
  *   POST/DELETE …/api/albums/<id>/items { ids }                   Drive 1.7 'albums' ('frame': PATCH { frame })
  *   GET    …/api/storage[?all=1] · POST storage/versions/prune { areaId, keep }   Drive 1.7 'storage'
+ *   GET|POST …/api/nodes/<id>/insight · POST nodes/<id>/insight/apply { name?, folder? }   Drive 1.8 'docAi'
+ *   GET    …/api/deadlines?from&to · POST|DELETE deadlines/<id>/remind { daysBefore } · PATCH areas/<id> { docAi }
+ *   POST   …/api/nodes/<id>/office                               Drive 1.9 'office' → { url, mode, expiresAt }
+ *   GET|POST …/api/vaults · GET vaults/<id> · GET vaults/<id>/keys?deviceId · GET|PUT vaults/<id>/recovery
+ *   GET|POST …/api/vaults/<id>/devices · POST …/devices/<did>/approve · DELETE …/devices/<did> · POST vaults/<id>/rotate
+ *          (Drive 1.9 'vault'; POST nodes, uploads/commit and PATCH nodes/<id> take encrypted, nameCipher, keyVersion)
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -55,6 +61,7 @@ const JSON_TIMEOUT_MS = 25000;
 const PREVIEW_MAX = 2 * 1024 * 1024;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
+const isB64u = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[A-Za-z0-9_-]+$/.test(v);
 
 class DriveApi {
   /**
@@ -328,7 +335,10 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null }) {
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null, encrypted = null }) {
+    // Drive 1.9 ('vault'): into a vault only the ciphertext with { nameCipher, keyVersion } (name: the opaque name of a
+    // file of the vault for a new version) — never text, takenAt, entropy
+    if (encrypted) return this._commitEncrypted({ mediaId, parentId, name, mtime, onConflict, baseRev, ...encrypted });
     // Drive 1.5 ('emptyFiles'): an empty file goes without media as `size: 0`
     if (!empty && !drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
     const body = empty ? { parentId: this._id(parentId), name, size: 0 } : { mediaId, parentId: this._id(parentId), name };
@@ -344,6 +354,34 @@ class DriveApi {
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
     return c;
+  }
+
+  async _commitEncrypted({ mediaId, parentId, name = null, mtime = null, onConflict = null, baseRev = null, nameCipher = null, keyVersion }) {
+    if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    const kv = drive.posId(keyVersion);
+    if (!kv || (nameCipher !== null && !isB64u(nameCipher, 2000)) || (name !== null && !/^[0-9a-f]{32}$/.test(String(name)))) throw new DriveError('invalid', { code: 'invalid' });
+    if (!nameCipher && !name) throw new DriveError('invalid', { code: 'invalid' });
+    const body = { mediaId, parentId: this._id(parentId), encrypted: true, keyVersion: kv };
+    if (nameCipher) body.nameCipher = nameCipher;
+    if (name) body.name = name;
+    if (onConflict === 'version' || onConflict === 'rename') body.onConflict = onConflict;
+    if (drive.count(baseRev) !== null) body.baseRev = baseRev;
+    if (Number.isFinite(mtime) && mtime > 0) body.mtime = Math.round(mtime);
+    const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
+    if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
+    return c;
+  }
+
+  /** Drive 1.9 ('vault'): a folder in a vault (POST nodes { parentId, encrypted, nameCipher, keyVersion }). */
+  mkdirEncrypted(parentId, { nameCipher, keyVersion }) {
+    if (!isB64u(nameCipher, 2000) || !drive.posId(keyVersion)) throw new DriveError('invalid', { code: 'invalid' });
+    return this._nodeAnswer(this.api('POST', 'nodes', { body: { parentId: this._id(parentId), encrypted: true, nameCipher, keyVersion: drive.posId(keyVersion) } }));
+  }
+
+  /** Drive 1.9 ('vault'): a vault node's new name (PATCH nodes/<id> { nameCipher }). */
+  renameEncrypted(id, nameCipher) {
+    if (!isB64u(nameCipher, 2000)) throw new DriveError('invalid', { code: 'invalid' });
+    return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body: { nameCipher } }));
   }
 
   /**
@@ -531,6 +569,176 @@ class DriveApi {
     if (!a || k === null || k > 1000) throw new DriveError('invalid', { code: 'invalid' });
     const r = await this.api('POST', 'storage/versions/prune', { body: { areaId: a, keep: k }, timeout: 300000 });
     return { removed: drive.count(r.removed) || 0, freedBytes: drive.count(r.freedBytes) || 0, more: r.more === true };
+  }
+
+  // ── AI for documents (Drive 1.8, 'docAi') ────────────────
+
+  async _insight(promise) {
+    const r = drive.normalizeInsight(await promise);
+    if (!r) throw new DriveError('bad insight answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** GET nodes/<id>/insight → { status, kind, title, date, sender, amount, currency, error, at, suggestion, deadlines } */
+  insight(id) {
+    return this._insight(this.api('GET', `nodes/${this._id(id)}/insight`));
+  }
+
+  /** POST nodes/<id>/insight: recognise again (write right; 422 unsupported { reason: no_text | media_disabled }) */
+  recognize(id) {
+    return this._insight(this.api('POST', `nodes/${this._id(id)}/insight`, { body: {} }));
+  }
+
+  /** POST nodes/<id>/insight/apply { name?: true, folder?: true } → { node, insight } */
+  async applyInsight(id, { name = false, folder = false } = {}) {
+    const body = {};
+    if (name === true) body.name = true;
+    if (folder === true) body.folder = true;
+    if (!Object.keys(body).length) throw new DriveError('nothing to apply', { code: 'invalid' });
+    const r = await this.api('POST', `nodes/${this._id(id)}/insight/apply`, { body });
+    const node = drive.normalizeNode(r && r.node);
+    const insight = drive.normalizeInsight(r && r.insight);
+    if (!node) throw new DriveError('bad apply answer', { code: 'bad_response' });
+    return { node, insight };
+  }
+
+  /** GET deadlines?from=&to= (YYYY-MM-DD; default today … +365 days) → { deadlines } */
+  async deadlines({ from = null, to = null } = {}) {
+    const params = {};
+    for (const [k, v] of [['from', from], ['to', to]]) {
+      if (v === null || v === undefined || v === '') continue;
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new DriveError('invalid date', { code: 'invalid' });
+      params[k] = v;
+    }
+    return drive.normalizeDeadlines(await this.api('GET', 'deadlines', { params }));
+  }
+
+  async _deadline(promise) {
+    const d = drive.normalizeDeadline((await promise).deadline);
+    if (!d) throw new DriveError('bad deadline answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** POST deadlines/<id>/remind { daysBefore: 0…90 } → deadline (the reminder is the person's own) */
+  remind(id, daysBefore) {
+    const days = drive.count(daysBefore);
+    if (days === null || days > 90) throw new DriveError('invalid', { code: 'invalid' });
+    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/remind`, { body: { daysBefore: days } }));
+  }
+
+  /** DELETE deadlines/<id>/remind → deadline */
+  unremind(id) {
+    return this._deadline(this.api('DELETE', `deadlines/${this._id(id)}/remind`));
+  }
+
+  /** PATCH areas/<id> { docAi } → { id, docAi } */
+  async setDocAi(areaId, on) {
+    const a = drive.areaIdOf(areaId);
+    if (!a || typeof on !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('PATCH', `areas/${encodeURIComponent(a)}`, { body: { docAi: on } });
+    const area = r && r.area && typeof r.area === 'object' ? r.area : {};
+    return { id: drive.areaIdOf(area.id) || a, docAi: typeof area.docAi === 'boolean' ? area.docAi : on };
+  }
+
+  // ── Office in the browser (Drive 1.9, 'office') ─────────
+
+  /** POST nodes/<id>/office → { url, mode: 'edit' | 'view', expiresAt } (409 encrypted / office_unavailable) */
+  async office(id) {
+    const r = drive.normalizeOffice(await this.api('POST', `nodes/${this._id(id)}/office`, { body: {} }));
+    if (!r) throw new DriveError('bad office answer', { code: 'bad_response' });
+    return r;
+  }
+
+  // ── Vault folders (Drive 1.9, 'vault') ───────────────────
+
+  _vaultId(id) {
+    const v = drive.vaultIdOf(id);
+    if (!v) throw new DriveError('invalid vault', { code: 'invalid' });
+    return v;
+  }
+
+  _deviceId(id) {
+    const d = drive.vaultDeviceIdOf(id);
+    if (!d) throw new DriveError('invalid device', { code: 'invalid' });
+    return d;
+  }
+
+  async _vaultAnswer(promise) {
+    const v = drive.normalizeVault((await promise).vault);
+    if (!v) throw new DriveError('bad vault answer', { code: 'bad_response' });
+    return v;
+  }
+
+  /** GET vaults → [vault] */
+  async vaults() {
+    const r = await this.api('GET', 'vaults');
+    return (Array.isArray(r && r.vaults) ? r.vaults : []).slice(0, 1000).map(drive.normalizeVault).filter(Boolean);
+  }
+
+  vault(id) {
+    return this._vaultAnswer(this.api('GET', `vaults/${this._vaultId(id)}`));
+  }
+
+  /** POST vaults { id, parentId, nameCipher, recoveryPub, recoveryAuth, recoveryWrap, device, wrap } → { vault, node } */
+  async createVault(body) {
+    const r = await this.api('POST', 'vaults', { body: { ...body, id: this._vaultId(body && body.id), parentId: this._id(body && body.parentId) } });
+    const vault = drive.normalizeVault(r && r.vault);
+    const node = drive.normalizeNode(r && r.node);
+    if (!vault || !node) throw new DriveError('bad vault answer', { code: 'bad_response' });
+    return { vault, node };
+  }
+
+  /** GET vaults/<id>/keys?deviceId= → { deviceId, state, keyVersion, keys } (404: this device never asked) */
+  async vaultKeys(id, deviceId) {
+    const r = drive.normalizeVaultKeys(await this.api('GET', `vaults/${this._vaultId(id)}/keys`, { params: { deviceId: this._deviceId(deviceId) } }));
+    if (!r) throw new DriveError('bad keys answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** GET vaults/<id>/recovery → { recoveryPub, keyVersion, keys } */
+  async vaultRecovery(id) {
+    const r = drive.normalizeVaultRecovery(await this.api('GET', `vaults/${this._vaultId(id)}/recovery`));
+    if (!r) throw new DriveError('bad recovery answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** PUT vaults/<id>/recovery { pub, auth, wraps } → vault */
+  setVaultRecovery(id, body) {
+    return this._vaultAnswer(this.api('PUT', `vaults/${this._vaultId(id)}/recovery`, { body }));
+  }
+
+  /** GET vaults/<id>/devices → [device] */
+  async vaultDevices(id) {
+    const r = await this.api('GET', `vaults/${this._vaultId(id)}/devices`);
+    return (Array.isArray(r && r.devices) ? r.devices : []).slice(0, 500).map(drive.normalizeVaultDevice).filter(Boolean);
+  }
+
+  async _deviceAnswer(promise) {
+    const d = drive.normalizeVaultDevice((await promise).device);
+    if (!d) throw new DriveError('bad device answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** POST vaults/<id>/devices { publicKey, name, platform } → device (the request; pending) */
+  askVault(id, { publicKey, name = null, platform = 'windows' }) {
+    const body = { publicKey, platform };
+    if (name) body.name = String(name).slice(0, 80);
+    return this._deviceAnswer(this.api('POST', `vaults/${this._vaultId(id)}/devices`, { body }));
+  }
+
+  /** POST vaults/<id>/devices/<did>/approve { wraps, via?, recoveryAuth? } → device */
+  approveVaultDevice(id, deviceId, body) {
+    return this._deviceAnswer(this.api('POST', `vaults/${this._vaultId(id)}/devices/${this._deviceId(deviceId)}/approve`, { body }));
+  }
+
+  /** DELETE vaults/<id>/devices/<did> → device (declined / removed) */
+  revokeVaultDevice(id, deviceId) {
+    return this._deviceAnswer(this.api('DELETE', `vaults/${this._vaultId(id)}/devices/${this._deviceId(deviceId)}`));
+  }
+
+  /** POST vaults/<id>/rotate { keyVersion, wraps, recoveryWrap | recovery } → vault */
+  rotateVault(id, body) {
+    return this._vaultAnswer(this.api('POST', `vaults/${this._vaultId(id)}/rotate`, { body }));
   }
 
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */

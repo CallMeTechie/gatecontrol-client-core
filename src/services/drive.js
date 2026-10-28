@@ -59,10 +59,31 @@
  *   storage overview (largest files, duplicates); the previews of photos
  *   whose answer names no mediaId are loaded by the node.
  *
+ * - Drive 1.8 'docAi': what Drive recognised in a document (kind, title, date,
+ *   sender, amount, a suggested name / folder to take, its deadlines with the
+ *   person's reminder), "Erneut erkennen", the deadlines of all files, the
+ *   switch per area. A click on a deadline reminder (push topic `deadline`)
+ *   opens the file on the page (NotificationCenter.addClickRoute).
+ * - Drive 1.8 'cloudImport': the import runs in the portal only — its page
+ *   `/portal?drive=import#plg-gatecontrol-drive` opens in the browser.
+ * - Drive 1.9 'office': "Im Browser bearbeiten / ansehen" — POST
+ *   nodes/<id>/office, its https address goes to the default browser.
+ * - Drive 1.9 'vault' (services/drive-vault.js): vault folders, end-to-end
+ *   encrypted on this PC. Listings show their names decrypted (when this device
+ *   has the key, else `locked`); uploads into a vault are encrypted chunk by
+ *   chunk into a temporary file (ciphertext only) and go up as
+ *   application/octet-stream with nameCipher / keyVersion; opening decrypts into
+ *   %TEMP%\gatecontrol-drive\vault\<random>\<name>, removed again after
+ *   VAULT_OPEN_KEEP_MS (later while the file is in use), at stop and at the next
+ *   start; renaming and new folders send the encrypted name. No previews, text,
+ *   takenAt, entropy, links, office or AI for them.
+ *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
  * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
- * 'timetravel' ({ folderId, at, before }) after a time travel.
+ * 'timetravel' ({ folderId, at, before }) after a time travel, 'vault'
+ * ({ vault, event, device, keyVersion }) a request / approval / new key of a
+ * vault folder (live event `vault`).
  */
 
 const EventEmitter = require('events');
@@ -71,6 +92,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const DriveApi = require('./drive-api');
+const DriveVault = require('./drive-vault');
+const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
@@ -96,6 +119,10 @@ const MAX_PATHS = 200;
 const FOLDER_MAX_FILES = 20000;   // a dropped folder: at most this many files …
 const FOLDER_MAX_DIRS = 5000;     // … and folders
 const ME_MAX_AGE = 10 * 60 * 1000;
+const VAULT_OPEN_KEEP_MS = 10 * 60 * 1000;   // a decrypted file opened from a vault is removed after this …
+const VAULT_OPEN_RETRY_MS = 5 * 60 * 1000;   // … or later while a program still holds it
+const DEADLINE_TOPIC = `plugin:${drive.PLUGIN_ID}:deadline`;
+const VAULT_TOPIC = `plugin:${drive.PLUGIN_ID}:vault`;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -116,10 +143,15 @@ class DriveService extends EventEmitter {
    * @param {() => number} [opts.now]
    * @param {() => string[]} [opts.allowedHosts] - hosts "Im Portal öffnen" may open (default: the server's and the portal's)
    * @param {(file: string, o: object) => Promise<string|null>} [opts.readPdfText] - text layer of a PDF (tests)
+   * @param {object} [opts.protect] - Drive 1.9 vaults: { available, encrypt, decrypt } of Electron safeStorage (DPAPI) —
+   *   without it this PC cannot keep a device key (DriveService.safeStorageProtect(safeStorage))
+   * @param {object} [opts.notificationCenter] - a click on a deadline / vault push opens the page
+   * @param {() => string} [opts.deviceName] - this PC's name for vault requests
    */
   constructor({
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
     tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
+    protect = null, notificationCenter = null, deviceName = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -135,7 +167,11 @@ class DriveService extends EventEmitter {
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
     this.tempDir = typeof tempDir === 'function' ? tempDir : () => path.join(os.tmpdir(), 'gatecontrol-drive');
     this.pushClient = pushClient;
+    this.notificationCenter = notificationCenter;
     this.timing = { ...DEFAULT_TIMING, ...timing };
+    this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now });
+    this._vaultOpened = new Map();  // a decrypted file's folder → its removal timer
+    this._vaultRoots = new Map();   // vault id → the node id of its folder
     this.now = now;
 
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
@@ -174,12 +210,23 @@ class DriveService extends EventEmitter {
           this.emit('remote', { areas, seq: drive.count(d.seq) });
         } else if (ev.data.type === 'guard') {
           this.guard({ fresh: true }).catch(() => {});
+        } else if (ev.data.type === 'vault') {
+          // Drive 1.9: a request, an approval, a new key of a vault folder
+          this.vault.onEvent(d);
+          this.emit('vault', vaultEvent(d));
         }
       };
       pc.on('hello', onHello);
       pc.on('event', onEvent);
       this._unsub.push(() => { pc.removeListener('hello', onHello); pc.removeListener('event', onEvent); });
     }
+    const nc = this.notificationCenter;
+    if (nc && typeof nc.addClickRoute === 'function') {
+      // Drive 1.8 / 1.9: a deadline reminder opens its file, a vault request the vault on the page
+      this._unsub.push(nc.addClickRoute(drive.APP_ROUTE, (entry) => this.clickContext(entry)));
+    }
+    // decrypted files a crash left behind
+    this._sweepVaultTemp().catch(() => {});
     this.check().catch(() => {});
   }
 
@@ -190,6 +237,28 @@ class DriveService extends EventEmitter {
     clearTimeout(this._emitTimer);
     this._emitTimer = null;
     for (const off of this._unsub.splice(0)) { try { off(); } catch { /* gone */ } }
+    this.vault.clear();
+    for (const t of this._vaultOpened.values()) clearTimeout(t);
+    this._vaultOpened.clear();
+    this._sweepVaultTemp().catch(() => {});
+  }
+
+  /**
+   * A click on a Drive push while the page exists → { kind: 'deadline', nodeId, deadlineId, areaId } |
+   * { kind: 'vault', vaultId, nodeId, event } | null (the inbox opens).
+   */
+  clickContext(entry) {
+    if (!this.available() || !entry || typeof entry !== 'object') return null;
+    const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {};
+    const d = data.drive && typeof data.drive === 'object' && !Array.isArray(data.drive) ? data.drive : null;
+    if (!d) return null;
+    if (entry.topic === DEADLINE_TOPIC && drive.posId(d.node)) {
+      return { kind: 'deadline', nodeId: drive.posId(d.node), deadlineId: drive.posId(d.deadline), areaId: drive.areaIdOf(d.area) };
+    }
+    if (entry.topic === VAULT_TOPIC && drive.vaultIdOf(d.vault)) {
+      return { kind: 'vault', vaultId: d.vault, nodeId: drive.posId(d.node), areaId: drive.areaIdOf(d.area), event: typeof d.event === 'string' ? d.event.slice(0, 20) : null };
+    }
+    return null;
   }
 
   /** server:setup: the old server's state goes (queued uploads are dropped), the new one is asked. */
@@ -199,6 +268,8 @@ class DriveService extends EventEmitter {
     this._previews.clear();
     this._mediaOf.clear();
     this._inflight.clear();
+    this.vault.clear();
+    this._vaultRoots.clear();
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
     for (const [id, job] of this._jobs) if (job.waiting) this._set(id, { state: 'skipped' });
     this._jobs.clear();
@@ -415,9 +486,235 @@ class DriveService extends EventEmitter {
     return this._run(async () => ({ ok: true, ...(await this.api.areas()) }));
   }
 
-  /** A folder: { ok, node, crumbs, role, writable, items, total, next } */
+  /**
+   * A folder: { ok, node, crumbs, role, writable, items, total, next, vault } — vault (Drive 1.9): the vault the folder
+   * lies in { id, state, name, needsRotation } (null outside one); vault nodes carry their decrypted name, or
+   * `locked: true` while this device has no key.
+   */
   async folder(id, query = {}) {
-    return this._run(async () => ({ ok: true, ...(await this.api.folder(id, query)) }));
+    return this._run(async () => {
+      const f = await this.api.folder(id, query);
+      await this._vaultDecorate(f.items, { inVault: f.node.encrypted });
+      let vault = null;
+      if (f.node.encrypted && f.node.vaultId) {
+        await this.vault.tryOpen(f.node.vaultId);
+        f.node = this._vaultNode(f.node);
+        if (f.node.vaultRoot === undefined) f.node.vaultRoot = false;
+        vault = { id: f.node.vaultId, state: this.vault.stateOf(f.node.vaultId) };
+        await this._vaultCrumbs(f).catch(() => {});
+      }
+      return { ok: true, ...f, vault };
+    });
+  }
+
+  // ── Vault folders (Drive 1.9, 'vault') ───────────────────
+
+  /** A vault node with its decrypted name (else locked: true and the opaque name). */
+  _vaultNode(n) {
+    if (!n || !n.encrypted) return n;
+    const name = this.vault.nameOf(n);
+    return name ? { ...n, name, opaqueName: n.name, locked: false } : { ...n, opaqueName: n.name, locked: true };
+  }
+
+  /** Names of the vault nodes of a list (vaults with a key here are opened quietly first). */
+  async _vaultDecorate(items, { inVault = false } = {}) {
+    if (!Array.isArray(items) || !items.some((n) => n.encrypted)) return items;
+    for (const vid of new Set(items.filter((n) => n.encrypted && n.vaultId).map((n) => n.vaultId))) await this.vault.tryOpen(vid);
+    for (let i = 0; i < items.length; i++) {
+      const n = items[i];
+      if (!n.encrypted) continue;
+      items[i] = { ...this._vaultNode(n), vaultRoot: !inVault && n.isDir, vaultState: this.vault.stateOf(n.vaultId) };
+      if (!inVault && n.isDir && n.vaultId) this._vaultRoots.set(n.vaultId, n.id);
+    }
+    return items;
+  }
+
+  /** The breadcrumbs inside a vault get their names (from the names decrypted before, else the nodes). */
+  async _vaultCrumbs(f) {
+    const vid = f.node.vaultId;
+    let rootId = this._vaultRoots.get(vid);
+    if (!rootId) {
+      rootId = (await this.api.vault(vid)).nodeId;
+      this._vaultRoots.set(vid, rootId);
+    }
+    const at = f.crumbs.findIndex((c) => c.id === rootId);
+    if (at < 0) return;
+    for (let i = at; i < f.crumbs.length; i++) {
+      const c = f.crumbs[i];
+      let name = c.id === f.node.id && !f.node.locked ? f.node.name : this.vault.knownName(c.id);
+      if (!name && this.vault.isOpen(vid)) name = this.vault.nameOf(await this.api.node(c.id).catch(() => null));
+      f.crumbs[i] = name ? { ...c, name } : { ...c, locked: true };
+    }
+  }
+
+  /** The node `id` when it lies in a vault (feature on), else null. */
+  async _vaultNodeOf(id) {
+    if (!(await this.api.has('vault').catch(() => false))) return null;
+    const n = await this.api.node(id);
+    return n.encrypted && n.vaultId ? n : null;
+  }
+
+  /** The decrypted names of the children of the vault folder `folderId` → [{ node, name }] (locked ones left out). */
+  async _vaultSiblings(folderId, vaultId) {
+    const out = [];
+    for (const n of await this.api.childrenAll(folderId)) {
+      if (n.deleted || !n.encrypted || n.vaultId !== vaultId) continue;
+      const name = this.vault.nameOf(n);
+      if (name) out.push({ node: n, name });
+    }
+    return out;
+  }
+
+  /** { ok, supported, device: { id, safetyNumber, name } | null } — this PC for vaults (no key made here). */
+  async vaultStatus() {
+    return this._run(async () => {
+      const supported = this.vault.supported() && await this.api.has('vault').catch(() => false);
+      const device = supported ? await this.vault.device({ create: false }) : null;
+      return { ok: true, supported, protect: this.vault.supported(), device: device ? { id: device.id, safetyNumber: device.safetyNumber, name: device.name } : null };
+    });
+  }
+
+  async vaults() {
+    return this._run(async () => {
+      await this._feature('vault');
+      const vaults = await this.vault.list();
+      for (const v of vaults) this._vaultRoots.set(v.id, v.nodeId);
+      return { ok: true, vaults };
+    });
+  }
+
+  /** A new vault folder → { ok, vault, node, recoveryKey } (recoveryKey: shown once). */
+  async vaultCreate(parentId, name) {
+    const n = this._name(name);
+    return this._run(async () => {
+      await this._feature('vault');
+      const r = await this.vault.create(drive.posId(parentId), n);
+      this._vaultRoots.set(r.vault.id, r.node.id);
+      this.emit('changed', { folderId: drive.posId(parentId) });
+      return { ok: true, ...r };
+    });
+  }
+
+  /** Opens a vault on this PC → { ok, state: 'open' | 'pending' | 'none' | 'revoked' } */
+  async vaultOpen(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, ...(await this.vault.open(vaultId, { fresh: true })) };
+    });
+  }
+
+  /** This PC asks for access → { ok, state, safetyNumber } (the number the approving device compares). */
+  async vaultRequest(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      const r = await this.vault.request(vaultId);
+      return { ok: true, state: r.state, safetyNumber: r.safetyNumber, deviceId: r.device.deviceId };
+    });
+  }
+
+  /** The devices of a vault with their safety numbers → { ok, devices, vault } */
+  async vaultDevices(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      const [devices, vault] = await Promise.all([this.vault.devices(vaultId), this.vault.get(vaultId)]);
+      return { ok: true, devices, vault };
+    });
+  }
+
+  /** Approves a request after the safety number was compared → { ok, device } */
+  async vaultApprove(vaultId, deviceId, safetyNumber) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, device: await this.vault.approve(vaultId, deviceId, safetyNumber) };
+    });
+  }
+
+  async vaultDecline(vaultId, deviceId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, device: await this.vault.decline(vaultId, deviceId) };
+    });
+  }
+
+  /** Opens the vault with its recovery key → { ok, state: 'open' } */
+  async vaultRecover(vaultId, text) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, ...(await this.vault.recover(vaultId, text)) };
+    });
+  }
+
+  /** A new vault key (needsRotation) → { ok, vault, recoveryKey } (recoveryKey only when Drive asked for a new one) */
+  async vaultRotate(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, ...(await this.vault.rotate(vaultId)) };
+    });
+  }
+
+  /** A folder in a vault (the top one of an uploaded folder: a free name) → node with its name. */
+  async _vaultMkdir(vaultId, parentId, name, { free = false } = {}) {
+    let n = name;
+    if (free) {
+      const taken = new Set((await this._vaultSiblings(parentId, vaultId)).map((x) => S.keyOf(x.name)));
+      n = freeFileName(name, taken, true);
+    }
+    const node = await this.vault.withCurrent(vaultId, (cur) => this.api.mkdirEncrypted(parentId, this.vault.encryptName(vaultId, n, cur)));
+    this.vault.nameOf(node);
+    return { ...node, name: n, opaqueName: node.name, locked: false };
+  }
+
+  /** Removes the folders of decrypted files (all of them: at stop / start). */
+  async _sweepVaultTemp() {
+    for (const d of ['vault', 'vault-dl', 'vault-up']) {
+      await fs.promises.rm(path.join(this.tempDir(), d), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+    }
+  }
+
+  /** The decrypted copy in `dir` goes after VAULT_OPEN_KEEP_MS — later while a program still holds it. */
+  _forgetOpened(dir, delay = VAULT_OPEN_KEEP_MS) {
+    clearTimeout(this._vaultOpened.get(dir));
+    const t = setTimeout(async () => {
+      this._vaultOpened.delete(dir);
+      try {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      } catch {
+        this._forgetOpened(dir, VAULT_OPEN_RETRY_MS);
+      }
+    }, delay);
+    if (t.unref) t.unref();
+    this._vaultOpened.set(dir, t);
+  }
+
+  /** The ciphertext of a vault file (or a version) decrypted into `file` → node content info. */
+  async _vaultFetchTo(node, versionId, file, row) {
+    const keys = this.vault.keys(node.vaultId);
+    const c = await this.api.content(node.id, versionId);
+    if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
+    const tmpDir = path.join(this.tempDir(), 'vault-dl');
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+    const enc = path.join(tmpDir, `${crypto.randomBytes(8).toString('hex')}.enc`);
+    const part = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
+    try {
+      const out = fs.createWriteStream(enc);
+      try {
+        await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: Math.round(got / 2), ...(total ? { total } : {}) }, { progress: true }) });
+      } catch (err) { out.destroy(); throw err; }
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      let total = null;
+      try {
+        await V.decryptFile(keys, node.vaultId, enc, part, { onProgress: (done, size) => { total = size; this._set(row.id, { sent: done, total: size }, { progress: true }); } });
+      } catch (err) {
+        if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'decrypt' ? 'vault_decrypt' : 'vault_invalid' });
+        throw err;
+      }
+      await fs.promises.rm(file, { force: true });
+      await fs.promises.rename(part, file);
+      return { size: total };
+    } finally {
+      await fs.promises.rm(enc, { force: true }).catch(() => {});
+      await fs.promises.rm(part, { force: true }).catch(() => {});
+    }
   }
 
   async search(q, area = null) {
@@ -427,7 +724,7 @@ class DriveService extends EventEmitter {
   }
 
   async trashList(area = null) {
-    return this._run(async () => ({ ok: true, items: await this.api.trashList(area) }));
+    return this._run(async () => ({ ok: true, items: await this._vaultDecorate(await this.api.trashList(area), { inVault: true }) }));
   }
 
   async versions(id) {
@@ -447,12 +744,24 @@ class DriveService extends EventEmitter {
 
   async mkdir(parentId, name) {
     const n = this._name(name);
-    return this._run(async () => ({ ok: true, node: await this.api.mkdir(parentId, n) }));
+    return this._run(async () => {
+      // Drive 1.9: a folder in a vault gets an encrypted name
+      const parent = await this._vaultNodeOf(parentId);
+      if (parent) return { ok: true, node: await this._vaultMkdir(parent.vaultId, parent.id, n, { free: true }) };
+      return { ok: true, node: await this.api.mkdir(parentId, n) };
+    });
   }
 
   async rename(id, name) {
     const n = this._name(name);
-    return this._run(async () => ({ ok: true, node: await this.api.rename(id, n) }));
+    return this._run(async () => {
+      const node = await this._vaultNodeOf(id);
+      if (node) {
+        const r = await this.vault.withCurrent(node.vaultId, (cur) => this.api.renameEncrypted(node.id, this.vault.encryptName(node.vaultId, n, cur).nameCipher));
+        return { ok: true, node: this._vaultNode(r) };
+      }
+      return { ok: true, node: await this.api.rename(id, n) };
+    });
   }
 
   async move(id, parentId) {
@@ -601,6 +910,88 @@ class DriveService extends EventEmitter {
     });
   }
 
+  // ── Drive 1.8: AI for documents, deadlines, the import ───
+
+  /** What Drive recognised in a file → { ok, insight } */
+  async insight(id) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, insight: await this.api.insight(id) };
+    });
+  }
+
+  /** "Erneut erkennen" → { ok, insight } (422 unsupported { reason: no_text | media_disabled }) */
+  async recognize(id) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, insight: await this.api.recognize(id) };
+    });
+  }
+
+  /** The suggestion taken (name and / or folder) → { ok, node, insight } */
+  async applyInsight(id, { name = false, folder = false } = {}) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      const before = await this.api.node(id).catch(() => null);
+      const r = await this.api.applyInsight(id, { name, folder });
+      if (before && before.parentId) this.emit('changed', { folderId: before.parentId });
+      if (r.node.parentId && (!before || before.parentId !== r.node.parentId)) this.emit('changed', { folderId: r.node.parentId });
+      return { ok: true, ...r };
+    });
+  }
+
+  /** The deadlines of the files the person reads → { ok, deadlines } (from / to: YYYY-MM-DD) */
+  async deadlines({ from = null, to = null } = {}) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, ...(await this.api.deadlines({ from, to })) };
+    });
+  }
+
+  /** "Erinnern N Tage vorher" (daysBefore null: no reminder) → { ok, deadline } */
+  async remind(deadlineId, daysBefore) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      const deadline = daysBefore === null || daysBefore === undefined ? await this.api.unremind(deadlineId) : await this.api.remind(deadlineId, daysBefore);
+      return { ok: true, deadline };
+    });
+  }
+
+  /** AI for documents on / off in an area (write right) → { ok, area: { id, docAi } } */
+  async setDocAi(areaId, on) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, area: await this.api.setDocAi(areaId, on) };
+    });
+  }
+
+  /** "Aus Google Drive / OneDrive importieren": the portal's import page in the browser (Drive 1.8 'cloudImport'). */
+  async openImport() {
+    return this._run(async () => {
+      await this._feature('cloudImport');
+      const c = await this._meFresh(false);
+      const a = this.apiClient || {};
+      const url = drive.allowedLink(drive.importLink((c.links && c.links.drive) || a.portalUrl || a.serverUrl), this._hosts());
+      if (!url) return { ok: false, code: 'unsupported', error: 'no portal address' };
+      if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+      const ok = await openExternalSafely(this.shell, url, { log: this.log, label: 'Drive import link' });
+      return ok ? { ok: true } : { ok: false, code: 'open_failed', error: 'not opened' };
+    });
+  }
+
+  // ── Drive 1.9: office in the browser ─────────────────────
+
+  /** "Im Browser bearbeiten / ansehen": the office address in the default browser → { ok, mode, expiresAt } */
+  async office(id) {
+    return this._run(async () => {
+      await this._feature('office');
+      if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+      const r = await this.api.office(id);
+      const ok = await openExternalSafely(this.shell, r.url, { log: this.log, label: 'Drive office link' });
+      return ok ? { ok: true, mode: r.mode, expiresAt: r.expiresAt } : { ok: false, code: 'open_failed', error: 'not opened' };
+    });
+  }
+
   /**
    * The preview of a photo by its node (Drive 1.7 photo answers without a mediaId): the node is
    * asked once (GET nodes/<id>, it tells no one), then the preview of its media → { ok, mime, data }.
@@ -736,6 +1127,13 @@ class DriveService extends EventEmitter {
     const folderId = drive.posId(parentId);
     if (!folderId) throw new DriveError('invalid folder', { code: 'invalid' });
     this._need();
+    // Drive 1.9: into a vault only encrypted (this PC needs its key)
+    const parent = await this._run(() => this._vaultNodeOf(folderId));
+    const vaultId = parent ? parent.vaultId : null;
+    if (vaultId) {
+      await this.vault.tryOpen(vaultId);
+      this.vault.keys(vaultId);
+    }
     const list = Array.isArray(paths) ? paths.slice(0, MAX_PATHS) : [];
     const out = { queued: [], rejected: [], folders: 0, skipped: 0 };
     for (const p of list) {
@@ -743,20 +1141,20 @@ class DriveService extends EventEmitter {
       const base = path.basename(p);
       let st;
       try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      if (st.isDirectory()) { await this._queueFolder(folderId, p, out); continue; }
+      if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId); continue; }
       if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      this._queueFile(folderId, p, base, st, out);
+      this._queueFile(folderId, p, base, st, out, vaultId);
     }
     this._pump();
     return { ok: true, ...out };
   }
 
-  _queueFile(folderId, p, base, st, out) {
+  _queueFile(folderId, p, base, st, out, vaultId = null) {
     if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); return; }
     const name = drive.safeName(base);
     if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
     const id = `u${++this._nextId}`;
-    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow() };
+    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow(), vault: vaultId };
     this._jobs.set(id, job);
     this._queue.push(job);
     this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now() });
@@ -768,7 +1166,7 @@ class DriveService extends EventEmitter {
    * then its files into the queue. Left out like "Ordner sichern": temporary files,
    * node_modules / .git, names Drive does not take, links.
    */
-  async _queueFolder(parentId, abs, out) {
+  async _queueFolder(parentId, abs, out, vaultId = null) {
     const base = path.basename(abs);
     const top = drive.safeName(base);
     if (!top) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
@@ -778,7 +1176,7 @@ class DriveService extends EventEmitter {
     let files = 0;
     let dirs = 0;
     try {
-      const made = await this._run(() => this.api.mkdir(parentId, top, { rename: true }));
+      const made = await this._run(() => (vaultId ? this._vaultMkdir(vaultId, parentId, top, { free: true }) : this.api.mkdir(parentId, top, { rename: true })));
       dirs++;
       const walk = async (dirAbs, nodeId, rel) => {
         let entries;
@@ -791,7 +1189,7 @@ class DriveService extends EventEmitter {
           if (e.isSymbolicLink()) { out.skipped++; continue; }
           if (e.isDirectory()) {
             if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { out.skipped++; continue; }
-            const child = await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
+            const child = vaultId ? await this._run(() => this._vaultMkdir(vaultId, nodeId, name)) : await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
               if (!(err && err.status === 409)) throw err;
               const kids = await this.api.childrenAll(nodeId);
               const have = kids.find((k) => k.isDir && S.keyOf(k.name) === S.keyOf(name));
@@ -805,11 +1203,11 @@ class DriveService extends EventEmitter {
             try { st = await fs.promises.stat(p); } catch { out.skipped++; continue; }
             const why = S.excluded(r, { dir: false, size: st.size }, settings);
             if (why) { if (why !== 'temp') out.skipped++; continue; }
-            // an empty file only goes to Drives that take them (1.5 'emptyFiles')
-            if (!st.size && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
+            // an empty file only goes to Drives that take them (1.5 'emptyFiles'; a vault's file always has its header)
+            if (!st.size && !vaultId && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
             if (files >= FOLDER_MAX_FILES) { out.skipped++; continue; }
             files++;
-            this._queueFile(nodeId, p, name, st, out);
+            this._queueFile(nodeId, p, name, st, out, vaultId);
           }
         }
       };
@@ -896,6 +1294,7 @@ class DriveService extends EventEmitter {
       job.size = st.size;
       this._set(job.id, { total: st.size });
     }
+    if (job.vault) { await this._runVaultUpload(job); return; }
     if (!job.choice) {
       const sha = job.size <= drive.SHA_MAX_BYTES ? await sha256File(job.path).catch(() => null) : null;
       const c = await this.api.check({ parentId: job.folderId, name: job.name, sha256: sha, size: job.size });
@@ -924,6 +1323,59 @@ class DriveService extends EventEmitter {
     }
     this._jobs.delete(job.id);
     this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name: r.node.name });
+    this.emit('changed', { folderId: job.folderId });
+  }
+
+  /**
+   * A file into a vault: a taken name asks like any upload (by the decrypted names of the folder) → the file encrypted
+   * chunk by chunk into a temporary file (ciphertext only) → media upload → commit with nameCipher / keyVersion
+   * (a new version: the file's opaque name with onConflict 'version'). A stale key: the keys again, once.
+   */
+  async _runVaultUpload(job) {
+    const vaultId = job.vault;
+    this.vault.keys(vaultId);
+    const siblings = await this._vaultSiblings(job.folderId, vaultId);
+    const same = (x) => S.keyOf(x.name) === S.keyOf(job.name);
+    let name = job.name;
+    let opaque = null;
+    if (!job.choice) {
+      const hit = siblings.find((x) => same(x) && !x.node.isDir);
+      if (hit) {
+        job.waiting = true;
+        this._set(job.id, { state: 'conflict' });
+        return;
+      }
+    }
+    if (job.choice === 'version') {
+      const hit = siblings.find((x) => same(x) && !x.node.isDir);
+      if (hit) opaque = hit.node.name;
+    }
+    if (!opaque && siblings.some(same)) name = freeFileName(job.name, new Set(siblings.map((x) => S.keyOf(x.name))));
+    const dir = path.join(this.tempDir(), 'vault-up');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const tmp = path.join(dir, `${job.id}-${crypto.randomBytes(6).toString('hex')}.enc`);
+    let r;
+    try {
+      r = await this.vault.withCurrent(vaultId, async (cur) => {
+        let enc;
+        try {
+          enc = await V.encryptFile(cur.tk, vaultId, cur.keyVersion, job.path, tmp);
+        } catch (err) {
+          if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'changed' ? 'missing' : 'invalid' });
+          throw err;
+        }
+        const up = await this.api.upload({ path: tmp, size: enc.cipherSize, mime: 'application/octet-stream' }, {
+          onProgress: (sent) => this._set(job.id, { sent: Math.min(job.size, Math.round(sent * job.size / Math.max(1, enc.cipherSize))) }, { progress: true }),
+        });
+        const { nameCipher } = this.vault.encryptName(vaultId, name, cur);
+        return this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, mtime: job.mtime, encrypted: { nameCipher, keyVersion: cur.keyVersion, name: opaque, onConflict: opaque ? 'version' : 'rename' } });
+      });
+    } finally {
+      await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    }
+    this.vault.nameOf(r.node);
+    this._jobs.delete(job.id);
+    this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name });
     this.emit('changed', { folderId: job.folderId });
   }
 
@@ -964,6 +1416,7 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
+      if (node.encrypted && node.vaultId) return this._openVaultFile(node, versionId);
       const name = drive.safeName(node.name) || 'Datei';
       if (unsafeToOpen(name, node.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
       const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
@@ -995,19 +1448,55 @@ class DriveService extends EventEmitter {
     });
   }
 
+  /**
+   * A vault file decrypted into %TEMP%\gatecontrol-drive\vault\<random>\<name> and opened; the copy goes again
+   * after VAULT_OPEN_KEEP_MS (later while in use), at stop and at the next start.
+   */
+  async _openVaultFile(node, versionId) {
+    await this.vault.tryOpen(node.vaultId);
+    this.vault.keys(node.vaultId);
+    const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+    if (unsafeToOpen(name, null)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
+    const dir = path.join(this.tempDir(), 'vault', crypto.randomBytes(8).toString('hex'));
+    const file = path.join(dir, safeFileName(name, 'Datei'));
+    const row = this._downloadRow(name, node.size);
+    try {
+      await this._vaultFetchTo(node, versionId, file, row);
+      this._set(row.id, { state: 'done', sent: row.total });
+    } catch (err) {
+      this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+    this._forgetOpened(dir);
+    const err = await this.shell.openPath(file);
+    if (err) {
+      this.log.warn(`Opening a Drive vault file failed: ${err}`);
+      return { ok: false, code: 'open_failed', error: String(err) };
+    }
+    return { ok: true, path: file };
+  }
+
   /** "Speichern unter …": the file (or a version) into a path the person picks → { ok, path } | { ok: false, cancelled }. */
   async saveAs(nodeId, { versionId = null } = {}) {
     if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
-      const name = drive.safeName(node.name) || 'Datei';
+      const vault = node.encrypted && node.vaultId ? node.vaultId : null;
+      if (vault) {
+        await this.vault.tryOpen(vault);
+        this.vault.keys(vault);
+      }
+      const name = drive.safeName(vault ? this.vault.nameOf(node) || '' : node.name) || 'Datei';
       const win = this.getMainWindow();
       const res = win ? await this.dialog.showSaveDialog(win, { defaultPath: name }) : await this.dialog.showSaveDialog({ defaultPath: name });
       if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
       const row = this._downloadRow(path.basename(res.filePath), node.size);
       try {
-        await this._fetchTo(node.id, versionId, res.filePath, row);
+        // a vault's file: decrypted into the path picked (the person asked for a plain copy there)
+        if (vault) await this._vaultFetchTo(node, versionId, res.filePath, row);
+        else await this._fetchTo(node.id, versionId, res.filePath, row);
       } catch (err) {
         this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
         throw err;
@@ -1026,6 +1515,42 @@ class DriveService extends EventEmitter {
   }
 }
 
+/** The live event / push data `vault` → { vault, event, device, keyVersion } */
+function vaultEvent(d) {
+  const o = d && typeof d === 'object' ? d : {};
+  return {
+    vault: drive.vaultIdOf(o.vault),
+    event: typeof o.event === 'string' ? o.event.slice(0, 20) : null,
+    device: drive.vaultDeviceIdOf(o.device),
+    keyVersion: drive.posId(o.keyVersion),
+  };
+}
+
+/** "Brief.pdf" → "Brief (2).pdf" while taken (keys of S.keyOf); a folder (`dir`) without the extension rule. */
+function freeFileName(name, taken, dir = false) {
+  if (!taken.has(S.keyOf(name))) return name;
+  const dot = dir ? -1 : name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let i = 2; i < 10000; i++) {
+    const c = `${base} (${i})${ext}`;
+    if (!taken.has(S.keyOf(c))) return c;
+  }
+  return `${base} (${Date.now()})${ext}`;
+}
+
+/**
+ * safeStorage (Windows: DPAPI, bound to the Windows user) as the `protect` of the vault folders' device key:
+ * DriveService.safeStorageProtect(require('electron').safeStorage).
+ */
+function safeStorageProtect(safeStorage) {
+  return {
+    available: () => !!(safeStorage && safeStorage.isEncryptionAvailable()),
+    encrypt: (b) => safeStorage.encryptString(Buffer.from(b).toString('base64')),
+    decrypt: (b) => Buffer.from(safeStorage.decryptString(Buffer.from(b)), 'base64'),
+  };
+}
+
 /** SHA-256 of a file (hex), streamed. */
 function sha256File(p) {
   return new Promise((resolve, reject) => {
@@ -1041,5 +1566,8 @@ DriveService.DEFAULT_TIMING = DEFAULT_TIMING;
 DriveService.STORE_KEY = STORE_KEY;
 DriveService.sha256File = sha256File;
 DriveService.FOLDER_MAX_FILES = FOLDER_MAX_FILES;
+DriveService.safeStorageProtect = safeStorageProtect;
+DriveService.freeFileName = freeFileName;
+DriveService.VAULT_OPEN_KEEP_MS = VAULT_OPEN_KEEP_MS;
 
 module.exports = DriveService;

@@ -53,6 +53,24 @@
  *   drive:album:items     ({ id, ids, remove? }) → { ok, album }
  *   drive:storage         ({ all? }) → { ok, total, limit, areas, people, largest, duplicates }   (Drive 1.7 'storage')
  *   drive:storage:prune   ({ areaId, keep }) → { ok, removed, freedBytes }
+ *   drive:insight         ({ id }) → { ok, insight }                               (Drive 1.8 'docAi')
+ *   drive:insight:run     ({ id }) → { ok, insight }                               "Erneut erkennen"
+ *   drive:insight:apply   ({ id, name?, folder? }) → { ok, node, insight }         the suggestion taken
+ *   drive:deadlines       ({ from?, to? }) → { ok, deadlines }
+ *   drive:deadline:remind ({ id, daysBefore: 0…90 | null }) → { ok, deadline }     null: no reminder
+ *   drive:area:docai      ({ areaId, on }) → { ok, area }
+ *   drive:import          () → { ok }   the portal's import page in the browser   (Drive 1.8 'cloudImport')
+ *   drive:office          ({ id }) → { ok, mode, expiresAt }   "Im Browser bearbeiten" (Drive 1.9 'office')
+ *   drive:vault:status    () → { ok, supported, protect, device }                  (Drive 1.9 'vault')
+ *   drive:vaults          () → { ok, vaults }
+ *   drive:vault:create    ({ parentId, name }) → { ok, vault, node, recoveryKey }   recoveryKey: shown once
+ *   drive:vault:open      ({ vaultId }) → { ok, state }
+ *   drive:vault:request   ({ vaultId }) → { ok, state, safetyNumber, deviceId }
+ *   drive:vault:devices   ({ vaultId }) → { ok, devices, vault }
+ *   drive:vault:approve   ({ vaultId, deviceId, safetyNumber }) → { ok, device }
+ *   drive:vault:decline   ({ vaultId, deviceId }) → { ok, device }
+ *   drive:vault:recover   ({ vaultId, recoveryKey }) → { ok, state }
+ *   drive:vault:rotate    ({ vaultId }) → { ok, vault, recoveryKey }
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -69,7 +87,8 @@
  *   drive:sync:open       ({ id }) → { ok }                     the folder in the Explorer
  *
  * Events to the main window: drive:state, drive:transfers, drive:changed, drive:remote
- * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:sync.
+ * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:vault ({ vault, event, device,
+ * keyVersion }: a vault request / approval / new key), drive:sync.
  */
 
 const DRIVE_EVENTS = {
@@ -78,10 +97,16 @@ const DRIVE_EVENTS = {
   changed: 'drive:changed',
   remote: 'drive:remote',
   guard: 'drive:guard',
+  vault: 'drive:vault',
 };
 
 function fail(err) {
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  const out = { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  // the plugin's detail of a refusal (Drive 1.8: 422 unsupported { reason: no_text | media_disabled }; 1.9: stale_key …)
+  const b = err && err.body;
+  if (b && typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason)) out.reason = b.reason;
+  if (b && typeof b.field === 'string' && /^[A-Za-z_.]{1,40}$/.test(b.field)) out.field = b.field;
+  return out;
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -94,6 +119,9 @@ const isAt = (v) => (Number.isSafeInteger(v) && v > 0) || (typeof v === 'string'
 const isAlbumId = (v) => isId(v) || (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v));
 const optArea = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:_-]{1,80}$/.test(v));
 const optCursor = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:._+|,-]{1,100}$/.test(v));
+const isVaultId = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v);
+const isDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const optDay = (v) => v === undefined || v === null || v === '' || isDay(v);
 const optLimit = (v) => v === undefined || v === null || (Number.isSafeInteger(v) && v > 0 && v <= 200);
 const SYNC_SETTINGS = {
   skipDev: (v) => typeof v === 'boolean',
@@ -213,6 +241,30 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   }));
   handle('drive:storage', wrap(async (a) => s.storage({ all: a.all === true })));
   handle('drive:storage:prune', wrap(async (a) => (optArea(a.areaId) && a.areaId && Number.isSafeInteger(a.keep) && a.keep >= 0 && a.keep <= 1000 ? s.pruneVersions({ areaId: a.areaId, keep: a.keep }) : invalid())));
+
+  // ── Drive 1.8 / 1.9 ────────────────────────────────────
+  handle('drive:insight', byId(async (a) => s.insight(a.id)));
+  handle('drive:insight:run', byId(async (a) => s.recognize(a.id)));
+  handle('drive:insight:apply', byId(async (a) => (a.name === true || a.folder === true ? s.applyInsight(a.id, { name: a.name === true, folder: a.folder === true }) : invalid())));
+  handle('drive:deadlines', wrap(async (a) => (optDay(a.from) && optDay(a.to) ? s.deadlines({ from: a.from || null, to: a.to || null }) : invalid())));
+  handle('drive:deadline:remind', byId(async (a) => {
+    if (!(a.daysBefore === null || (Number.isSafeInteger(a.daysBefore) && a.daysBefore >= 0 && a.daysBefore <= 90))) return invalid();
+    return s.remind(a.id, a.daysBefore);
+  }));
+  handle('drive:area:docai', wrap(async (a) => (optArea(a.areaId) && a.areaId && typeof a.on === 'boolean' ? s.setDocAi(a.areaId, a.on) : invalid())));
+  handle('drive:import', wrap(async () => s.openImport()));
+  handle('drive:office', byId(async (a) => s.office(a.id)));
+  handle('drive:vault:status', wrap(async () => s.vaultStatus()));
+  handle('drive:vaults', wrap(async () => s.vaults()));
+  handle('drive:vault:create', wrap(async (a) => (isId(a.parentId) && isStr(a.name, 255) ? s.vaultCreate(a.parentId, a.name) : invalid())));
+  const byVault = (fn) => wrap(async (a) => (isVaultId(a.vaultId) ? fn(a) : invalid()));
+  handle('drive:vault:open', byVault(async (a) => s.vaultOpen(a.vaultId)));
+  handle('drive:vault:request', byVault(async (a) => s.vaultRequest(a.vaultId)));
+  handle('drive:vault:devices', byVault(async (a) => s.vaultDevices(a.vaultId)));
+  handle('drive:vault:approve', byVault(async (a) => (isVaultId(a.deviceId) && isStr(a.safetyNumber, 30) ? s.vaultApprove(a.vaultId, a.deviceId, a.safetyNumber) : invalid())));
+  handle('drive:vault:decline', byVault(async (a) => (isVaultId(a.deviceId) ? s.vaultDecline(a.vaultId, a.deviceId) : invalid())));
+  handle('drive:vault:recover', byVault(async (a) => (isStr(a.recoveryKey, 200) ? s.vaultRecover(a.vaultId, a.recoveryKey) : invalid())));
+  handle('drive:vault:rotate', byVault(async (a) => s.vaultRotate(a.vaultId)));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());

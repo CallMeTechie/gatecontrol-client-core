@@ -28,6 +28,11 @@
  * - Watching: fs.watch (recursive) per folder → a run 3 s after the last
  *   change; a full run at start and every 15 minutes. Files that are still
  *   being written (changed in the last 2 s) wait for the next run.
+ * - Vault folders (Drive 1.9 'vault', end-to-end encrypted on the devices):
+ *   never part of "Ordner sichern" — nodes with `encrypted: true` are left out
+ *   of Drive's tree (their names are opaque, their contents ciphertext), a
+ *   folder of the PC is never uploaded into one, and a vault folder cannot be
+ *   the Drive folder of "Abgleichen" ('encrypted').
  * - Left out: temporary files (~$*, *.tmp, Thumbs.db, desktop.ini,
  *   .DS_Store), node_modules and .git (switch, on by default), files over a
  *   size (10 GB by default), empty files on Drives before 1.5 (the media upload
@@ -490,6 +495,7 @@ class DriveSync extends EventEmitter {
       if (!id) throw new DriveError('no Drive folder', { code: 'invalid' });
       if (this._cfg.folders.some((f) => f.mode === 'sync' && f.target.nodeId === id && f.scope === folder.scope)) throw new DriveError('Drive folder synced already', { code: 'target_taken' });
       const r = await this.api.folder(id, { limit: 1 });
+      if (r.node.encrypted) throw new DriveError('a vault folder', { code: 'encrypted' });
       if (!r.writable) throw new DriveError('read only', { code: 'forbidden' });
       const area = (await this.api.areas().catch(() => ({ areas: [] }))).areas.find((a) => a.id === r.node.areaId);
       const names = r.crumbs.filter((c) => c.id !== r.node.id).map((c) => c.name);
@@ -1029,7 +1035,7 @@ class DriveSync extends EventEmitter {
     });
     if (dev && dev.folder) {
       const leaf = f.remoteName || 'Ordner';
-      const find = async () => (await this.api.childrenAll(dev.folder.id)).find((n) => n.isDir && !n.deleted && S.keyOf(n.name) === S.keyOf(leaf)) || null;
+      const find = async () => (await this.api.childrenAll(dev.folder.id)).find((n) => n.isDir && !n.deleted && !n.encrypted && S.keyOf(n.name) === S.keyOf(leaf)) || null;
       let n = await find();
       if (!n) {
         try {
@@ -1109,7 +1115,8 @@ class DriveSync extends EventEmitter {
     while (dirs.length) {
       const id = dirs.shift();
       for (const n of await this.api.childrenAll(id)) {
-        if (n.deleted) continue;
+        // Drive 1.9: vault folders and their content are never synced (opaque names, ciphertext)
+        if (n.deleted || n.encrypted) continue;
         tree[n.id] = S.slimNode(n);
         if (n.isDir) dirs.push(n.id);
         if (++count > 500000) throw new DriveError('too many files', { code: 'too_many_files' });
@@ -1402,7 +1409,7 @@ class DriveSync extends EventEmitter {
   }
 
   _tree(ctx, node) {
-    if (!ctx.st.tree || !node) return;
+    if (!ctx.st.tree || !node || node.encrypted) return;
     ctx.st.tree[node.id] = S.slimNode(node);
   }
 
@@ -1477,7 +1484,8 @@ class DriveSync extends EventEmitter {
       if (!(err && err.status === 409)) throw err;
       const kids = await this.api.childrenAll(parentId);
       node = kids.find((n) => S.keyOf(n.name) === S.keyOf(name));
-      if (!node || !node.isDir) throw new DriveError('a file is in the way', { code: 'exists' });
+      // a vault folder (Drive 1.9) is never a folder of the PC: nothing goes into it
+      if (!node || !node.isDir || node.encrypted) throw new DriveError('a file is in the way', { code: 'exists' });
       for (const k of kids) this._tree(ctx, k);
     }
     this._tree(ctx, node);

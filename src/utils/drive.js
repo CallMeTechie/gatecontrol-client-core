@@ -133,6 +133,8 @@ function normalizeArea(v) {
     archived,
     writable: !archived && (role === 'write' || role === 'manage'),
     storage: storageOf(a.storage),
+    // Drive 1.8 ('docAi'): AI for documents on in this area (null: the Drive does not say)
+    docAi: typeof a.docAi === 'boolean' ? a.docAi : null,
   };
 }
 
@@ -191,6 +193,15 @@ function normalizeNode(v) {
     deletedOnDevice: line(o.deletedOnDevice, 128),
     // Drive 1.7 ('takenAt'): when a photo / video was taken (EXIF, else mtime) or null
     takenAt: msOf(o.takenAt),
+    // Drive 1.8 ('docAi'): the short form of the recognition { status, kind } on files while the feature is on
+    insight: insightShort(o.insight),
+    // Drive 1.9 ('vault'): a node of a vault folder — `name` is opaque, the device decrypts nameCipher
+    ...(o.encrypted === true ? {
+      encrypted: true,
+      vaultId: VAULT_ID_RE.test(String(o.vaultId || '')) ? o.vaultId : null,
+      nameCipher: typeof o.nameCipher === 'string' && o.nameCipher.length <= 2000 && /^[A-Za-z0-9_-]+$/.test(o.nameCipher) ? o.nameCipher : null,
+      keyVersion: posId(o.keyVersion),
+    } : { encrypted: false }),
   };
 }
 
@@ -686,6 +697,189 @@ function normalizeStorage(raw) {
   };
 }
 
+// ── Drive 1.8: AI for documents, deadlines, the import ─────
+
+const INSIGHT_STATUS = Object.freeze(['none', 'pending', 'ready', 'failed', 'off']);
+const DOC_KINDS = Object.freeze(['invoice', 'contract', 'notice', 'medical', 'certificate', 'statement', 'insurance', 'warranty', 'other']);
+const DEADLINE_KINDS = Object.freeze(['payment', 'cancellation', 'objection']);
+const DAY_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const dayOf = (v) => (typeof v === 'string' && DAY_RE.test(v) ? v : null);
+
+/** node.insight → { status, kind } or null (older Drives, the feature off, a folder). */
+function insightShort(v) {
+  const o = obj(v);
+  if (!o || !INSIGHT_STATUS.includes(o.status)) return null;
+  return { status: o.status, kind: o.status === 'ready' && DOC_KINDS.includes(o.kind) ? o.kind : null };
+}
+
+/** A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent } | null, node? } or null. */
+function normalizeDeadline(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const date = o && dayOf(o.date);
+  if (!id || !date || !DEADLINE_KINDS.includes(o.kind)) return null;
+  const r = obj(o.reminder);
+  const days = r ? count(r.daysBefore) : null;
+  const out = {
+    id,
+    kind: o.kind,
+    date,
+    label: line(o.label, 200),
+    reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent) } : null,
+  };
+  if (o.node !== undefined) out.node = normalizeNode(o.node);
+  return out;
+}
+
+/** GET deadlines → { deadlines } (by date; rows without their file dropped). */
+function normalizeDeadlines(raw) {
+  const r = obj(raw) || {};
+  const list = arr(r.deadlines).slice(0, 500).map(normalizeDeadline).filter((d) => d && d.node);
+  list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id));
+  return { deadlines: list };
+}
+
+/**
+ * GET / POST nodes/<id>/insight → { status, kind, title, date, sender, amount, currency, error, at,
+ * suggestion: { folderId, folderPath, name } | null, deadlines } or null.
+ */
+function normalizeInsight(raw) {
+  const r = obj(raw);
+  if (!r || !INSIGHT_STATUS.includes(r.status)) return null;
+  const s = obj(r.suggestion);
+  const folderId = s ? posId(s.folderId) : null;
+  const name = s ? line(s.name, NAME_MAX) : null;
+  const amount = typeof r.amount === 'number' && Number.isFinite(r.amount) && Math.abs(r.amount) < 1e12 ? r.amount : null;
+  const currency = typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : null;
+  return {
+    status: r.status,
+    kind: DOC_KINDS.includes(r.kind) ? r.kind : null,
+    title: line(r.title, 200),
+    date: dayOf(r.date),
+    sender: line(r.sender, 200),
+    amount,
+    currency: amount === null ? null : currency,
+    error: codeOf(r.error),
+    at: msOf(r.at),
+    // folderPath: relative to the area's root ('' the top folder)
+    suggestion: folderId || name ? { folderId, folderPath: folderId ? (typeof s.folderPath === 'string' ? s.folderPath.replace(CTRL_LINE_RE, ' ').slice(0, 2000) : '') : null, name } : null,
+    deadlines: arr(r.deadlines).slice(0, 20).map(normalizeDeadline).filter(Boolean).map(({ node, ...d }) => d),
+  };
+}
+
+/**
+ * The portal's page of the import (Drive 1.8 'cloudImport'): `/portal?drive=import#plg-gatecontrol-drive` on the
+ * origin of `base` (me.links.drive, else the portal's address) → https URL or null.
+ */
+function importLink(base) {
+  const u = httpsUrl(base);
+  if (!u) return null;
+  return `${new URL(u).origin}/portal?drive=import#${APP_ROUTE}`;
+}
+
+// ── Drive 1.9: vault folders, office ───────────────────────
+
+const VAULT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+const VAULT_DEVICE_RE = /^[A-Za-z0-9_-]{22}$/;
+const VAULT_DEVICE_STATES = Object.freeze(['approved', 'pending', 'revoked']);
+const B64U_RE = /^[A-Za-z0-9_-]+$/;
+const b64uOf = (v, max) => (typeof v === 'string' && v.length <= max && B64U_RE.test(v) ? v : null);
+const vaultIdOf = (v) => (typeof v === 'string' && VAULT_ID_RE.test(v) ? v : null);
+const vaultDeviceIdOf = (v) => (typeof v === 'string' && VAULT_DEVICE_RE.test(v) ? v : null);
+
+/** A vault → { id, nodeId, areaId, parentId, nameCipher, keyVersion, recoveryPub, recoveryHolder, needsRotation, createdAt, createdBy, rotatedAt, myDevices, pending } or null. */
+function normalizeVault(v) {
+  const o = obj(v);
+  const id = o && vaultIdOf(o.id);
+  const nodeId = o && posId(o.nodeId);
+  if (!id || !nodeId) return null;
+  return {
+    id,
+    nodeId,
+    areaId: areaIdOf(o.areaId),
+    parentId: posId(o.parentId),
+    nameCipher: b64uOf(o.nameCipher, 2000),
+    keyVersion: posId(o.keyVersion) || 1,
+    recoveryPub: b64uOf(o.recoveryPub, 43),
+    recoveryHolder: posId(o.recoveryHolder),
+    needsRotation: bool(o.needsRotation),
+    createdAt: msOf(o.createdAt),
+    createdBy: posId(o.createdBy),
+    rotatedAt: msOf(o.rotatedAt),
+    myDevices: arr(o.myDevices).slice(0, 200).map((d) => {
+      const x = obj(d);
+      const did = x && vaultDeviceIdOf(x.deviceId);
+      return did && VAULT_DEVICE_STATES.includes(x.state) ? { deviceId: did, state: x.state, name: line(x.name, 80) } : null;
+    }).filter(Boolean),
+    pending: count(o.pending) || 0,
+  };
+}
+
+/** A device of a vault → { deviceId, userId, name, platform, publicKey, state, via, createdAt, approvedAt, approvedBy, revokedAt } or null. */
+function normalizeVaultDevice(v) {
+  const o = obj(v);
+  const deviceId = o && vaultDeviceIdOf(o.deviceId);
+  const publicKey = o && b64uOf(o.publicKey, 43);
+  if (!deviceId || !publicKey || publicKey.length !== 43 || !VAULT_DEVICE_STATES.includes(o.state)) return null;
+  return {
+    deviceId,
+    userId: posId(o.userId),
+    name: line(o.name, 80),
+    platform: typeof o.platform === 'string' && /^[a-z]{1,16}$/.test(o.platform) ? o.platform : null,
+    publicKey,
+    state: o.state,
+    via: ['create', 'device', 'recovery'].includes(o.via) ? o.via : null,
+    createdAt: msOf(o.createdAt),
+    approvedAt: msOf(o.approvedAt),
+    approvedBy: posId(o.approvedBy),
+    revokedAt: msOf(o.revokedAt),
+  };
+}
+
+/** The wraps of GET vaults/<id>/keys or …/recovery → [{ keyVersion, wrap }] (by version). */
+function wrapsOf(v) {
+  const out = arr(v).slice(0, 10000).map((w) => {
+    const o = obj(w);
+    const kv = o && posId(o.keyVersion);
+    const wrap = o && b64uOf(o.wrap, 108);
+    return kv && wrap && wrap.length === 108 ? { keyVersion: kv, wrap } : null;
+  }).filter(Boolean);
+  out.sort((a, b) => a.keyVersion - b.keyVersion);
+  return out;
+}
+
+/** GET vaults/<id>/keys?deviceId= → { deviceId, state, keyVersion, keys } or null. */
+function normalizeVaultKeys(raw) {
+  const r = obj(raw);
+  if (!r || !VAULT_DEVICE_STATES.includes(r.state)) return null;
+  return { deviceId: vaultDeviceIdOf(r.deviceId), state: r.state, keyVersion: posId(r.keyVersion), keys: wrapsOf(r.keys) };
+}
+
+/** GET vaults/<id>/recovery → { recoveryPub, keyVersion, keys } or null. */
+function normalizeVaultRecovery(raw) {
+  const r = obj(raw);
+  const pub = r && b64uOf(r.recoveryPub, 43);
+  if (!pub) return null;
+  return { recoveryPub: pub, keyVersion: posId(r.keyVersion), keys: wrapsOf(r.keys) };
+}
+
+/** The documents office in the browser opens (contract): word processing, spreadsheets, presentations, CSV. */
+const OFFICE_EXTS = Object.freeze(['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'csv']);
+
+/** Is `name` a document "Im Browser bearbeiten" offers? */
+function isOfficeName(name) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(typeof name === 'string' ? name : '');
+  return !!m && OFFICE_EXTS.includes(m[1].toLowerCase());
+}
+
+/** POST nodes/<id>/office → { url, mode: 'edit' | 'view', expiresAt } or null (an https URL only). */
+function normalizeOffice(raw) {
+  const r = obj(raw);
+  const url = r && httpsUrl(r.url);
+  if (!url) return null;
+  return { url, mode: r.mode === 'edit' ? 'edit' : 'view', expiresAt: msOf(r.expiresAt) };
+}
+
 // ── Requests ───────────────────────────────────────────────
 
 /** Children query: sort, order, offset, limit (≤ 1000) — unknown values fall back to name / asc. */
@@ -715,6 +909,25 @@ function errorCode(err) {
 }
 
 module.exports = {
+  INSIGHT_STATUS,
+  DOC_KINDS,
+  DEADLINE_KINDS,
+  insightShort,
+  normalizeInsight,
+  normalizeDeadline,
+  normalizeDeadlines,
+  importLink,
+  VAULT_ID_RE,
+  VAULT_DEVICE_RE,
+  vaultIdOf,
+  vaultDeviceIdOf,
+  normalizeVault,
+  normalizeVaultDevice,
+  normalizeVaultKeys,
+  normalizeVaultRecovery,
+  OFFICE_EXTS,
+  isOfficeName,
+  normalizeOffice,
   isoOf,
   cursorOf,
   albumIdOf,

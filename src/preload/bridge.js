@@ -473,6 +473,32 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Drive 1.7 'storage' (all: administrators)
       storage:      (all) => ipcRenderer.invoke('drive:storage', { all: !!all }),
       pruneVersions: (areaId, keep) => ipcRenderer.invoke('drive:storage:prune', { areaId, keep }),
+      // Drive 1.8 'docAi': what Drive recognised in a document, its deadlines and reminders
+      insight:      (id) => ipcRenderer.invoke('drive:insight', { id }),
+      recognize:    (id) => ipcRenderer.invoke('drive:insight:run', { id }),
+      applyInsight: (id, opts) => ipcRenderer.invoke('drive:insight:apply', { id, name: !!(opts && opts.name), folder: !!(opts && opts.folder) }),
+      deadlines:    (range) => ipcRenderer.invoke('drive:deadlines', { from: (range && range.from) || null, to: (range && range.to) || null }),
+      // daysBefore null: no reminder
+      remind:       (id, daysBefore) => ipcRenderer.invoke('drive:deadline:remind', { id, daysBefore: daysBefore === undefined ? null : daysBefore }),
+      setDocAi:     (areaId, on) => ipcRenderer.invoke('drive:area:docai', { areaId, on: !!on }),
+      // Drive 1.8 'cloudImport': the portal's import page in the browser
+      openImport:   () => ipcRenderer.invoke('drive:import'),
+      // Drive 1.9 'office': "Im Browser bearbeiten / ansehen"
+      office:       (id) => ipcRenderer.invoke('drive:office', { id }),
+      // Drive 1.9 'vault': end-to-end encrypted folders (keys stay in the main process)
+      vault: {
+        status:   () => ipcRenderer.invoke('drive:vault:status'),
+        list:     () => ipcRenderer.invoke('drive:vaults'),
+        create:   (parentId, name) => ipcRenderer.invoke('drive:vault:create', { parentId, name }),
+        open:     (vaultId) => ipcRenderer.invoke('drive:vault:open', { vaultId }),
+        request:  (vaultId) => ipcRenderer.invoke('drive:vault:request', { vaultId }),
+        devices:  (vaultId) => ipcRenderer.invoke('drive:vault:devices', { vaultId }),
+        approve:  (vaultId, deviceId, safetyNumber) => ipcRenderer.invoke('drive:vault:approve', { vaultId, deviceId, safetyNumber }),
+        decline:  (vaultId, deviceId) => ipcRenderer.invoke('drive:vault:decline', { vaultId, deviceId }),
+        recover:  (vaultId, recoveryKey) => ipcRenderer.invoke('drive:vault:recover', { vaultId, recoveryKey }),
+        rotate:   (vaultId) => ipcRenderer.invoke('drive:vault:rotate', { vaultId }),
+        onEvent:  (cb) => subscribe('drive:vault', cb),
+      },
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {
         status:   () => ipcRenderer.invoke('drive:sync:status'),

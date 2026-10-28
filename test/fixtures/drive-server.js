@@ -25,6 +25,12 @@
 // against the history of every change: srv.state.history), 'photos' (photos, photos/months, photos/memories – items
 // with mediaId / previewUrl / largeUrl; srv.photoMediaIds = false: without), 'albums' / 'frame' (srv.state.albums), 'storage' (GET storage,
 // storage/versions/prune).
+// Drive 1.8: 'docAi' (node.insight { status, kind }, GET / POST nodes/<id>/insight, …/insight/apply, GET deadlines,
+// POST / DELETE deadlines/<id>/remind, PATCH areas/<id> { docAi }, areas[].docAi; srv.setInsight(id, insight),
+// srv.state.deadlines), 'cloudImport' (only the feature: the import runs in the portal).
+// Drive 1.9: 'office' (POST nodes/<id>/office → an https URL; 409 encrypted / office_unavailable), 'vault' (vaults,
+// keys, recovery, devices, approve, revoke, rotate; nodes, uploads/commit and PATCH with encrypted / nameCipher /
+// keyVersion; 409 stale_key; no links, search or office in a vault; srv.state.vaults).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -58,6 +64,13 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   // Drive 1.7 'timeTravel': how every node was after each change
   state.history = [];
   state.albums = new Map();
+  // Drive 1.8 'docAi': nodeId → the full insight; deadlines; areas switched off
+  state.insights = new Map();
+  state.deadlines = [];
+  state.docAiOff = new Set();
+  // Drive 1.9 'vault': id → { id, nodeId, areaId, keyVersion, recoveryPub, recoveryAuth (sha256 hex), recoveryBy, needsRotation, devices, wraps }
+  state.vaults = new Map();
+  state.officeCalls = [];
   const snap = () => new Map([...state.nodes.values()].map((n) => [n.id, { name: n.name, parentId: n.parentId, isDir: n.isDir, deleted: !!n.deleted, mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime }]));
   const logChange = (op, n, device = '42', areaId = n.areaId) => {
     state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device });
@@ -93,7 +106,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.media.set(toolMedia, { data: Buffer.from('MZ'), mime: 'application/x-msdownload' });
   node({ id: 13, areaId: 'mine:2', parentId: 1, name: 'setup.exe', size: 2, mime: 'application/x-msdownload', mediaId: toolMedia });
 
-  const srv = { state, cutUploadAfter: null, pageMax: 1000, photoMediaIds: true, startedAt: Date.now(), timeTravelMax: 2000 };
+  // linksBase: the origin of me.links (an e2e test points it at its mock server)
+  const srv = { state, nextId: () => ++nextId, linksBase: 'https://gc.example.com', cutUploadAfter: null, pageMax: 1000, photoMediaIds: true, startedAt: Date.now(), timeTravelMax: 2000 };
   state.history.push({ at: 0, nodes: snap() });
   // nodes below `id` (all, also deleted ones)
   srv.below = (id) => {
@@ -198,6 +212,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     },
   };
 
+  // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
+  srv.setInsight = (id, ins) => {
+    const deadlines = (ins.deadlines || []).map((d) => {
+      const row = { id: ++nextId, nodeId: id, kind: d.kind, date: d.date, label: d.label || null, reminder: null };
+      state.deadlines.push(row);
+      return row;
+    });
+    state.insights.set(id, { status: 'ready', kind: 'other', title: null, date: null, sender: null, amount: null, currency: null, error: null, at: iso(Date.now()), suggestion: null, ...ins, deadlines });
+  };
+  // Drive 1.9: another device of the person asks for vault `vaultId` (pending)
+  srv.vaultAsk = (vaultId, publicKey, name = 'Pixel') => {
+    const v = state.vaults.get(vaultId);
+    const deviceId = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('gcdrive-v1:device:'), Buffer.from(publicKey, 'base64url')])).digest().subarray(0, 16).toString('base64url');
+    v.devices.set(deviceId, { deviceId, userId: 2, name, platform: 'android', publicKey, state: 'pending', via: null, createdAt: iso(Date.now()), approvedAt: null, approvedBy: null, revokedAt: null });
+    return deviceId;
+  };
+
   const json = (res, status, body) => {
     const data = Buffer.from(JSON.stringify(body));
     res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': data.length });
@@ -210,9 +241,16 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     req.on('end', () => resolve(Buffer.concat(parts)));
     req.on('error', () => resolve(Buffer.concat(parts)));
   });
+  const insightOf = (n) => {
+    if (n.isDir) return undefined;
+    if (n.encrypted || state.docAiOff.has(n.areaId)) return { status: 'off', kind: null };
+    const i = state.insights.get(n.id);
+    return i ? { status: i.status, kind: i.status === 'ready' ? i.kind : null } : { status: 'none', kind: null };
+  };
   const view = (n) => ({
     ...n,
-    preview: !n.isDir && n.mediaId && /^image\//.test(n.mime || '') ? { url: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : (n.isDir ? undefined : null),
+    preview: !n.isDir && n.mediaId && !n.encrypted && /^image\//.test(n.mime || '') ? { url: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : (n.isDir ? undefined : null),
+    ...(features && features.includes('docAi') && !n.isDir ? { insight: insightOf(n) } : {}),
   });
   const areaOf = (n) => areas.find((a) => a.id === n.areaId);
   const writable = (n) => { const a = areaOf(n); return a && !a.archived && (a.role === 'write' || a.role === 'manage'); };
@@ -311,13 +349,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const seg = route.split('/');
     const get = (id) => { const n = state.nodes.get(Number(id)); return n && !n.deleted ? n : null; };
 
+    const areasNowMe = () => (features && features.includes('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id) })) : areas);
     if (req.method === 'GET' && route === 'me') {
       return json(res, 200, {
         ok: true, me: { id: 2, name: 'Marc', seat: seat || null, deviceId: '42' }, licence: { valid: licence, tier: 'combo' },
-        areas: seat ? areas : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
+        areas: seat ? areasNowMe() : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
         ...(features ? { features } : {}),
-        ...(features && features.includes('links') ? { links: { node: 'https://gc.example.com/portal#plg-gatecontrol-drive/node/{id}', drive: 'https://gc.example.com/portal#plg-gatecontrol-drive' } } : {}),
+        ...(features && features.includes('links') ? { links: { node: `${srv.linksBase}/portal#plg-gatecontrol-drive/node/{id}`, drive: `${srv.linksBase}/portal#plg-gatecontrol-drive` } } : {}),
         ...(features && features.includes('guard') ? { guard: { locked: state.guard.locked, incident: state.guard.locked ? state.guard.incident : null }, incidents: state.incidents } : {}),
       });
     }
@@ -382,8 +421,168 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       return json(res, 200, { ok: true, device: devView(d) });
     }
-    if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas });
     const has = (f) => !!(features && features.includes(f));
+    const areasNow = () => (has('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id) })) : areas);
+    if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas: areasNow() });
+    // ── Drive 1.8 'docAi' ──
+    if (has('docAi') && seg[0] === 'areas' && seg[1] && req.method === 'PATCH') {
+      const a = areas.find((x) => x.id === decodeURIComponent(seg[1]));
+      if (!a) return refuse(res, 404, 'not_found');
+      if (!(a.role === 'write' || a.role === 'manage')) return refuse(res, 403, 'forbidden');
+      if (body.docAi) state.docAiOff.delete(a.id); else state.docAiOff.add(a.id);
+      return json(res, 200, { ok: true, area: { id: a.id, docAi: !!body.docAi } });
+    }
+    if (seg[0] === 'nodes' && seg[2] === 'insight') {
+      if (!has('docAi')) return refuse(res, 404, 'not_found');
+      const n = get(seg[1]);
+      if (!n || n.isDir) return refuse(res, 404, 'not_found');
+      const dl = (id) => state.deadlines.filter((d) => d.nodeId === id).map(({ nodeId, ...d }) => d);
+      const full = () => {
+        if (n.encrypted || state.docAiOff.has(n.areaId)) return { status: 'off', kind: null, title: null, date: null, sender: null, amount: null, currency: null, error: null, at: null, suggestion: null, deadlines: n.encrypted ? [] : dl(n.id) };
+        const i = state.insights.get(n.id);
+        return i ? { ...i, deadlines: dl(n.id) } : { status: 'none', kind: null, title: null, date: null, sender: null, amount: null, currency: null, error: null, at: null, suggestion: null, deadlines: dl(n.id) };
+      };
+      if (seg.length === 3 && req.method === 'GET') return json(res, 200, { ok: true, ...full() });
+      if (n.encrypted) return refuse(res, 409, 'encrypted');
+      if (!writable(n)) return refuse(res, 403, 'forbidden');
+      if (seg.length === 3 && req.method === 'POST') {
+        if (n.mime !== 'application/pdf') return json(res, 422, { ok: false, code: 'unsupported', error: 'unsupported', reason: 'no_text' });
+        state.insights.set(n.id, { ...(state.insights.get(n.id) || {}), status: 'pending', kind: null, suggestion: null, at: iso(Date.now()) });
+        return json(res, 200, { ok: true, ...full() });
+      }
+      if (seg[3] === 'apply' && req.method === 'POST') {
+        const i = state.insights.get(n.id);
+        if (!i || i.status !== 'ready' || !i.suggestion) return json(res, 400, { ok: false, code: 'invalid', field: 'insight', error: 'invalid' });
+        if (body.name && i.suggestion.name) n.name = freeName(n.parentId, i.suggestion.name);
+        if (body.folder && i.suggestion.folderId) n.parentId = i.suggestion.folderId;
+        i.suggestion = { folderId: body.folder ? null : i.suggestion.folderId, folderPath: body.folder ? null : i.suggestion.folderPath, name: body.name ? null : i.suggestion.name };
+        if (!i.suggestion.folderId && !i.suggestion.name) i.suggestion = null;
+        logChange('move', n);
+        return json(res, 200, { ok: true, node: view(n), insight: full() });
+      }
+    }
+    if (has('docAi') && seg[0] === 'deadlines') {
+      if (seg.length === 1 && req.method === 'GET') {
+        const from = url.searchParams.get('from') || new Date().toISOString().slice(0, 10);
+        const to = url.searchParams.get('to') || '9999-12-31';
+        const list = state.deadlines.filter((d) => d.date >= from && d.date <= to && get(d.nodeId) && !get(d.nodeId).encrypted)
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id))
+          .map(({ nodeId, ...d }) => ({ ...d, node: { ...view(get(nodeId)), path: '' } }));
+        return json(res, 200, { ok: true, deadlines: list });
+      }
+      const d = state.deadlines.find((x) => x.id === Number(seg[1]));
+      if (!d || seg[2] !== 'remind') return refuse(res, 404, 'not_found');
+      const plain = () => { const { nodeId, ...x } = d; return x; };
+      if (req.method === 'POST') {
+        const days = Number(body.daysBefore);
+        if (!Number.isInteger(days) || days < 0 || days > 90) return json(res, 400, { ok: false, code: 'invalid', field: 'daysBefore', error: 'invalid' });
+        d.reminder = { at: iso(Date.parse(`${d.date}T07:00:00Z`) - days * 86400000), daysBefore: days, sent: false };
+        return json(res, 200, { ok: true, deadline: plain() });
+      }
+      if (req.method === 'DELETE') { d.reminder = null; return json(res, 200, { ok: true, deadline: plain() }); }
+    }
+    // ── Drive 1.9 'office' ──
+    if (seg[0] === 'nodes' && seg[2] === 'office' && req.method === 'POST') {
+      if (!has('office')) return refuse(res, 404, 'not_found');
+      const n = get(seg[1]);
+      if (!n || n.isDir) return refuse(res, 404, 'not_found');
+      if (n.encrypted) return refuse(res, 409, 'encrypted');
+      if (!/\.(docx|xlsx|pptx|odt|ods|odp|csv)$/i.test(n.name)) return json(res, 409, { ok: false, code: 'office_unavailable', reason: 'type', error: 'office_unavailable' });
+      state.officeCalls.push(n.id);
+      return json(res, 200, { ok: true, url: `https://gc.example.com/plugin-public/gatecontrol-drive/office/open/${n.id}?access_token=tok`, mode: writable(n) ? 'edit' : 'view', expiresAt: iso(Date.now() + 120000) });
+    }
+    // ── Drive 1.9 'vault' ──
+    const vaultOfNode = (n) => (n && n.vaultId ? state.vaults.get(n.vaultId) : null);
+    const kvOf = (c) => Buffer.from(c, 'base64url').readUInt32BE(1);
+    if (has('vault') && seg[0] === 'vaults') {
+      const vaultView = (v) => {
+        const n = state.nodes.get(v.nodeId);
+        const devs = [...v.devices.values()];
+        const mine = devs.filter((d) => d.userId === 2);
+        return {
+          id: v.id, nodeId: v.nodeId, areaId: v.areaId, parentId: n.parentId, nameCipher: n.nameCipher, keyVersion: v.keyVersion, recoveryPub: v.recoveryPub,
+          recoveryHolder: v.recoveryBy, needsRotation: v.needsRotation, createdAt: iso(Date.now()), createdBy: 2, rotatedAt: null,
+          myDevices: mine.map((d) => ({ deviceId: d.deviceId, state: d.state, name: d.name })),
+          pending: mine.some((d) => d.state === 'approved') ? devs.filter((d) => d.state === 'pending').length : 0,
+        };
+      };
+      const devId = (pub) => crypto.createHash('sha256').update(Buffer.concat([Buffer.from('gcdrive-v1:device:'), Buffer.from(pub, 'base64url')])).digest().subarray(0, 16).toString('base64url');
+      const authHash = (a) => crypto.createHash('sha256').update(Buffer.from(String(a || ''), 'base64url')).digest('hex');
+      const wrapOk = (w) => typeof w === 'string' && Buffer.from(w, 'base64url').length === 81 && Buffer.from(w, 'base64url')[0] === 1;
+      if (seg.length === 1 && req.method === 'POST') {
+        const parent = get(body.parentId);
+        if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
+        if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        if (parent.vaultId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
+        if (!/^[A-Za-z0-9_-]{22}$/.test(String(body.id)) || !wrapOk(body.wrap) || !wrapOk(body.recoveryWrap) || !body.device || !body.nameCipher || kvOf(body.nameCipher) !== 1) return refuse(res, 400, 'invalid');
+        const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), isDir: true, encrypted: true, vaultId: body.id, nameCipher: body.nameCipher, keyVersion: 1 });
+        logChange('create', made);
+        const did = devId(body.device.publicKey);
+        const v = { id: body.id, nodeId: made.id, areaId: parent.areaId, keyVersion: 1, recoveryPub: body.recoveryPub, recoveryAuth: authHash(body.recoveryAuth), recoveryBy: 2, needsRotation: false, devices: new Map(), wraps: new Map() };
+        v.devices.set(did, { deviceId: did, userId: 2, name: body.device.name || null, platform: body.device.platform || null, publicKey: body.device.publicKey, state: 'approved', via: 'create', createdAt: iso(Date.now()), approvedAt: iso(Date.now()), approvedBy: 2, revokedAt: null });
+        v.wraps.set(`${did}|1`, body.wrap);
+        v.wraps.set('recovery|1', body.recoveryWrap);
+        state.vaults.set(v.id, v);
+        return json(res, 200, { ok: true, vault: vaultView(v), node: view(made) });
+      }
+      if (seg.length === 1 && req.method === 'GET') return json(res, 200, { ok: true, vaults: [...state.vaults.values()].filter((v) => get(v.nodeId)).map(vaultView) });
+      const v = state.vaults.get(seg[1]);
+      if (!v || !get(v.nodeId)) return refuse(res, 404, 'not_found');
+      const wrapsFor = (did) => [...v.wraps.entries()].filter(([k]) => k.split('|')[0] === did).map(([k, wrap]) => ({ keyVersion: Number(k.split('|')[1]), wrap })).sort((a, b) => a.keyVersion - b.keyVersion);
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, vault: vaultView(v) });
+      if (seg[2] === 'keys' && req.method === 'GET') {
+        const d = v.devices.get(url.searchParams.get('deviceId'));
+        if (!d || d.userId !== 2) return refuse(res, 404, 'not_found');
+        return json(res, 200, { ok: true, deviceId: d.deviceId, state: d.state, keyVersion: v.keyVersion, keys: d.state === 'approved' ? wrapsFor(d.deviceId) : [] });
+      }
+      if (seg[2] === 'recovery' && req.method === 'GET') return json(res, 200, { ok: true, recoveryPub: v.recoveryPub, keyVersion: v.keyVersion, keys: wrapsFor('recovery') });
+      if (seg[2] === 'devices' && seg.length === 3 && req.method === 'GET') return json(res, 200, { ok: true, devices: [...v.devices.values()] });
+      if (seg[2] === 'devices' && seg.length === 3 && req.method === 'POST') {
+        const did = devId(body.publicKey);
+        const have = v.devices.get(did);
+        if (have && have.state !== 'revoked') return json(res, 200, { ok: true, device: have });
+        const d = { deviceId: did, userId: 2, name: body.name || null, platform: body.platform || null, publicKey: body.publicKey, state: 'pending', via: null, createdAt: iso(Date.now()), approvedAt: null, approvedBy: null, revokedAt: null };
+        v.devices.set(did, d);
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'devices' && seg.length === 5 && seg[4] === 'approve' && req.method === 'POST') {
+        const d = v.devices.get(seg[3]);
+        if (!d || d.state === 'revoked') return refuse(res, 404, 'not_found');
+        const mine = [...v.devices.values()].some((x) => x.userId === 2 && x.state === 'approved');
+        const recovered = body.via === 'recovery' && authHash(body.recoveryAuth) === v.recoveryAuth;
+        if (body.via === 'recovery' && !recovered) return json(res, 403, { ok: false, code: 'forbidden', reason: 'recovery_auth', error: 'forbidden' });
+        if (!mine && !recovered) return refuse(res, 403, 'forbidden');
+        const list = Array.isArray(body.wraps) ? body.wraps : [{ keyVersion: v.keyVersion, wrap: body.wrap }];
+        if (!list.some((w) => w.keyVersion === v.keyVersion) || !list.every((w) => wrapOk(w.wrap) && w.keyVersion <= v.keyVersion)) return json(res, 400, { ok: false, code: 'invalid', field: 'wraps', error: 'invalid' });
+        for (const w of list) v.wraps.set(`${d.deviceId}|${w.keyVersion}`, w.wrap);
+        Object.assign(d, { state: 'approved', approvedAt: iso(Date.now()), approvedBy: 2, via: recovered ? 'recovery' : 'device' });
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'devices' && seg.length === 4 && req.method === 'DELETE') {
+        const d = v.devices.get(seg[3]);
+        if (!d) return refuse(res, 404, 'not_found');
+        if (d.state === 'approved') v.needsRotation = true;
+        Object.assign(d, { state: 'revoked', revokedAt: iso(Date.now()) });
+        for (const k of [...v.wraps.keys()]) if (k.startsWith(`${d.deviceId}|`)) v.wraps.delete(k);
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'rotate' && req.method === 'POST') {
+        if (body.keyVersion !== v.keyVersion + 1) return json(res, 409, { ok: false, code: 'conflict', keyVersion: v.keyVersion, error: 'conflict' });
+        const want = [...v.devices.values()].filter((d) => d.state === 'approved').map((d) => d.deviceId).sort();
+        const got = (body.wraps || []).map((w) => w.deviceId).sort();
+        if (JSON.stringify(want) !== JSON.stringify(got)) return json(res, 409, { ok: false, code: 'conflict', devices: want, error: 'conflict' });
+        if (srv.recoveryRequired && !body.recovery) return json(res, 409, { ok: false, code: 'conflict', reason: 'recovery_required', error: 'conflict' });
+        for (const w of body.wraps) v.wraps.set(`${w.deviceId}|${body.keyVersion}`, w.wrap);
+        if (body.recovery) {
+          for (const k of [...v.wraps.keys()]) if (k.startsWith('recovery|')) v.wraps.delete(k);
+          for (const w of body.recovery.wraps) v.wraps.set(`recovery|${w.keyVersion}`, w.wrap);
+          Object.assign(v, { recoveryPub: body.recovery.pub, recoveryAuth: authHash(body.recovery.auth), recoveryBy: 2 });
+        } else v.wraps.set(`recovery|${body.keyVersion}`, body.recoveryWrap);
+        Object.assign(v, { keyVersion: body.keyVersion, needsRotation: false });
+        return json(res, 200, { ok: true, vault: vaultView(v) });
+      }
+      return refuse(res, 404, 'not_found');
+    }
     // ── Drive 1.7 ──
     if (has('timeTravel') && seg[0] === 'nodes' && seg[2] === 'timetravel') {
       const folder = get(seg[1]);
@@ -529,7 +728,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     }
     if (req.method === 'GET' && route === 'search') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
-      const items = [...state.nodes.values()].filter((n) => !n.deleted && n.parentId && n.name.toLowerCase().includes(q)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
+      const items = [...state.nodes.values()].filter((n) => !n.deleted && !n.encrypted && n.parentId && n.name.toLowerCase().includes(q)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
       if (q === 'miete') items.push({ ...view(state.nodes.get(12)), path: 'Dokumente', match: 'text', snippet: '… die Miete für Oktober …' });
       return json(res, 200, { ok: true, items });
     }
@@ -559,6 +758,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         const parent = get(body.parentId);
         if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
         if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        if (parent.vaultId || body.encrypted) {
+          const v = state.vaults.get(parent.vaultId);
+          if (!v || body.encrypted !== true || !body.nameCipher) return json(res, 400, { ok: false, code: 'invalid', field: 'encrypted', error: 'invalid' });
+          if (body.keyVersion !== v.keyVersion || kvOf(body.nameCipher) !== v.keyVersion) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+          const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), isDir: true, encrypted: true, vaultId: v.id, nameCipher: body.nameCipher, keyVersion: body.keyVersion });
+          logChange('create', made);
+          return json(res, 200, { ok: true, node: view(made) });
+        }
         if (taken(parent.id, body.name) && !body.rename) return refuse(res, 409, 'exists');
         const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), isDir: true });
         logChange('create', made);
@@ -575,10 +782,22 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
           logChange('unmark', n);
           return json(res, 200, { ok: true, node: view(n) });
         }
+        if (body.nameCipher !== undefined || n.encrypted) {
+          const v = vaultOfNode(n);
+          if (!v || (body.name && body.name !== n.name) || (body.parentId && (get(body.parentId) || {}).vaultId !== n.vaultId)) return json(res, 400, { ok: false, code: 'invalid', field: 'nameCipher', error: 'invalid' });
+          if (body.nameCipher) {
+            if (kvOf(body.nameCipher) !== v.keyVersion) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+            n.nameCipher = body.nameCipher;
+          }
+          if (body.parentId) n.parentId = body.parentId;
+          logChange('move', n);
+          return json(res, 200, { ok: true, node: view(n) });
+        }
         if (body.parentId) {
           const target = get(body.parentId);
           if (!target || !target.isDir) return refuse(res, 404, 'not_found');
           if (!writable(target)) return refuse(res, 403, 'forbidden');
+          if (target.vaultId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
           n.parentId = target.id;
           n.areaId = target.areaId;
         }
@@ -613,7 +832,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       if (seg[2] === 'content' && req.method === 'GET') {
         if (!n.isDir && !n.mediaId && n.size === 0) return json(res, 200, { ok: true, url: 'data:,', name: n.name, mime: n.mime, size: 0, mediaId: null, empty: true });
-        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId });
+        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId, ...(n.encrypted ? { encrypted: true, vaultId: n.vaultId, nameCipher: n.nameCipher } : {}) });
       }
       if (seg[2] === 'versions') {
         const list = state.versions.get(n.id) || [];
@@ -641,6 +860,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const md = empty ? { data: Buffer.alloc(0), mime: 'application/octet-stream' } : state.media.get(body.mediaId);
       if (!md) return refuse(res, empty || body.size === 0 ? 400 : 409, body.size === 0 ? 'invalid' : 'upload_invalid');
       if (state.claimed && state.claimed.has(body.mediaId)) return refuse(res, 409, 'upload_invalid');
+      if (parent.vaultId || body.encrypted) {
+        const v = state.vaults.get(parent.vaultId);
+        if (!v || body.encrypted !== true || (body.name && !/^[0-9a-f]{32}$/.test(body.name))) return json(res, 400, { ok: false, code: 'invalid', field: 'encrypted', error: 'invalid' });
+        if (body.keyVersion !== v.keyVersion || (body.nameCipher && kvOf(body.nameCipher) !== v.keyVersion)) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+        (state.claimed || (state.claimed = new Set())).add(body.mediaId);
+        const old = body.name ? taken(parent.id, body.name) : null;
+        if (old && body.onConflict === 'version') {
+          (state.versions.get(old.id) || state.versions.set(old.id, []).get(old.id)).push({ id: ++nextId, rev: old.rev, size: old.size, at: iso(Date.now()), by: 2, mediaId: old.mediaId });
+          Object.assign(old, { mediaId: body.mediaId, size: md.data.length, sha256: sha(md.data), rev: old.rev + 1, keyVersion: body.keyVersion, ...(body.nameCipher ? { nameCipher: body.nameCipher } : {}) });
+          logChange('update', old);
+          return json(res, 200, { ok: true, node: view(old), created: false });
+        }
+        if (!body.nameCipher) return json(res, 400, { ok: false, code: 'invalid', field: 'nameCipher', error: 'invalid' });
+        const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), size: md.data.length, mime: 'application/octet-stream', mediaId: body.mediaId, sha256: sha(md.data), mtime: body.mtime ? iso(Number(body.mtime)) : null, encrypted: true, vaultId: v.id, nameCipher: body.nameCipher, keyVersion: body.keyVersion });
+        logChange('create', n);
+        return json(res, 200, { ok: true, node: view(n), created: true });
+      }
       const t = taken(parent.id, body.name);
       const mtime = body.mtime ? iso(Number(body.mtime)) : null;
       if (body.takenAt !== undefined && !Number.isFinite(Date.parse(body.takenAt))) return json(res, 400, { ok: false, code: 'invalid', field: 'takenAt', error: 'invalid' });
@@ -687,6 +923,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         const n = get(body.nodeId);
         if (!n) return refuse(res, 404, 'not_found');
         if (!writable(n)) return refuse(res, 403, 'forbidden');
+        if (n.encrypted) return refuse(res, 409, 'encrypted');
         const token = crypto.randomBytes(12).toString('base64url');
         const link = {
           token, url: `https://gc.example.com/s/${token}`, nodeId: n.id, areaId: n.areaId, kind: n.isDir ? 'folder' : 'files', mode: body.mode,
