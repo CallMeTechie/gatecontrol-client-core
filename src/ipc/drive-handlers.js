@@ -38,6 +38,21 @@
  *   drive:portal          ({ id? }) → { ok } | { ok: false, code: 'unsupported' }   "Im Portal öffnen" (Drive 1.6 'links')
  *   drive:guard           ({ fresh? }) → { ok, supported, locked, incident, incidents, portal }   (Drive 1.6 'guard')
  *   drive:guard:decide    ({ id, decision: 'undo' | 'release' }) → { ok, decision, incident, restored, trashed, guard }
+ *   drive:timetravel:preview ({ id, at }) → { ok, at, historySince, restore, revert, trash, move, total, sample, limited,
+ *                         linked: [{ id, path, name, mode, relation }] }   (Drive 1.7 'timeTravel'; linked: folders of this PC)
+ *   drive:timetravel      ({ id, at }) → { ok, at, before, restored, reverted, trashed, moved, failed }
+ *   drive:photos          ({ area?, before?, limit? }) → { ok, items, next }        (Drive 1.7 'photos')
+ *   drive:photos:months   ({ area? }) → { ok, months }
+ *   drive:photos:memories ({ date? }) → { ok, groups }
+ *   drive:preview:node    ({ id, large? }) → { ok, mime, data }   a photo's preview by its node
+ *   drive:albums          () → { ok, albums }                                       (Drive 1.7 'albums')
+ *   drive:album           ({ id, before?, limit? }) → { ok, album, items, next }
+ *   drive:album:create    ({ name, areaId? }) → { ok, album }
+ *   drive:album:update    ({ id, name?, coverId?, frame? }) → { ok, album }         (frame: Drive 1.7 'frame')
+ *   drive:album:delete    ({ id }) → { ok }
+ *   drive:album:items     ({ id, ids, remove? }) → { ok, album }
+ *   drive:storage         ({ all? }) → { ok, total, limit, areas, people, largest, duplicates }   (Drive 1.7 'storage')
+ *   drive:storage:prune   ({ areaId, keep }) → { ok, removed, freedBytes }
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -75,6 +90,11 @@ const isId = (v) => Number.isSafeInteger(v) && v > 0;
 const optId = (v) => v === undefined || v === null || isId(v);
 const isStr = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isFolderId = (v) => typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v);
+const isAt = (v) => (Number.isSafeInteger(v) && v > 0) || (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)));
+const isAlbumId = (v) => isId(v) || (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v));
+const optArea = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:_-]{1,80}$/.test(v));
+const optCursor = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:._+|,-]{1,100}$/.test(v));
+const optLimit = (v) => v === undefined || v === null || (Number.isSafeInteger(v) && v > 0 && v <= 200);
 const SYNC_SETTINGS = {
   skipDev: (v) => typeof v === 'boolean',
   homeOnly: (v) => typeof v === 'boolean',
@@ -155,6 +175,44 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
     const idOk = isId(a.id) || (typeof a.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(a.id));
     return idOk && (a.decision === 'undo' || a.decision === 'release') ? s.guardDecide(a.id, a.decision) : invalid();
   }));
+
+  // ── Drive 1.7 ──────────────────────────────────────────
+  handle('drive:timetravel:preview', byId(async (a) => {
+    if (!isAt(a.at)) return invalid();
+    const r = await s.timeTravelPreview(a.id, a.at);
+    let linked = [];
+    if (sync && typeof sync.linkedFolders === 'function') linked = await sync.linkedFolders(a.id).catch(() => []);
+    return { ...r, linked };
+  }));
+  handle('drive:timetravel', byId(async (a) => (isAt(a.at) ? s.timeTravel(a.id, a.at) : invalid())));
+  handle('drive:photos', wrap(async (a) => (optArea(a.area) && optCursor(a.before) && optLimit(a.limit) ? s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100 }) : invalid())));
+  handle('drive:photos:months', wrap(async (a) => (optArea(a.area) ? s.photoMonths(a.area || null) : invalid())));
+  handle('drive:photos:memories', wrap(async (a) => {
+    if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();
+    return s.memories(a.date || null);
+  }));
+  handle('drive:preview:node', byId(async (a) => {
+    const r = await s.previewOf(a.id, { large: a.large === true });
+    return { ok: true, mime: r.mime, data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength) };
+  }));
+  handle('drive:albums', wrap(async () => s.albums()));
+  handle('drive:album', wrap(async (a) => (isAlbumId(a.id) && optCursor(a.before) && optLimit(a.limit) ? s.album(a.id, { before: a.before || null, limit: a.limit || 100 }) : invalid())));
+  handle('drive:album:create', wrap(async (a) => (isStr(a.name, 200) && optArea(a.areaId) ? s.createAlbum({ name: a.name, areaId: a.areaId || null }) : invalid())));
+  handle('drive:album:update', wrap(async (a) => {
+    if (!isAlbumId(a.id)) return invalid();
+    const patch = {};
+    if (a.name !== undefined) { if (!isStr(a.name, 200)) return invalid(); patch.name = a.name; }
+    if (a.coverId !== undefined) { if (!(a.coverId === null || isId(a.coverId))) return invalid(); patch.coverId = a.coverId; }
+    if (a.frame !== undefined) { if (typeof a.frame !== 'boolean') return invalid(); patch.frame = a.frame; }
+    return Object.keys(patch).length ? s.updateAlbum(a.id, patch) : invalid();
+  }));
+  handle('drive:album:delete', wrap(async (a) => (isAlbumId(a.id) ? s.deleteAlbum(a.id) : invalid())));
+  handle('drive:album:items', wrap(async (a) => {
+    if (!isAlbumId(a.id) || !Array.isArray(a.ids) || !a.ids.length || a.ids.length > 500 || !a.ids.every(isId)) return invalid();
+    return s.albumItems(a.id, a.ids, { remove: a.remove === true });
+  }));
+  handle('drive:storage', wrap(async (a) => s.storage({ all: a.all === true })));
+  handle('drive:storage:prune', wrap(async (a) => (optArea(a.areaId) && a.areaId && Number.isSafeInteger(a.keep) && a.keep >= 0 && a.keep <= 1000 ? s.pruneVersions({ areaId: a.areaId, keep: a.keep }) : invalid())));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());
