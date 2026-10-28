@@ -18,6 +18,11 @@
  *   (the device approves itself with the key's proof), a new vault key (`needsRotation`; with a new recovery key when
  *   Drive says `recovery_required`), stale keys (409 stale_key: the keys are fetched again, the caller retries once).
  *
+ * - Drive 1.11 "Tresor-Sperre" (services/drive-vault-lock.js): the device key unwraps the vault keys only while
+ *   `isUnlocked()` (after Windows Hello); before that an approved vault is 'locked'. forget() wipes the keys and the
+ *   decrypted names (the device key stays under DPAPI). A vault made here or opened with its recovery key keeps the
+ *   keys it got that way until the next lock.
+ *
  * Errors: DriveError (MessengerApi) with code 'vault_unsupported' · 'vault_locked' (no key here) · 'recovery_key'
  * (wrong recovery key) · 'safety' (the safety number did not match) · the plugin's codes.
  */
@@ -48,8 +53,9 @@ class DriveVault {
    * @param {() => string} [opts.deviceName] - the name other devices see ("Desktop-PC")
    * @param {object} [opts.log]
    * @param {() => number} [opts.now]
+   * @param {() => boolean} [opts.isUnlocked] - Drive 1.11: may the device key unwrap vault keys now (Windows Hello)?
    */
-  constructor({ api, store = null, protect = null, scope, deviceName = null, log = null, now = Date.now } = {}) {
+  constructor({ api, store = null, protect = null, scope, deviceName = null, log = null, now = Date.now, isUnlocked = null } = {}) {
     this.api = api;
     this.store = store;
     this.protect = protect;
@@ -57,6 +63,7 @@ class DriveVault {
     this.deviceName = typeof deviceName === 'function' ? deviceName : () => os.hostname().slice(0, 80) || 'PC';
     this.log = log || noopLog();
     this.now = now;
+    this.isUnlocked = typeof isUnlocked === 'function' ? isUnlocked : () => true;
     this._scope = null;
     this._device = null;      // { id, publicRaw, publicKey, safetyNumber } of this server
     this._keys = new Map();   // vaultId → Map keyVersion → TK
@@ -67,6 +74,15 @@ class DriveVault {
   }
 
   // ── scope, device ─────────────────────────────────────────
+
+  /** Drive 1.11: the vaults lock — every vault key wiped, the decrypted names forgotten (the device stays). */
+  forget() {
+    for (const m of this._keys.values()) for (const k of m.values()) V.wipe(k);
+    this._keys.clear();
+    this._states.clear();
+    this._names.clear();
+    this._opening.clear();
+  }
 
   /** Forget every key and name (a server change, the app ends). */
   clear() {
@@ -174,7 +190,7 @@ class DriveVault {
     return !!this.keysOf(vaultId);
   }
 
-  /** 'open' | 'pending' | 'none' | 'revoked' | 'unsupported' | null (not asked yet) */
+  /** 'open' | 'locked' (approved, Windows Hello first) | 'pending' | 'none' | 'revoked' | 'unsupported' | null (not asked yet) */
   stateOf(vaultId) {
     if (this.isOpen(vaultId)) return 'open';
     if (!this.supported()) return 'unsupported';
@@ -229,6 +245,12 @@ class DriveVault {
       this._states.set(id, { state: r.state, at: this.now() });
       return { state: r.state, keyVersion: r.keyVersion };
     }
+    // Drive 1.11: the device key unwraps nothing while the vaults are locked
+    if (!this.isUnlocked()) {
+      const st = this.isOpen(id) ? 'open' : 'locked';
+      this._states.set(id, { state: st, at: this.now() });
+      return { state: st, keyVersion: r.keyVersion };
+    }
     const priv = this._private();
     try {
       this._addKeys(id, r.keys, priv, this._device.publicRaw);
@@ -244,7 +266,7 @@ class DriveVault {
   async tryOpen(vaultId) {
     if (!this.supported() || this.isOpen(vaultId)) return this.stateOf(vaultId);
     const s = this._states.get(vaultId);
-    if (s && this.now() - s.at < RETRY_OPEN_MS) return s.state;
+    if (s && this.now() - s.at < RETRY_OPEN_MS && !(s.state === 'locked' && this.isUnlocked())) return s.state;
     try { return (await this.open(vaultId)).state; } catch (err) {
       this._states.set(vaultId, { state: (s && s.state) || null, at: this.now() });
       this.log.info(`Drive vault: not opened (${err.code || 'error'})`);
@@ -305,6 +327,8 @@ class DriveVault {
 
   /** A name → { nameCipher, keyVersion } under the current key. */
   encryptName(vaultId, name, cur = null) {
+    // a key wiped by a lock in between (Drive 1.11) never encrypts anything
+    if (cur && this.keys(vaultId).get(cur.keyVersion) !== cur.tk) throw new DriveError('vault is locked', { code: 'vault_locked' });
     const c = cur || this.current(vaultId);
     return { nameCipher: V.encryptName(c.tk, vaultId, c.keyVersion, name), keyVersion: c.keyVersion };
   }
@@ -322,7 +346,7 @@ class DriveVault {
     return {
       id: v.id, nodeId: v.nodeId, areaId: v.areaId, parentId: v.parentId, name, keyVersion: v.keyVersion,
       needsRotation: v.needsRotation, pending: v.pending, recoveryHolder: v.recoveryHolder, createdAt: v.createdAt,
-      state: this.isOpen(v.id) ? 'open' : mine ? (mine.state === 'approved' ? 'approved' : mine.state) : 'none',
+      state: this.isOpen(v.id) ? 'open' : mine ? (mine.state === 'approved' ? (this.isUnlocked() ? 'approved' : 'locked') : mine.state) : 'none',
     };
   }
 

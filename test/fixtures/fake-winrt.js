@@ -10,6 +10,9 @@
  *   const hello = createWindowsHello({ platform: 'win32', koffi, api: rt.api, timing: { pollMs: 1 } });
  *   rt.next = 'cancel';              // the person's answer to the next prompt: 'ok' | 'cancel' | 'password' | 'locked'
  *                                    // (or a list for the next prompts)
+ *   rt.consent = { avail: 'available', next: 'verified', interop: true }   // UserConsentVerifier: availability, the
+ *                                    // answer to the next confirmation (or a list), whether the factory has the interop
+ *   rt.consentPrompts                // [{ kind: 'window' | 'plain', message, hwnd }]
  *   rt.live()                        // objects not released yet (must be 0 after every call)
  *   rt.dispose()                     // unregisters the callbacks
  */
@@ -47,6 +50,8 @@ function fakeWinRt(koffi, opts = {}) {
     freed: [],               // wiped? per CoTaskMemFree
     roInit: 0,
     created: 0,
+    consent: { avail: 'available', next: 'verified', interop: true, windowFails: false },
+    consentPrompts: [],
   };
 
   const reg = (proto, fn) => {
@@ -117,6 +122,10 @@ function fakeWinRt(koffi, opts = {}) {
   }];
   defineClass('AsyncOpPtr', { 8: getResultsPtr }, { qi: qiAsync });
   defineClass('AsyncOpBool', { 8: [P.outU8, (o, out) => { koffi.encode(out, 'uint8_t', o.state.result() ? 1 : 0); return 0; }] }, { qi: qiAsync });
+  defineClass('AsyncOpI32', { 8: [P.outI32, (o, out) => putI32(out, o.state.result())] }, { qi: (o, riid) => {
+    if (o.state.iid && sameIid(riid, o.state.iid)) { o.refs++; return o.mem; }
+    return qiAsync(o, riid);
+  } });
   defineClass('AsyncAction', { 8: [P.call, (o) => { o.state.result(); return 0; }] }, { qi: qiAsync });
   defineClass('AsyncInfo', {
     7: [P.outI32, (o, out) => {
@@ -207,7 +216,42 @@ function fakeWinRt(koffi, opts = {}) {
     }],
   });
 
-  const statics = { 'Windows.Security.Credentials.KeyCredentialManager': ['ManagerStatics', IID.IKeyCredentialManagerStatics], 'Windows.Security.Cryptography.CryptographicBuffer': ['BufferStatics', IID.ICryptographicBufferStatics] };
+  // ── UserConsentVerifier ──
+  const AVAIL = ['available', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy'];
+  const RESULT = ['verified', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy', 'retries_exhausted', 'cancelled'];
+  const consentAnswer = () => {
+    const c = rt.consent;
+    if (Array.isArray(c.next)) return c.next.length ? c.next.shift() : 'verified';
+    const a = c.next;
+    c.next = 'verified';
+    return a;
+  };
+  const consentOp = (iid, result) => {
+    const op = asyncOp('AsyncOpI32', result);
+    objects.get(op).state.iid = iid;
+    return op;
+  };
+  defineClass('ConsentInterop', {
+    6: [P.forWindow, (_o, hwnd, h, riid, out) => {
+      if (rt.consent.windowFails) return E_FAIL;
+      if (!sameIid(riid, IID.IAsyncVerificationResult)) return E_NOINTERFACE;
+      rt.consentPrompts.push({ kind: 'window', message: textOf(h), hwnd: BigInt(hwnd) });
+      return put(out, consentOp(IID.IAsyncVerificationResult, () => RESULT.indexOf(consentAnswer())));
+    }],
+  });
+  defineClass('ConsentStatics', {
+    6: [P.outPtr, (_o, out) => put(out, consentOp(IID.IAsyncAvailability, () => AVAIL.indexOf(rt.consent.avail)))],
+    7: [P.strOut, (_o, h, out) => {
+      rt.consentPrompts.push({ kind: 'plain', message: textOf(h), hwnd: null });
+      return put(out, consentOp(IID.IAsyncVerificationResult, () => RESULT.indexOf(consentAnswer())));
+    }],
+  }, { qi: (_o, riid) => (rt.consent.interop && sameIid(riid, IID.IUserConsentVerifierInterop) ? make('ConsentInterop') : null) });
+
+  const statics = {
+    'Windows.Security.Credentials.KeyCredentialManager': ['ManagerStatics', IID.IKeyCredentialManagerStatics],
+    'Windows.Security.Cryptography.CryptographicBuffer': ['BufferStatics', IID.ICryptographicBufferStatics],
+    'Windows.Security.Credentials.UI.UserConsentVerifier': ['ConsentStatics', IID.IUserConsentVerifierStatics],
+  };
   const factories = new Map();
 
   rt.api = {
@@ -240,7 +284,7 @@ function fakeWinRt(koffi, opts = {}) {
   };
 
   /** Objects still referenced (factories excluded: kept for the process' lifetime). */
-  rt.live = () => [...objects.values()].filter((o) => o.refs > 0 && !['ManagerStatics', 'BufferStatics'].includes(o.cls)).map((o) => o.cls);
+  rt.live = () => [...objects.values()].filter((o) => o.refs > 0 && !['ManagerStatics', 'BufferStatics', 'ConsentStatics', 'ConsentInterop'].includes(o.cls)).map((o) => o.cls);
   rt.strings = () => strings.size;
   rt.leakedMemory = () => memory.size;
   rt.dispose = () => { for (const c of cbs.splice(0)) koffi.unregister(c); };

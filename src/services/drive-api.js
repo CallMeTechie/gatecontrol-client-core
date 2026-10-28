@@ -11,6 +11,7 @@
  *   GET    …/gatecontrol-drive/api/me                            seat, licence, areas
  *   GET    …/api/areas                                           areas with their storage
  *   GET    …/api/nodes/<id>  +  …/nodes/<id>/children            a folder (crumbs, role, content)
+ *   GET    …/api/nodes/<id>/children?dirs=1                      Drive 1.11 'vaultsApart': its folders (hasDirs) for the menu
  *   GET    …/api/nodes/by-path?area&path                         a node by its path in an area
  *   GET    …/api/changes?since&limit                             the change log (folder sync)
  *   POST   …/api/nodes { parentId, name, rename? }               new folder
@@ -156,6 +157,22 @@ class DriveApi {
     const r = await this.api('GET', `nodes/${this._id(id)}/children`, { params: drive.childrenQuery({ sort: 'name', order: 'asc', offset, limit }) });
     if (!r || !Array.isArray(r.items)) throw new DriveError('bad children answer', { code: 'bad_response' });
     return { items: drive.normalizeItems(r, 1000), total: drive.count(r.total), next: drive.count(r.next), role: drive.ROLES.includes(r.role) ? r.role : null };
+  }
+
+  /**
+   * Drive 1.11: the subfolders of a folder for the menu's tree → { items: [{ id, name, hasDirs }], next }. With
+   * 'vaultsApart' `children?dirs=1` (folders only, no vaults, `hasDirs`), else the plain children filtered here
+   * (hasDirs null: unknown until opened).
+   */
+  async dirs(id, { offset = 0, limit = 1000, apart = false } = {}) {
+    const params = drive.childrenQuery({ sort: 'name', order: 'asc', offset, limit });
+    if (apart) params.dirs = 1;
+    const r = await this.api('GET', `nodes/${this._id(id)}/children`, { params });
+    if (!r || !Array.isArray(r.items)) throw new DriveError('bad children answer', { code: 'bad_response' });
+    const d = drive.normalizeDirs(r, 1000);
+    // an older Drive sends folders first: a page with files has all folders already
+    if (!apart && d.next !== null && r.items.some((x) => x && x.isDir === false)) d.next = null;
+    return d;
   }
 
   /** Every child of a folder (all pages, at most `max`). */
