@@ -101,7 +101,12 @@ const DRIVE_EVENTS = {
 };
 
 function fail(err) {
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  const out = { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  // the plugin's detail of a refusal (Drive 1.8: 422 unsupported { reason: no_text | media_disabled }; 1.9: stale_key …)
+  const b = err && err.body;
+  if (b && typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason)) out.reason = b.reason;
+  if (b && typeof b.field === 'string' && /^[A-Za-z_.]{1,40}$/.test(b.field)) out.field = b.field;
+  return out;
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});

@@ -106,7 +106,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.media.set(toolMedia, { data: Buffer.from('MZ'), mime: 'application/x-msdownload' });
   node({ id: 13, areaId: 'mine:2', parentId: 1, name: 'setup.exe', size: 2, mime: 'application/x-msdownload', mediaId: toolMedia });
 
-  const srv = { state, nextId: () => ++nextId, cutUploadAfter: null, pageMax: 1000, photoMediaIds: true, startedAt: Date.now(), timeTravelMax: 2000 };
+  // linksBase: the origin of me.links (an e2e test points it at its mock server)
+  const srv = { state, nextId: () => ++nextId, linksBase: 'https://gc.example.com', cutUploadAfter: null, pageMax: 1000, photoMediaIds: true, startedAt: Date.now(), timeTravelMax: 2000 };
   state.history.push({ at: 0, nodes: snap() });
   // nodes below `id` (all, also deleted ones)
   srv.below = (id) => {
@@ -355,7 +356,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         areas: seat ? areasNowMe() : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
         ...(features ? { features } : {}),
-        ...(features && features.includes('links') ? { links: { node: 'https://gc.example.com/portal#plg-gatecontrol-drive/node/{id}', drive: 'https://gc.example.com/portal#plg-gatecontrol-drive' } } : {}),
+        ...(features && features.includes('links') ? { links: { node: `${srv.linksBase}/portal#plg-gatecontrol-drive/node/{id}`, drive: `${srv.linksBase}/portal#plg-gatecontrol-drive` } } : {}),
         ...(features && features.includes('guard') ? { guard: { locked: state.guard.locked, incident: state.guard.locked ? state.guard.incident : null }, incidents: state.incidents } : {}),
       });
     }

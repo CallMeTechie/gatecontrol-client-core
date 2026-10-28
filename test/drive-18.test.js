@@ -178,6 +178,7 @@ describe('DriveService: the import page and office in the browser', () => {
     ];
     for (const [ch, a] of bad) assert.equal((await handlers[ch](null, a)).code, 'invalid', `${ch} ${JSON.stringify(a)}`);
     assert.equal((await handlers['drive:insight'](null, { id: 12 })).insight.kind, 'invoice');
+    assert.deepEqual(await handlers['drive:insight:run'](null, { id: 11 }), { ok: false, code: 'unsupported', error: 'unsupported', status: 422, reason: 'no_text' });
     const dls = (await handlers['drive:deadlines'](null, { from: '2026-01-01', to: '2099-12-31' })).deadlines;
     assert.equal(dls.length, 1);
     assert.equal((await handlers['drive:deadline:remind'](null, { id: dls[0].id, daysBefore: 0 })).deadline.reminder.daysBefore, 0);
