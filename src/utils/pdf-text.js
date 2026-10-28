@@ -36,9 +36,18 @@ const fs = require('fs');
 `;
 
 let unpdfPath;
+/**
+ * The path of unpdf for the worker. In the packed app it lies unpacked next to app.asar
+ * (Pro: build.asarUnpack), so the worker loads it from a plain folder.
+ */
 function resolveUnpdf() {
   if (unpdfPath === undefined) {
     try { unpdfPath = require.resolve('unpdf'); } catch { unpdfPath = null; }
+    const asar = `app.asar${path.sep}`;
+    if (unpdfPath && unpdfPath.includes(asar)) {
+      const unpacked = unpdfPath.replace(asar, `app.asar.unpacked${path.sep}`);
+      try { if (fs.existsSync(unpacked)) unpdfPath = unpacked; } catch { /* keep the asar path */ }
+    }
   }
   return unpdfPath;
 }
