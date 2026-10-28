@@ -416,7 +416,8 @@ describe('DriveSync: vault folders are left out', () => {
       trashItem: async (p) => { await fs.promises.rm(p, { recursive: true, force: true }); }, timing: { watch: false, settleMs: 0, emitMs: 0, startMs: 600000 }, readPdfText: async () => null,
     });
     sync.start();
-    cleanup.push(() => sync.stop());
+    // a run still going would write its state again into dv-state-… after the cleanup removed it
+    cleanup.push(async () => { sync.stop(); await sync.idle(); });
     const target = srv.mutate.dir(1, 'Abgleich');
     const made = await svc.vaultCreate(target.id, 'Geheim');
     const src = tmpDir('dv-src-');
@@ -430,7 +431,8 @@ describe('DriveSync: vault folders are left out', () => {
     fs.mkdirSync(path.join(pc, srv.state.nodes.get(made.node.id).name));
     fs.writeFileSync(path.join(pc, srv.state.nodes.get(made.node.id).name, 'c.txt'), 'c');
     const f = await sync.addFolder({ path: pc, mode: 'sync', targetId: target.id });
-    await sync.sync(f.folder.id, { full: true });
+    sync.sync(f.folder.id, { full: true });
+    await sync.idle();
     assert.equal(fs.readdirSync(pc).includes('a.txt'), false);
     assert.deepEqual(fs.readdirSync(pc).sort(), ['b.txt', srv.state.nodes.get(made.node.id).name].sort());
     const vaultKids = [...srv.state.nodes.values()].filter((n) => n.parentId === made.node.id && !n.deleted);

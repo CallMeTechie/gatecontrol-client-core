@@ -76,7 +76,9 @@ async function setup(features = ALL) {
   cleanup.push(() => srv.close());
   const apiClient = new ApiClient(srv.url, 'gc_token', log);
   const api = new DriveApi({ apiClient, log, getLang: () => 'de', sleep: async () => {} });
-  const svc = new DriveService({ apiClient, api, log, store: createMemoryStore(), tempDir: () => tmpDir('drive17-tmp-'), timing: { progressMs: 0 } });
+  // one temp folder: a new one per call would come after the cleanup (svc.stop() asks for it) and stay behind
+  const tmp = tmpDir('drive17-tmp-');
+  const svc = new DriveService({ apiClient, api, log, store: createMemoryStore(), tempDir: () => tmp, timing: { progressMs: 0 } });
   svc.start();
   cleanup.push(() => svc.stop());
   await svc.check();
