@@ -506,9 +506,13 @@ class DriveApi {
     return r;
   }
 
-  /** POST / DELETE albums/<id>/items { ids } (≤ 500, pictures and videos) → album */
+  /**
+   * POST / DELETE albums/<id>/items { ids } (≤ 500, pictures and videos) → album.
+   * DELETE also carries the ids as `?ids=1,2,3` (a body of a DELETE may not pass every proxy).
+   */
   albumItems(id, ids, { remove = false } = {}) {
-    return this._albumAnswer(this.api(remove ? 'DELETE' : 'POST', `albums/${this._albumId(id)}/items`, { body: { ids: this._ids(ids) } }));
+    const list = this._ids(ids);
+    return this._albumAnswer(this.api(remove ? 'DELETE' : 'POST', `albums/${this._albumId(id)}/items`, { body: { ids: list }, ...(remove ? { params: { ids: list.join(',') } } : {}) }));
   }
 
   // ── Storage (Drive 1.7, 'storage') ───────────────────────
@@ -520,13 +524,13 @@ class DriveApi {
     return r;
   }
 
-  /** POST storage/versions/prune { areaId, keep } → { removed, freedBytes } */
+  /** POST storage/versions/prune { areaId, keep } → { removed, freedBytes, more } (more: there is more to remove, run it again) */
   async pruneVersions({ areaId, keep } = {}) {
     const a = drive.areaIdOf(areaId);
     const k = drive.count(keep);
     if (!a || k === null || k > 1000) throw new DriveError('invalid', { code: 'invalid' });
     const r = await this.api('POST', 'storage/versions/prune', { body: { areaId: a, keep: k }, timeout: 300000 });
-    return { removed: drive.count(r.removed) || 0, freedBytes: drive.count(r.freedBytes) || 0 };
+    return { removed: drive.count(r.removed) || 0, freedBytes: drive.count(r.freedBytes) || 0, more: r.more === true };
   }
 
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */

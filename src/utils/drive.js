@@ -513,7 +513,9 @@ function albumIdOf(v) {
 }
 
 /**
- * GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample: [{ op, name, path }], limited } or null.
+ * GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample: [{ op, name, path }], limited,
+ * lost, ops, max } or null. lost: files whose content of then is gone already (they stay as they are); ops / max: the steps
+ * of this time travel and the most the plugin does at once (more: 400 invalid { field: 'at' }).
  */
 function normalizeTimeTravelPreview(raw) {
   const r = obj(raw);
@@ -525,17 +527,19 @@ function normalizeTimeTravelPreview(raw) {
     if (!name) return null;
     return { op: TT_OPS.includes(o.op) ? o.op : null, name, path: line(o.path, 2000) };
   }).filter(Boolean);
-  const out = { at: msOf(r.at), historySince: msOf(r.historySince), restore: n('restore'), revert: n('revert'), trash: n('trash'), move: n('move'), sample, limited: bool(r.limited) };
+  const out = { at: msOf(r.at), historySince: msOf(r.historySince), restore: n('restore'), revert: n('revert'), trash: n('trash'), move: n('move'), sample, limited: bool(r.limited), lost: n('lost') };
   out.total = out.restore + out.revert + out.trash + out.move;
+  out.ops = count(r.ops) ?? out.total;
+  out.max = count(r.max) || null;
   return out;
 }
 
-/** POST nodes/<id>/timetravel → { at, before, restored, reverted, trashed, moved, failed } or null (`before`: ms, "Rückgängig"). */
+/** POST nodes/<id>/timetravel → { at, before, restored, reverted, trashed, moved, failed, lost } or null (`before`: ms, "Rückgängig"). */
 function normalizeTimeTravelResult(raw) {
   const r = obj(raw);
   if (!r) return null;
   const n = (k) => (Array.isArray(r[k]) ? r[k].length : count(r[k]) || 0);
-  return { at: msOf(r.at), before: msOf(r.before), restored: n('restored'), reverted: n('reverted'), trashed: n('trashed'), moved: n('moved'), failed: n('failed') };
+  return { at: msOf(r.at), before: msOf(r.before), restored: n('restored'), reverted: n('reverted'), trashed: n('trashed'), moved: n('moved'), failed: n('failed'), lost: n('lost') };
 }
 
 /** A photo / video of GET photos, an album or memories → clean object or null. */
@@ -583,7 +587,7 @@ function normalizeMonths(raw) {
   return { months };
 }
 
-/** GET photos/memories → { groups: [{ yearsAgo, date, items }] } (the closest year first) */
+/** GET photos/memories → { date, groups: [{ yearsAgo, date, items }] } (the closest year first; date: the day asked for) */
 function normalizeMemories(raw) {
   const r = obj(raw) || {};
   const groups = arr(r.groups).slice(0, 100).map((g) => {
@@ -594,10 +598,13 @@ function normalizeMemories(raw) {
     return items.length ? { yearsAgo, date: typeof o.date === 'string' && DATE_RE.test(o.date.slice(0, 10)) ? o.date.slice(0, 10) : null, items } : null;
   }).filter(Boolean);
   groups.sort((a, b) => a.yearsAgo - b.yearsAgo);
-  return { groups };
+  return { date: typeof r.date === 'string' && DATE_RE.test(r.date.slice(0, 10)) ? r.date.slice(0, 10) : null, groups };
 }
 
-/** An album → { id, name, areaId, count, coverId, frame, updatedAt, canEdit } or null. */
+/**
+ * An album → { id, name, areaId, count, coverId, frame, updatedAt, canEdit, canFrame, createdBy } or null.
+ * canFrame: may switch the photo frame (Drive decides; canEdit alone is not enough).
+ */
 function normalizeAlbum(v) {
   const o = obj(v);
   const id = o && albumIdOf(o.id);
@@ -612,6 +619,8 @@ function normalizeAlbum(v) {
     frame: bool(o.frame),
     updatedAt: msOf(o.updatedAt),
     canEdit: bool(o.canEdit),
+    canFrame: bool(o.canFrame),
+    createdBy: posId(o.createdBy),
   };
 }
 
@@ -639,7 +648,7 @@ function storageNode(v) {
   return { id, name, size: count(o.size) || 0, areaId: areaIdOf(o.areaId), parentId: posId(o.parentId), path: line(o.path, 2000), updatedAt: msOf(o.updatedAt), canDelete: bool(o.canDelete) };
 }
 
-/** GET storage → { total, limit, areas, people, largest, duplicates } or null. */
+/** GET storage → { all, total, limit, areas, people, largest, duplicates } or null (all: every area of the server was counted). */
 function normalizeStorage(raw) {
   const r = obj(raw);
   if (!r) return null;
@@ -650,7 +659,7 @@ function normalizeStorage(raw) {
     const o = obj(a);
     const id = o && areaIdOf(o.id);
     if (!id) return null;
-    return { id, label: line(o.label, 200) || id, kind: AREA_KINDS.includes(o.kind) ? o.kind : null, ...nums(o), quota: count(o.quota) || null };
+    return { id, label: line(o.label, 200) || id, kind: AREA_KINDS.includes(o.kind) ? o.kind : null, ...nums(o), quota: count(o.quota) || null, canPrune: bool(o.canPrune) };
   }).filter(Boolean);
   areas.sort((a, b) => b.bytes - a.bytes);
   const people = arr(r.people).slice(0, 2000).map((p) => {
@@ -667,6 +676,7 @@ function normalizeStorage(raw) {
     return { sha256: sha256Of(o.sha256), size: count(o.size) || 0, count: count(o.count) || items.length, wasted: count(o.wasted) || 0, items };
   }).filter(Boolean);
   return {
+    all: bool(r.all),
     total: nums(t),
     limit: lim && count(lim.maxBytes) ? { maxBytes: count(lim.maxBytes) } : null,
     areas,

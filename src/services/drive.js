@@ -562,7 +562,7 @@ class DriveService extends EventEmitter {
     });
   }
 
-  /** { name?, coverId?, frame? } – `frame` only on Drives with 'frame' */
+  /** { name?, coverId?, frame? } – `frame` only on Drives with 'frame' (and albums with canFrame; else 403 { field: 'frame' }) */
   async updateAlbum(id, patch = {}) {
     return this._run(async () => {
       await this._feature('albums');

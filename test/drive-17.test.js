@@ -102,9 +102,11 @@ function syncOf({ srv, svc, api }) {
 describe('utils/drive: Drive 1.7 answers', () => {
   it('cleans time travel, photos, albums, storage, takenAt and me.admin', () => {
     const p = drive.normalizeTimeTravelPreview({ at: '2026-10-01T10:00:00Z', historySince: '2026-09-01T00:00:00Z', restore: 2, revert: '3', trash: 4, move: -1, sample: [{ op: 'trash', name: 'neu.txt', path: 'A/neu.txt' }, { op: 'x', name: 'b' }, { name: '' }, null], limited: true });
-    assert.deepEqual(p, { at: Date.parse('2026-10-01T10:00:00Z'), historySince: Date.parse('2026-09-01T00:00:00Z'), restore: 2, revert: 3, trash: 4, move: 0, sample: [{ op: 'trash', name: 'neu.txt', path: 'A/neu.txt' }, { op: null, name: 'b', path: null }], limited: true, total: 9 });
+    assert.deepEqual(p, { at: Date.parse('2026-10-01T10:00:00Z'), historySince: Date.parse('2026-09-01T00:00:00Z'), restore: 2, revert: 3, trash: 4, move: 0, sample: [{ op: 'trash', name: 'neu.txt', path: 'A/neu.txt' }, { op: null, name: 'b', path: null }], limited: true, lost: 0, total: 9, ops: 9, max: null });
+    const lim = drive.normalizeTimeTravelPreview({ restore: 1, lost: 2, ops: 2500, max: 2000 });
+    assert.deepEqual([lim.lost, lim.ops, lim.max], [2, 2500, 2000]);
     assert.deepEqual(drive.normalizeTimeTravelResult({ at: '2026-10-01T10:00:00Z', before: '2026-10-28T09:00:00.123Z', restored: 1, reverted: [1, 2], trashed: 0, moved: 0, failed: [] }),
-      { at: Date.parse('2026-10-01T10:00:00Z'), before: Date.parse('2026-10-28T09:00:00.123Z'), restored: 1, reverted: 2, trashed: 0, moved: 0, failed: 0 });
+      { at: Date.parse('2026-10-01T10:00:00Z'), before: Date.parse('2026-10-28T09:00:00.123Z'), restored: 1, reverted: 2, trashed: 0, moved: 0, failed: 0, lost: 0 });
     assert.equal(drive.isoOf(Date.UTC(2026, 0, 2)), '2026-01-02T00:00:00.000Z');
     assert.equal(drive.isoOf('nope'), null);
 
@@ -169,6 +171,9 @@ describe('DriveService: Drive 1.7', () => {
     assert.equal(p.trash, 1);
     assert.equal(p.total, 2);
     assert.equal(p.limited, false);
+    assert.equal(p.ops, 2);
+    assert.equal(p.max, 2000);
+    assert.equal(p.lost, 0);
     assert.equal(srv.state.nodes.get(a.id).sha256, sha('A2')); // the preview changes nothing
     const events = [];
     svc.on('timetravel', (e) => events.push(e));
@@ -189,6 +194,9 @@ describe('DriveService: Drive 1.7', () => {
     assert.equal(srv.state.nodes.get(a.id).sha256, sha('A2'));
     assert.equal(srv.state.nodes.get(n.id).deleted, false);
     await assert.rejects(svc.timeTravel(f.id, 'gestern'), (e) => e.code === 'invalid');
+    // more steps than the plugin does at once
+    srv.timeTravelMax = 1;
+    await assert.rejects(svc.timeTravel(f.id, T), (e) => e.status === 400 && e.body.field === 'at' && e.body.max === 1);
   });
 
   it('photos: pages, months, memories; previews by the node; albums; storage', async () => {
@@ -206,8 +214,13 @@ describe('DriveService: Drive 1.7', () => {
     assert.equal(m.months[0].month, '2026-10');
     assert.equal(m.months[0].count, 5);
     const mem = await svc.memories('2026-10-28');
+    assert.equal(mem.date, '2026-10-28');
     assert.deepEqual(mem.groups.map((g) => [g.yearsAgo, g.items[0].id]), [[2, memo.id]]);
-    // the answer has no mediaId: the node is asked once, then the preview
+    // an answer without a mediaId: the node is asked once, then the preview
+    srv.photoMediaIds = false;
+    const p0 = await svc.photos({ limit: 3 });
+    assert.equal(p0.items[0].mediaId, null);
+    svc._mediaOf.clear(); // the page of p1 named the media already
     const before = srv.state.requests.length;
     const pv = await svc.previewOf(p1.items[0].id);
     assert.equal(pv.ok, true);
@@ -234,9 +247,14 @@ describe('DriveService: Drive 1.7', () => {
     assert.equal(r.album.count, 2);
     const del = srv.state.requests.filter((x) => x.method === 'DELETE' && x.path.endsWith('/items')).pop();
     assert.deepEqual(del.body, { ids: [ids[0]] });
+    assert.equal(del.query.ids, String(ids[0]));
     r = await svc.updateAlbum(c.album.id, { name: 'Herbst 2026', frame: true });
     assert.equal(r.album.name, 'Herbst 2026');
     assert.equal(r.album.frame, true);
+    assert.equal(r.album.canFrame, true);
+    srv.noFrame = true;
+    await assert.rejects(svc.updateAlbum(c.album.id, { frame: false }), (e) => e.status === 403);
+    srv.noFrame = false;
     const page = await svc.album(c.album.id);
     assert.deepEqual(page.items.map((x) => x.id), ids.slice(1));
     assert.equal((await svc.albums()).albums.length, 1);
@@ -257,6 +275,9 @@ describe('DriveService: Drive 1.7', () => {
     assert.equal(srv.state.requests.filter((x) => x.path.endsWith('/storage')).pop().query.all, '1');
     const pr = await svc.pruneVersions({ areaId: 'mine:2', keep: 0 });
     assert.equal(pr.removed, 1);
+    assert.equal(pr.more, false);
+    assert.equal(st.areas.find((a) => a.id === 'mine:2').canPrune, true);
+    assert.equal(all.all, true);
   });
 
   it('a photo uploaded from the page carries when it was taken (only to Drives with takenAt)', async () => {
