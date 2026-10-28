@@ -190,6 +190,12 @@ class DriveVault {
     return !!this.keysOf(vaultId);
   }
 
+  /** Any vault key in memory (Drive 1.11: the lock's timers wipe them)? */
+  hasKeys() {
+    for (const m of this._keys.values()) if (m.size) return true;
+    return false;
+  }
+
   /** 'open' | 'locked' (approved, Windows Hello first) | 'pending' | 'none' | 'revoked' | 'unsupported' | null (not asked yet) */
   stateOf(vaultId) {
     if (this.isOpen(vaultId)) return 'open';

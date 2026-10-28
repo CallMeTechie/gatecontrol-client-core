@@ -339,6 +339,22 @@ describe('Drive 1.11: the vault lock (Windows Hello)', () => {
     assert.equal((await h['drive:hello-settings'](null)).ok, true);
   });
 
+  it('a vault made here keeps its key only until the time without use runs out (no Hello needed for that)', async () => {
+    const consent = fakeConsent();
+    const { svc } = await setup(APART, { consent, minuteMs: 30 });
+    await svc.vaultLockSettings({ autoLockMinutes: 1 });
+    const made = await svc.vaultCreate(null, 'Neu', { areaId: 'mine:2' });
+    assert.equal(svc.vault.isOpen(made.vault.id), true);
+    assert.equal(svc.vaultLock.isUnlocked(), false, 'making a vault unlocks no other vault');
+    await until(() => !svc.vault.isOpen(made.vault.id), 2000);
+    assert.equal(consent.prompts.length, 0);
+    // the window hidden wipes such keys, too
+    const again = await svc.vaultRecover(made.vault.id, made.recoveryKey);
+    assert.equal(again.state, 'open');
+    svc.windowHidden();
+    assert.equal(svc.vault.isOpen(made.vault.id), false);
+  });
+
   it('without a consent option (an app that does not wire it): nothing enforced, as before', async () => {
     const { svc } = await setup(APART, {});
     const st = await svc.vaultLockStatus();

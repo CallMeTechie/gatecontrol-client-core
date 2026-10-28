@@ -71,10 +71,12 @@ class DriveVaultLock extends EventEmitter {
    * @param {() => any} [opts.getWindow] - the owner window of the dialog (BrowserWindow.getNativeWindowHandle())
    * @param {() => string} [opts.getLang] - 'de' | 'en' (the dialog's text)
    * @param {() => boolean} [opts.busy] - vault transfers running: the time without use waits for them
+   * @param {() => boolean} [opts.hasKeys] - vault keys in memory although locked (a vault made here or opened with its
+   *   recovery key): the timers wipe them, too
    * @param {object} [opts.timing] - { minuteMs }
    * @param {object} [opts.log]
    */
-  constructor({ consent, store = null, powerMonitor = null, getWindow = null, getLang = null, busy = null, timing = {}, log = null } = {}) {
+  constructor({ consent, store = null, powerMonitor = null, getWindow = null, getLang = null, busy = null, hasKeys = null, timing = {}, log = null } = {}) {
     super();
     this.enforced = consent !== undefined;
     this.consent = consent || null;
@@ -83,6 +85,7 @@ class DriveVaultLock extends EventEmitter {
     this.getWindow = typeof getWindow === 'function' ? getWindow : () => null;
     this.getLang = typeof getLang === 'function' ? getLang : () => 'de';
     this.busy = typeof busy === 'function' ? busy : () => false;
+    this.hasKeys = typeof hasKeys === 'function' ? hasKeys : () => false;
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this.log = log || noopLog();
     this._unlocked = false;
@@ -225,12 +228,17 @@ class DriveVaultLock extends EventEmitter {
     this.emit('unlock');
   }
 
+  /** Something to lock: unlocked, or keys a vault made here / its recovery key left in memory. */
+  _active() {
+    try { return this._unlocked || !!this.hasKeys(); } catch { return this._unlocked; }
+  }
+
   /** Use of a vault: the time without use starts again. */
   touch() {
     clearTimeout(this._timer);
     this._timer = null;
     const m = this.settings().autoLockMinutes;
-    if (!this._unlocked || !(m > 0)) return;
+    if (!this._active() || !(m > 0)) return;
     const arm = (ms) => {
       this._timer = setTimeout(() => {
         // a vault upload / download still running waits (it is use, too)
@@ -244,14 +252,14 @@ class DriveVaultLock extends EventEmitter {
 
   /** The window was minimized / hidden into the tray: "Beim Verlassen sperren" locks now. */
   windowHidden() {
-    if (this._unlocked && this.settings().lockOnLeave) this.lock('hidden');
+    if (this._active() && this.settings().lockOnLeave) this.lock('hidden');
   }
 
   /** Locks (also when locked already: what an unlock without Hello left behind goes, too). */
   lock(reason = 'manual') {
     clearTimeout(this._timer);
     this._timer = null;
-    const was = this._unlocked;
+    const was = this._active();
     this._unlocked = false;
     const r = REASONS.includes(reason) ? reason : 'manual';
     if (was) {

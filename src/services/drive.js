@@ -192,6 +192,7 @@ class DriveService extends EventEmitter {
         return w && !(typeof w.isDestroyed === 'function' && w.isDestroyed()) && typeof w.getNativeWindowHandle === 'function' ? w.getNativeWindowHandle() : null;
       },
       busy: () => this._vaultActive > 0 || [...this._jobs.values()].some((j) => j.vault && !j.waiting),
+      hasKeys: () => this.vault.hasKeys(),
     });
     this.vaultLock.on('lock', (e) => this._onVaultLock(e));
     this.vaultLock.on('unlock', () => this.emit('vaultLock', { locked: false, reason: null }));
@@ -639,6 +640,8 @@ class DriveService extends EventEmitter {
       if (!area) throw new DriveError('no such area', { code: 'not_found' });
       if (!area.writable) throw new DriveError('read only', { code: 'forbidden' });
       const r = await this.vault.create(area.rootId, n);
+      // its key stays until the next lock (time without use, window hidden, Windows locked)
+      this.vaultLock.touch();
       this._vaultRoots.set(r.vault.id, r.node.id);
       this.emit('changed', { folderId: area.rootId });
       return { ok: true, ...r };
@@ -754,7 +757,9 @@ class DriveService extends EventEmitter {
   async vaultRecover(vaultId, text) {
     return this._run(async () => {
       await this._feature('vault');
-      return { ok: true, ...(await this.vault.recover(vaultId, text)) };
+      const r = await this.vault.recover(vaultId, text);
+      this.vaultLock.touch();
+      return { ok: true, ...r };
     });
   }
 
