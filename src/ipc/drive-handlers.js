@@ -196,7 +196,7 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:links', wrap(async (a) => (optId(a.nodeId) ? s.links(a.nodeId || null) : invalid())));
   handle('drive:link:create', wrap(async (a) => {
     if (Array.isArray(a.ids)) {
-      if (!isIds(a.ids, 500) || (a.mode !== 'view' && a.mode !== 'download') || !isStr(a.expires, 10) || !(a.pin === undefined || a.pin === null || a.pin === '' || isStr(a.pin, 12))) return invalid();
+      if (!isIds(a.ids, 5000) || (a.mode !== 'view' && a.mode !== 'download') || !isStr(a.expires, 10) || !(a.pin === undefined || a.pin === null || a.pin === '' || isStr(a.pin, 12))) return invalid();
       return s.createLink({ ids: a.ids, mode: a.mode, expires: a.expires, pin: a.pin || null });
     }
     if (!isId(a.nodeId) || !isStr(a.mode, 20) || !isStr(a.expires, 10) || !(a.pin === undefined || a.pin === null || a.pin === '' || isStr(a.pin, 12))) return invalid();

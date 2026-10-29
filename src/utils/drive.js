@@ -936,7 +936,7 @@ const OP_CONFLICT = Object.freeze(['version', 'rename', 'skip']);
 const OP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const REASON_RE = /^[a-z_]{1,40}$/;
 const OP_IDS_MAX = 10000;          // ids of one request (the plugin limits the nodes after expanding folders itself)
-const LINK_IDS_MAX = 500;
+const LINK_IDS_MAX = 5000;      // one link for several: with 'zipMixed' up to 5000 files
 
 /** A job's id (number or token) → string, else null. */
 function opIdOf(v) {
