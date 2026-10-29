@@ -42,6 +42,9 @@
  *   GET|POST …/api/vaults · GET vaults/<id> · GET vaults/<id>/keys?deviceId · GET|PUT vaults/<id>/recovery
  *   GET|POST …/api/vaults/<id>/devices · POST …/devices/<did>/approve · DELETE …/devices/<did> · POST vaults/<id>/rotate
  *          (Drive 1.9 'vault'; POST nodes, uploads/commit and PATCH nodes/<id> take encrypted, nameCipher, keyVersion)
+ *   POST   …/api/ops/check { op, ids, target? } · POST ops { op, ids, target?, onConflict? } · GET ops/<id> · GET ops?state
+ *   DELETE …/api/ops/<id> · POST ops/<id>/undo                   Drive 1.12 'bulk': jobs for many nodes (move, copy, trash …)
+ *   POST   …/api/zip { ids } → { url, name, expiresAt }           Drive 1.12 'zip' · POST links { ids, … }: 'multiLink'
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -52,6 +55,7 @@
  * `http_<status>`, 'network', 'timeout').
  */
 
+const axios = require('axios');
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
 const drive = require('../utils/drive');
@@ -318,8 +322,9 @@ class DriveApi {
 
   // ── Links ────────────────────────────────────────────────
 
+  /** A link of one node ({ nodeId, … }) or — Drive 1.12 'multiLink' — one link for several ({ ids, … }). */
   async createLink(opts) {
-    const body = drive.linkBody(opts);
+    const body = opts && Array.isArray(opts.ids) ? drive.multiLinkBody(opts) : drive.linkBody(opts);
     if (!body) throw new DriveError('invalid link', { code: 'invalid' });
     const link = drive.normalizeLink((await this.api('POST', 'links', { body })).link);
     if (!link) throw new DriveError('bad link answer', { code: 'bad_response' });
@@ -335,6 +340,94 @@ class DriveApi {
     if (!drive.isLinkToken(token)) throw new DriveError('invalid link', { code: 'invalid' });
     await this.api('DELETE', `links/${token}`);
     return { ended: true };
+  }
+
+  // ── Jobs for many nodes (Drive 1.12, 'bulk' / 'zip') ───
+
+  _opBody(o) {
+    const body = drive.opBody(o);
+    if (!body) throw new DriveError('invalid job', { code: 'invalid' });
+    return body;
+  }
+
+  _opId(id) {
+    const v = drive.opIdOf(id);
+    if (!v) throw new DriveError('invalid job id', { code: 'invalid' });
+    return encodeURIComponent(v);
+  }
+
+  async _opAnswer(promise) {
+    const op = drive.normalizeOp(await promise);
+    if (!op) throw new DriveError('bad job answer', { code: 'bad_response' });
+    return op;
+  }
+
+  /** POST ops/check { op, ids, target? } → { files, folders, bytes, conflicts, blocked } (changes nothing) */
+  async opsCheck(o) {
+    const { onConflict, ...rest } = o || {};
+    const r = drive.normalizeOpCheck(await this.api('POST', 'ops/check', { body: this._opBody(rest), timeout: 120000 }));
+    if (!r) throw new DriveError('bad check answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST ops { op, ids, target?, onConflict? } → job (a small one may come back `done` already) */
+  opsStart(o) {
+    return this._opAnswer(this.api('POST', 'ops', { body: this._opBody(o), timeout: 120000 }));
+  }
+
+  /** GET ops/<id> → job */
+  op(id) {
+    return this._opAnswer(this.api('GET', `ops/${this._opId(id)}`));
+  }
+
+  /** GET ops?state=running → [job] (the person's own) */
+  async ops({ state = 'running' } = {}) {
+    return drive.normalizeOps(await this.api('GET', 'ops', { params: drive.OP_STATES.includes(state) ? { state } : {} }));
+  }
+
+  /** DELETE ops/<id>: stops the job (what is done stays) → job */
+  opCancel(id) {
+    return this._opAnswer(this.api('DELETE', `ops/${this._opId(id)}`));
+  }
+
+  /** POST ops/<id>/undo (until undoUntil) → the job that undoes it */
+  opUndo(id) {
+    return this._opAnswer(this.api('POST', `ops/${this._opId(id)}/undo`, { body: {}, timeout: 120000 }));
+  }
+
+  /** POST zip { ids } → { url, name, expiresAt } (a short-lived address of the ZIP, bound to the person) */
+  async zip(ids) {
+    const list = drive.idList(ids);
+    if (!list) throw new DriveError('invalid ids', { code: 'invalid' });
+    const z = drive.normalizeZip(await this.api('POST', 'zip', { body: { ids: list }, timeout: 120000 }));
+    if (!z) throw new DriveError('bad zip answer', { code: 'bad_response' });
+    return z;
+  }
+
+  /**
+   * Streams the ZIP of zip() into `dest` → { bytes, mime }: a path on this server (or its address written out) goes
+   * with the device token; an https address of another host only when `hosts` allows it (the portal's) and without it.
+   */
+  downloadZip(url, dest, { onProgress, hosts = [] } = {}) {
+    let p = null;
+    let pub = null;
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) p = url;
+    else if (typeof url === 'string') {
+      try {
+        const u = new URL(url);
+        const base = new URL(String(this.scope().split('\n')[0] || ''));
+        if (u.origin === base.origin) p = `${u.pathname}${u.search}`;
+        else if (u.protocol === 'https:' && !u.username && !u.password && (hosts || []).includes(u.hostname.toLowerCase())) pub = u.href;
+      } catch { p = null; }
+    }
+    const opts = { onProgress, maxBytes: Number.MAX_SAFE_INTEGER };
+    if (p && !p.includes('..')) return this.media._stream(p, dest, opts);
+    if (pub) {
+      // a public link of GateControl: no token, no cookies — a plain GET
+      const plain = new GateDropApi({ http: { _client: () => axios, scope: () => '' }, log: this.log, mediaPath: drive.MEDIA_PATH, label: 'Drive' });
+      return plain._stream(pub, dest, opts);
+    }
+    return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
   }
 
   // ── Files ────────────────────────────────────────────────

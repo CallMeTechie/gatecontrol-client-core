@@ -86,13 +86,18 @@
  *   The cache on this PC (opened files, previews; never vault keys or uploads still running): cacheInfo() /
  *   clearCache().
  *
+ * - Drive 1.12 'bulk' / 'zip' / 'multiLink' (the selection of many files and folders, services/drive-ops.js): what
+ *   a job would do (conflicts, what cannot go), the job itself (move, copy, into the trash) as a row of the transfer
+ *   list that runs on in the server, "Abbrechen", "Rückgängig"; older Drives: move and trash as a loop of single
+ *   calls. "Herunterladen (ZIP)" of a selection into a path the person picks, one link for several files.
+ *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
  * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
  * 'timetravel' ({ folderId, at, before }) after a time travel, 'vault'
  * ({ vault, event, device, keyVersion }) a request / approval / new key of a
  * vault folder (live event `vault`), 'vaultLock' ({ locked, reason }) the vaults
- * locked / unlocked (Drive 1.11).
+ * locked / unlocked (Drive 1.11), 'op' (the row of a job that ended, Drive 1.12).
  */
 
 const EventEmitter = require('events');
@@ -103,6 +108,7 @@ const path = require('path');
 const DriveApi = require('./drive-api');
 const DriveVault = require('./drive-vault');
 const DriveVaultLock = require('./drive-vault-lock');
+const DriveOps = require('./drive-ops');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
@@ -124,6 +130,7 @@ const DEFAULT_TIMING = {
   previewCache: 300,       // pictures kept in memory
   keepTransfers: 50,       // finished rows kept in the list
   minuteMs: 60 * 1000,     // Drive 1.11: the vault lock's minutes
+  opPollMs: 1000,          // Drive 1.12: a running job is asked every second
 };
 const STORE_KEY = 'driveLastFolder';
 const MAX_PATHS = 200;
@@ -202,6 +209,13 @@ class DriveService extends EventEmitter {
     this._vaultSweep = null;        // the running sweep of the vault's temp folders (_sweepVaultTemp)
     this._vaultRoots = new Map();   // vault id → the node id of its folder
     this.now = now;
+    // Drive 1.12: jobs for many nodes at once (services/drive-ops.js); their rows are part of the transfer list
+    this.ops = new DriveOps({
+      api: this.api, vault: this.vault, now, log: this.log, timing: { opPollMs: this.timing.opPollMs },
+      row: (r) => this._row(r), set: (id, patch, o) => this._set(id, patch, o), emit: (ev, payload) => this.emit(ev, payload),
+      siblings: (folderId, vaultId) => this._vaultSiblings(folderId, vaultId),
+    });
+    this._opsResumed = false;
 
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
     this._timer = null;
@@ -239,6 +253,9 @@ class DriveService extends EventEmitter {
           this.emit('remote', { areas, seq: drive.count(d.seq) });
         } else if (ev.data.type === 'guard') {
           this.guard({ fresh: true }).catch(() => {});
+        } else if (ev.data.type === 'op') {
+          // Drive 1.12: a job's progress / its end
+          this.ops.onEvent(d);
         } else if (ev.data.type === 'vault') {
           // Drive 1.9: a request, an approval, a new key of a vault folder
           this.vault.onEvent(d);
@@ -268,6 +285,7 @@ class DriveService extends EventEmitter {
     this._emitTimer = null;
     for (const off of this._unsub.splice(0)) { try { off(); } catch { /* gone */ } }
     this.vaultLock.stop();
+    this.ops.stop();
     this.vault.clear();
     for (const t of this._vaultOpened.values()) clearTimeout(t);
     this._vaultOpened.clear();
@@ -302,6 +320,9 @@ class DriveService extends EventEmitter {
     this.vaultLock.lock('server');
     this.vault.clear();
     this._vaultRoots.clear();
+    this.ops.reset();
+    this._opsResumed = false;
+    this._transfers = this._transfers.filter((r) => r.dir !== 'op');
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
     for (const [id, job] of this._jobs) if (job.waiting) this._set(id, { state: 'skipped' });
     this._jobs.clear();
@@ -338,7 +359,14 @@ class DriveService extends EventEmitter {
       const p = await this.api.plugin();
       this._retry = 0;
       if (!p) this._setState({ state: 'unavailable', reason: 'not_installed', version: null, checkedAt: this.now() });
-      else this._setState({ state: 'available', reason: null, version: typeof p.version === 'string' ? p.version.slice(0, 40) : null, checkedAt: this.now() });
+      else {
+        this._setState({ state: 'available', reason: null, version: typeof p.version === 'string' ? p.version.slice(0, 40) : null, checkedAt: this.now() });
+        // Drive 1.12: jobs of the person still running on the server (the app was closed meanwhile) show again
+        if (this._started && !this._opsResumed) {
+          this._opsResumed = true;
+          this.ops.resume().catch((err) => { this._opsResumed = false; this.log.debug(`Drive jobs not resumed: ${drive.errorCode(err)}`); });
+        }
+      }
     } catch (err) {
       if (err && err.status === 404) {
         this._retry = 0;
@@ -1008,8 +1036,75 @@ class DriveService extends EventEmitter {
     return this._run(async () => ({ ok: true, node: await this.api.restoreVersion(id, versionId) }));
   }
 
+  /** A link of one node, or (`ids`, Drive 1.12 'multiLink') one link for several (with folders: 400 invalid { reason: 'mixed' }). */
   async createLink(opts) {
-    return this._run(async () => ({ ok: true, link: await this.api.createLink(opts) }));
+    return this._run(async () => {
+      if (opts && Array.isArray(opts.ids)) await this._feature('multiLink');
+      return { ok: true, link: await this.api.createLink(opts) };
+    });
+  }
+
+  // ── Jobs for many nodes (Drive 1.12, services/drive-ops.js) ──
+
+  /** What a job would do → { ok, bulk, local, files, folders, bytes, conflicts, blocked } (changes nothing) */
+  async opsCheck({ op, ids, target = null } = {}) {
+    return this._run(() => this.ops.check({ op, ids, target }));
+  }
+
+  /** Starts a job → { ok, op } (its row of the transfer list; the event 'op' when it ends) */
+  async opsStart({ op, ids, target = null, onConflict = null, meta = {} } = {}) {
+    return this._run(() => this.ops.start({ op, ids, target, onConflict, meta }));
+  }
+
+  /** "Abbrechen" of a running job → { ok, op } */
+  async opCancel(opId) {
+    return this._run(() => this.ops.cancel(opId));
+  }
+
+  /** "Rückgängig" of a job that ended (until undoUntil) → { ok, op } */
+  async opUndo(opId) {
+    return this._run(async () => {
+      await this._feature('bulk');
+      return this.ops.undo(opId);
+    });
+  }
+
+  /**
+   * "Herunterladen (ZIP)" (Drive 1.12 'zip'): "Speichern unter …" first (name: the page's suggestion), then Drive
+   * makes the ZIP of the nodes (never a vault's) and it streams into that path → { ok, path } | { ok: false, cancelled }.
+   */
+  async zip(ids, { name = null } = {}) {
+    if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
+    const list = drive.idList(ids);
+    if (!list) throw new DriveError('invalid ids', { code: 'invalid' });
+    return this._run(async () => {
+      await this._feature('zip');
+      const base = drive.safeName(typeof name === 'string' ? name : '') || 'Drive';
+      const fileName = /\.zip$/i.test(base) ? base : `${base}.zip`;
+      const win = this.getMainWindow();
+      const opts = { defaultPath: fileName, filters: [{ name: 'ZIP', extensions: ['zip'] }] };
+      const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
+      if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
+      const row = this._downloadRow(path.basename(res.filePath), 0);
+      const part = `${res.filePath}.${crypto.randomBytes(4).toString('hex')}.part`;
+      let bytes = 0;
+      try {
+        const z = await this.api.zip(list);
+        const out = fs.createWriteStream(part);
+        try {
+          const r = await this.api.downloadZip(z.url, out, { hosts: this._hosts(), onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+          bytes = r.bytes;
+        } catch (err) { out.destroy(); throw err; }
+        await fs.promises.rm(res.filePath, { force: true });
+        await fs.promises.rename(part, res.filePath);
+      } catch (err) {
+        await fs.promises.rm(part, { force: true }).catch(() => {});
+        this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+        throw err;
+      }
+      this._set(row.id, { state: 'done', sent: bytes, total: bytes, path: res.filePath });
+      return { ok: true, path: res.filePath };
+    });
   }
 
   async endLink(token) {

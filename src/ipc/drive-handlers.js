@@ -81,6 +81,14 @@
  *   drive:hello-settings  () → { ok }                                               Windows' sign-in options
  *   drive:cache           () → { ok, bytes, files, previews }                       the cache on this PC
  *   drive:cache:clear     () → { ok, removed, kept }
+ *   drive:ops:check       ({ op: 'move'|'copy'|'trash', ids, target? }) → { ok, bulk, local, files, folders, bytes,
+ *                         conflicts, blocked }                                          Drive 1.12 'bulk'
+ *   drive:ops:start       ({ op, ids, target?, onConflict?: 'version'|'rename'|'skip', meta?: { name, count, target,
+ *                         parents } }) → { ok, op }   (a row of the transfer list; event drive:op when it ends)
+ *   drive:ops:cancel      ({ id }) → { ok, op }
+ *   drive:ops:undo        ({ id }) → { ok, op }                                     until op.undoUntil
+ *   drive:zip             ({ ids, name? }) → { ok, path } | { ok: false, cancelled }  Drive 1.12 'zip' ("Speichern unter …")
+ *   drive:link:create     ({ ids, mode: 'view'|'download', expires, pin? }) → { ok, link }   one link for several ('multiLink')
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -98,7 +106,8 @@
  *
  * Events to the main window: drive:state, drive:transfers, drive:changed, drive:remote
  * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:vault ({ vault, event, device,
- * keyVersion }: a vault request / approval / new key), drive:vault-lock ({ locked, reason }: Drive 1.11), drive:sync.
+ * keyVersion }: a vault request / approval / new key), drive:vault-lock ({ locked, reason }: Drive 1.11), drive:op
+ * (the row of a job that ended: Drive 1.12), drive:sync.
  */
 
 const DRIVE_EVENTS = {
@@ -109,6 +118,7 @@ const DRIVE_EVENTS = {
   guard: 'drive:guard',
   vault: 'drive:vault',
   vaultLock: 'drive:vault-lock',
+  op: 'drive:op',
 };
 
 function fail(err) {
@@ -126,6 +136,9 @@ const isId = (v) => Number.isSafeInteger(v) && v > 0;
 const optId = (v) => v === undefined || v === null || isId(v);
 const isStr = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isFolderId = (v) => typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v);
+const isIds = (v, max = 10000) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(isId);
+const isOpId = (v) => isId(v) || (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v));
+const optStr = (v, max) => v === undefined || v === null || (typeof v === 'string' && v.length <= max);
 const isAt = (v) => (Number.isSafeInteger(v) && v > 0) || (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)));
 const isAlbumId = (v) => isId(v) || (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v));
 const optArea = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:_-]{1,80}$/.test(v));
@@ -182,6 +195,10 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:version:restore', byId(async (a) => (isId(a.versionId) ? s.restoreVersion(a.id, a.versionId) : invalid())));
   handle('drive:links', wrap(async (a) => (optId(a.nodeId) ? s.links(a.nodeId || null) : invalid())));
   handle('drive:link:create', wrap(async (a) => {
+    if (Array.isArray(a.ids)) {
+      if (!isIds(a.ids, 500) || (a.mode !== 'view' && a.mode !== 'download') || !isStr(a.expires, 10) || !(a.pin === undefined || a.pin === null || a.pin === '' || isStr(a.pin, 12))) return invalid();
+      return s.createLink({ ids: a.ids, mode: a.mode, expires: a.expires, pin: a.pin || null });
+    }
     if (!isId(a.nodeId) || !isStr(a.mode, 20) || !isStr(a.expires, 10) || !(a.pin === undefined || a.pin === null || a.pin === '' || isStr(a.pin, 12))) return invalid();
     return s.createLink({ nodeId: a.nodeId, mode: a.mode, expires: a.expires, pin: a.pin || null });
   }));
@@ -295,6 +312,22 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:hello-settings', wrap(async () => s.openHelloSettings()));
   handle('drive:cache', wrap(async () => s.cacheInfo()));
   handle('drive:cache:clear', wrap(async () => s.clearCache()));
+  // ── Drive 1.12 ─────────────────────────────────────────
+  handle('drive:ops:check', wrap(async (a) => {
+    if (!['move', 'copy', 'trash'].includes(a.op) || !isIds(a.ids) || (a.op !== 'trash' && !isId(a.target))) return invalid();
+    return s.opsCheck({ op: a.op, ids: a.ids, target: a.op === 'trash' ? null : a.target });
+  }));
+  handle('drive:ops:start', wrap(async (a) => {
+    if (!['move', 'copy', 'trash', 'restore', 'purge'].includes(a.op) || !isIds(a.ids)) return invalid();
+    if ((a.op === 'move' || a.op === 'copy') && !isId(a.target)) return invalid();
+    if (!(a.onConflict === undefined || a.onConflict === null || ['version', 'rename', 'skip'].includes(a.onConflict))) return invalid();
+    const m = obj(a.meta);
+    if (!optStr(m.name, 255) || !optStr(m.target, 2000) || !(m.count === undefined || m.count === null || (Number.isSafeInteger(m.count) && m.count >= 0)) || !(m.parents === undefined || m.parents === null || (Array.isArray(m.parents) && m.parents.length <= 100 && m.parents.every(isId)))) return invalid();
+    return s.opsStart({ op: a.op, ids: a.ids, target: a.target || null, onConflict: a.onConflict || null, meta: { name: m.name || null, count: m.count || null, target: m.target || null, parents: m.parents || [] } });
+  }));
+  handle('drive:ops:cancel', wrap(async (a) => (isOpId(a.id) ? s.opCancel(String(a.id)) : invalid())));
+  handle('drive:ops:undo', wrap(async (a) => (isOpId(a.id) ? s.opUndo(String(a.id)) : invalid())));
+  handle('drive:zip', wrap(async (a) => (isIds(a.ids) && optStr(a.name, 255) ? s.zip(a.ids, { name: a.name || null }) : invalid())));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());
