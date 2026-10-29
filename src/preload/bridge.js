@@ -415,6 +415,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       restoreVersion: (id, versionId) => ipcRenderer.invoke('drive:version:restore', { id, versionId }),
       links:        (nodeId) => ipcRenderer.invoke('drive:links', { nodeId: nodeId || null }),
       // { nodeId, mode: 'view' | 'download' | 'upload', expires: '1d' | '7d' | '30d' | 'never', pin? }
+      // Drive 1.12 'multiLink': { ids, mode: 'view' | 'download', expires, pin? } — one link for several files
       createLink:   (opts) => ipcRenderer.invoke('drive:link:create', { ...(opts || {}) }),
       endLink:      (token) => ipcRenderer.invoke('drive:link:end', { token }),
       preview:      (mediaId, opts) => ipcRenderer.invoke('drive:preview', { mediaId, large: !!(opts && opts.large) }),
@@ -489,6 +490,18 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       tree:         (id) => ipcRenderer.invoke('drive:tree', { id }),
       cache:        () => ipcRenderer.invoke('drive:cache'),
       clearCache:   () => ipcRenderer.invoke('drive:cache:clear'),
+      // Drive 1.12 'bulk': jobs for many nodes — check first (conflicts, blocked), then start; the job is a row of the
+      // transfer list (dir 'op'), onOp(row) when it ended ("Rückgängig" until row.undoUntil)
+      ops: {
+        check:  (op, ids, target) => ipcRenderer.invoke('drive:ops:check', { op, ids, target: target || null }),
+        // opts: { target?, onConflict?: 'version' | 'rename' | 'skip', meta?: { name, count, target, parents } }
+        start:  (op, ids, opts) => ipcRenderer.invoke('drive:ops:start', { ...(opts || {}), op, ids }),
+        cancel: (id) => ipcRenderer.invoke('drive:ops:cancel', { id }),
+        undo:   (id) => ipcRenderer.invoke('drive:ops:undo', { id }),
+      },
+      onOp:         (cb) => subscribe('drive:op', cb),
+      // Drive 1.12 'zip': "Speichern unter …", then the ZIP of the nodes
+      zip:          (ids, name) => ipcRenderer.invoke('drive:zip', { ids, name: name || null }),
       // Drive 1.9 'vault': end-to-end encrypted folders (keys stay in the main process)
       vault: {
         status:   () => ipcRenderer.invoke('drive:vault:status'),

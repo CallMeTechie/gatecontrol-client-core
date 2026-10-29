@@ -928,6 +928,189 @@ function linkBody({ nodeId, mode, expires, pin } = {}) {
   return body;
 }
 
+// ── Drive 1.12: jobs for many nodes at once, ZIP, one link for many ──
+
+const OP_KINDS = Object.freeze(['move', 'copy', 'trash', 'restore', 'purge']);
+const OP_STATES = Object.freeze(['running', 'done', 'failed', 'cancelled']);
+const OP_CONFLICT = Object.freeze(['version', 'rename', 'skip']);
+const OP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const REASON_RE = /^[a-z_]{1,40}$/;
+const OP_IDS_MAX = 10000;          // ids of one request (the plugin limits the nodes after expanding folders itself)
+const LINK_IDS_MAX = 5000;      // one link for several: with 'zipMixed' up to 5000 files
+
+/** A job's id (number or token) → string, else null. */
+function opIdOf(v) {
+  const n = posId(v);
+  if (n) return String(n);
+  return typeof v === 'string' && OP_ID_RE.test(v) ? v : null;
+}
+
+/** Distinct positive node ids (at most `max`), or null when none, too many or one is not an id. */
+function idList(ids, max = OP_IDS_MAX) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > max) return null;
+  const list = ids.map(posId);
+  if (list.some((x) => !x)) return null;
+  return [...new Set(list)];
+}
+
+const reasonOf = (v) => (typeof v === 'string' && REASON_RE.test(v) ? v : 'failed');
+const countOrLength = (v) => (Array.isArray(v) ? v.length : count(v) || 0);
+
+/** [{ id, reason, name? }] of a check / a job's report. */
+function blockedList(v, max = 1000) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    if (!id) return null;
+    const out = { id, reason: reasonOf(o.reason || o.code) };
+    const name = line(o.name, NAME_MAX);
+    if (name) out.name = name;
+    return out;
+  }).filter(Boolean);
+}
+
+/**
+ * POST ops/check → { items, files, folders, bytes, conflicts: [{ id, name, path, isDir, size, mtime, existing: { id, size,
+ * mtime, isDir }, same }], conflictsMore, merges, blocked: [{ id, reason, name? }], quota: { needed, free } | null, limit,
+ * tooMany } or null. `same`: the file there has the same content (counts as done, never stored twice); folders of the
+ * same name are merged (`merges`), their files in conflicts with their `path`.
+ */
+function normalizeOpCheck(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const conflicts = arr(r.conflicts).slice(0, 1000).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    const name = o && line(o.name, NAME_MAX);
+    if (!id || !name) return null;
+    const e = obj(o.existing) || {};
+    return {
+      id,
+      name,
+      // inside a merged folder: "Ordner/datei"
+      path: line(o.path, 2000),
+      isDir: bool(o.isDir),
+      size: count(o.size),
+      mtime: msOf(o.mtime),
+      existing: { id: posId(e.id), size: count(e.size), mtime: msOf(e.mtime), isDir: bool(e.isDir) },
+      same: bool(o.same),
+    };
+  }).filter(Boolean);
+  const q = obj(r.quota);
+  return {
+    items: count(r.items),
+    files: count(r.files) || 0,
+    folders: count(r.folders) || 0,
+    bytes: count(r.bytes) || 0,
+    conflicts,
+    conflictsMore: count(r.conflictsMore) || 0,
+    merges: count(r.merges) || 0,
+    blocked: blockedList(r.blocked),
+    // copy / move into another area: { needed, free } (free null: unknown)
+    quota: q ? { needed: count(q.needed) || 0, free: count(q.free) } : null,
+    limit: count(r.limit),
+    tooMany: bool(r.tooMany),
+  };
+}
+
+/**
+ * A job (POST ops, GET ops/<id>, live event `op`) → { id, kind, state, total, done, bytesTotal, bytesDone, targetId,
+ * targetPath, targetName, name, count, results: { done, skipped, failed: [{ id, reason }] } | null, undoUntil, undoOf, code } or null.
+ */
+function normalizeOp(raw) {
+  const r = obj(raw);
+  const o = (r && obj(r.op)) || r;
+  const id = o && opIdOf(o.id);
+  if (!id) return null;
+  const res = obj(o.results);
+  const failed = res ? blockedList(res.failed, 100) : [];
+  return {
+    id,
+    // 'undo': the job that undoes another one (undoOf)
+    kind: OP_KINDS.includes(o.kind) || o.kind === 'undo' ? o.kind : (OP_KINDS.includes(o.op) ? o.op : null),
+    state: OP_STATES.includes(o.state) ? o.state : 'running',
+    total: count(o.total) || 0,
+    done: count(o.done) || 0,
+    bytesTotal: count(o.bytesTotal) || 0,
+    bytesDone: count(o.bytesDone) || 0,
+    targetId: posId(o.targetId) || posId(o.target),
+    targetPath: line(o.targetPath, 2000),
+    targetName: line(o.targetName, NAME_MAX),
+    // the first node's name (null in a vault)
+    name: line(o.label, NAME_MAX) || line(o.name, NAME_MAX),
+    // the ids asked for ("N Elemente …"); total / done count files
+    count: count(o.items) ?? count(o.count),
+    results: res ? {
+      done: countOrLength(res.done),
+      skipped: countOrLength(res.skipped),
+      failed,
+      failedCount: Math.max(count(res.failedCount) || 0, failed.length),
+      // the top nodes made / moved at the target ("neu hier")
+      resultIds: arr(res.resultIds).slice(0, 500).map(posId).filter(Boolean),
+    } : null,
+    undoUntil: msOf(o.undoUntil),
+    undoOf: opIdOf(o.undoOf),
+    undoneBy: opIdOf(o.undoneBy),
+    // copy: who brings the bytes ('server' with GateControl's media copy; 'client' is not done by this app)
+    transfer: o.transfer === 'client' || o.transfer === 'server' ? o.transfer : null,
+    transfersLeft: count(o.transfersLeft) || 0,
+    code: codeOf(o.error) || codeOf(o.code),
+  };
+}
+
+/** GET ops?state=running → [job] */
+function normalizeOps(raw) {
+  const r = obj(raw) || {};
+  return arr(r.ops).slice(0, 100).map(normalizeOp).filter(Boolean);
+}
+
+/** POST ops / ops/check body { op, ids, target?, onConflict? } or null when invalid. */
+function opBody({ op, ids, target = null, onConflict = null } = {}) {
+  const list = idList(ids);
+  if (!OP_KINDS.includes(op) || !list) return null;
+  const body = { op, ids: list };
+  if (op === 'move' || op === 'copy') {
+    const tg = posId(target);
+    if (!tg) return null;
+    body.target = tg;
+  }
+  if (onConflict !== null && onConflict !== undefined) {
+    if (!OP_CONFLICT.includes(onConflict)) return null;
+    body.onConflict = onConflict;
+  }
+  return body;
+}
+
+/**
+ * POST zip → { url, name, expiresAt, files, skipped } or null: `url` the short-lived address of the ZIP — Drive 1.12 an
+ * absolute bearer address of GateControl (`https://<GateControl>/s/<token>/zip`, no login), or a path on the server;
+ * `name` its file name (…zip).
+ */
+function normalizeZip(raw) {
+  const r = obj(raw) || {};
+  const z = obj(r.zip) || r;
+  let url = null;
+  if (typeof z.url === 'string' && z.url.length <= LINK_URL_MAX) {
+    if (/^\/[A-Za-z0-9/_.~%?=&:+,-]*$/.test(z.url) && !z.url.includes('..') && !z.url.startsWith('//')) url = z.url;
+    else if (/^https?:\/\//i.test(z.url)) { try { url = new URL(z.url).href; } catch { url = null; } }
+  }
+  if (!url) return null;
+  const name = safeName(line(z.name, NAME_MAX) || '') || 'Drive.zip';
+  return { url, name: /\.zip$/i.test(name) ? name : `${name}.zip`, expiresAt: msOf(z.expiresAt), files: count(z.files), skipped: blockedList(z.skipped) };
+}
+
+/** Body of one link for several files: { nodeIds, mode: 'view' | 'download', expires, pin? } or null. */
+function multiLinkBody({ ids, mode, expires, pin } = {}) {
+  const list = idList(ids, LINK_IDS_MAX);
+  if (!list || (mode !== 'view' && mode !== 'download') || !LINK_EXPIRES.includes(expires)) return null;
+  const body = { nodeIds: list, mode, expires };
+  if (pin !== undefined && pin !== null && pin !== '') {
+    if (typeof pin !== 'string' || !PIN_RE.test(pin)) return null;
+    body.pin = pin;
+  }
+  return body;
+}
+
 /** The plugin's error code of a failure (or 'failed'). */
 function errorCode(err) {
   return (err && codeOf(err.code)) || 'failed';
@@ -1024,4 +1207,17 @@ module.exports = {
   normalizeDirs,
   linkBody,
   errorCode,
+  OP_KINDS,
+  OP_STATES,
+  OP_CONFLICT,
+  OP_IDS_MAX,
+  LINK_IDS_MAX,
+  opIdOf,
+  idList,
+  normalizeOpCheck,
+  normalizeOp,
+  normalizeOps,
+  opBody,
+  normalizeZip,
+  multiLinkBody,
 };

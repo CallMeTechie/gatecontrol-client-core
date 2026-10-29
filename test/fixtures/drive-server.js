@@ -34,6 +34,12 @@
 // Drive 1.11: 'vaultsApart' (children leave out vault folders — `vaults=1` keeps them —, `children?dirs=1` lists
 // folders only with `hasDirs`, POST vaults puts the vault into the top folder of the parent's area, a vault folder
 // cannot be moved: 400 invalid parentId).
+// Drive 1.12: 'bulk' (POST ops/check, POST ops, GET ops[/<id>], DELETE ops/<id>, POST ops/<id>/undo: move / copy /
+// trash / restore / purge with the conflict rule version | rename | skip, the same content counts as done, folders of
+// the same name merged, blocked root / same_folder / into_itself / encrypted / forbidden, 409 job_limit; srv.opAsync: jobs run until srv.finishOps(), srv.progressOp(), srv.failOp(); state.ops,
+// state.opCalls), 'zip' (POST zip { ids } → a media path of a fake ZIP listing the files; state.zips; srv.zipUrl(mediaId)
+// for another address; without 'zipMixed' one folder or ≤ 20 files), 'multiLink' (POST links { nodeIds }: files only,
+// ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -215,6 +221,136 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     },
   };
 
+  // Drive 1.12 'bulk': jobs (state.ops; srv.opAsync = true: a job runs until srv.finishOps() / srv.progressOp()),
+  // what a job would do (srv.opPlan), the job itself (srv.finishOp) with its steps for "Rückgängig"
+  state.ops = new Map();
+  state.opCalls = [];
+  state.zips = [];
+  srv.opAsync = false;
+  srv.undoMs = 15 * 60 * 1000;
+  srv.opsMax = 3;
+  srv.opMaxIds = 10000;
+  srv.zipUrl = null;
+  const liveNode = (id) => { const n = state.nodes.get(Number(id)); return n && !n.deleted ? n : null; };
+  const isVaultRoot = (n) => !!(n && n.encrypted && n.isDir && state.vaults.has(n.vaultId) && state.vaults.get(n.vaultId).nodeId === n.id);
+  srv.opPlan = (b) => {
+    const kinds = ['move', 'copy', 'trash', 'restore', 'purge'];
+    if (!b || !kinds.includes(b.op) || !Array.isArray(b.ids) || !b.ids.length) return { error: [400, 'invalid'] };
+    if (b.ids.length > srv.opMaxIds) return { error: [400, 'too_many'] };
+    const fromTrash = b.op === 'restore' || b.op === 'purge';
+    let target = null;
+    if (b.op === 'move' || b.op === 'copy') {
+      target = liveNode(b.target);
+      if (!target || !target.isDir) return { error: [404, 'not_found'] };
+      if (!writable(target)) return { error: [403, 'forbidden'] };
+    }
+    const up = new Set();
+    for (let c = target; c; c = c.parentId ? state.nodes.get(c.parentId) : null) up.add(c.id);
+    const out = { files: 0, folders: 0, bytes: 0, conflicts: [], conflictsMore: 0, merges: 0, blocked: [], items: [], quota: null, limit: srv.opMaxIds, tooMany: false };
+    for (const id of b.ids) {
+      const n = fromTrash ? state.nodes.get(Number(id)) || null : liveNode(id);
+      const block = (reason) => out.blocked.push({ id: Number(id), reason });
+      if (!n || (fromTrash && !n.deleted)) { block('not_found'); continue; }
+      if (b.op !== 'copy' && !writable(n)) { block('forbidden'); continue; }
+      if ((b.op === 'move' || b.op === 'copy') && (isVaultRoot(n) || (n.vaultId || null) !== (target.vaultId || null) || (b.op === 'copy' && n.encrypted))) { block('encrypted'); continue; }
+      if (!n.parentId && b.op !== 'copy') { block('root'); continue; }
+      if (target && up.has(n.id)) { block('into_itself'); continue; }
+      if (b.op === 'move' && n.parentId === target.id) { block('same_folder'); continue; }
+      const all = [n, ...srv.below(n.id).filter((x) => fromTrash || !x.deleted)];
+      for (const x of all) { if (x.isDir) out.folders++; else { out.files++; out.bytes += x.size || 0; } }
+      if (target) {
+        const t = taken(target.id, n.name);
+        // folders of the same name are merged (counted; Drive lists the files in them that meet)
+        if (t && t.id !== n.id && n.isDir && t.isDir) out.merges++;
+        else if (t && t.id !== n.id) {
+          out.conflicts.push({
+            id: n.id, name: n.name, isDir: n.isDir, size: n.isDir ? null : n.size, mtime: n.mtime,
+            existing: { id: t.id, size: t.isDir ? null : t.size, mtime: t.mtime, isDir: t.isDir },
+            same: !n.isDir && !t.isDir && !!n.sha256 && n.sha256 === t.sha256,
+          });
+        }
+      }
+      out.items.push(n);
+    }
+    return out;
+  };
+  const setArea = (n, areaId) => { n.areaId = areaId; for (const d of srv.below(n.id)) d.areaId = areaId; };
+  srv.finishOp = (o) => {
+    if (o.state !== 'running') return;
+    const target = o.targetId ? state.nodes.get(o.targetId) : null;
+    const choice = o.onConflict || 'version';
+    const newVersion = (t, n) => {
+      (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
+      Object.assign(t, { mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime, rev: t.rev + 1 });
+      logChange('update', t);
+    };
+    const moveInto = (n, parentId, top) => {
+      const t = taken(parentId, n.name);
+      let name = n.name;
+      if (t && t.id !== n.id) {
+        if (n.isDir && t.isDir) {
+          // the same folder name: merged (the content goes in, the rule holds for the files in it)
+          for (const c of children(n.id)) moveInto(c, t.id, false);
+          n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n);
+          o.steps.push({ action: 'trashed', id: n.id });
+          if (top) o.res.done++;
+          return;
+        }
+        if (!n.isDir && !t.isDir && n.sha256 && n.sha256 === t.sha256) { n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); o.steps.push({ action: 'trashed', id: n.id }); if (top) o.res.done++; return; }
+        if (choice === 'skip') { if (top) o.res.skipped++; return; }
+        if (choice === 'version' && !n.isDir && !t.isDir) { newVersion(t, n); n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); o.steps.push({ action: 'trashed', id: n.id }); if (top) o.res.done++; return; }
+        name = freeName(parentId, n.name);
+      }
+      o.steps.push({ action: 'moved', id: n.id, from: { parentId: n.parentId, name: n.name, areaId: n.areaId } });
+      n.parentId = parentId;
+      n.name = name;
+      setArea(n, state.nodes.get(parentId).areaId);
+      logChange('move', n);
+      if (top) { o.res.done++; o.res.resultIds.push(n.id); }
+    };
+    const copyInto = (n, parentId, top) => {
+      const t = taken(parentId, n.name);
+      let name = n.name;
+      if (t) {
+        if (n.isDir && t.isDir) { for (const c of children(n.id)) copyInto(c, t.id, false); if (top) o.res.done++; return; }
+        if (!n.isDir && !t.isDir && n.sha256 && n.sha256 === t.sha256) { if (top) o.res.done++; return; }
+        if (choice === 'skip') { if (top) o.res.skipped++; return; }
+        if (choice === 'version' && !n.isDir && !t.isDir) { newVersion(t, n); if (top) o.res.done++; return; }
+        name = freeName(parentId, n.name);
+      }
+      const parent = state.nodes.get(parentId);
+      const c = node({ id: ++nextId, areaId: parent.areaId, parentId, name, isDir: n.isDir, size: n.size, mime: n.mime, mediaId: n.mediaId, sha256: n.sha256, mtime: n.mtime });
+      logChange('create', c);
+      if (top) { o.steps.push({ action: 'created', id: c.id }); o.res.done++; o.res.resultIds.push(c.id); }
+      if (n.isDir) for (const k of children(n.id)) copyInto(k, c.id, false);
+    };
+    for (const n of o.plan.items) {
+      if (o.kind === 'move') moveInto(n, target.id, true);
+      else if (o.kind === 'copy') copyInto(n, target.id, true);
+      else if (o.kind === 'trash') {
+        n.deleted = true; n.deletedAt = iso(Date.now());
+        for (const d of srv.below(n.id)) { if (!d.deleted) { d.deleted = true; d.deletedAt = n.deletedAt; } }
+        logChange('delete', n);
+        o.steps.push({ action: 'trashed', id: n.id });
+        o.res.done++;
+      } else if (o.kind === 'restore') {
+        n.deleted = false; n.name = freeName(n.parentId, n.name);
+        for (const d of srv.below(n.id)) d.deleted = false;
+        logChange('restore', n);
+        o.res.done++;
+      } else if (o.kind === 'purge') {
+        for (const d of srv.below(n.id)) state.nodes.delete(d.id);
+        logChange('purge', n);
+        state.nodes.delete(n.id);
+        o.res.done++;
+      }
+    }
+    Object.assign(o, { done: o.total, bytesDone: o.bytesTotal, state: 'done', finishedAt: Date.now() });
+  };
+  srv.finishOps = () => { for (const o of state.ops.values()) srv.finishOp(o); };
+  srv.progressOp = (id, done, bytesDone = 0) => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { done, bytesDone }); };
+  srv.failOp = (id, code = 'failed') => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { state: 'failed', error: code, finishedAt: Date.now() }); };
+
   // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
   srv.setInsight = (id, ins) => {
     const deadlines = (ins.deadlines || []).map((d) => {
@@ -277,6 +413,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     state.requests.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams) });
+    // Drive 1.12: the ZIP of a selection as GateControl's bearer link (no login)
+    const zipHit = /^\/s\/([A-Za-z0-9]+)\/zip$/.exec(p);
+    if (req.method === 'GET' && zipHit && state.media.has(zipHit[1])) {
+      const md = state.media.get(zipHit[1]);
+      state.zipGets = (state.zipGets || []).concat([{ token: req.headers['x-api-token'] || null }]);
+      res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': md.data.length });
+      return res.end(md.data);
+    }
     if (req.headers['x-api-token'] !== 'gc_token') return json(res, 401, { error: 'unauthorized' });
 
     if (p === '/api/v1/client/plugins') {
@@ -929,6 +1073,101 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         state.nodes.delete(n.id);
         return json(res, 200, { ok: true, id: n.id, files: 1 });
       }
+    }
+    // ── Drive 1.12 'bulk' / 'zip' / 'multiLink' ──
+    if (has('bulk') && seg[0] === 'ops') {
+      const opView = (o) => ({
+        id: o.id, kind: o.kind, state: o.state, items: o.ids.length, total: o.total, done: o.done, bytesTotal: o.bytesTotal, bytesDone: o.bytesDone,
+        label: o.label || null, onConflict: o.onConflict, targetId: o.targetId, targetPath: o.targetPath, targetName: o.targetName, undoOf: o.undoOf || null, undoneBy: o.undoneBy || null,
+        ...(o.kind === 'copy' ? { transfer: has('copyServer') ? 'server' : 'client', transfersLeft: 0 } : {}),
+        error: o.error || null,
+        results: { done: o.res.done, skipped: o.res.skipped, failedCount: o.res.failed.length, failed: o.res.failed, resultIds: o.res.resultIds },
+        undoUntil: o.state === 'done' && o.kind !== 'undo' && !o.undoneBy ? iso(o.finishedAt + srv.undoMs) : null,
+        createdAt: iso(o.createdAt),
+      });
+      if (seg[1] === 'check' && req.method === 'POST') {
+        const r = srv.opPlan(body);
+        if (r.error) return refuse(res, r.error[0], r.error[1]);
+        return json(res, 200, { ok: true, items: r.items.length, files: r.files, folders: r.folders, bytes: r.bytes, conflicts: r.conflicts, conflictsMore: 0, merges: r.merges, blocked: r.blocked, quota: r.quota, limit: r.limit, tooMany: r.tooMany });
+      }
+      if (seg.length === 1 && req.method === 'POST') {
+        const r = srv.opPlan(body);
+        if (r.error) return refuse(res, r.error[0], r.error[1]);
+        if ([...state.ops.values()].filter((o) => o.state === 'running').length >= srv.opsMax) return json(res, 409, { ok: false, code: 'job_limit', max: srv.opsMax, error: 'job_limit' });
+        const o = { id: `op${++nextId}`, kind: body.op, state: 'running', ids: body.ids, targetId: body.target || null, onConflict: body.onConflict || 'version', plan: r, total: r.files, done: 0, bytesTotal: r.bytes, bytesDone: 0, label: r.items[0] ? (r.items[0].encrypted ? null : r.items[0].name) : null, res: { done: 0, skipped: 0, failed: r.blocked.map((b) => ({ id: b.id, reason: b.reason })), resultIds: [] }, steps: [], createdAt: Date.now(), finishedAt: null };
+        const t = body.target ? get(body.target) : null;
+        o.targetName = t ? t.name : null;
+        o.targetPath = t ? crumbs(t).map((c) => c.name).join(' › ') : null;
+        state.ops.set(o.id, o);
+        state.opCalls.push({ op: body.op, ids: body.ids, target: body.target || null, onConflict: body.onConflict || null });
+        if (!srv.opAsync) srv.finishOp(o);
+        return json(res, 200, { ok: true, op: opView(o) });
+      }
+      if (seg.length === 1 && req.method === 'GET') {
+        const st = url.searchParams.get('state');
+        return json(res, 200, { ok: true, ops: [...state.ops.values()].filter((o) => !st || o.state === st).map(opView) });
+      }
+      const o = state.ops.get(seg[1]);
+      if (!o) return refuse(res, 404, 'not_found');
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, op: opView(o) });
+      if (seg.length === 2 && req.method === 'DELETE') {
+        if (o.state === 'running') { o.state = 'cancelled'; o.finishedAt = Date.now(); }
+        return json(res, 200, { ok: true, op: opView(o) });
+      }
+      if (seg[2] === 'undo' && req.method === 'POST') {
+        const why = o.state === 'running' ? 'running' : o.undoneBy ? 'undone' : o.state !== 'done' || Date.now() > o.finishedAt + srv.undoMs ? 'expired' : !o.steps.length ? 'nothing' : null;
+        if (why) return json(res, 409, { ok: false, code: 'conflict', reason: why, error: 'conflict' });
+        const u = { id: `op${++nextId}`, kind: 'undo', undoOf: o.id, state: 'done', ids: o.ids, targetId: null, total: o.steps.length, done: o.steps.length, bytesTotal: 0, bytesDone: 0, res: { done: 0, skipped: 0, failed: [], resultIds: [] }, steps: [], createdAt: Date.now(), finishedAt: Date.now() };
+        for (const s of o.steps.slice().reverse()) {
+          const n = state.nodes.get(s.id);
+          if (!n) { u.res.skipped++; continue; }
+          if (s.action === 'moved') { const nm = freeName(s.from.parentId, s.from.name); n.parentId = s.from.parentId; n.name = nm; setArea(n, s.from.areaId); logChange('move', n); }
+          else if (s.action === 'trashed') { n.deleted = false; for (const d of srv.below(n.id)) d.deleted = false; logChange('restore', n); }
+          else if (s.action === 'created') { n.deleted = true; n.deletedAt = iso(Date.now()); for (const d of srv.below(n.id)) d.deleted = true; logChange('delete', n); }
+          u.res.done++;
+        }
+        o.undoneBy = u.id;
+        state.ops.set(u.id, u);
+        return json(res, 200, { ok: true, op: opView(u) });
+      }
+      return refuse(res, 404, 'not_found');
+    }
+    if (has('zip') && seg[0] === 'zip' && req.method === 'POST') {
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const nodes = ids.map((id) => get(id));
+      if (!ids.length || nodes.some((n) => !n)) return refuse(res, 404, 'not_found');
+      if (nodes.some((n) => n.encrypted)) return refuse(res, 409, 'encrypted');
+      // without 'zipMixed': exactly one folder, or 1 … 20 files
+      if (!has('zipMixed')) {
+        if (nodes.some((n) => n.isDir) && nodes.length > 1) return json(res, 400, { ok: false, code: 'invalid', reason: 'mixed', error: 'invalid' });
+        if (nodes.length > 20) return json(res, 400, { ok: false, code: 'invalid', reason: 'too_many', max: 20, error: 'invalid' });
+      }
+      const names = [];
+      const walk = (n, prefix) => { if (n.isDir) { for (const c of children(n.id)) walk(c, `${prefix}${n.name}/`); } else names.push(`${prefix}${n.name}`); };
+      for (const n of nodes) walk(n, '');
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data: Buffer.from(`PK-fake\n${names.join('\n')}`), mime: 'application/zip' });
+      state.zips.push({ ids, names, mediaId });
+      state.zips[state.zips.length - 1].name = body.name || null;
+      const name = body.name ? `${body.name}.zip` : nodes.length === 1 ? `${nodes[0].name.replace(/\.[^.]+$/, '')}.zip` : 'Drive-Auswahl.zip';
+      return json(res, 200, { ok: true, url: srv.zipUrl ? srv.zipUrl(mediaId) : `${MEDIA}/${mediaId}`, name, expiresAt: iso(Date.now() + 900000), files: names.length, skipped: [] });
+    }
+    if (has('multiLink') && seg[0] === 'links' && seg.length === 1 && req.method === 'POST' && Array.isArray(body.nodeIds)) {
+      const nodes = body.nodeIds.map((id) => get(id));
+      if (!body.nodeIds.length || nodes.some((n) => !n)) return refuse(res, 404, 'not_found');
+      if (nodes.some((n) => n.isDir) && !has('zipMixed')) return json(res, 400, { ok: false, code: 'invalid', reason: 'mixed', error: 'invalid' });
+      if (nodes.length > 20 && !has('zipMixed')) return json(res, 400, { ok: false, code: 'invalid', reason: 'too_many', max: 20, error: 'invalid' });
+      if (body.mode === 'upload') return json(res, 400, { ok: false, code: 'invalid', field: 'mode', error: 'invalid' });
+      if (nodes.some((n) => !writable(n))) return refuse(res, 403, 'forbidden');
+      if (nodes.some((n) => n.encrypted)) return refuse(res, 409, 'encrypted');
+      const token = crypto.randomBytes(12).toString('base64url');
+      const link = {
+        token, url: `https://gc.example.com/s/${token}`, nodeId: nodes[0].id, nodeIds: nodes.map((n) => n.id), count: nodes.length, areaId: nodes[0].areaId, kind: 'files', mode: body.mode,
+        title: `${nodes.length} Dateien`, name: `${nodes.length} Dateien`, path: '', state: 'active', active: true, endedWhy: null,
+        expiresAt: body.expires === 'never' ? null : iso(Date.now() + 86400000), pin: !!body.pin, opens: 0, downloads: 0, createdAt: iso(Date.now()), createdBy: 2,
+      };
+      state.links.push(link);
+      return json(res, 200, { ok: true, link });
     }
     if (seg[0] === 'links') {
       if (seg.length === 1 && req.method === 'POST') {
