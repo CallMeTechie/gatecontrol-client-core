@@ -82,7 +82,7 @@ async function setup(features, opts = {}) {
   return { srv, ...(await service(srv, opts)) };
 }
 
-const BULK = ['devices', 'emptyFiles', 'vault', 'vaultsApart', 'bulk', 'zip', 'multiLink'];
+const BULK = ['devices', 'emptyFiles', 'vault', 'vaultsApart', 'bulk', 'zip', 'multiLink', 'copyServer'];
 const OLD = ['devices', 'emptyFiles', 'vault', 'vaultsApart'];
 const byName = (srv, name, parentId) => [...srv.state.nodes.values()].find((n) => n.name === name && !n.deleted && (parentId === undefined || n.parentId === parentId));
 const opRows = (svc) => svc.transfers().filter((r) => r.dir === 'op');
@@ -100,7 +100,7 @@ describe('Drive 1.12: answers and requests (utils/drive.js)', () => {
     assert.equal(op.kind, 'copy');
     assert.equal(op.done, 58);
     assert.equal(op.targetId, 7);
-    assert.deepEqual(op.results, { done: 2, skipped: 1, failed: [{ id: 5, reason: 'forbidden' }] });
+    assert.deepEqual(op.results, { done: 2, skipped: 1, failed: [{ id: 5, reason: 'forbidden' }], failedCount: 1, resultIds: [] });
     assert.equal(op.undoUntil, Date.parse('2026-10-29T10:00:00Z'));
     assert.equal(op.name, 'Urlaub  2026');
     assert.equal(op.extra, undefined);
@@ -122,11 +122,11 @@ describe('Drive 1.12: answers and requests (utils/drive.js)', () => {
     assert.deepEqual(drive.opBody({ op: 'trash', ids: [1], target: 9 }), { op: 'trash', ids: [1] });
     assert.equal(drive.idList(new Array(10001).fill(1)), null);
     assert.equal(drive.idList([]), null);
-    assert.deepEqual(drive.normalizeZip({ url: '/api/v1/client/plugins/gatecontrol-drive/media/abc', name: 'Fotos', expiresAt: 5 }), { url: '/api/v1/client/plugins/gatecontrol-drive/media/abc', name: 'Fotos.zip', expiresAt: 5 });
+    assert.deepEqual(drive.normalizeZip({ url: '/api/v1/client/plugins/gatecontrol-drive/media/abc', name: 'Fotos', expiresAt: 5 }), { url: '/api/v1/client/plugins/gatecontrol-drive/media/abc', name: 'Fotos.zip', expiresAt: 5, files: null, skipped: [] });
     assert.equal(drive.normalizeZip({ url: 'https://gc.example.com/s/tok', name: 'a/b.zip' }).name, 'a_b.zip');
     assert.equal(drive.normalizeZip({ url: '//evil.example/x' }), null);
     assert.equal(drive.normalizeZip({ url: 'javascript:alert(1)' }), null);
-    assert.deepEqual(drive.multiLinkBody({ ids: [1, 2], mode: 'download', expires: '7d', pin: '1234' }), { ids: [1, 2], mode: 'download', expires: '7d', pin: '1234' });
+    assert.deepEqual(drive.multiLinkBody({ ids: [1, 2], mode: 'download', expires: '7d', pin: '1234' }), { nodeIds: [1, 2], mode: 'download', expires: '7d', pin: '1234' });
     assert.equal(drive.multiLinkBody({ ids: [1, 2], mode: 'upload', expires: '7d' }), null);
     assert.equal(drive.multiLinkBody({ ids: [1], mode: 'view', expires: '7d', pin: '12' }), null);
   });
@@ -166,7 +166,7 @@ describe("Drive 1.12 'bulk': jobs of the server", () => {
     assert.equal(done.p.count, 2);
     assert.equal(done.p.targetName, 'Ziel');
     assert.equal(done.p.undoable, true);
-    assert.deepEqual(done.p.results, { done: 2, skipped: 0, failed: [] });
+    assert.deepEqual(done.p.results, { done: 2, skipped: 0, failed: [], failedCount: 0, resultIds: [13] });
     assert.equal(srv.state.nodes.get(13).parentId, ziel.id);
     assert.equal(srv.state.nodes.get(11).deleted, true, 'became a new version of the file there');
     assert.equal(srv.state.nodes.get(old.id).rev, 2);
@@ -200,6 +200,23 @@ describe("Drive 1.12 'bulk': jobs of the server", () => {
     assert.equal(created, 2);
   });
 
+  it('copying needs copyServer (GateControl copies the media); the job carries items, label and the new nodes', async () => {
+    const noCopy = await setup(BULK.filter((f) => f !== 'copyServer'));
+    await assert.rejects(noCopy.svc.opsCheck({ op: 'copy', ids: [11], target: 10 }), (e) => e.code === 'unsupported');
+    const { srv, svc, events } = await setup(BULK);
+    await svc.opsStart({ op: 'copy', ids: [11, 13], target: 10 });
+    const e = await until(() => events.find((x) => x.ev === 'op'));
+    assert.equal(e.p.count, 2, 'items of the job');
+    assert.equal(e.p.name, 'Foto.jpg', 'its label');
+    assert.equal(e.p.results.resultIds.length, 2);
+    assert.ok(e.p.results.resultIds.every((id) => srv.state.nodes.get(id).parentId === 10));
+    // a job limit of the person
+    srv.opAsync = true;
+    srv.opsMax = 1;
+    await svc.opsStart({ op: 'trash', ids: [12] });
+    await assert.rejects(svc.opsStart({ op: 'trash', ids: [13] }), (x) => x.code === 'job_limit');
+  });
+
   it('a large job runs on: a row with progress (asked again), "Abbrechen" ends it with what is done', async () => {
     const { srv, svc, events } = await setup(BULK);
     srv.opAsync = true;
@@ -209,7 +226,7 @@ describe("Drive 1.12 'bulk': jobs of the server", () => {
     const opId = r.op.opId;
     srv.progressOp(opId, 1, 14);
     await until(() => opRows(svc).find((x) => x.opId === opId && x.done === 1 && x.bytesDone === 14));
-    assert.equal(opRows(svc)[0].total, 3);
+    assert.equal(opRows(svc)[0].total, 2, 'files of the job');
     const c = await svc.opCancel(opId);
     assert.equal(c.ok, true);
     const ended = await until(() => events.find((e) => e.ev === 'op' && e.p.opId === opId));
@@ -262,7 +279,7 @@ describe('Drive 1.12 on an older Drive: a loop of single calls', () => {
     assert.deepEqual(c.conflicts.map((x) => x.name), ['Foto.jpg']);
     assert.deepEqual(c.blocked, [{ id: 10, reason: 'into_itself' }]);
     const c2 = await svc.opsCheck({ op: 'move', ids: [12], target: 10 });
-    assert.deepEqual(c2.blocked, [{ id: 12, reason: 'here' }]);
+    assert.deepEqual(c2.blocked, [{ id: 12, reason: 'same_folder' }]);
     assert.equal(srv.state.requests.some((r) => r.path.endsWith('/ops/check')), false);
     await assert.rejects(svc.opsCheck({ op: 'copy', ids: [11], target: ziel.id }), (e) => e.code === 'unsupported');
     await assert.rejects(svc.opsStart({ op: 'copy', ids: [11], target: ziel.id }), (e) => e.code === 'unsupported');
@@ -284,7 +301,7 @@ describe('Drive 1.12 on an older Drive: a loop of single calls', () => {
     const b = srv.mutate.file(1, 'Foto (2).jpg', 'y');
     await svc.opsStart({ op: 'move', ids: [b.id], target: ziel.id, onConflict: 'skip' });
     const e2 = await until(() => events.filter((x) => x.ev === 'op')[1]);
-    assert.deepEqual(e2.p.results, { done: 0, skipped: 1, failed: [] });
+    assert.deepEqual(e2.p.results, { done: 0, skipped: 1, failed: [], failedCount: 0, resultIds: [] });
     assert.equal(srv.state.nodes.get(b.id).parentId, 1);
     await svc.opsStart({ op: 'trash', ids: [12, b.id] });
     await until(() => events.filter((x) => x.ev === 'op')[2]);
@@ -361,7 +378,7 @@ describe("Drive 1.12 'zip' and 'multiLink'", () => {
   it('ZIP: "Speichern unter …" first, then the ZIP streams into that path (a row of the list)', async () => {
     const dir = tmpDir('db-zip-');
     const dest = path.join(dir, 'Auswahl.zip');
-    const { srv, svc, dialogs } = await setup(BULK, { savePath: dest });
+    const { srv, svc, dialogs } = await setup([...BULK, 'zipMixed'], { savePath: dest });
     const r = await svc.zip([10, 11], { name: 'Auswahl' });
     assert.equal(r.ok, true);
     assert.equal(dialogs[0].defaultPath, 'Auswahl.zip');
@@ -384,17 +401,27 @@ describe("Drive 1.12 'zip' and 'multiLink'", () => {
     await assert.rejects(old.svc.zip([11]), (e) => e.code === 'unsupported');
   });
 
-  it('ZIP at another address: only the portal\'s host and without the device token', async () => {
+  it('ZIP at GateControl\'s bearer address: fetched without the device token; plain http elsewhere refused', async () => {
     const dest = path.join(tmpDir('db-z3-'), 'x.zip');
-    const { srv, svc, api } = await setup(BULK, { savePath: dest, hosts: ['gc.example.com'] });
-    srv.zipUrl = () => 'https://evil.example.org/zip/1';
+    const { srv, svc, api } = await setup(BULK, { savePath: dest });
+    srv.zipUrl = () => 'http://evil.example.org/zip/1';
     await assert.rejects(svc.zip([11]), (e) => e.code === 'invalid');
     assert.equal(fs.existsSync(dest), false);
-    // the server's own address written out goes like a path
-    srv.zipUrl = (m) => `${srv.url}/api/v1/client/plugins/gatecontrol-drive/media/${m}`;
-    assert.equal((await svc.zip([11])).ok, true);
+    srv.zipUrl = (m) => `${srv.url}/s/${m}/zip`;
+    assert.equal((await svc.zip([11], { name: 'Fotos' })).ok, true);
     assert.ok(fs.readFileSync(dest, 'utf8').includes('Foto.jpg'));
+    assert.deepEqual(srv.state.zipGets, [{ token: null }], 'no device token on the bearer link');
+    assert.equal(srv.state.zips[0].name, null);
+    assert.equal(srv.state.zips[1].name, 'Fotos');
     await assert.rejects(api.downloadZip('/x/../y', new PassThrough()), (e) => e.code === 'invalid');
+  });
+
+  it('ZIP limits without zipMixed: one folder or ≤ 20 files (400 mixed), with zipMixed a mixed selection', async () => {
+    const dest = path.join(tmpDir('db-z5-'), 'x.zip');
+    const { svc } = await setup(BULK, { savePath: dest });
+    await assert.rejects(svc.zip([10, 11]), (e) => e.code === 'invalid' && e.body && e.body.reason === 'mixed');
+    const mixed = await setup([...BULK, 'zipMixed'], { savePath: dest });
+    assert.equal((await mixed.svc.zip([10, 11])).ok, true);
   });
 
   it('one link for several files; with a folder: invalid (mixed); an older Drive cannot', async () => {

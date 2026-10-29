@@ -44,7 +44,7 @@
  *          (Drive 1.9 'vault'; POST nodes, uploads/commit and PATCH nodes/<id> take encrypted, nameCipher, keyVersion)
  *   POST   …/api/ops/check { op, ids, target? } · POST ops { op, ids, target?, onConflict? } · GET ops/<id> · GET ops?state
  *   DELETE …/api/ops/<id> · POST ops/<id>/undo                   Drive 1.12 'bulk': jobs for many nodes (move, copy, trash …)
- *   POST   …/api/zip { ids } → { url, name, expiresAt }           Drive 1.12 'zip' · POST links { ids, … }: 'multiLink'
+ *   POST   …/api/zip { ids, name? } → { url, name, expiresAt }    Drive 1.12 'zip' · POST links { nodeIds, … }: 'multiLink'
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -395,39 +395,42 @@ class DriveApi {
     return this._opAnswer(this.api('POST', `ops/${this._opId(id)}/undo`, { body: {}, timeout: 120000 }));
   }
 
-  /** POST zip { ids } → { url, name, expiresAt } (a short-lived address of the ZIP, bound to the person) */
-  async zip(ids) {
+  /**
+   * POST zip { ids, name? } → { url, name, expiresAt, files, skipped } (a short-lived bearer address of the ZIP; Drive 1.12
+   * without 'zipMixed': one folder or 1 … 20 files, else 400 invalid { reason: 'mixed' | 'too_many' })
+   */
+  async zip(ids, { name = null } = {}) {
     const list = drive.idList(ids);
     if (!list) throw new DriveError('invalid ids', { code: 'invalid' });
-    const z = drive.normalizeZip(await this.api('POST', 'zip', { body: { ids: list }, timeout: 120000 }));
+    const body = { ids: list };
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (n) body.name = n;
+    const z = drive.normalizeZip(await this.api('POST', 'zip', { body, timeout: 120000 }));
     if (!z) throw new DriveError('bad zip answer', { code: 'bad_response' });
     return z;
   }
 
   /**
-   * Streams the ZIP of zip() into `dest` → { bytes, mime }: a path on this server (or its address written out) goes
-   * with the device token; an https address of another host only when `hosts` allows it (the portal's) and without it.
+   * Streams the ZIP of zip() into `dest` → { bytes, mime }: a path on this server goes with the device token; an address
+   * written out (Drive 1.12: GateControl's bearer link `…/s/<token>/zip`, no login) is fetched without it — https, or
+   * the server's own address.
    */
-  downloadZip(url, dest, { onProgress, hosts = [] } = {}) {
-    let p = null;
-    let pub = null;
-    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) p = url;
-    else if (typeof url === 'string') {
-      try {
-        const u = new URL(url);
-        const base = new URL(String(this.scope().split('\n')[0] || ''));
-        if (u.origin === base.origin) p = `${u.pathname}${u.search}`;
-        else if (u.protocol === 'https:' && !u.username && !u.password && (hosts || []).includes(u.hostname.toLowerCase())) pub = u.href;
-      } catch { p = null; }
-    }
+  downloadZip(url, dest, { onProgress } = {}) {
     const opts = { onProgress, maxBytes: Number.MAX_SAFE_INTEGER };
-    if (p && !p.includes('..')) return this.media._stream(p, dest, opts);
-    if (pub) {
-      // a public link of GateControl: no token, no cookies — a plain GET
-      const plain = new GateDropApi({ http: { _client: () => axios, scope: () => '' }, log: this.log, mediaPath: drive.MEDIA_PATH, label: 'Drive' });
-      return plain._stream(pub, dest, opts);
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
+      if (url.includes('..')) return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
+      return this.media._stream(url, dest, opts);
     }
-    return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
+    let u = null;
+    try { u = new URL(String(url)); } catch { u = null; }
+    let same = false;
+    try { same = !!u && u.origin === new URL(String(this.scope().split('\n')[0] || '')).origin; } catch { same = false; }
+    if (!u || u.username || u.password || !(u.protocol === 'https:' || (same && u.protocol === 'http:'))) {
+      return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
+    }
+    // a bearer link: no token, no cookies — a plain GET
+    const plain = new GateDropApi({ http: { _client: () => axios, scope: () => '' }, log: this.log, mediaPath: drive.MEDIA_PATH, label: 'Drive' });
+    return plain._stream(u.href, dest, opts);
   }
 
   // ── Files ────────────────────────────────────────────────

@@ -8,13 +8,15 @@
  *     Conflicts are the names the target has already: the page asks once for all of them ("Als neue Version
  *     speichern" / "Beide behalten" / "Überspringen"; the same content counts as done, nothing is stored twice;
  *     folders of the same name are merged by Drive). Blocked are the nodes that cannot go ('forbidden', 'into_itself',
- *     'encrypted', 'locked', …) — the rest goes.
+ *     'encrypted', 'locked', 'root', 'same_folder', …) — the rest goes.
  *   - start(): the job (`POST ops`); small ones come back done, larger ones run on the server — on in the background
  *     when the app ends; their progress shows as a row of the transfer list (dir 'op': files done of total, bytes),
  *     asked every second while one runs and taken from the live event `op`; on the next start the person's running
  *     jobs are picked up again (`GET ops?state=running`). "Abbrechen": what is done stays. When a job ends the event
  *     'op' (the row) lets the page show "N Elemente nach „Ziel“ verschoben · Rückgängig" (until `undoUntil`:
  *     `POST ops/<id>/undo` — moved back, out of the trash again, copies into the trash).
+ *   - Copying only with 'copyServer' (GateControl copies the media itself); this app never brings the bytes of a copy
+ *     (the transfer routes of Drive 1.12 are not used).
  *   - Without `bulk` (an older Drive): move and trash run here as a loop of the single calls (a taken name: "Beide
  *     behalten" or "Überspringen", a new version is not possible without Drive 1.12); copy and undo are not offered.
  *   - Vault folders (Drive 1.9): never across the vault's border (`encrypted`); inside the same vault moving runs here
@@ -120,7 +122,8 @@ class DriveOps {
     if ((op === 'move' || op === 'copy') && (vaultId || tgtVault) && (vaultId !== tgtVault || op === 'copy')) {
       return { bulk, local: true, vaultId, blockedAll: 'encrypted' };
     }
-    if (op === 'copy' && !bulk) throw new DriveError('Drive cannot copy', { code: 'unsupported' });
+    // copying needs Drive 1.12 and GateControl's media copy ('copyServer'; the bytes are never brought by this app)
+    if (op === 'copy' && !(bulk && await this.api.has('copyServer').catch(() => false))) throw new DriveError('Drive cannot copy', { code: 'unsupported' });
     // a vault's move runs here (Drive knows only the encrypted names); everything else on the server when it can
     const local = !bulk || (op === 'move' && !!vaultId);
     return { bulk, local, vaultId };
@@ -184,7 +187,7 @@ class DriveOps {
       if (vaultId && n.vaultId !== vaultId) { out.blocked.push({ id, reason: 'encrypted' }); continue; }
       if (op !== 'trash') {
         if (n.id === tgt || (n.isDir && crumbs.includes(n.id))) { out.blocked.push({ id, reason: 'into_itself' }); continue; }
-        if (n.parentId === tgt) { out.blocked.push({ id, reason: 'here' }); continue; }
+        if (n.parentId === tgt) { out.blocked.push({ id, reason: 'same_folder' }); continue; }
         const name = this._nameOf(n);
         const have = name ? taken.get(S.keyOf(name)) : null;
         if (have) {
@@ -238,12 +241,13 @@ class DriveOps {
   _track(job, meta) {
     const have = this._ops.get(job.id);
     if (have) { this._update(job); return { ...have.row }; }
+    const undo = !!meta.undo || job.kind === 'undo';
     const row = {
-      id: `o${job.id}`, dir: 'op', opId: job.id, kind: job.kind || meta.op || null, state: 'running',
+      id: `o${job.id}`, dir: 'op', opId: job.id, kind: job.kind && job.kind !== 'undo' ? job.kind : meta.op || null, state: 'running',
       name: meta.name || job.name || null, count: meta.count || job.count || job.total || 0,
-      targetId: job.targetId || meta.targetId || null, targetName: meta.target || job.targetPath || null,
+      targetId: job.targetId || meta.targetId || null, targetName: meta.target || job.targetName || job.targetPath || null,
       total: 0, done: 0, bytesTotal: 0, bytesDone: 0, results: null, undoUntil: null, undoable: false,
-      local: false, undo: !!meta.undo, code: null, at: this.now(),
+      local: false, undo, code: null, at: this.now(),
     };
     this._ops.set(job.id, { row, meta, local: false, cancel: false });
     this._rowFn(row);
@@ -257,7 +261,7 @@ class DriveOps {
     if (!j || j.row.state !== 'running') return;
     const patch = {
       total: job.total, done: Math.min(job.done, job.total || job.done), bytesTotal: job.bytesTotal, bytesDone: job.bytesDone,
-      ...(job.targetPath && !j.row.targetName ? { targetName: job.targetPath } : {}),
+      ...((job.targetName || job.targetPath) && !j.row.targetName ? { targetName: job.targetName || job.targetPath } : {}),
       ...(job.targetId && !j.row.targetId ? { targetId: job.targetId } : {}),
     };
     if (job.state === 'running') {
@@ -316,7 +320,7 @@ class DriveOps {
   async resume() {
     if (!(await this.api.has('bulk').catch(() => false))) return [];
     const jobs = await this.api.ops({ state: 'running' });
-    return jobs.filter((job) => !this._ops.has(job.id)).map((job) => this._track(job, { op: job.kind }));
+    return jobs.filter((job) => !this._ops.has(job.id)).map((job) => this._track(job, { op: job.kind === 'undo' ? null : job.kind }));
   }
 
   /** "Abbrechen": what is done stays → { ok, op } */
@@ -361,7 +365,7 @@ class DriveOps {
   }
 
   async _loop(j, { op, list, tgt, onConflict, vaultId }) {
-    const res = { done: 0, skipped: 0, failed: [] };
+    const res = { done: 0, skipped: 0, failed: [], failedCount: 0, resultIds: [] };
     let taken = new Map();
     if (op === 'move') taken = await this._taken(tgt, vaultId);
     const keys = new Set(taken.keys());
@@ -388,10 +392,12 @@ class DriveOps {
             await this._moveTo(n, tgt, free, vaultId);
             keys.add(S.keyOf(free));
             res.done++;
+            res.resultIds.push(n.id);
           } else {
             await this._moveTo(n, tgt, null, vaultId);
             keys.add(k);
             res.done++;
+            res.resultIds.push(n.id);
           }
         }
       } catch (err) {
@@ -401,6 +407,7 @@ class DriveOps {
         this._setFn(j.row.id, { done }, { progress: true });
       }
     }
+    res.failedCount = res.failed.length;
     this._finish(j, { state: j.cancel ? 'cancelled' : (res.failed.length && !res.done ? 'failed' : 'done'), done, results: res, code: res.failed.length ? res.failed[0].reason : null });
   }
 

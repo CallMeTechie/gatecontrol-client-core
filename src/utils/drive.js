@@ -970,9 +970,10 @@ function blockedList(v, max = 1000) {
 }
 
 /**
- * POST ops/check → { files, folders, bytes, conflicts: [{ id, name, isDir, size, mtime, existing: { id, size, mtime,
- * isDir }, same }], blocked: [{ id, reason }] } or null. `same`: the file there has the same content (counts as done,
- * never stored twice).
+ * POST ops/check → { items, files, folders, bytes, conflicts: [{ id, name, path, isDir, size, mtime, existing: { id, size,
+ * mtime, isDir }, same }], conflictsMore, merges, blocked: [{ id, reason, name? }], quota: { needed, free } | null, limit,
+ * tooMany } or null. `same`: the file there has the same content (counts as done, never stored twice); folders of the
+ * same name are merged (`merges`), their files in conflicts with their `path`.
  */
 function normalizeOpCheck(raw) {
   const r = obj(raw);
@@ -986,6 +987,8 @@ function normalizeOpCheck(raw) {
     return {
       id,
       name,
+      // inside a merged folder: "Ordner/datei"
+      path: line(o.path, 2000),
       isDir: bool(o.isDir),
       size: count(o.size),
       mtime: msOf(o.mtime),
@@ -993,7 +996,21 @@ function normalizeOpCheck(raw) {
       same: bool(o.same),
     };
   }).filter(Boolean);
-  return { files: count(r.files) || 0, folders: count(r.folders) || 0, bytes: count(r.bytes) || 0, conflicts, blocked: blockedList(r.blocked) };
+  const q = obj(r.quota);
+  return {
+    items: count(r.items),
+    files: count(r.files) || 0,
+    folders: count(r.folders) || 0,
+    bytes: count(r.bytes) || 0,
+    conflicts,
+    conflictsMore: count(r.conflictsMore) || 0,
+    merges: count(r.merges) || 0,
+    blocked: blockedList(r.blocked),
+    // copy / move into another area: { needed, free } (free null: unknown)
+    quota: q ? { needed: count(q.needed) || 0, free: count(q.free) } : null,
+    limit: count(r.limit),
+    tooMany: bool(r.tooMany),
+  };
 }
 
 /**
@@ -1006,6 +1023,7 @@ function normalizeOp(raw) {
   const id = o && opIdOf(o.id);
   if (!id) return null;
   const res = obj(o.results);
+  const failed = res ? blockedList(res.failed, 100) : [];
   return {
     id,
     // 'undo': the job that undoes another one (undoOf)
@@ -1018,12 +1036,25 @@ function normalizeOp(raw) {
     targetId: posId(o.targetId) || posId(o.target),
     targetPath: line(o.targetPath, 2000),
     targetName: line(o.targetName, NAME_MAX),
-    name: line(o.name, NAME_MAX) || line(o.label, NAME_MAX),
-    count: count(o.count),
-    results: res ? { done: countOrLength(res.done), skipped: countOrLength(res.skipped), failed: blockedList(res.failed) } : null,
+    // the first node's name (null in a vault)
+    name: line(o.label, NAME_MAX) || line(o.name, NAME_MAX),
+    // the ids asked for ("N Elemente …"); total / done count files
+    count: count(o.items) ?? count(o.count),
+    results: res ? {
+      done: countOrLength(res.done),
+      skipped: countOrLength(res.skipped),
+      failed,
+      failedCount: Math.max(count(res.failedCount) || 0, failed.length),
+      // the top nodes made / moved at the target ("neu hier")
+      resultIds: arr(res.resultIds).slice(0, 500).map(posId).filter(Boolean),
+    } : null,
     undoUntil: msOf(o.undoUntil),
     undoOf: opIdOf(o.undoOf),
-    code: codeOf(o.code),
+    undoneBy: opIdOf(o.undoneBy),
+    // copy: who brings the bytes ('server' with GateControl's media copy; 'client' is not done by this app)
+    transfer: o.transfer === 'client' || o.transfer === 'server' ? o.transfer : null,
+    transfersLeft: count(o.transfersLeft) || 0,
+    code: codeOf(o.error) || codeOf(o.code),
   };
 }
 
@@ -1051,8 +1082,9 @@ function opBody({ op, ids, target = null, onConflict = null } = {}) {
 }
 
 /**
- * POST zip → { url, name, expiresAt } or null: `url` the short-lived address of the ZIP — a path on the server
- * (`/…`) or an http(s) address; `name` its file name (…zip).
+ * POST zip → { url, name, expiresAt, files, skipped } or null: `url` the short-lived address of the ZIP — Drive 1.12 an
+ * absolute bearer address of GateControl (`https://<GateControl>/s/<token>/zip`, no login), or a path on the server;
+ * `name` its file name (…zip).
  */
 function normalizeZip(raw) {
   const r = obj(raw) || {};
@@ -1064,14 +1096,14 @@ function normalizeZip(raw) {
   }
   if (!url) return null;
   const name = safeName(line(z.name, NAME_MAX) || '') || 'Drive.zip';
-  return { url, name: /\.zip$/i.test(name) ? name : `${name}.zip`, expiresAt: msOf(z.expiresAt) };
+  return { url, name: /\.zip$/i.test(name) ? name : `${name}.zip`, expiresAt: msOf(z.expiresAt), files: count(z.files), skipped: blockedList(z.skipped) };
 }
 
-/** Body of one link for several nodes: { ids, mode: 'view' | 'download', expires, pin? } or null. */
+/** Body of one link for several files: { nodeIds, mode: 'view' | 'download', expires, pin? } or null. */
 function multiLinkBody({ ids, mode, expires, pin } = {}) {
   const list = idList(ids, LINK_IDS_MAX);
   if (!list || (mode !== 'view' && mode !== 'download') || !LINK_EXPIRES.includes(expires)) return null;
-  const body = { ids: list, mode, expires };
+  const body = { nodeIds: list, mode, expires };
   if (pin !== undefined && pin !== null && pin !== '') {
     if (typeof pin !== 'string' || !PIN_RE.test(pin)) return null;
     body.pin = pin;

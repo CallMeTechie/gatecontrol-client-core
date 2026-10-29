@@ -1089,10 +1089,10 @@ class DriveService extends EventEmitter {
       const part = `${res.filePath}.${crypto.randomBytes(4).toString('hex')}.part`;
       let bytes = 0;
       try {
-        const z = await this.api.zip(list);
+        const z = await this.api.zip(list, { name: typeof name === 'string' && name ? base.replace(/\.zip$/i, '') : null });
         const out = fs.createWriteStream(part);
         try {
-          const r = await this.api.downloadZip(z.url, out, { hosts: this._hosts(), onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+          const r = await this.api.downloadZip(z.url, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
           bytes = r.bytes;
         } catch (err) { out.destroy(); throw err; }
         await fs.promises.rm(res.filePath, { force: true });
