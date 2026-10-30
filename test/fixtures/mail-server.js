@@ -289,8 +289,20 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     }
     if (req.method === 'GET' && route === 'search') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
-      const items = [...state.messages.values()].filter((m) => `${m.subject} ${m.snippet} ${m.from.name}`.toLowerCase().includes(q)).sort((a, b) => b.date - a.date);
-      return json(res, 200, { items: items.slice(0, 50).map(sum), next: null, remote: items.length === 0 });
+      // from: part of the sender's address (as the plugin's LIKE); box: one account; cursor <date>.<id>; pages of `limit` (50)
+      const from = String(url.searchParams.get('from') || '').toLowerCase();
+      const box = url.searchParams.get('box');
+      const cur = /^(\d+)\.(\d+)$/.exec(url.searchParams.get('cursor') || '');
+      const limit = Number(state.searchLimit) || 50;
+      const items = [...state.messages.values()]
+        .filter((m) => `${m.subject} ${m.snippet} ${m.from.name}`.toLowerCase().includes(q))
+        .filter((m) => !from || String(m.from.address || m.from.email || '').toLowerCase().includes(from))
+        .filter((m) => !box || box === 'all' || m.accountId === Number(box))
+        .sort((a, b) => b.date - a.date || b.id - a.id)
+        .filter((m) => !cur || m.date < Number(cur[1]) || (m.date === Number(cur[1]) && m.id < Number(cur[2])));
+      const page = items.slice(0, limit);
+      const last = page[page.length - 1];
+      return json(res, 200, { items: page.map(sum), next: items.length > limit ? `${last.date}.${last.id}` : null, remote: !from && items.length === 0 });
     }
     if (req.method === 'GET' && seg[0] === 'threads' && seg.length === 2) {
       const items = [...state.messages.values()].filter((m) => m.threadId === Number(seg[1])).sort((a, b) => a.date - b.date);

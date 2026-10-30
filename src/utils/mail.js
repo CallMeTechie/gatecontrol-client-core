@@ -595,18 +595,22 @@ function listQuery(q = {}) {
   return p;
 }
 
-/** Query of GET search ({ q, box, from, after, before, attachments, unread, cursor }) → params, or null. */
+/**
+ * Query of GET search ({ q, box, from, after, before, attachments, unread, cursor }) → params, or null. Words or a
+ * sender (`from` alone: the sender's mails) are needed.
+ */
 function searchQuery(q = {}) {
   const o = obj(q) || {};
   const s = typeof o.q === 'string' ? o.q.replace(CTRL_LINE_RE, ' ').trim() : '';
-  if (!s || s.length > 200) return null;
-  const p = { q: s };
+  const hasFrom = o.from !== undefined && o.from !== null && o.from !== '';
+  if ((!s && !hasFrom) || s.length > 200) return null;
+  const p = s ? { q: s } : {};
   if (o.box !== undefined && o.box !== null) {
     const box = String(o.box);
     if (!BOX_RE.test(box)) return null;
     p.box = box;
   }
-  if (o.from !== undefined && o.from !== null && o.from !== '') {
+  if (hasFrom) {
     const f = line(o.from, 200);
     if (!f) return null;
     p.from = f;
@@ -890,22 +894,27 @@ function textToHtml(t) {
 
 const FRAME_CSP = `default-src 'none'; img-src ${SCHEME}: data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'`;
 
+/** The element of the frame document that holds the mail (the window makes it smaller when it is too wide). */
+const FIT_ID = 'gc-fit';
+
 /**
  * The whole document of the reading frame (iframe srcdoc, sandboxed without scripts): its own CSP (pictures only
  * through gcmail: and data:), links open in a new window (the window guard hands them to the browser), a white
- * page like mail programs show it.
+ * page like mail programs show it. Pictures, tables, long links and preformatted text stay inside the width; the
+ * mail sits in #gc-fit, which the window sets smaller (CSS zoom) when it is still wider (a newsletter's table of a
+ * fixed 600 px) — measured from outside, the frame runs no script.
  */
 function mailDocument(message, { lang = 'de' } = {}) {
   const m = message || {};
   const body = m.html ? rewriteSources(m.html, m) : `<div class="gc-text">${textToHtml(m.text || '')}</div>`;
   return '<!doctype html><html lang="' + (lang === 'en' ? 'en' : 'de') + '"><head><meta charset="utf-8">'
     + `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">`
-    + '<meta name="referrer" content="no-referrer"><base target="_blank">'
+    + '<meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_blank">'
     + '<style>html,body{margin:0;padding:0;background:#fff;color:#1A1D22}body{padding:16px;font:14px/1.5 "Segoe UI",system-ui,sans-serif;overflow-wrap:anywhere}'
     + 'img{max-width:100%;height:auto}img[data-gc-blocked]{display:inline-block;min-width:16px;min-height:16px;background:#EEF1F5;border-radius:3px}'
     + '.gc-text{white-space:pre-wrap}blockquote{margin:0 0 0 8px;padding-left:10px;border-left:3px solid #D5DBE3;color:#4A5563}'
-    + 'table{max-width:100%}pre{white-space:pre-wrap}a{color:#1A56C4}</style>'
-    + `</head><body>${body}</body></html>`;
+    + 'table{max-width:100%}td,th{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#1A56C4;overflow-wrap:anywhere;word-break:break-word}</style>'
+    + `</head><body><div id="${FIT_ID}">${body}</div></body></html>`;
 }
 
 /** Draft HTML for the editor frame: the plugin's img/<token> pictures through gcmail: (serverHtml() turns them back). */
@@ -1022,6 +1031,7 @@ module.exports = {
   FAILED_TOPIC,
   SCHEME,
   FRAME_CSP,
+  FIT_ID,
   MAX_UPLOAD_BYTES,
   IMAGE_MAX_BYTES,
   PROVIDERS,
