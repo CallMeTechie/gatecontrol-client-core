@@ -335,6 +335,7 @@ describe('MailService', () => {
     const missing = await svc.message(105);
     assert.equal(missing.message.bodyMissing, true);
     assert.equal(missing.message.html, null);
+    assert.equal(missing.message.text, 'Inhalt fehlt', 'since 1.1.2 the snippet stands in');
     assert.equal((await svc.handleProtocol({ url: 'gcmail://evil/x', method: 'GET' })).status, 404);
     assert.equal((await svc.handleProtocol({ url: 'gcmail://img/tok_logo', method: 'POST' })).status, 405);
     const thread = await svc.thread(900);
@@ -538,7 +539,13 @@ describe('MailService', () => {
     svc.on('outbox', () => outbox.push(1));
     pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-mail', type: 'mail', data: { kind: 'changed', accountId: 2, folderId: 21 } } });
     pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-drive', type: 'mail', data: { kind: 'changed' } } });
-    assert.deepEqual(changed, [{ accountId: 2, folderId: 21 }]);
+    pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-mail', type: 'mail', data: { kind: 'changed', accountId: 2, folderId: null, messageId: 105, attachmentId: 3 } } });
+    pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-mail', type: 'mail', data: { kind: 'changed', accountId: 2, folderId: 21, threadId: 900 } } });
+    assert.deepEqual(changed, [
+      { accountId: 2, folderId: 21, messageId: null, threadId: null, attachmentId: null },
+      { accountId: 2, folderId: null, messageId: 105, threadId: null, attachmentId: 3 },
+      { accountId: 2, folderId: 21, messageId: null, threadId: 900, attachmentId: null },
+    ]);
     nc.emit('new', { topic: mail.FAILED_TOPIC, data: { mail: { outboxId: 3 } } });
     assert.equal(outbox.length, 1);
     const click = routes.get('plg-gatecontrol-mail');
@@ -581,6 +588,80 @@ describe('mail loopback receiver', () => {
   });
 });
 
+describe('mail 1.1.2: account pictures, bodies and attachments the provider sends later', () => {
+  it('pure: the avatar, the live event with ids, busy', () => {
+    assert.deepEqual(mail.normalizeAccount({ id: 2, email: 'a@firma.de', avatar: { mediaId: 'avatar2abcdef', mime: 'image/JPEG' } }).avatar, { mediaId: 'avatar2abcdef', mime: 'image/jpeg' });
+    assert.equal(mail.normalizeAccount({ id: 2, email: 'a@firma.de' }).avatar, null, 'older servers send none');
+    assert.equal(mail.normalizeAvatar({ mediaId: 'avatar2abcdef', mime: 'image/svg+xml' }), null, 'never SVG');
+    assert.equal(mail.normalizeAvatar({ mediaId: '../x', mime: 'image/png' }), null);
+    assert.deepEqual(mail.normalizeChanged({ kind: 'changed', accountId: '3', folderId: null, messageId: 42, threadId: -1, attachmentId: 7 }), { accountId: 3, folderId: null, messageId: 42, threadId: null, attachmentId: 7 });
+    assert.deepEqual(mail.busyOf({ code: 'busy', detail: { reason: 'loading', retryAfter: 5 } }), { loading: true, retryAfter: 5 });
+    assert.deepEqual(mail.busyOf({ code: 'busy', detail: { retryAfter: 3600 } }), { loading: false, retryAfter: 60 });
+    assert.deepEqual(mail.busyOf({ code: 'busy' }), { loading: false, retryAfter: 5 });
+    assert.equal(mail.busyOf({ code: 'not_found' }), null);
+    assert.equal(mail.busyOf(null), null);
+  });
+
+  it('the Microsoft account\'s picture as a data: URL, kept by its media id', async () => {
+    const { svc, srv } = await setup();
+    const me = await svc.me();
+    assert.deepEqual(me.accounts.map((a) => a.avatar), [null, { mediaId: 'avatar2abcdef', mime: 'image/png' }]);
+    const a = await svc.avatar('avatar2abcdef');
+    assert.equal(a.ok, true);
+    assert.equal(a.url, `data:image/png;base64,${PNG.toString('base64')}`);
+    const n = srv.state.requests.filter((x) => x.path.endsWith('/media/avatar2abcdef')).length;
+    assert.equal(n, 1);
+    await svc.avatar('avatar2abcdef');
+    assert.equal(srv.state.requests.filter((x) => x.path.endsWith('/media/avatar2abcdef')).length, 1, 'kept in memory');
+    assert.ok(srv.state.requests.filter((x) => x.path.endsWith('/media/avatar2abcdef')).every((x) => x.auth === 'gc_token'));
+    srv.state.media.set('avatarsvgxyz', { bytes: Buffer.from('<svg/>'), mime: 'image/svg+xml' });
+    await assert.rejects(svc.avatar('avatarsvgxyz'), { code: 'invalid' });
+    await assert.rejects(svc.avatar('../x'), { code: 'invalid' });
+    await assert.rejects(svc.avatar('missing0000'));
+  });
+
+  it('a body the provider sends later: the snippet, a full copy of the cache stays', async () => {
+    const cacheDir = tmpDir('mail-cache-');
+    const { svc, srv } = await setup({}, { cacheDir, protect: fakeProtect() });
+    const full = await svc.message(101);
+    assert.ok(full.message.html);
+    srv.state.messages.get(101).bodyMissing = true;
+    const again = await svc.message(101);
+    assert.equal(again.message.bodyMissing, false, 'the copy kept earlier');
+    assert.ok(again.doc.includes('Sehr geehrte Kundin'));
+    const cached = await svc.cache.getMessage(101);
+    assert.ok(cached.html, 'the snippet does not replace the full copy');
+    const missing = await svc.message(105);
+    assert.equal(missing.message.bodyMissing, true);
+    assert.equal(await svc.cache.getMessage(105), null, 'a snippet alone is not kept');
+  });
+
+  it('attachments and embedded pictures still on their way: busy with retryAfter, then there', async () => {
+    const shell = { openPath: async () => '' };
+    const { svc, srv } = await setup({}, { shell });
+    const loading = [];
+    svc.on('loading', (x) => loading.push(x));
+    srv.state.fail['GET cid/:id/:id'] = { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } };
+    const busy = await svc.handleProtocol({ url: 'gcmail://cid/101/2', method: 'GET' });
+    assert.equal(busy.status, 503);
+    assert.deepEqual(loading, [{ messageId: 101, attachmentId: 2, retryAfter: 5 }]);
+    delete srv.state.fail['GET cid/:id/:id'];
+    assert.equal((await svc.handleProtocol({ url: 'gcmail://cid/101/2', method: 'GET' })).status, 200, 'not kept while busy');
+    srv.state.fail['GET messages/:id/attachments/:id'] = { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } };
+    const err = await svc.openAttachment(101, 1, { name: 'Rechnung_2026_11.pdf', mime: 'application/pdf' }).catch((e) => e);
+    assert.equal(err.code, 'busy');
+    assert.equal(err.status, 409);
+    assert.deepEqual(mail.busyOf(err), { loading: true, retryAfter: 5 });
+    // through IPC the renderer gets the detail
+    const handlers = {};
+    registerMailHandlers((ch, fn) => { handlers[ch] = fn; }, { mail: svc, getMainWindow: () => null, log });
+    const r = await handlers['mail:attachment:open']({}, { id: 101, attachmentId: 1, name: 'Rechnung_2026_11.pdf' });
+    assert.deepEqual([r.ok, r.code, r.detail.reason, r.detail.retryAfter], [false, 'busy', 'loading', 5]);
+    delete srv.state.fail['GET messages/:id/attachments/:id'];
+    assert.equal((await svc.openAttachment(101, 1, { name: 'Rechnung_2026_11.pdf', mime: 'application/pdf' })).ok, true);
+  });
+});
+
 describe('mail IPC', () => {
   it('checks arguments, passes the plugin\'s detail, forwards events', async () => {
     const { svc } = await setup();
@@ -607,5 +688,10 @@ describe('mail IPC', () => {
     assert.equal(u.draft.subject, 'Neu');
     svc.emit('changed', { accountId: 1, folderId: null });
     assert.deepEqual(sent.at(-1), ['mail:changed', { accountId: 1, folderId: null }]);
+    svc.emit('loading', { messageId: 101, attachmentId: 2, retryAfter: 5 });
+    assert.deepEqual(sent.at(-1), ['mail:loading', { messageId: 101, attachmentId: 2, retryAfter: 5 }]);
+    assert.equal((await call('mail:avatar', { mediaId: 5 })).code, 'invalid');
+    const av = await call('mail:avatar', { mediaId: 'avatar2abcdef' });
+    assert.ok(av.ok && av.url.startsWith('data:image/png;base64,'));
   });
 });

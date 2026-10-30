@@ -80,7 +80,7 @@ describe('createBridgeApi', () => {
       'killswitch:toggle', 'locale:get',
       'locale:set', 'logs:export', 'logs:get', 'logs:show',
       'mail:account:add', 'mail:account:delete', 'mail:account:microsoft', 'mail:account:update', 'mail:act', 'mail:ai', 'mail:ai:run',
-      'mail:ai:todo', 'mail:attachment:open', 'mail:attachment:save', 'mail:check', 'mail:contacts', 'mail:discover', 'mail:draft:create',
+      'mail:ai:todo', 'mail:attachment:open', 'mail:attachment:save', 'mail:avatar', 'mail:check', 'mail:contacts', 'mail:discover', 'mail:draft:create',
       'mail:draft:delete', 'mail:draft:get', 'mail:draft:update', 'mail:drive:save', 'mail:drive:save-all', 'mail:drive:suggest', 'mail:editor',
       'mail:filing', 'mail:filing:confirm', 'mail:filing:dismiss', 'mail:flags', 'mail:folders', 'mail:images', 'mail:list', 'mail:me',
       'mail:message', 'mail:outbox', 'mail:pick', 'mail:providers', 'mail:search', 'mail:send', 'mail:send:cancel', 'mail:settings',
@@ -110,7 +110,7 @@ describe('createBridgeApi', () => {
       'chat:state', 'chat:typing', 'chat:unread',
       'drive:changed', 'drive:guard', 'drive:op', 'drive:remote', 'drive:state', 'drive:sync', 'drive:transfers', 'drive:vault', 'drive:vault-lock',
       'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
-      'locale:changed', 'mail:changed', 'mail:outbox', 'mail:state', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
+      'locale:changed', 'mail:changed', 'mail:loading', 'mail:outbox', 'mail:state', 'navigate', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
       'vault:push', 'vault:state',
     ]);

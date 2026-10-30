@@ -16,6 +16,7 @@
  *   mail:signin:cancel     () → { ok }
  *   mail:account:update    ({ id, name?, color?, kind?, push?, ai?, attachments?, signature?, password? }) → { ok, account }
  *   mail:account:delete    ({ id }) → { ok }
+ *   mail:avatar            ({ mediaId }) → { ok, mime, url }   an account's picture as a data: URL
  *   mail:folders           () → { ok, accounts: [{ accountId, folders }], offline? }
  *   mail:list              ({ box?, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }) → { ok, items, next, counts, offline? }
  *   mail:search            ({ q, box?, from?, after?, before?, attachments?, unread?, cursor? }) → { ok, items, next, remote }
@@ -25,6 +26,7 @@
  *   mail:flags             ({ ids, unread?, flagged? }) → { ok, items? }
  *   mail:act               ({ action: 'archive'|'delete'|'junk'|'move'|'tab', ids, folderId?, tab? }) → { ok, items? }
  *   mail:attachment:open   ({ id, attachmentId, name?, mime? }) → { ok, path } | { ok: false, code: 'unsafe' }
+ *                          (still on its way from the provider: { ok: false, code: 'busy', detail: { reason: 'loading', retryAfter } })
  *   mail:attachment:save   ({ id, attachmentId, name? }) → { ok, path } | { ok: false, code: 'cancelled' }
  *   mail:pick              () → file dialog → { ok, paths } | { ok: false, code: 'cancelled' }
  *   mail:upload            ({ paths }) → { ok, items: [{ mediaId, name, size, mime }], rejected }
@@ -46,13 +48,15 @@
  *   mail:filing:confirm    ({ id, folderId?, name? }) → { ok, savedTo }
  *   mail:filing:dismiss    ({ id }) → { ok }
  *
- * Events to the main window: mail:state, mail:changed ({ accountId, folderId }), mail:outbox.
+ * Events to the main window: mail:state, mail:changed ({ accountId, folderId, messageId, threadId, attachmentId }),
+ * mail:outbox, mail:loading ({ messageId, attachmentId, retryAfter }) an embedded picture still on its way.
  */
 
 const MAIL_EVENTS = {
   state: 'mail:state',
   changed: 'mail:changed',
   outbox: 'mail:outbox',
+  loading: 'mail:loading',
 };
 
 function fail(err) {
@@ -112,6 +116,7 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
     return s.updateAccount(a.id, patch);
   }));
   handle('mail:account:delete', byId(async (a) => s.deleteAccount(a.id)));
+  handle('mail:avatar', wrap(async (a) => (isStr(a.mediaId, 128) ? s.avatar(a.mediaId) : invalid())));
   handle('mail:folders', wrap(async () => s.folders()));
   handle('mail:list', wrap(async (a) => s.list({
     box: a.box, folder: a.folder, tab: a.tab, unread: a.unread === true, flagged: a.flagged === true,

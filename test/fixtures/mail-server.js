@@ -10,7 +10,8 @@
 //
 //   const srv = await mailServer({ plugin, allowed, features });
 //   srv.url, srv.state (requests, accounts, messages, drafts, outbox, media, uploads, …),
-//   srv.state.fail = { '<METHOD> <route>': { status, code, … } } — refuse a route with { error: { code, … } },
+//   srv.state.fail = { '<METHOD> <route>': { status, code, extra } } — refuse a route with { error: { code, …extra } }
+//   (e.g. 'GET cid/:id/:id': { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } }),
 //   srv.down = true — every request fails (connection closed), srv.close()
 
 const http = require('node:http');
@@ -35,7 +36,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     settings: { threads: true, swipeLeft: 'archive', swipeRight: 'read' },
     accounts: [
       { id: 1, provider: 'gmx', email: 'max@gmx.de', name: 'Privat · GMX', color: '#F5B544', kind: 'personal', state: 'ok', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: 'Max' },
-      { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '' },
+      { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '', avatar: { mediaId: 'avatar2abcdef', mime: 'image/png' } },
     ],
     passwords: new Map([[1, 'geheim']]),
     folders: [
@@ -59,6 +60,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     msCodes: new Map(),     // code → challenge
     todos: [],
   };
+  // the Microsoft account's picture (Account.avatar, Mail 1.1.2)
+  state.media.set('avatar2abcdef', { bytes: PNG, mime: 'image/png' });
   const addMsg = (m) => state.messages.set(m.id, {
     threadId: m.id, threadCount: 1, to: [{ name: 'Max', address: 'max@gmx.de' }], cc: [], bcc: [], replyTo: [], answered: false,
     flagged: false, hasAttachments: false, savedToDrive: false, ai: null, tab: 'relevant', unread: false, attachments: [],
@@ -91,8 +94,9 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     to: m.to.slice(0, 3), subject: m.subject, snippet: m.snippet, date: m.date, unread: m.unread, flagged: m.flagged, answered: m.answered,
     hasAttachments: m.hasAttachments, tab: m.tab, savedToDrive: m.savedToDrive, ai: m.ai,
   });
+  // since Mail 1.1.2 a body not here after ~12 s comes as bodyMissing with the snippet as text
   const full = (m) => ({
-    ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.bodyMissing ? null : m.text, trackers: m.trackers,
+    ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.bodyMissing ? m.snippet : m.text, trackers: m.trackers,
     imagesBlocked: m.imagesBlocked && !m.imagesAllowed,
     html: m.bodyMissing ? null : m.html, attachments: m.attachments, listUnsubscribe: m.listUnsubscribe, bodyMissing: !!m.bodyMissing,
   });
