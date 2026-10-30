@@ -752,7 +752,8 @@ class DriveSync extends EventEmitter {
 
   /** Waits until the queue is empty (tests, quit). */
   async idle() {
-    while (this._pumping || this._queue.size) await new Promise((r) => setTimeout(r, 10));
+    // a run ends with the report of the folders to Drive (Drive 1.5 'devices'): idle after that, too
+    while (this._pumping || this._queue.size || this._reporting) await new Promise((r) => setTimeout(r, 10));
   }
 
   async _pump() {
@@ -777,7 +778,12 @@ class DriveSync extends EventEmitter {
       this._pumping = false;
       this._emit(true);
     }
-    await this._reportFolders();
+    this._reporting = (this._reporting || 0) + 1;
+    try {
+      await this._reportFolders();
+    } finally {
+      this._reporting -= 1;
+    }
   }
 
   _retryLater() {
