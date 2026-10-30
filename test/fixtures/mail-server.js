@@ -78,6 +78,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
   addMsg({ id: 102, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Projektbesprechung Dienstag', snippet: 'Passt dir Dienstag 10 Uhr?', date: now - 2 * 60 * 60 * 1000, unread: true, threadId: 900, threadCount: 2 });
   addMsg({ id: 103, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Projektbesprechung', snippet: 'Erste Mail', date: now - 3 * DAY, threadId: 900, threadCount: 2 });
   addMsg({ id: 104, accountId: 1, folderId: 11, from: { name: 'Elektromarkt', address: 'news@elektromarkt.de' }, subject: 'Nur heute: 20 %', snippet: 'Newsletter', date: now - 5 * 60 * 60 * 1000, tab: 'other', unread: true });
+  // a mail whose body is not in the server's copy (bodyMissing)
+  addMsg({ id: 105, accountId: 2, folderId: 21, from: { name: 'Tim Brandt', address: 'tim@firma.de' }, subject: 'Alte Unterlagen', snippet: 'Inhalt fehlt', date: now - 6 * 60 * 60 * 1000, bodyMissing: true });
   // older inbox mails of account 1 (pages, the offline cache fills 30 days back)
   for (let i = 0; i < 60; i += 1) {
     addMsg({ id: 200 + i, accountId: 1, folderId: 11, from: { name: `Absender ${i}`, address: `a${i}@example.com` }, subject: `Alte Mail ${i}`, snippet: 'alt', date: now - (i + 1) * DAY });
@@ -90,9 +92,9 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     hasAttachments: m.hasAttachments, tab: m.tab, savedToDrive: m.savedToDrive, ai: m.ai,
   });
   const full = (m) => ({
-    ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.text, trackers: m.trackers,
+    ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.bodyMissing ? null : m.text, trackers: m.trackers,
     imagesBlocked: m.imagesBlocked && !m.imagesAllowed,
-    html: m.html, attachments: m.attachments, listUnsubscribe: m.listUnsubscribe,
+    html: m.bodyMissing ? null : m.html, attachments: m.attachments, listUnsubscribe: m.listUnsubscribe, bodyMissing: !!m.bodyMissing,
   });
   const inbox = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'inbox');
   const trash = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'trash');
@@ -114,7 +116,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
   }
 
   function draftOut(d) {
-    return { id: d.id, accountId: d.accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, html: d.html, attachments: d.attachments, warnings: d.warnings };
+    return { id: d.id, accountId: d.accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, html: d.html, attachments: d.attachments.map(({ device, ...a }) => a), warnings: d.warnings };
   }
 
   function applyAtts(d, list) {
@@ -124,7 +126,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       if (a.mediaId) {
         const m = state.media.get(a.mediaId);
         if (!m) return 'invalid';
-        out.push({ id: ++nextId, name: m.name || 'datei', size: m.bytes.length, mime: m.mime, as: 'copy' });
+        out.push({ id: ++nextId, name: a.name || m.name || 'datei', size: m.bytes.length, mime: m.mime, as: 'copy', device: true });
       } else if (a.messageId) {
         const msg = state.messages.get(a.messageId);
         const att = msg && msg.attachments.find((x) => x.id === a.attachmentId);
@@ -157,7 +159,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     // ── core media routes ──
     if (req.method === 'PUT' && p === MEDIA) {
       const mediaId = `m${crypto.randomBytes(8).toString('hex')}`;
-      state.media.set(mediaId, { bytes: raw, mime: req.headers['content-type'] || 'application/octet-stream' });
+      state.media.set(mediaId, { bytes: raw, mime: req.headers['content-type'] || 'application/octet-stream', device: true });
       state.uploads.push({ mediaId, bytes: raw.length });
       return json(res, 200, { mediaId, mime: req.headers['content-type'], bytes: raw.length });
     }
@@ -269,7 +271,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       else if (q.folder) list = list.filter((m) => m.accountId === Number(box) && m.folderId === Number(q.folder));
       else list = list.filter((m) => m.accountId === Number(box) && m.folderId === inbox(Number(box)).id);
       const isInbox = !q.folder || state.folders.find((f) => f.id === Number(q.folder) && f.role === 'inbox');
-      const counts = { relevant: list.filter((m) => m.tab === 'relevant').length, other: list.filter((m) => m.tab === 'other').length };
+      const counts = { relevant: list.filter((m) => m.tab === 'relevant' && m.unread).length, other: list.filter((m) => m.tab === 'other' && m.unread).length };
       if (isInbox && (q.tab === 'relevant' || q.tab === 'other')) list = list.filter((m) => m.tab === q.tab);
       if (q.unread) list = list.filter((m) => m.unread);
       if (q.flagged) list = list.filter((m) => m.flagged);
@@ -348,17 +350,20 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     }
 
     // ── pictures ──
+    // GET img/<token> → { mime, size, data (base64) }; ≤ 700 KB, else 413 too_large
     if (req.method === 'GET' && seg[0] === 'img' && seg.length === 2) {
-      if (seg[1] === 'tok_html') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<script>1</script>'); }
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': PNG.length });
-      return res.end(PNG);
+      if (seg[1] === 'tok_svg') return json(res, 200, { mime: 'image/svg+xml', size: 20, data: Buffer.from('<svg onload="x()"/>').toString('base64') });
+      if (seg[1] === 'tok_big') return err(res, 413, 'too_large', { max: 716800 });
+      return json(res, 200, { mime: 'image/png', size: PNG.length, data: PNG.toString('base64') });
     }
+    // GET cid/<m>/<a> → { mediaId, mime, size, url }; the apps load media/<mediaId>
     if (req.method === 'GET' && seg[0] === 'cid' && seg.length === 3) {
       const m = state.messages.get(Number(seg[1]));
       const a = m && m.attachments.find((x) => x.id === Number(seg[2]));
       if (!a) return err(res, 404, 'not_found');
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': PNG.length });
-      return res.end(PNG);
+      const mediaId = `cid${m.id}x${a.id}`;
+      state.media.set(mediaId, { bytes: PNG, mime: 'image/png' });
+      return json(res, 200, { mediaId, mime: 'image/png', size: PNG.length, url: `https://portal.example/signed/${mediaId}` });
     }
 
     // ── writing ──
@@ -387,13 +392,21 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       if (req.method === 'PUT' && seg.length === 2) {
         for (const k of ['accountId', 'to', 'cc', 'bcc', 'subject', 'html']) if (body[k] !== undefined) d[k] = body[k];
         d.warnings = [];
-        const bad = applyAtts(d, body.attachments || []);
-        if (bad) return err(res, 400, bad);
+        if (body.attachments !== undefined) {
+          const bad = applyAtts(d, body.attachments);
+          if (bad) return err(res, 400, bad);
+        }
+        const acc = state.accounts.find((x) => x.id === d.accountId);
+        if (acc && (acc.provider === 'm365' || acc.provider === 'outlook') && d.attachments.some((a) => a.device)) {
+          d.warnings.push({ kind: 'too_large', text: 'Microsoft-Konten können Dateien vom Gerät nicht mitsenden.' });
+        }
         if (d.attachments.reduce((s, a) => s + (a.as === 'copy' ? a.size : 0), 0) > 20e6) return err(res, 413, 'too_large');
         state.lastDraftBody = body;
         return json(res, 200, { draft: draftOut(d) });
       }
       if (req.method === 'POST' && seg[2] === 'send') {
+        const acc = state.accounts.find((x) => x.id === d.accountId);
+        if (acc && (acc.provider === 'm365' || acc.provider === 'outlook') && d.attachments.some((a) => a.device)) return err(res, 409, 'attachments_unsupported');
         const id = ++nextId;
         const at = Date.now();
         state.outbox.set(id, { id, draftId: d.id, accountId: d.accountId, subject: d.subject, sendAt: body.sendAt || at + 10000, state: 'waiting' });
@@ -419,6 +432,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       if (!state.features.includes('ai')) return err(res, 409, 'ai_off');
       if (req.method === 'GET' && seg.length === 2) return json(res, 200, state.ai.get(id) || { status: 'none' });
       if (req.method === 'POST' && seg.length === 2) {
+        if (state.ai.has(id) && body.again !== true) return json(res, 200, state.ai.get(id));
+        state.aiRuns = (state.aiRuns || 0) + 1;
         const r = { status: 'done', summary: null, todos: [], replies: [{ label: 'OK', text: 'Passt, danke!' }] };
         state.ai.set(id, r);
         return json(res, 200, r);

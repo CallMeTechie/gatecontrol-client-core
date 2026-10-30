@@ -238,25 +238,36 @@ class MailApi {
     return m;
   }
 
-  /** A picture of the reading frame (img/<token> or cid/<m>/<a>) → { mime, data: Buffer }; only image/*. */
+  /**
+   * A picture of the reading frame → { mime, data: Buffer }; only image/* (never SVG):
+   * img/<token> answers { mime, size, data (base64, ≤ 700 KB) }, cid/<m>/<a> answers { mediaId, mime, size, url } and
+   * the bytes come from the plugin's media route.
+   */
   async picture(target) {
-    let p;
-    if (target && target.kind === 'img' && mail.isToken(target.token)) p = `img/${target.token}`;
-    else if (target && target.kind === 'cid') p = `cid/${this._id(target.messageId)}/${this._id(target.attachmentId)}`;
-    else throw new MailError('invalid picture', { code: 'invalid' });
-    const client = this.http._client();
-    let res;
-    try {
-      res = await client.request({
-        method: 'GET', url: mail.API_BASE + p, responseType: 'arraybuffer', timeout: IMAGE_TIMEOUT_MS,
-        maxContentLength: mail.IMAGE_MAX_BYTES, maxRedirects: 0, headers: { Accept: 'image/*' },
-      });
-    } catch (err) {
-      throw pluginError(err);
+    const okMime = (m) => typeof m === 'string' && /^image\/[a-z0-9.+-]{1,40}$/.test(m.toLowerCase()) && m.toLowerCase() !== 'image/svg+xml';
+    if (target && target.kind === 'img' && mail.isToken(target.token)) {
+      const r = await this.api('GET', `img/${target.token}`, { timeout: IMAGE_TIMEOUT_MS });
+      const mime = typeof r.mime === 'string' ? r.mime.split(';')[0].trim().toLowerCase() : '';
+      if (!okMime(mime) || typeof r.data !== 'string' || r.data.length > Math.ceil(mail.IMAGE_MAX_BYTES / 3) * 4 + 8 || !/^[A-Za-z0-9+/=\s]+$/.test(r.data)) {
+        throw new MailError('not a picture', { code: 'invalid' });
+      }
+      const data = Buffer.from(r.data, 'base64');
+      if (!data.length || data.length > mail.IMAGE_MAX_BYTES) throw new MailError('not a picture', { code: 'invalid' });
+      return { mime, data };
     }
-    const ct = String((res.headers && res.headers['content-type']) || '').split(';')[0].trim().toLowerCase();
-    if (!/^image\/[a-z0-9.+-]{1,40}$/.test(ct) || ct === 'image/svg+xml') throw new MailError('not a picture', { code: 'invalid' });
-    return { mime: ct, data: Buffer.from(res.data) };
+    if (target && target.kind === 'cid') {
+      const r = await this.api('GET', `cid/${this._id(target.messageId)}/${this._id(target.attachmentId)}`, { timeout: IMAGE_TIMEOUT_MS });
+      const mime = typeof r.mime === 'string' ? r.mime.split(';')[0].trim().toLowerCase() : '';
+      if (!mail.isMediaId(r.mediaId) || !okMime(mime)) throw new MailError('not a picture', { code: 'invalid' });
+      const chunks = [];
+      const { Writable } = require('stream');
+      const sink = new Writable({ write(c, _e, cb) { chunks.push(c); cb(); } });
+      const got = await this.media.streamTo(`${mail.MEDIA_PATH}/${r.mediaId}`, sink, { maxBytes: mail.IMAGE_MAX_BYTES });
+      const real = got && got.mime ? got.mime.toLowerCase() : mime;
+      if (real && real.startsWith('image/') && !okMime(real)) throw new MailError('not a picture', { code: 'invalid' });
+      return { mime, data: Buffer.concat(chunks) };
+    }
+    throw new MailError('invalid picture', { code: 'invalid' });
   }
 
   // ── Writing ──────────────────────────────────────────────
@@ -319,7 +330,8 @@ class MailApi {
 
   async ai(id) { return mail.normalizeAi(await this.api('GET', `ai/${this._id(id)}`)); }
 
-  async runAi(id) { return mail.normalizeAi(await this.api('POST', `ai/${this._id(id)}`, { body: {}, timeout: 120000 })); }
+  /** POST ai/<id>: an existing result comes back as it is; `again` asks the AI anew ("Neu erstellen"). */
+  async runAi(id, { again = false } = {}) { return mail.normalizeAi(await this.api('POST', `ai/${this._id(id)}`, { body: again ? { again: true } : {}, timeout: 120000 })); }
 
   async todo(id, index, action = 'family_calendar') {
     if (!Number.isSafeInteger(index) || index < 0 || index > 50 || action !== 'family_calendar') throw new MailError('invalid todo', { code: 'invalid' });

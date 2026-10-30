@@ -37,7 +37,7 @@
  *   mail:send:cancel       ({ outboxId }) → { ok, draftId, draft }
  *   mail:outbox            () → { ok, items }
  *   mail:contacts          ({ q }) → { ok, items }
- *   mail:ai                ({ id }) → { ok, ai }  ·  mail:ai:run ({ id }) → { ok, ai }
+ *   mail:ai                ({ id }) → { ok, ai }  ·  mail:ai:run ({ id, again? }) → { ok, ai }   again: "Neu erstellen"
  *   mail:ai:todo           ({ id, index }) → { ok, where }   into the family calendar
  *   mail:drive:suggest     ({ id, attachmentId }) → { ok, suggestion, duplicate }
  *   mail:drive:save        ({ id, attachmentId, folderId?, name?, remember? }) → { ok, savedTo }
@@ -154,7 +154,7 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:outbox', wrap(async () => s.outbox()));
   handle('mail:contacts', wrap(async (a) => (optStr(a.q, 100) ? s.contacts(a.q || '') : invalid())));
   handle('mail:ai', byId(async (a) => s.ai(a.id)));
-  handle('mail:ai:run', byId(async (a) => s.runAi(a.id)));
+  handle('mail:ai:run', byId(async (a) => s.runAi(a.id, { again: a.again === true })));
   handle('mail:ai:todo', byId(async (a) => (Number.isSafeInteger(a.index) && a.index >= 0 && a.index <= 50 ? s.todo(a.id, a.index) : invalid())));
   handle('mail:drive:suggest', byId(async (a) => (isId(a.attachmentId) ? s.suggest(a.id, a.attachmentId) : invalid())));
   handle('mail:drive:save', byId(async (a) => {

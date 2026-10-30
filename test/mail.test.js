@@ -142,11 +142,11 @@ describe('utils/mail', () => {
     assert.equal(mail.draftBody({ mode: 'reply' }), null, 'a reply needs its mail');
     const b = mail.draftBody({
       accountId: 1, to: [{ email: 'a@b.de' }], subject: 'Hi\n', html: '<p><img src="gcmail://img/tok"></p>',
-      attachments: [{ id: 3 }, { mediaId: 'm123456' }, { messageId: 1, attachmentId: 2 }, { driveNodeId: 9, as: 'link', expiresDays: 14, password: 'pw' }, { driveNodeId: 8 }],
+      attachments: [{ id: 3 }, { mediaId: 'm123456', name: 'A.pdf' }, { messageId: 1, attachmentId: 2 }, { driveNodeId: 9, as: 'link', expiresDays: 14, password: 'pw' }, { driveNodeId: 8 }],
     });
     assert.equal(b.subject, 'Hi ');
     assert.equal(b.html, '<p><img src="img/tok"></p>', 'gcmail pictures go back as the plugin\'s img/<token>');
-    assert.deepEqual(b.attachments, [{ id: 3 }, { mediaId: 'm123456' }, { messageId: 1, attachmentId: 2 }, { driveNodeId: 9, as: 'link', expiresDays: 14, password: 'pw' }, { driveNodeId: 8, as: 'copy' }]);
+    assert.deepEqual(b.attachments, [{ id: 3 }, { mediaId: 'm123456', name: 'A.pdf' }, { messageId: 1, attachmentId: 2 }, { driveNodeId: 9, as: 'link', expiresDays: 14, password: 'pw' }, { driveNodeId: 8, as: 'copy' }]);
     assert.equal(mail.draftBody({ attachments: [{ driveNodeId: 9, as: 'link', expiresDays: 120 }] }), null);
     assert.equal(mail.draftBody({ attachments: [{ path: 'C:\\x' }] }), null);
     assert.equal(mail.accountBody({ provider: 'gmx', email: 'a@gmx.de', password: 'x', imap: { host: '127.0.0.1;rm', port: 993, security: 'tls' } }), null);
@@ -327,7 +327,14 @@ describe('MailService', () => {
     await svc.handleProtocol({ url: 'gcmail://img/tok_logo', method: 'GET' });
     assert.equal(srv.state.requests.filter((x) => x.path.endsWith('/img/tok_logo')).length, n, 'kept in memory');
     assert.ok(srv.state.requests.filter((x) => x.path.includes('/img/')).every((x) => x.auth === 'gc_token'), 'with the client sign-in');
-    assert.equal((await svc.handleProtocol({ url: 'gcmail://img/tok_html', method: 'GET' })).status, 404, 'only pictures');
+    assert.equal((await svc.handleProtocol({ url: 'gcmail://img/tok_svg', method: 'GET' })).status, 404, 'never SVG');
+    assert.equal((await svc.handleProtocol({ url: 'gcmail://img/tok_big', method: 'GET' })).status, 404, 'too large (413)');
+    // cid: the answer names the media, its bytes come from the plugin's media route
+    assert.ok(srv.state.requests.some((x) => x.path.endsWith('/media/cid101x2')));
+    // a body not in the server's copy
+    const missing = await svc.message(105);
+    assert.equal(missing.message.bodyMissing, true);
+    assert.equal(missing.message.html, null);
     assert.equal((await svc.handleProtocol({ url: 'gcmail://evil/x', method: 'GET' })).status, 404);
     assert.equal((await svc.handleProtocol({ url: 'gcmail://img/tok_logo', method: 'POST' })).status, 405);
     const thread = await svc.thread(900);
@@ -437,8 +444,10 @@ describe('MailService', () => {
     });
     assert.deepEqual(upd.draft.attachments.map((a) => a.as), ['copy', 'link']);
     assert.equal(upd.draft.warnings[0].kind, 'too_large');
-    const keep = await svc.updateDraft(reply.draft.id, { attachments: [{ id: upd.draft.attachments[0].id }] });
-    assert.equal(keep.draft.attachments.length, 1, 'kept attachments are named by their id');
+    // PUT drafts: the whole list, { id } keeps one (the Drive link; a file of this PC cannot go out of a Microsoft account)
+    const keep = await svc.updateDraft(reply.draft.id, { attachments: [{ id: upd.draft.attachments[1].id }] });
+    assert.deepEqual(keep.draft.attachments.map((a) => a.as), ['link'], 'kept attachments are named by their id');
+    assert.deepEqual(keep.draft.warnings, []);
     const outbox = [];
     svc.on('outbox', () => outbox.push(1));
     const sent = await svc.send(reply.draft.id);
@@ -453,6 +462,12 @@ describe('MailService', () => {
     assert.deepEqual(ob.items.map((x) => [x.id, x.state]), [[later.outboxId, 'waiting']]);
     assert.equal(outbox.length, 3);
     // forwarding: the client names the attachments to take along ({ messageId, attachmentId })
+    // Microsoft accounts cannot send files of this PC: a warning on the draft, send refused
+    const ms = await svc.createDraft({ accountId: 2, to: [{ email: 'tim@firma.de' }], subject: 'MS', attachments: [{ mediaId: up.items[0].mediaId, name: 'Angebot.pdf' }] });
+    assert.equal(ms.draft.attachments[0].name, 'Angebot.pdf');
+    const msu = await svc.updateDraft(ms.draft.id, { subject: 'MS 2', attachments: [{ id: ms.draft.attachments[0].id }] });
+    assert.equal(msu.draft.warnings[0].kind, 'too_large');
+    await assert.rejects(svc.send(ms.draft.id), (e) => e.code === 'attachments_unsupported' && e.status === 409);
     const fw = await svc.createDraft({ replyTo: 101, mode: 'forward', attachments: [{ messageId: 101, attachmentId: 1 }] });
     assert.deepEqual(fw.draft.attachments.map((a) => a.name), ['Rechnung_2026_11.pdf']);
     const c = await svc.contacts('tim');
@@ -482,12 +497,17 @@ describe('MailService', () => {
 
   it('AI, family calendar, Drive and "Zum Ablegen"', async () => {
     const { svc, srv } = await setup();
+    assert.equal(mail.normalizeMessage({ id: 1, accountId: 1, bodyMissing: true }).bodyMissing, true);
     const ai = await svc.ai(101);
     assert.equal(ai.ai.summary, 'Rechnung über 84,20 € für Strom im Oktober, wird am 28.11. abgebucht.');
     assert.equal(ai.ai.todos[0].kind, 'deadline');
     assert.deepEqual((await svc.ai(102)).ai, { status: 'none' });
     const run = await svc.runAi(102);
     assert.equal(run.ai.replies[0].text, 'Passt, danke!');
+    await svc.runAi(102);
+    assert.equal(srv.state.aiRuns, 1, 'an existing result is answered as it is');
+    await svc.runAi(102, { again: true });
+    assert.equal(srv.state.aiRuns, 2, '"Neu erstellen" asks anew');
     const todo = await svc.todo(101, 0);
     assert.equal(todo.where, 'Familienkalender · 28.11.');
     assert.deepEqual(srv.state.todos[0].body, { action: 'family_calendar' });

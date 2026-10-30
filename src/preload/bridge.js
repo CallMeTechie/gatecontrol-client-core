@@ -606,7 +606,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       outbox:       () => ipcRenderer.invoke('mail:outbox'),
       contacts:     (q) => ipcRenderer.invoke('mail:contacts', { q }),
       ai:           (id) => ipcRenderer.invoke('mail:ai', { id }),
-      runAi:        (id) => ipcRenderer.invoke('mail:ai:run', { id }),
+      // an existing result as it is; again: true asks the AI anew ("Neu erstellen")
+      runAi:        (id, again) => ipcRenderer.invoke('mail:ai:run', { id, again: again === true }),
       todo:         (id, index) => ipcRenderer.invoke('mail:ai:todo', { id, index }),
       suggest:      (id, attachmentId) => ipcRenderer.invoke('mail:drive:suggest', { id, attachmentId }),
       // { folderId?, name?, remember? }

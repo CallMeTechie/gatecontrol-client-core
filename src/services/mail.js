@@ -643,7 +643,7 @@ class MailService extends EventEmitter {
         const mime = guessMime(name);
         try {
           const r = await this.api.upload({ path: p, size: st.size, mime });
-          items.push({ mediaId: r.mediaId, name, size: st.size, mime: r.mime || mime });
+          items.push({ mediaId: r.mediaId, name, size: st.size, mime: r.mime || mime });   // the draft takes { mediaId, name }
         } catch (err) {
           rejected.push({ name, code: mail.errorCode(err) });
         }
@@ -695,7 +695,8 @@ class MailService extends EventEmitter {
 
   async ai(id) { return this._run(async () => ({ ok: true, ai: await this.api.ai(id) })); }
 
-  async runAi(id) { return this._run(async () => ({ ok: true, ai: await this.api.runAi(id) })); }
+  /** The AI's result (an existing one as it is; `again`: "Neu erstellen"). */
+  async runAi(id, { again = false } = {}) { return this._run(async () => ({ ok: true, ai: await this.api.runAi(id, { again }) })); }
 
   async todo(id, index) { return this._run(async () => ({ ok: true, ...(await this.api.todo(id, index)) })); }
 

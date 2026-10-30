@@ -376,6 +376,8 @@ function normalizeMessage(v) {
     trackers: count(o.trackers) || 0,
     attachments: arr(o.attachments).map(normalizeAttachment).filter(Boolean).slice(0, 200),
     listUnsubscribe: unsub && (unsub.url || unsub.mail) ? unsub : null,
+    // the body is not in the server's copy (and the provider did not give it now): "wird geladen" / try again
+    bodyMissing: bool(o.bodyMissing),
   };
 }
 
@@ -629,14 +631,17 @@ function splitAddresses(raw) {
 }
 
 /**
- * An attachment of a draft request: { mediaId } | { messageId, attachmentId } | { driveNodeId, as, expiresDays?,
- * password? } | { id } (one the draft has already — assumption: PUT drafts/<id> keeps it this way), or null.
+ * An attachment of a draft request (PUT drafts: always the whole list): { mediaId, name? } | { messageId, attachmentId } | { driveNodeId, as, expiresDays?,
+ * password? } | { id } (one the draft has already: kept), or null.
  */
 function draftAtt(v) {
   const o = obj(v);
   if (!o) return null;
   if (posId(o.id) && Object.keys(o).every((k) => k === 'id' || k === 'name' || k === 'size')) return { id: posId(o.id) };
-  if (isMediaId(o.mediaId)) return { mediaId: o.mediaId };
+  if (isMediaId(o.mediaId)) {
+    const name = line(o.name, NAME_MAX);
+    return name ? { mediaId: o.mediaId, name } : { mediaId: o.mediaId };
+  }
   if (posId(o.messageId) && posId(o.attachmentId)) return { messageId: posId(o.messageId), attachmentId: posId(o.attachmentId) };
   if (posId(o.driveNodeId)) {
     const as = o.as === 'link' ? 'link' : (o.as === 'copy' || o.as === undefined ? 'copy' : null);
