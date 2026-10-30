@@ -129,6 +129,10 @@ describe('utils/mail', () => {
     assert.equal(mail.listQuery({ limit: 1000 }), null);
     assert.deepEqual(mail.searchQuery({ q: ' Rechnung ', box: 'all', after: 5, unread: true }), { q: 'Rechnung', box: 'all', after: 5, unread: 1 });
     assert.equal(mail.searchQuery({ q: '' }), null);
+    // a sender's mails: the address alone, in one account, page by page
+    assert.deepEqual(mail.searchQuery({ from: 'news@ionos.de', box: 2, cursor: '123.4' }), { box: '2', from: 'news@ionos.de', cursor: '123.4' });
+    assert.equal(mail.searchQuery({ from: '' }), null);
+    assert.equal(mail.searchQuery({ from: 'x', q: 'y'.repeat(201) }), null);
     assert.equal(mail.listKey(mail.listQuery({ box: 1, tab: 'relevant' })), '1||relevant|||');
     assert.equal(mail.isInboxKey(mail.listQuery({ box: 1, folder: 12 })), false);
   });
@@ -177,6 +181,11 @@ describe('utils/mail', () => {
     assert.ok(!/https:\/\/(t|tracker|quoted)\.example/.test(doc), 'no remote source left');
     assert.ok(!doc.includes('file:///') && !doc.includes('svg+xml') && !doc.includes('gcmail://cid/9/9'));
     assert.ok(doc.includes('<p title="a src=x">src="y"</p>'), 'text is not touched');
+    // wide mails: pictures, tables, links, pre inside the width; the mail in #gc-fit for the window's zoom
+    assert.ok(doc.includes(`<body><div id="${mail.FIT_ID}"><p title=`) && doc.endsWith('</div></body></html>'));
+    assert.ok(doc.includes('img{max-width:100%;height:auto}') && doc.includes('table{max-width:100%}') && doc.includes('pre{white-space:pre-wrap;overflow-wrap:anywhere}'));
+    assert.ok(doc.includes('a{color:#1A56C4;overflow-wrap:anywhere'));
+    assert.ok(!/<script/i.test(doc) && !mail.FRAME_CSP.includes('script-src') && mail.FRAME_CSP.startsWith("default-src 'none'"), 'no script in the frame');
     const blocked = mail.mailDocument({ ...msg, imagesBlocked: true });
     assert.ok(!blocked.includes('gcmail://img/'), 'blocked pictures are not requested');
     assert.ok(blocked.includes('gcmail://cid/5/9'), 'embedded pictures are no tracking');
@@ -266,6 +275,23 @@ describe('MailService', () => {
     assert.deepEqual(f.accounts[0].folders.find((x) => x.id === 15), { id: 15, name: 'Rechnungen', path: 'Archive/Rechnungen', role: null, parentId: 14, unread: 0, total: 0 });
     const s = await svc.search({ q: 'rechnung' });
     assert.deepEqual(s.items.map((m) => m.id), [101]);
+  });
+
+  it('a sender\'s mails: GET search?from=<address>&box=<account> page by page; the name from the contacts', async () => {
+    const { svc, srv } = await setup();
+    srv.state.searchLimit = 1;
+    const first = await svc.search({ from: 'sabine@firma.de', box: 2 });
+    assert.equal(first.ok, true);
+    assert.deepEqual(first.items.map((m) => m.id), [102]);
+    assert.ok(first.next);
+    const second = await svc.search({ from: 'sabine@firma.de', box: 2, cursor: first.next });
+    assert.deepEqual(second.items.map((m) => m.id), [103]);
+    assert.equal(second.next, null);
+    const asked = srv.state.requests.filter((x) => x.path.endsWith('/api/search'));
+    assert.deepEqual(asked[0].query, { box: '2', from: 'sabine@firma.de', lang: 'de' }, 'no words needed');
+    assert.equal((await svc.search({ from: 'sabine@firma.de', box: 1 })).items.length, 0, 'only the account');
+    const c = await svc.contacts('tim@firma.de');
+    assert.deepEqual(c.items, [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'person' }]);
   });
 
   it('offline: the last lists and opened mails come from the encrypted cache (30 days of the inbox filled)', async () => {
@@ -676,6 +702,9 @@ describe('mail IPC', () => {
     assert.equal((await call('mail:act', { action: 'burn', ids: [1] })).code, 'invalid');
     assert.equal((await call('mail:act', { action: 'move', ids: [1] })).code, 'invalid');
     assert.equal((await call('mail:list', { box: '../../x' })).code, 'invalid');
+    assert.equal((await call('mail:search', {})).code, 'invalid', 'words or a sender');
+    assert.equal((await call('mail:search', { from: 7 })).code, 'invalid');
+    assert.deepEqual((await call('mail:search', { from: 'sabine@firma.de', box: 2 })).items.map((m) => m.id), [102, 103]);
     assert.equal((await call('mail:send', { id: 1, sendAt: 'morgen' })).code, 'invalid');
     assert.equal((await call('mail:upload', { paths: ['a', 1] })).code, 'invalid');
     const r = await call('mail:account:add', { provider: 'gmx', email: 'a@gmx.de', password: 'falsch' });
