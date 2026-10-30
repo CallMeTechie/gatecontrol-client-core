@@ -482,6 +482,17 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // daysBefore null: no reminder
       remind:       (id, daysBefore) => ipcRenderer.invoke('drive:deadline:remind', { id, daysBefore: daysBefore === undefined ? null : daysBefore }),
       setDocAi:     (areaId, on) => ipcRenderer.invoke('drive:area:docai', { areaId, on: !!on }),
+      // Drive 1.14: a deadline into the family calendar ('deadlineCalendar'), a question to the documents ('docAsk'),
+      // "In Dokument umwandeln" of pictures ('scanDocs': prepare → save as pdf / docx / xlsx / image, or discard)
+      calendar:     (id) => ipcRenderer.invoke('drive:deadline:calendar', { id }),
+      ask:          (q, area) => ipcRenderer.invoke('drive:ask', { q, area: area || null }),
+      scan: {
+        status:  () => ipcRenderer.invoke('drive:scan:status'),
+        prepare: (ids) => ipcRenderer.invoke('drive:scan:prepare', { ids }),
+        // opts: { target: 'pdf' | 'docx' | 'xlsx' | 'image', folderId?, name?, keepOriginal }
+        save:    (scanId, opts) => ipcRenderer.invoke('drive:scan:save', { ...(opts || {}), scanId }),
+        discard: (scanId) => ipcRenderer.invoke('drive:scan:discard', { scanId }),
+      },
       // Drive 1.8 'cloudImport': the portal's import page in the browser
       openImport:   () => ipcRenderer.invoke('drive:import'),
       // Drive 1.9 'office': "Im Browser bearbeiten / ansehen"

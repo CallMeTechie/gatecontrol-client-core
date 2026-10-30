@@ -40,6 +40,12 @@
 // state.opCalls), 'zip' (POST zip { ids } → a media path of a fake ZIP listing the files; state.zips; srv.zipUrl(mediaId)
 // for another address; without 'zipMixed' one folder or ≤ 20 files), 'multiLink' (POST links { nodeIds }: files only,
 // ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
+// Drive 1.14: 'deadlineCalendar' (POST deadlines/<id>/calendar → deadline.calendar; srv.familie = false → 409
+// familie_unavailable; state.calendarCalls), 'docAsk' (POST ask { q, area? }: srv.answer(q) → the answer, default
+// not_found with the words of q as terms; state.askCalls), 'scanDocs' (POST scans/classify { mediaIds, text? } →
+// srv.scanKind (default: 'table'); POST scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal } → a new
+// node (docx / xlsx / pdf) in folderId; state.classifyCalls / convertCalls), 'photoSearch' (GET photos?q=: the photos
+// whose state.labels (nodeId → [label]) contain a word of q, with terms).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -351,6 +357,16 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   srv.progressOp = (id, done, bytesDone = 0) => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { done, bytesDone }); };
   srv.failOp = (id, code = 'failed') => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { state: 'failed', error: code, finishedAt: Date.now() }); };
 
+  // Drive 1.14
+  state.calendarCalls = [];
+  state.askCalls = [];
+  state.classifyCalls = [];
+  state.convertCalls = [];
+  state.commits = [];
+  state.labels = new Map();
+  srv.familie = true;
+  srv.answer = null;
+  srv.scanKind = 'table';
   // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
   srv.setInsight = (id, ins) => {
     const deadlines = (ins.deadlines || []).map((d) => {
@@ -618,8 +634,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, deadlines: list });
       }
       const d = state.deadlines.find((x) => x.id === Number(seg[1]));
-      if (!d || seg[2] !== 'remind') return refuse(res, 404, 'not_found');
       const plain = () => { const { nodeId, ...x } = d; return x; };
+      // Drive 1.14 'deadlineCalendar'
+      if (d && seg[2] === 'calendar' && req.method === 'POST' && has('deadlineCalendar')) {
+        state.calendarCalls.push(d.id);
+        if (!srv.familie) return refuse(res, 409, 'familie_unavailable');
+        d.calendar = { eventId: `ev-${d.id}`, at: iso(Date.now()) };
+        return json(res, 200, { ok: true, deadline: plain() });
+      }
+      if (!d || seg[2] !== 'remind') return refuse(res, 404, 'not_found');
       if (req.method === 'POST') {
         const days = Number(body.daysBefore);
         if (!Number.isInteger(days) || days < 0 || days > 90) return json(res, 400, { ok: false, code: 'invalid', field: 'daysBefore', error: 'invalid' });
@@ -773,7 +796,49 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const items = rest.slice(0, limit);
       return { items: items.map(photo), next: rest.length > limit ? new Date(when(items[items.length - 1])).toISOString() : null };
     };
+    if (has('photos') && req.method === 'GET' && route === 'photos' && url.searchParams.get('q')) {
+      if (!has('photoSearch')) return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
+      const words = url.searchParams.get('q').toLowerCase().split(/\s+/).filter(Boolean);
+      const hits = photoList(url.searchParams.get('area')).filter((n) => words.every((w) => (state.labels.get(n.id) || []).some((l) => l.toLowerCase().includes(w))));
+      const counts = new Map();
+      for (const n of hits) for (const l of state.labels.get(n.id) || []) if (!words.some((w) => l.toLowerCase().includes(w))) counts.set(l, (counts.get(l) || 0) + 1);
+      const terms = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([term, count]) => ({ term, count }));
+      return json(res, 200, { ok: true, ...pageOf(hits), terms, total: hits.length });
+    }
     if (has('photos') && req.method === 'GET' && route === 'photos') return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
+    // ── Drive 1.14 'docAsk' / 'scanDocs' ──
+    if (req.method === 'POST' && route === 'ask' && has('docAsk')) {
+      state.askCalls.push(body);
+      if (typeof body.q !== 'string' || body.q.length < 2) return json(res, 400, { ok: false, code: 'invalid', field: 'q', error: 'invalid' });
+      if (srv.askLimited) return refuse(res, 429, 'rate_limited');
+      const a = typeof srv.answer === 'function' ? srv.answer(body.q) : null;
+      return json(res, 200, { ok: true, ...(a || { status: 'not_found', answer: null, sources: [], terms: body.q.split(/\s+/).filter((w) => w.length > 3).slice(0, 4) }) });
+    }
+    if (req.method === 'POST' && seg[0] === 'scans' && has('scanDocs')) {
+      const ids = Array.isArray(body.mediaIds) ? body.mediaIds : [];
+      if (!ids.length || !ids.every((m) => state.media.has(m))) return json(res, 400, { ok: false, code: 'invalid', field: 'mediaIds', error: 'invalid' });
+      if (seg[1] === 'classify') {
+        state.classifyCalls.push(body);
+        if (srv.classifyRefused) return json(res, 422, { ok: false, code: 'unsupported', reason: 'media_disabled', error: 'unsupported' });
+        return json(res, 200, { ok: true, kind: srv.scanKind, confidence: 0.9, summary: srv.scanKind === 'table' ? '3 Spalten, 12 Zeilen, Summenzeile' : 'Gerade gerückt und aufgehellt' });
+      }
+      if (seg[1] === 'convert') {
+        state.convertCalls.push(body);
+        const parent = get(body.folderId || 1);
+        if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
+        if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        const ext = { pdf: 'pdf', docx: 'docx', xlsx: 'xlsx' }[body.target];
+        const mime = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }[body.target];
+        if (!ext) return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
+        const data = Buffer.from(`PK fake ${body.target}`);
+        const mediaId = crypto.randomBytes(16).toString('hex');
+        state.media.set(mediaId, { data, mime });
+        const name = freeName(parent.id, body.name || `Scan.${ext}`);
+        const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name, size: data.length, mime, mediaId, sha256: sha(data) });
+        logChange('create', n);
+        return json(res, 200, { ok: true, node: view(n), original: null });
+      }
+    }
     if (has('photos') && req.method === 'GET' && route === 'photos/months') {
       const m = new Map();
       for (const n of photoList(url.searchParams.get('area'))) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
@@ -1009,6 +1074,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, exists: !!t, same: !!t && !!body.sha256 && t.sha256 === body.sha256, node: t ? view(t) : null });
     }
     if (seg[0] === 'uploads' && seg[1] === 'commit') {
+      state.commits.push(body);
       const parent = get(body.parentId);
       if (!parent) return refuse(res, 404, 'not_found');
       if (!writable(parent)) return refuse(res, 403, 'forbidden');

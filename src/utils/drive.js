@@ -581,10 +581,16 @@ function photoList(v, max) {
   return arr(v).slice(0, max).map(normalizePhoto).filter(Boolean);
 }
 
-/** GET photos → { items, next } (next: the cursor for `before`, or null) */
+/**
+ * GET photos → { items, next } (next: the cursor for `before`, or null); Drive 1.14 'photoSearch' with `q`: also
+ * `terms` (the hit chips) and `total` (the number of hits, when the plugin tells it).
+ */
 function normalizePhotos(raw) {
   const r = obj(raw) || {};
-  return { items: photoList(r.items, 500), next: cursorOf(r.next) };
+  const out = { items: photoList(r.items, 500), next: cursorOf(r.next) };
+  if (r.terms !== undefined || r.labels !== undefined) out.terms = photoTerms(r.terms !== undefined ? r.terms : r.labels);
+  if (count(r.total) !== null) out.total = count(r.total);
+  return out;
 }
 
 /** GET photos/months → { months: [{ month: 'YYYY-MM', count }] } (newest first) */
@@ -701,7 +707,8 @@ function normalizeStorage(raw) {
 
 const INSIGHT_STATUS = Object.freeze(['none', 'pending', 'ready', 'failed', 'off']);
 const DOC_KINDS = Object.freeze(['invoice', 'contract', 'notice', 'medical', 'certificate', 'statement', 'insurance', 'warranty', 'other']);
-const DEADLINE_KINDS = Object.freeze(['payment', 'cancellation', 'objection']);
+// Drive 1.14: warranty (Garantieende) and renewal (Vertragsverlängerung: the date is the last day to cancel)
+const DEADLINE_KINDS = Object.freeze(['payment', 'cancellation', 'objection', 'warranty', 'renewal']);
 const DAY_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const dayOf = (v) => (typeof v === 'string' && DAY_RE.test(v) ? v : null);
 
@@ -712,7 +719,11 @@ function insightShort(v) {
   return { status: o.status, kind: o.status === 'ready' && DOC_KINDS.includes(o.kind) ? o.kind : null };
 }
 
-/** A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent } | null, node? } or null. */
+/**
+ * A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent } | null,
+ * calendar: { eventId, at } | null, node? } or null. calendar (Drive 1.14 'deadlineCalendar'): the person's entry in
+ * the family calendar.
+ */
 function normalizeDeadline(v) {
   const o = obj(v);
   const id = o && posId(o.id);
@@ -720,12 +731,15 @@ function normalizeDeadline(v) {
   if (!id || !date || !DEADLINE_KINDS.includes(o.kind)) return null;
   const r = obj(o.reminder);
   const days = r ? count(r.daysBefore) : null;
+  const c = obj(o.calendar);
+  const eventId = c ? line(c.eventId, 100) : null;
   const out = {
     id,
     kind: o.kind,
     date,
     label: line(o.label, 200),
     reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent) } : null,
+    calendar: c && (eventId || c.at) ? { eventId, at: msOf(c.at) } : null,
   };
   if (o.node !== undefined) out.node = normalizeNode(o.node);
   return out;
@@ -765,6 +779,74 @@ function normalizeInsight(raw) {
     suggestion: folderId || name ? { folderId, folderPath: folderId ? (typeof s.folderPath === 'string' ? s.folderPath.replace(CTRL_LINE_RE, ' ').slice(0, 2000) : '') : null, name } : null,
     deadlines: arr(r.deadlines).slice(0, 20).map(normalizeDeadline).filter(Boolean).map(({ node, ...d }) => d),
   };
+}
+
+// ── Drive 1.14: questions to the documents, scans become documents, photos by content ──
+
+const ASK_STATUS = Object.freeze(['answered', 'not_found']);
+const ASK_MAX = 500;
+const SCAN_KINDS = Object.freeze(['printed', 'handwriting', 'table', 'whiteboard', 'other']);
+const SCAN_TARGETS = Object.freeze(['pdf', 'docx', 'xlsx']);
+const SCAN_PAGES_MAX = 20;
+const TERM_MAX = 40;
+
+/** One line of text with its line breaks kept (an answer, a quote) ≤ max, or null. */
+function textBlock(v, max) {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, ' ').trim().slice(0, max);
+  return s || null;
+}
+
+/** A search term / photo label: a short single line, or null. */
+function termOf(v) {
+  return line(v, TERM_MAX);
+}
+
+/**
+ * POST ask → { status: 'answered' | 'not_found', answer, sources: [{ nodeId, name, path, page, quote }], terms } or
+ * null. An answer without text counts as not found; sources without their file are dropped.
+ */
+function normalizeAsk(raw) {
+  const r = obj(raw);
+  if (!r || !ASK_STATUS.includes(r.status)) return null;
+  const answer = textBlock(r.answer, 4000);
+  const sources = arr(r.sources).slice(0, 8).map((v) => {
+    const o = obj(v);
+    const nodeId = o && posId(o.nodeId);
+    const name = o && line(o.name, NAME_MAX);
+    if (!nodeId || !name) return null;
+    return { nodeId, name, path: line(o.path, 2000), page: posId(o.page), quote: textBlock(o.quote, 600) };
+  }).filter(Boolean);
+  const status = r.status === 'answered' && answer ? 'answered' : 'not_found';
+  return { status, answer: status === 'answered' ? answer : null, sources: status === 'answered' ? sources : [], terms: arr(r.terms).slice(0, 20).map(termOf).filter(Boolean) };
+}
+
+/** POST scans/classify → { kind, confidence: 0…1, summary } or null. */
+function normalizeScanClass(raw) {
+  const r = obj(raw);
+  if (!r || !SCAN_KINDS.includes(r.kind)) return null;
+  const c = typeof r.confidence === 'number' && Number.isFinite(r.confidence) ? Math.min(1, Math.max(0, r.confidence)) : null;
+  return { kind: r.kind, confidence: c, summary: line(r.summary, 300) };
+}
+
+/** POST scans/convert → { node, original } (original: the kept scan's node, or null) or null. */
+function normalizeScanConvert(raw) {
+  const r = obj(raw) || {};
+  const node = normalizeNode(r.node);
+  if (!node) return null;
+  return { node, original: normalizeNode(r.original) };
+}
+
+/** The hit chips of GET photos?q= (the most frequent labels of the hits): strings or { term | label, count }. */
+function photoTerms(v) {
+  const out = [];
+  for (const x of arr(v).slice(0, 30)) {
+    const o = obj(x);
+    const term = termOf(o ? (o.term !== undefined ? o.term : o.label) : x);
+    if (!term || out.some((t) => t.term.toLowerCase() === term.toLowerCase())) continue;
+    out.push({ term, count: o ? count(o.count) : null });
+  }
+  return out;
 }
 
 /**
@@ -1117,6 +1199,15 @@ function errorCode(err) {
 }
 
 module.exports = {
+  ASK_STATUS,
+  SCAN_KINDS,
+  SCAN_TARGETS,
+  SCAN_PAGES_MAX,
+  normalizeAsk,
+  normalizeScanClass,
+  normalizeScanConvert,
+  photoTerms,
+  termOf,
   INSIGHT_STATUS,
   DOC_KINDS,
   DEADLINE_KINDS,

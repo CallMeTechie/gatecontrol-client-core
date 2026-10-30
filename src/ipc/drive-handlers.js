@@ -89,6 +89,13 @@
  *   drive:ops:undo        ({ id }) → { ok, op }                                     until op.undoUntil
  *   drive:zip             ({ ids, name? }) → { ok, path } | { ok: false, cancelled }  Drive 1.12 'zip' ("Speichern unter …")
  *   drive:link:create     ({ ids, mode: 'view'|'download', expires, pin? }) → { ok, link }   one link for several ('multiLink')
+ *   drive:deadline:calendar ({ id }) → { ok, deadline }                            Drive 1.14 'deadlineCalendar'
+ *   drive:ask             ({ q, area? }) → { ok, status, answer, sources, terms }   Drive 1.14 'docAsk'
+ *   drive:photos          ({ …, q }) → { ok, items, next, terms, total }            Drive 1.14 'photoSearch'
+ *   drive:scan:status     () → { ok, supported, local, reason }                      Drive 1.14 'scanDocs'
+ *   drive:scan:prepare    ({ ids }) → { ok, scanId, pages, kind, confidence, summary, local, words, folderId, name, suggestion }
+ *   drive:scan:save       ({ scanId, target: 'pdf'|'docx'|'xlsx'|'image', folderId?, name?, keepOriginal }) → { ok, node, target, local }
+ *   drive:scan:discard    ({ scanId }) → { ok }
  *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
@@ -241,7 +248,7 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
     return { ...r, linked };
   }));
   handle('drive:timetravel', byId(async (a) => (isAt(a.at) ? s.timeTravel(a.id, a.at) : invalid())));
-  handle('drive:photos', wrap(async (a) => (optArea(a.area) && optCursor(a.before) && optLimit(a.limit) ? s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100 }) : invalid())));
+  handle('drive:photos', wrap(async (a) => (optArea(a.area) && optCursor(a.before) && optLimit(a.limit) && optStr(a.q, 100) ? s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100, ...(a.q ? { q: a.q } : {}) }) : invalid())));
   handle('drive:photos:months', wrap(async (a) => (optArea(a.area) ? s.photoMonths(a.area || null) : invalid())));
   handle('drive:photos:memories', wrap(async (a) => {
     if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();
@@ -328,6 +335,17 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:ops:cancel', wrap(async (a) => (isOpId(a.id) ? s.opCancel(String(a.id)) : invalid())));
   handle('drive:ops:undo', wrap(async (a) => (isOpId(a.id) ? s.opUndo(String(a.id)) : invalid())));
   handle('drive:zip', wrap(async (a) => (isIds(a.ids) && optStr(a.name, 255) ? s.zip(a.ids, { name: a.name || null }) : invalid())));
+  // ── Drive 1.14 ─────────────────────────────────────────
+  handle('drive:deadline:calendar', byId(async (a) => s.calendar(a.id)));
+  handle('drive:ask', wrap(async (a) => (isStr(a.q, 500) && optArea(a.area) ? s.ask(a.q, a.area || null) : invalid())));
+  handle('drive:scan:status', wrap(async () => s.scanStatus()));
+  handle('drive:scan:prepare', wrap(async (a) => (isIds(a.ids, 20) ? s.scanPrepare(a.ids) : invalid())));
+  const isScanId = (v) => typeof v === 'string' && /^[0-9a-f]{24}$/.test(v);
+  handle('drive:scan:save', wrap(async (a) => {
+    if (!isScanId(a.scanId) || !['pdf', 'docx', 'xlsx', 'image'].includes(a.target) || !optId(a.folderId) || !optStr(a.name, 255) || typeof a.keepOriginal !== 'boolean') return invalid();
+    return s.scanSave(a.scanId, { target: a.target, folderId: a.folderId || null, name: a.name || null, keepOriginal: a.keepOriginal });
+  }));
+  handle('drive:scan:discard', wrap(async (a) => (isScanId(a.scanId) ? s.scanDiscard(a.scanId) : invalid())));
 
   if (sync) {
     handle('drive:sync:status', () => sync.status());

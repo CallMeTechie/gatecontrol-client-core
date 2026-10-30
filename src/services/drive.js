@@ -91,6 +91,15 @@
  *   list that runs on in the server, "Abbrechen", "Rückgängig"; older Drives: move and trash as a loop of single
  *   calls. "Herunterladen (ZIP)" of a selection into a path the person picks, one link for several files.
  *
+ * - Drive 1.14 (only with the features `me` reports): 'deadlineCalendar' — a deadline into the family calendar
+ *   (POST deadlines/<id>/calendar); 'docAsk' — a question to the person's documents (POST ask: the answer only from
+ *   their files, with the sources and quotes); 'photoSearch' — photos by what is on them (GET photos?q=, the labels
+ *   come from the phones); 'scanDocs' — "In Dokument umwandeln" of pictures: scans/classify (with the text of the
+ *   pages first, read on this PC), then the document: printed text becomes a searchable PDF made here (Windows OCR,
+ *   services/windows-ocr.js + utils/searchable-pdf.js; no AI, nothing but the PDF leaves the PC) or — without the OCR
+ *   of Windows — by Drive (scans/convert target pdf); Word / Excel always by Drive (scans/convert). The pictures are
+ *   Drive's nodes already: "Original-Scan behalten" off puts them into the trash after the document is there.
+ *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
  * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
@@ -119,6 +128,7 @@ const { takenAt: readTakenAt, isMediaName } = require('../utils/taken-at');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
+const { buildSearchablePdf, pagesText } = require('../utils/searchable-pdf');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -141,8 +151,21 @@ const VAULT_OPEN_KEEP_MS = 10 * 60 * 1000;   // a decrypted file opened from a v
 const VAULT_OPEN_RETRY_MS = 5 * 60 * 1000;   // … or later while a program still holds it
 const DEADLINE_TOPIC = `plugin:${drive.PLUGIN_ID}:deadline`;
 const VAULT_TOPIC = `plugin:${drive.PLUGIN_ID}:vault`;
+const SCAN_KEEP_MS = 30 * 60 * 1000;          // a prepared scan (its pictures on this PC) is dropped after this
+const SCAN_IMAGE_MAX = 40 * 1024 * 1024;      // a picture larger than this is not read on this PC
+const SCAN_MIME_RE = /^image\/(jpeg|png)$/i;  // what this PC can read (Electron's decoder) …
+const SCAN_ANY_RE = /^image\/(jpeg|png|webp|heic|heif|tiff|bmp)$/i;   // … and what Drive takes as a scan
+const SCAN_EXT = { pdf: 'pdf', docx: 'docx', xlsx: 'xlsx' };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
+
+const SCAN_NAME_EXT_RE = /\.(jpe?g|png|webp|hei[cf]|tiff?|bmp|pdf|docx|xlsx)$/i;
+
+/** `name` with the extension `ext` (a picture's or document's extension already there is replaced). */
+function withExt(name, ext) {
+  const base = String(name || '').trim().replace(SCAN_NAME_EXT_RE, '');
+  return ext ? `${base}.${ext}` : base;
+}
 
 class DriveService extends EventEmitter {
   /**
@@ -169,11 +192,13 @@ class DriveService extends EventEmitter {
    *   (windowsHello.createConsentVerifier()); null: none here (the vaults open only with "Mit Windows Hello öffnen"
    *   switched off); left out: not enforced (as before Drive 1.11)
    * @param {object} [opts.powerMonitor] - Electron powerMonitor: the vaults lock when Windows locks or sleeps
+   * @param {object|null} [opts.ocr] - Drive 1.14: the text recognition of Windows (windowsOcr.createWindowsOcr()) for
+   *   searchable PDFs made on this PC; null: Drive makes them (scans/convert)
    */
   constructor({
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
     tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
-    protect = null, notificationCenter = null, deviceName = null, consent, powerMonitor = null,
+    protect = null, notificationCenter = null, deviceName = null, consent, powerMonitor = null, ocr = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -216,6 +241,9 @@ class DriveService extends EventEmitter {
       siblings: (folderId, vaultId) => this._vaultSiblings(folderId, vaultId),
     });
     this._opsResumed = false;
+    // Drive 1.14: the OCR of Windows and the scans prepared for "In Dokument umwandeln" (scanId → session)
+    this.ocr = ocr && typeof ocr.recognize === 'function' ? ocr : null;
+    this._scans = new Map();
 
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
     this._timer = null;
@@ -290,6 +318,7 @@ class DriveService extends EventEmitter {
     for (const t of this._vaultOpened.values()) clearTimeout(t);
     this._vaultOpened.clear();
     this._sweepVaultTemp().catch(() => {});
+    for (const id of [...this._scans.keys()]) this.scanDiscard(id);
   }
 
   /**
@@ -1142,11 +1171,11 @@ class DriveService extends EventEmitter {
     });
   }
 
-  /** GET photos → { ok, items, next } */
-  async photos({ area = null, before = null, limit = 100 } = {}) {
+  /** GET photos → { ok, items, next } — Drive 1.14 'photoSearch': with `q` the photos by what is on them (+ terms, total) */
+  async photos({ area = null, before = null, limit = 100, q = null } = {}) {
     return this._run(async () => {
-      await this._feature('photos');
-      const r = await this.api.photos({ area, before, limit });
+      await this._feature(q ? 'photoSearch' : 'photos');
+      const r = await this.api.photos({ area, before, limit, q });
       for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
       return { ok: true, ...r };
     });
@@ -1309,6 +1338,198 @@ class DriveService extends EventEmitter {
       const ok = await openExternalSafely(this.shell, r.url, { log: this.log, label: 'Drive office link' });
       return ok ? { ok: true, mode: r.mode, expiresAt: r.expiresAt } : { ok: false, code: 'open_failed', error: 'not opened' };
     });
+  }
+
+  // ── Drive 1.14: the family calendar, questions, scans become documents ──
+
+  /** "In den Familienkalender" of a deadline → { ok, deadline } (409 familie_unavailable: Familie not there / refused) */
+  async calendar(deadlineId) {
+    return this._run(async () => {
+      await this._feature('deadlineCalendar');
+      return { ok: true, deadline: await this.api.calendar(deadlineId) };
+    });
+  }
+
+  /** A question to the person's documents → { ok, status, answer, sources, terms } (429 rate_limited) */
+  async ask(q, area = null) {
+    return this._run(async () => {
+      await this._feature('docAsk');
+      return { ok: true, ...(await this.api.ask(q, { area })) };
+    });
+  }
+
+  /** Can this PC make the searchable PDF itself? → { ok, supported, local, reason } */
+  async scanStatus() {
+    const supported = await this.api.has('scanDocs').catch(() => false);
+    if (!this.ocr) return { ok: true, supported, local: false, reason: 'no_ocr' };
+    const a = await Promise.resolve(this.ocr.available()).catch(() => ({ available: false, reason: 'error' }));
+    return { ok: true, supported, local: !!(a && a.available), reason: a && a.available ? null : (a && a.reason) || 'error' };
+  }
+
+  _scanDir() {
+    return path.join(this.tempDir(), 'scan', crypto.randomBytes(8).toString('hex'));
+  }
+
+  /**
+   * "In Dokument umwandeln" of the pictures `ids` (one scan, its pages in this order, ≤ 20): their media, the text of
+   * the pages read on this PC (Windows OCR — the text goes to the AI first, the picture only when it is needed), then
+   * scans/classify → { ok, scanId, pages, kind, confidence, summary, classified, local, words, folderId, areaId, name,
+   * suggestion: { name, folderId, folderPath } | null }. kind 'printed' with local: the PDF is made here.
+   */
+  async scanPrepare(ids) {
+    return this._run(async () => {
+      await this._feature('scanDocs');
+      const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.posId).filter(Boolean))];
+      if (!list.length || list.length > drive.SCAN_PAGES_MAX) throw new DriveError('invalid pages', { code: 'invalid' });
+      const nodes = [];
+      for (const id of list) {
+        const n = await this.api.node(id);
+        if (n.isDir || n.encrypted) throw new DriveError('not a picture', { code: n.encrypted ? 'encrypted' : 'invalid' });
+        if (!SCAN_ANY_RE.test(n.mime || guessMime(n.name))) throw new DriveError('not a picture', { code: 'not_picture' });
+        nodes.push(n);
+      }
+      const contents = [];
+      for (const n of nodes) contents.push(await this.api.content(n.id));
+      const mediaIds = contents.map((c) => c.mediaId);
+      // the text of the pages on this PC (only when every page is a picture this PC reads)
+      let pages = null;
+      let dir = null;
+      const local = !!this.ocr && contents.every((c, i) => SCAN_MIME_RE.test(c.mime || nodes[i].mime || '') && (!c.size || c.size <= SCAN_IMAGE_MAX))
+        && !!(await Promise.resolve(this.ocr.available()).catch(() => null) || {}).available;
+      if (local) {
+        dir = this._scanDir();
+        try {
+          await fs.promises.mkdir(dir, { recursive: true });
+          pages = [];
+          for (let i = 0; i < contents.length; i++) {
+            const file = path.join(dir, `page-${i + 1}`);
+            const out = fs.createWriteStream(file);
+            try {
+              await this.api.download(contents[i].mediaId, out, { maxBytes: SCAN_IMAGE_MAX });
+            } catch (err) { out.destroy(); throw err; }
+            const r = await this.ocr.recognize(await fs.promises.readFile(file));
+            pages.push({ file, width: r.width, height: r.height, lines: r.lines });
+          }
+        } catch (err) {
+          this.log.warn(`Drive scan: no text on this PC (${drive.errorCode(err)})`);
+          pages = null;
+          await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+          dir = null;
+        }
+      }
+      const text = pages ? pagesText(pages) : '';
+      const words = pages ? pages.reduce((a, p) => a + p.lines.reduce((b, l) => b + l.words.length, 0), 0) : 0;
+      let cls = null;
+      let classifyError = null;
+      try {
+        cls = await this.api.scanClassify({ mediaIds, text: text || null });
+      } catch (err) {
+        // without AI for it (budget, pictures not allowed …) the PDF made here and "Nur Bild" still work
+        if (!(err instanceof DriveError) || ['network', 'timeout', 'drive_unavailable'].includes(err.code)) throw err;
+        classifyError = drive.errorCode(err);
+      }
+      let suggestion = null;
+      if (await this.api.has('docAi').catch(() => false)) {
+        const ins = await this.api.insight(nodes[0].id).catch(() => null);
+        if (ins && ins.status === 'ready' && ins.suggestion) suggestion = ins.suggestion;
+      }
+      const scanId = crypto.randomBytes(12).toString('hex');
+      const timer = setTimeout(() => this.scanDiscard(scanId), SCAN_KEEP_MS);
+      if (timer.unref) timer.unref();
+      this._scans.set(scanId, { ids: list, nodes, mediaIds, pages, dir, kind: cls ? cls.kind : (words ? 'printed' : 'other'), timer, scope: this._scopeNow() });
+      return {
+        ok: true,
+        scanId,
+        pages: list.length,
+        kind: cls ? cls.kind : (words ? 'printed' : 'other'),
+        confidence: cls ? cls.confidence : null,
+        summary: cls ? cls.summary : null,
+        classified: !!cls,
+        classifyError,
+        local: !!pages,
+        words,
+        folderId: nodes[0].parentId,
+        areaId: nodes[0].areaId,
+        name: withExt(nodes[0].name, null),
+        suggestion,
+      };
+    });
+  }
+
+  /** A prepared scan is not needed any more (its pictures on this PC go). */
+  scanDiscard(scanId) {
+    const sc = this._scans.get(scanId);
+    if (!sc) return { ok: true };
+    this._scans.delete(scanId);
+    clearTimeout(sc.timer);
+    if (sc.dir) fs.promises.rm(sc.dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: true };
+  }
+
+  /**
+   * "Als PDF / Word-Datei / Excel-Datei speichern" (target 'pdf' | 'docx' | 'xlsx') or "Bild speichern" ('image': the
+   * picture stays, renamed / moved when asked) of a prepared scan into `folderId` as `name` → { ok, node, target, local }.
+   * keepOriginal false: the pictures go into the trash once the document is there.
+   */
+  async scanSave(scanId, { target, folderId = null, name = null, keepOriginal = true } = {}) {
+    return this._run(async () => {
+      await this._feature('scanDocs');
+      const sc = this._scans.get(scanId);
+      if (!sc || sc.scope !== this._scopeNow()) throw new DriveError('scan gone', { code: 'not_found' });
+      if (this._locked()) throw new DriveError('device locked', { code: 'device_locked' });
+      const parentId = drive.posId(folderId) || sc.nodes[0].parentId;
+      let node;
+      let local = false;
+      if (target === 'image') {
+        if (sc.nodes.length !== 1) throw new DriveError('one picture only', { code: 'invalid' });
+        const n = sc.nodes[0];
+        const ext = (/\.([A-Za-z0-9]{1,5})$/.exec(n.name) || [])[1] || null;
+        const want = name ? this._name(withExt(name, ext)) : n.name;
+        node = want !== n.name || parentId !== n.parentId ? await this.api.place(n.id, { name: want !== n.name ? want : null, parentId: parentId !== n.parentId ? parentId : null }) : n;
+        this.scanDiscard(scanId);
+        if (n.parentId) this.emit('changed', { folderId: n.parentId });
+        if (parentId !== n.parentId) this.emit('changed', { folderId: parentId });
+        return { ok: true, node, target, local: false };
+      }
+      if (!SCAN_EXT[target]) throw new DriveError('invalid target', { code: 'invalid' });
+      const fileName = this._name(withExt(name || sc.nodes[0].name, SCAN_EXT[target]));
+      if (target === 'pdf' && sc.pages && sc.pages.length) {
+        node = await this._scanPdfHere(sc, parentId, fileName);
+        local = true;
+      } else {
+        // Drive makes it (the pictures are its nodes already: no second original)
+        const r = await this.api.scanConvert({ mediaIds: sc.mediaIds, target, kind: sc.kind, folderId: parentId, name: fileName, keepOriginal: false });
+        node = r.node;
+      }
+      this.scanDiscard(scanId);
+      if (keepOriginal === false) {
+        for (const n of sc.nodes) await this.api.trash(n.id).catch((err) => this.log.warn(`Drive scan: original not removed (${drive.errorCode(err)})`));
+        for (const f of new Set(sc.nodes.map((n) => n.parentId).filter(Boolean))) if (f !== node.parentId) this.emit('changed', { folderId: f });
+      }
+      this.emit('changed', { folderId: node.parentId || parentId });
+      return { ok: true, node, target, local };
+    });
+  }
+
+  /** The searchable PDF of a scan made on this PC → the new node (its text goes with the commit for the search). */
+  async _scanPdfHere(sc, parentId, fileName) {
+    const pages = [];
+    for (const p of sc.pages) {
+      const img = this.ocr.image(await fs.promises.readFile(p.file));
+      pages.push({ jpeg: img.jpeg, width: img.width, height: img.height, lines: p.lines });
+    }
+    const pdf = buildSearchablePdf(pages, { title: fileName.replace(/\.pdf$/i, ''), now: this.now() });
+    const file = path.join(sc.dir, 'scan.pdf');
+    await fs.promises.writeFile(file, pdf);
+    const up = await this.api.upload({ path: file, size: pdf.length, mime: 'application/pdf' }, {});
+    const text = pagesText(sc.pages);
+    const extra = {};
+    if (await this.api.has('guard').catch(() => false)) {
+      const e = await G.fileEntropy(file);
+      if (e !== null) extra.entropy = e;
+    }
+    const r = await this.api.commit({ mediaId: up.mediaId, parentId, name: fileName, onConflict: 'rename', text: text || null, ...extra });
+    return r.node;
   }
 
   /**

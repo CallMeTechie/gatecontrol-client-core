@@ -45,6 +45,11 @@
  *   POST   …/api/ops/check { op, ids, target? } · POST ops { op, ids, target?, onConflict? } · GET ops/<id> · GET ops?state
  *   DELETE …/api/ops/<id> · POST ops/<id>/undo                   Drive 1.12 'bulk': jobs for many nodes (move, copy, trash …)
  *   POST   …/api/zip { ids, name? } → { url, name, expiresAt }    Drive 1.12 'zip' · POST links { nodeIds, … }: 'multiLink'
+ *   POST   …/api/deadlines/<id>/calendar                         Drive 1.14 'deadlineCalendar' → { deadline } (calendar)
+ *   POST   …/api/ask { q, area? }                                Drive 1.14 'docAsk' → { status, answer, sources, terms }
+ *   POST   …/api/scans/classify { mediaIds, text? }              Drive 1.14 'scanDocs' → { kind, confidence, summary }
+ *   POST   …/api/scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal }   → { node, original? }
+ *   GET    …/api/photos?q=                                       Drive 1.14 'photoSearch': photos by their labels (+ terms)
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -590,9 +595,18 @@ class DriveApi {
     return list;
   }
 
-  /** GET photos?area=&before=&limit= → { items, next } (newest first by takenAt) */
-  async photos({ area = null, before = null, limit = 100 } = {}) {
-    return drive.normalizePhotos(await this.api('GET', 'photos', { params: { ...this._area(area), ...this._page({ before, limit }) } }));
+  /**
+   * GET photos?area=&before=&limit= → { items, next } (newest first by takenAt); Drive 1.14 'photoSearch': with `q` the
+   * photos whose labels match (→ also { terms, total }).
+   */
+  async photos({ area = null, before = null, limit = 100, q = null } = {}) {
+    const params = { ...this._area(area), ...this._page({ before, limit }) };
+    if (q !== null && q !== undefined && q !== '') {
+      const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+      if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });
+      params.q = text;
+    }
+    return drive.normalizePhotos(await this.api('GET', 'photos', { params }));
   }
 
   /** GET photos/months?area= → { months: [{ month, count }] } */
@@ -742,6 +756,49 @@ class DriveApi {
   /** DELETE deadlines/<id>/remind → deadline */
   unremind(id) {
     return this._deadline(this.api('DELETE', `deadlines/${this._id(id)}/remind`));
+  }
+
+  /** Drive 1.14 'deadlineCalendar': POST deadlines/<id>/calendar → deadline (with `calendar`; 409 familie_unavailable) */
+  calendar(id) {
+    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/calendar`, { body: {}, timeout: 60000 }));
+  }
+
+  // ── Drive 1.14: questions, scans ─────────────────────────
+
+  /** POST ask { q, area? } → { status: answered | not_found, answer, sources, terms } (429 rate_limited) */
+  async ask(q, { area = null } = {}) {
+    const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+    if (text.length < 2 || text.length > 500) throw new DriveError('invalid question', { code: 'invalid' });
+    const r = drive.normalizeAsk(await this.api('POST', 'ask', { body: { q: text, ...this._area(area) }, timeout: 120000 }));
+    if (!r) throw new DriveError('bad answer', { code: 'bad_response' });
+    return r;
+  }
+
+  _mediaIds(ids) {
+    const list = Array.isArray(ids) ? ids : [];
+    if (!list.length || list.length > drive.SCAN_PAGES_MAX || !list.every(drive.isMediaId)) throw new DriveError('invalid media ids', { code: 'invalid' });
+    return list.slice();
+  }
+
+  /** POST scans/classify { mediaIds, text? } → { kind, confidence, summary } (text first: the picture only when needed) */
+  async scanClassify({ mediaIds, text = null } = {}) {
+    const body = { mediaIds: this._mediaIds(mediaIds) };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    const r = drive.normalizeScanClass(await this.api('POST', 'scans/classify', { body, timeout: 120000 }));
+    if (!r) throw new DriveError('bad classify answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal } → { node, original } */
+  async scanConvert({ mediaIds, target, kind, folderId = null, name = null, keepOriginal = true } = {}) {
+    if (!drive.SCAN_TARGETS.includes(target) || !drive.SCAN_KINDS.includes(kind)) throw new DriveError('invalid scan', { code: 'invalid' });
+    const body = { mediaIds: this._mediaIds(mediaIds), target, kind, keepOriginal: keepOriginal !== false };
+    if (folderId !== null && folderId !== undefined) body.folderId = this._id(folderId);
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (n) body.name = n;
+    const r = drive.normalizeScanConvert(await this.api('POST', 'scans/convert', { body, timeout: 300000 }));
+    if (!r) throw new DriveError('bad convert answer', { code: 'bad_response' });
+    return r;
   }
 
   /** PATCH areas/<id> { docAi } → { id, docAi } */
