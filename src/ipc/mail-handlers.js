@@ -19,7 +19,7 @@
  *   mail:avatar            ({ mediaId }) → { ok, mime, url }   an account's picture as a data: URL
  *   mail:folders           () → { ok, accounts: [{ accountId, folders }], offline? }
  *   mail:list              ({ box?, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }) → { ok, items, next, counts, offline? }
- *   mail:search            ({ q, box?, from?, after?, before?, attachments?, unread?, cursor? }) → { ok, items, next, remote }
+ *   mail:search            ({ q?, box?, from?, after?, before?, attachments?, unread?, cursor? }) → { ok, items, next, remote } (q or from)
  *   mail:thread            ({ id }) → { ok, items: [Message + doc] }
  *   mail:message           ({ id, markRead? }) → { ok, message, doc, offline? }
  *   mail:images            ({ id, allow: 'once' | 'sender' }) → { ok, message, doc }
@@ -122,7 +122,8 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
     box: a.box, folder: a.folder, tab: a.tab, unread: a.unread === true, flagged: a.flagged === true,
     attachments: a.attachments === true, before: a.before, limit: a.limit,
   })));
-  handle('mail:search', wrap(async (a) => (isStr(a.q, 200) ? s.search({
+  // words, or a sender alone (the sender's mails)
+  handle('mail:search', wrap(async (a) => ((isStr(a.q, 200) && optStr(a.from, 200)) || (optStr(a.q, 200) && isStr(a.from, 200)) ? s.search({
     q: a.q, box: a.box, from: a.from, after: a.after, before: a.before, attachments: a.attachments === true, unread: a.unread === true, cursor: a.cursor,
   }) : invalid())));
   handle('mail:thread', byId(async (a) => s.thread(a.id)));

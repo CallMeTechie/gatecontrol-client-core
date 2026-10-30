@@ -702,6 +702,9 @@ describe('mail IPC', () => {
     assert.equal((await call('mail:act', { action: 'burn', ids: [1] })).code, 'invalid');
     assert.equal((await call('mail:act', { action: 'move', ids: [1] })).code, 'invalid');
     assert.equal((await call('mail:list', { box: '../../x' })).code, 'invalid');
+    assert.equal((await call('mail:search', {})).code, 'invalid', 'words or a sender');
+    assert.equal((await call('mail:search', { from: 7 })).code, 'invalid');
+    assert.deepEqual((await call('mail:search', { from: 'sabine@firma.de', box: 2 })).items.map((m) => m.id), [102, 103]);
     assert.equal((await call('mail:send', { id: 1, sendAt: 'morgen' })).code, 'invalid');
     assert.equal((await call('mail:upload', { paths: ['a', 1] })).code, 'invalid');
     const r = await call('mail:account:add', { provider: 'gmx', email: 'a@gmx.de', password: 'falsch' });
