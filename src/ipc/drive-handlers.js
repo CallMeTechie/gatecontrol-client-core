@@ -90,7 +90,8 @@
  *   drive:zip             ({ ids, name? }) → { ok, path } | { ok: false, cancelled }  Drive 1.12 'zip' ("Speichern unter …")
  *   drive:link:create     ({ ids, mode: 'view'|'download', expires, pin? }) → { ok, link }   one link for several ('multiLink')
  *   drive:deadline:calendar ({ id }) → { ok, deadline }                            Drive 1.14 'deadlineCalendar'
- *   drive:ask             ({ q, area? }) → { ok, status, answer, sources, terms }   Drive 1.14 'docAsk'
+ *   drive:area:calendar   ({ areaId, on }) → { ok, area: { id, docAi, deadlinesToCalendar } }   Drive 1.14 'deadlineCalendar'
+ *   drive:ask             ({ q: 3…300, area? }) → { ok, status, answer, sources, terms, areas, deadline }   Drive 1.14 'docAsk'
  *   drive:photos          ({ …, q }) → { ok, items, next, terms, total }            Drive 1.14 'photoSearch'
  *   drive:scan:status     () → { ok, supported, local, reason }                      Drive 1.14 'scanDocs'
  *   drive:scan:prepare    ({ ids }) → { ok, scanId, pages, kind, confidence, summary, local, words, folderId, name, suggestion }
@@ -337,9 +338,10 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   handle('drive:zip', wrap(async (a) => (isIds(a.ids) && optStr(a.name, 255) ? s.zip(a.ids, { name: a.name || null }) : invalid())));
   // ── Drive 1.14 ─────────────────────────────────────────
   handle('drive:deadline:calendar', byId(async (a) => s.calendar(a.id)));
-  handle('drive:ask', wrap(async (a) => (isStr(a.q, 500) && optArea(a.area) ? s.ask(a.q, a.area || null) : invalid())));
+  handle('drive:ask', wrap(async (a) => (isStr(a.q, 300) && a.q.trim().length >= 3 && optArea(a.area) ? s.ask(a.q, a.area || null) : invalid())));
   handle('drive:scan:status', wrap(async () => s.scanStatus()));
-  handle('drive:scan:prepare', wrap(async (a) => (isIds(a.ids, 20) ? s.scanPrepare(a.ids) : invalid())));
+  handle('drive:scan:prepare', wrap(async (a) => (isIds(a.ids, 8) ? s.scanPrepare(a.ids) : invalid())));
+  handle('drive:area:calendar', wrap(async (a) => (optArea(a.areaId) && a.areaId && typeof a.on === 'boolean' ? s.setDeadlinesToCalendar(a.areaId, a.on) : invalid())));
   const isScanId = (v) => typeof v === 'string' && /^[0-9a-f]{24}$/.test(v);
   handle('drive:scan:save', wrap(async (a) => {
     if (!isScanId(a.scanId) || !['pdf', 'docx', 'xlsx', 'image'].includes(a.target) || !optId(a.folderId) || !optStr(a.name, 255) || typeof a.keepOriginal !== 'boolean') return invalid();

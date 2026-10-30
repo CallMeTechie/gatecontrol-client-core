@@ -96,9 +96,11 @@
  *   their files, with the sources and quotes); 'photoSearch' — photos by what is on them (GET photos?q=, the labels
  *   come from the phones); 'scanDocs' — "In Dokument umwandeln" of pictures: scans/classify (with the text of the
  *   pages first, read on this PC), then the document: printed text becomes a searchable PDF made here (Windows OCR,
- *   services/windows-ocr.js + utils/searchable-pdf.js; no AI, nothing but the PDF leaves the PC) or — without the OCR
- *   of Windows — by Drive (scans/convert target pdf); Word / Excel always by Drive (scans/convert). The pictures are
- *   Drive's nodes already: "Original-Scan behalten" off puts them into the trash after the document is there.
+ *   services/windows-ocr.js + utils/searchable-pdf.js; no AI); else Drive makes the document's bytes (scans/convert —
+ *   with smaller copies of the pictures for a PDF's pages, a whiteboard's photo, a handwritten page; Drive writes no
+ *   file itself), this PC uploads them and files them with scans/save (with the recognised text; "Original-Scan
+ *   behalten" off: the first picture into the trash by Drive, the other pages here). 'deadlineCalendar' also: per area
+ *   new deadlines into the calendar on their own (PATCH areas/<id> { deadlinesToCalendar }).
  *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
@@ -1350,7 +1352,15 @@ class DriveService extends EventEmitter {
     });
   }
 
-  /** A question to the person's documents → { ok, status, answer, sources, terms } (429 rate_limited) */
+  /** New deadlines of an area into the family calendar on their own (write right) → { ok, area: { id, docAi, deadlinesToCalendar } } */
+  async setDeadlinesToCalendar(areaId, on) {
+    return this._run(async () => {
+      await this._feature('deadlineCalendar');
+      return { ok: true, area: await this.api.setDeadlinesToCalendar(areaId, on) };
+    });
+  }
+
+  /** A question to the person's documents (3 … 300 characters) → { ok, status, answer, sources, terms, areas, deadline } (429 rate_limited) */
   async ask(q, area = null) {
     return this._run(async () => {
       await this._feature('docAsk');
@@ -1371,10 +1381,11 @@ class DriveService extends EventEmitter {
   }
 
   /**
-   * "In Dokument umwandeln" of the pictures `ids` (one scan, its pages in this order, ≤ 20): their media, the text of
-   * the pages read on this PC (Windows OCR — the text goes to the AI first, the picture only when it is needed), then
-   * scans/classify → { ok, scanId, pages, kind, confidence, summary, classified, local, words, folderId, areaId, name,
-   * suggestion: { name, folderId, folderPath } | null }. kind 'printed' with local: the PDF is made here.
+   * "In Dokument umwandeln" of the pictures `ids` (one scan, its pages in this order, ≤ 8): their media; the pictures
+   * this PC reads (JPEG / PNG) are loaded — the text of the pages is read here when Windows has an OCR language (the
+   * text goes to the AI first, the picture only when it is needed); then scans/classify → { ok, scanId, pages, kind,
+   * confidence, summary, classified, local, words, folderId, areaId, name, suggestion: { name, folderId, folderPath } |
+   * null }. local: the searchable PDF is made here.
    */
   async scanPrepare(ids) {
     return this._run(async () => {
@@ -1391,12 +1402,11 @@ class DriveService extends EventEmitter {
       const contents = [];
       for (const n of nodes) contents.push(await this.api.content(n.id));
       const mediaIds = contents.map((c) => c.mediaId);
-      // the text of the pages on this PC (only when every page is a picture this PC reads)
+      // the pictures on this PC (smaller copies go to Drive for a PDF / a Word file; with an OCR language: their text)
       let pages = null;
       let dir = null;
-      const local = !!this.ocr && contents.every((c, i) => SCAN_MIME_RE.test(c.mime || nodes[i].mime || '') && (!c.size || c.size <= SCAN_IMAGE_MAX))
-        && !!(await Promise.resolve(this.ocr.available()).catch(() => null) || {}).available;
-      if (local) {
+      const readable = !!this.ocr && contents.every((c, i) => SCAN_MIME_RE.test(c.mime || nodes[i].mime || '') && (!c.size || c.size <= SCAN_IMAGE_MAX));
+      if (readable) {
         dir = this._scanDir();
         try {
           await fs.promises.mkdir(dir, { recursive: true });
@@ -1407,18 +1417,30 @@ class DriveService extends EventEmitter {
             try {
               await this.api.download(contents[i].mediaId, out, { maxBytes: SCAN_IMAGE_MAX });
             } catch (err) { out.destroy(); throw err; }
-            const r = await this.ocr.recognize(await fs.promises.readFile(file));
-            pages.push({ file, width: r.width, height: r.height, lines: r.lines });
+            pages.push({ file, width: null, height: null, lines: null });
           }
         } catch (err) {
-          this.log.warn(`Drive scan: no text on this PC (${drive.errorCode(err)})`);
+          this.log.warn(`Drive scan: pictures not loaded (${drive.errorCode(err)})`);
           pages = null;
           await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
           dir = null;
         }
       }
-      const text = pages ? pagesText(pages) : '';
-      const words = pages ? pages.reduce((a, p) => a + p.lines.reduce((b, l) => b + l.words.length, 0), 0) : 0;
+      let local = false;
+      if (pages && (await Promise.resolve(this.ocr.available()).catch(() => null) || {}).available) {
+        try {
+          for (const p of pages) {
+            const r = await this.ocr.recognize(await fs.promises.readFile(p.file));
+            Object.assign(p, { width: r.width, height: r.height, lines: r.lines });
+          }
+          local = true;
+        } catch (err) {
+          this.log.warn(`Drive scan: no text on this PC (${drive.errorCode(err)})`);
+          for (const p of pages) Object.assign(p, { width: null, height: null, lines: null });
+        }
+      }
+      const text = local ? pagesText(pages) : '';
+      const words = local ? pages.reduce((a, p) => a + p.lines.reduce((b, l) => b + l.words.length, 0), 0) : 0;
       let cls = null;
       let classifyError = null;
       try {
@@ -1433,20 +1455,23 @@ class DriveService extends EventEmitter {
         const ins = await this.api.insight(nodes[0].id).catch(() => null);
         if (ins && ins.status === 'ready' && ins.suggestion) suggestion = ins.suggestion;
       }
+      const kind = cls ? cls.kind : (words ? 'printed' : 'other');
       const scanId = crypto.randomBytes(12).toString('hex');
       const timer = setTimeout(() => this.scanDiscard(scanId), SCAN_KEEP_MS);
       if (timer.unref) timer.unref();
-      this._scans.set(scanId, { ids: list, nodes, mediaIds, pages, dir, kind: cls ? cls.kind : (words ? 'printed' : 'other'), timer, scope: this._scopeNow() });
+      this._scans.set(scanId, { ids: list, nodes, mediaIds, pages, local, text, dir, kind, timer, scope: this._scopeNow() });
       return {
         ok: true,
         scanId,
         pages: list.length,
-        kind: cls ? cls.kind : (words ? 'printed' : 'other'),
+        kind,
         confidence: cls ? cls.confidence : null,
         summary: cls ? cls.summary : null,
         classified: !!cls,
         classifyError,
-        local: !!pages,
+        local,
+        // a PDF needs this PC's text or its pictures for Drive (without them Drive makes no PDF)
+        pdf: local || !!pages,
         words,
         folderId: nodes[0].parentId,
         areaId: nodes[0].areaId,
@@ -1469,7 +1494,10 @@ class DriveService extends EventEmitter {
   /**
    * "Als PDF / Word-Datei / Excel-Datei speichern" (target 'pdf' | 'docx' | 'xlsx') or "Bild speichern" ('image': the
    * picture stays, renamed / moved when asked) of a prepared scan into `folderId` as `name` → { ok, node, target, local }.
-   * keepOriginal false: the pictures go into the trash once the document is there.
+   * A PDF with this PC's text is made here; else Drive makes the bytes (scans/convert — with smaller copies of the
+   * pictures for a PDF's pages, a whiteboard's photo, a handwritten page) and this PC uploads them; scans/save files
+   * either. keepOriginal false: the scan's pictures go into the trash once the document is there (the first by Drive).
+   * Drive gave no file (a PDF without pictures): code 'scan_no_file'.
    */
   async scanSave(scanId, { target, folderId = null, name = null, keepOriginal = true } = {}) {
     return this._run(async () => {
@@ -1478,14 +1506,12 @@ class DriveService extends EventEmitter {
       if (!sc || sc.scope !== this._scopeNow()) throw new DriveError('scan gone', { code: 'not_found' });
       if (this._locked()) throw new DriveError('device locked', { code: 'device_locked' });
       const parentId = drive.posId(folderId) || sc.nodes[0].parentId;
-      let node;
-      let local = false;
       if (target === 'image') {
         if (sc.nodes.length !== 1) throw new DriveError('one picture only', { code: 'invalid' });
         const n = sc.nodes[0];
         const ext = (/\.([A-Za-z0-9]{1,5})$/.exec(n.name) || [])[1] || null;
         const want = name ? this._name(withExt(name, ext)) : n.name;
-        node = want !== n.name || parentId !== n.parentId ? await this.api.place(n.id, { name: want !== n.name ? want : null, parentId: parentId !== n.parentId ? parentId : null }) : n;
+        const node = want !== n.name || parentId !== n.parentId ? await this.api.place(n.id, { name: want !== n.name ? want : null, parentId: parentId !== n.parentId ? parentId : null }) : n;
         this.scanDiscard(scanId);
         if (n.parentId) this.emit('changed', { folderId: n.parentId });
         if (parentId !== n.parentId) this.emit('changed', { folderId: parentId });
@@ -1493,43 +1519,75 @@ class DriveService extends EventEmitter {
       }
       if (!SCAN_EXT[target]) throw new DriveError('invalid target', { code: 'invalid' });
       const fileName = this._name(withExt(name || sc.nodes[0].name, SCAN_EXT[target]));
-      if (target === 'pdf' && sc.pages && sc.pages.length) {
-        node = await this._scanPdfHere(sc, parentId, fileName);
-        local = true;
+      const local = target === 'pdf' && sc.local;
+      let doc;   // { data, mime, name, text, folderId }
+      if (local) {
+        doc = await this._scanPdfHere(sc, fileName);
       } else {
-        // Drive makes it (the pictures are its nodes already: no second original)
-        const r = await this.api.scanConvert({ mediaIds: sc.mediaIds, target, kind: sc.kind, folderId: parentId, name: fileName, keepOriginal: false });
-        node = r.node;
+        const images = await this._scanImages(sc, target);
+        const ask = (imgs) => this.api.scanConvert({ mediaIds: sc.mediaIds, text: sc.text || null, target, kind: sc.kind, folderId: parentId, name: fileName, images: imgs });
+        let r;
+        try {
+          r = await ask(images);
+        } catch (err) {
+          // the pictures too large for Drive: once more without them
+          if (!(images && err && err.code === 'too_large')) throw err;
+          r = await ask(null);
+        }
+        if (!r.file) throw new DriveError('no document', { code: 'scan_no_file' });
+        doc = { data: r.file.data, mime: r.file.mime, name: r.file.name, text: r.text, folderId: r.folderId || parentId };
+      }
+      const file = path.join(sc.dir || this._scanDir(), `doc.${SCAN_EXT[target]}`);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(file, doc.data);
+      let saved;
+      try {
+        const up = await this.api.upload({ path: file, size: doc.data.length, mime: doc.mime || guessMime(doc.name) }, {});
+        saved = await this.api.scanSave({ mediaId: up.mediaId, folderId: doc.folderId || parentId, name: doc.name, text: doc.text || null, sourceId: sc.nodes[0].id, keepOriginal: keepOriginal !== false });
+      } finally {
+        if (!sc.dir) fs.promises.rm(path.dirname(file), { recursive: true, force: true }).catch(() => {});
       }
       this.scanDiscard(scanId);
       if (keepOriginal === false) {
-        for (const n of sc.nodes) await this.api.trash(n.id).catch((err) => this.log.warn(`Drive scan: original not removed (${drive.errorCode(err)})`));
-        for (const f of new Set(sc.nodes.map((n) => n.parentId).filter(Boolean))) if (f !== node.parentId) this.emit('changed', { folderId: f });
+        // the first picture Drive put into the trash (when one may); the other pages here
+        for (const n of sc.nodes.slice(1)) await this.api.trash(n.id).catch((err) => this.log.warn(`Drive scan: original not removed (${drive.errorCode(err)})`));
+        for (const f of new Set(sc.nodes.map((n) => n.parentId).filter(Boolean))) if (f !== saved.node.parentId) this.emit('changed', { folderId: f });
       }
-      this.emit('changed', { folderId: node.parentId || parentId });
-      return { ok: true, node, target, local };
+      this.emit('changed', { folderId: saved.node.parentId || doc.folderId || parentId });
+      return { ok: true, node: saved.node, target, local };
     });
   }
 
-  /** The searchable PDF of a scan made on this PC → the new node (its text goes with the commit for the search). */
-  async _scanPdfHere(sc, parentId, fileName) {
+  /** The searchable PDF of a scan made on this PC → { data, mime, name, text, folderId: null }. */
+  async _scanPdfHere(sc, fileName) {
     const pages = [];
     for (const p of sc.pages) {
       const img = this.ocr.image(await fs.promises.readFile(p.file));
       pages.push({ jpeg: img.jpeg, width: img.width, height: img.height, lines: p.lines });
     }
-    const pdf = buildSearchablePdf(pages, { title: fileName.replace(/\.pdf$/i, ''), now: this.now() });
-    const file = path.join(sc.dir, 'scan.pdf');
-    await fs.promises.writeFile(file, pdf);
-    const up = await this.api.upload({ path: file, size: pdf.length, mime: 'application/pdf' }, {});
-    const text = pagesText(sc.pages);
-    const extra = {};
-    if (await this.api.has('guard').catch(() => false)) {
-      const e = await G.fileEntropy(file);
-      if (e !== null) extra.entropy = e;
+    const data = buildSearchablePdf(pages, { title: fileName.replace(/\.pdf$/i, ''), now: this.now() });
+    return { data, mime: 'application/pdf', name: fileName, text: pagesText(sc.pages) || null, folderId: null };
+  }
+
+  /**
+   * Smaller JPEGs of the pages for scans/convert (≤ 600 KB together): every page for a PDF, the first for the Word file
+   * of a whiteboard / handwriting; null when not needed or not possible (Drive then works with the text alone).
+   */
+  async _scanImages(sc, target) {
+    const want = target === 'pdf' ? sc.pages : target === 'docx' && (sc.kind === 'whiteboard' || sc.kind === 'handwriting') && sc.pages ? sc.pages.slice(0, 1) : null;
+    if (!want || !want.length || !this.ocr || typeof this.ocr.jpeg !== 'function') return null;
+    const raw = [];
+    for (const p of want) raw.push(await fs.promises.readFile(p.file));
+    for (const [maxSide, quality] of [[1700, 72], [1400, 62], [1100, 55], [850, 50]]) {
+      try {
+        const out = raw.map((b) => this.ocr.jpeg(b, { maxSide, quality }));
+        if (out.reduce((a, b) => a + b.length, 0) <= drive.SCAN_IMAGES_MAX_BYTES - 8 * 1024) return out;
+      } catch (err) {
+        this.log.warn(`Drive scan: pictures not made smaller (${drive.errorCode(err)})`);
+        return null;
+      }
     }
-    const r = await this.api.commit({ mediaId: up.mediaId, parentId, name: fileName, onConflict: 'rename', text: text || null, ...extra });
-    return r.node;
+    return null;
   }
 
   /**

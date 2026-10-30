@@ -48,7 +48,9 @@
  *   POST   …/api/deadlines/<id>/calendar                         Drive 1.14 'deadlineCalendar' → { deadline } (calendar)
  *   POST   …/api/ask { q, area? }                                Drive 1.14 'docAsk' → { status, answer, sources, terms }
  *   POST   …/api/scans/classify { mediaIds, text? }              Drive 1.14 'scanDocs' → { kind, confidence, summary }
- *   POST   …/api/scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal }   → { node, original? }
+ *   POST   …/api/scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → { …, file { …, data } | null }
+ *   POST   …/api/scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original }
+ *   PATCH  …/api/areas/<id> { deadlinesToCalendar }               Drive 1.14: new deadlines of the area into the calendar
  *   GET    …/api/photos?q=                                       Drive 1.14 'photoSearch': photos by their labels (+ terms)
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
@@ -768,7 +770,7 @@ class DriveApi {
   /** POST ask { q, area? } → { status: answered | not_found, answer, sources, terms } (429 rate_limited) */
   async ask(q, { area = null } = {}) {
     const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
-    if (text.length < 2 || text.length > 500) throw new DriveError('invalid question', { code: 'invalid' });
+    if (text.length < 3 || text.length > 300) throw new DriveError('invalid question', { code: 'invalid' });
     const r = drive.normalizeAsk(await this.api('POST', 'ask', { body: { q: text, ...this._area(area) }, timeout: 120000 }));
     if (!r) throw new DriveError('bad answer', { code: 'bad_response' });
     return r;
@@ -789,16 +791,47 @@ class DriveApi {
     return r;
   }
 
-  /** POST scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal } → { node, original } */
-  async scanConvert({ mediaIds, target, kind, folderId = null, name = null, keepOriginal = true } = {}) {
+  /**
+   * POST scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → { kind, target, title, name, folderId,
+   * folderPath, text, file: { name, mime, size, sha256, data: Buffer } | null } — Drive makes the document's bytes, the
+   * app files them (media upload, then scanSave). `images`: Buffers (JPEG; PNG for docx), ≤ 600 KB together (else 413
+   * too_large) — a PDF's pages, a whiteboard's photo, a handwritten page.
+   */
+  async scanConvert({ mediaIds, text = null, target, kind, folderId = null, name = null, images = null } = {}) {
     if (!drive.SCAN_TARGETS.includes(target) || !drive.SCAN_KINDS.includes(kind)) throw new DriveError('invalid scan', { code: 'invalid' });
-    const body = { mediaIds: this._mediaIds(mediaIds), target, kind, keepOriginal: keepOriginal !== false };
+    const body = { mediaIds: this._mediaIds(mediaIds), target, kind };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
     if (folderId !== null && folderId !== undefined) body.folderId = this._id(folderId);
     const n = typeof name === 'string' ? drive.safeName(name) : null;
     if (n) body.name = n;
+    if (Array.isArray(images) && images.length) {
+      if (images.length > drive.SCAN_PAGES_MAX || !images.every(Buffer.isBuffer)) throw new DriveError('invalid images', { code: 'invalid' });
+      body.images = images.map((b) => b.toString('base64'));
+    }
     const r = drive.normalizeScanConvert(await this.api('POST', 'scans/convert', { body, timeout: 300000 }));
     if (!r) throw new DriveError('bad convert answer', { code: 'bad_response' });
     return r;
+  }
+
+  /** POST scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original } (onConflict rename) */
+  async scanSave({ mediaId, folderId, name, text = null, sourceId = null, keepOriginal = true } = {}) {
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (!drive.isMediaId(mediaId) || !n) throw new DriveError('invalid', { code: 'invalid' });
+    const body = { mediaId, folderId: this._id(folderId), name: n };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    if (sourceId !== null && sourceId !== undefined) { body.sourceId = this._id(sourceId); body.keepOriginal = keepOriginal !== false; }
+    const r = drive.normalizeScanSave(await this.api('POST', 'scans/save', { body, timeout: 120000 }));
+    if (!r) throw new DriveError('bad save answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** Drive 1.14: PATCH areas/<id> { deadlinesToCalendar } → { id, docAi, deadlinesToCalendar } (409 familie_unavailable) */
+  async setDeadlinesToCalendar(areaId, on) {
+    const a = drive.areaIdOf(areaId);
+    if (!a || typeof on !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('PATCH', `areas/${encodeURIComponent(a)}`, { body: { deadlinesToCalendar: on } });
+    const area = r && r.area && typeof r.area === 'object' ? r.area : {};
+    return { id: drive.areaIdOf(area.id) || a, docAi: typeof area.docAi === 'boolean' ? area.docAi : null, deadlinesToCalendar: typeof area.deadlinesToCalendar === 'boolean' ? area.deadlinesToCalendar : on };
   }
 
   /** PATCH areas/<id> { docAi } → { id, docAi } */

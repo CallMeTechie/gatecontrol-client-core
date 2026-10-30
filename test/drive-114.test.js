@@ -43,9 +43,10 @@ const LINES = [
 ];
 
 /** The OCR of Windows as the tests need it (what it was given is kept). */
-function fakeOcr({ available = true, fail = false } = {}) {
+function fakeOcr({ available = true, fail = false, big = 0 } = {}) {
   const o = {
     seen: [],
+    big,
     available: async () => (available ? { available: true, reason: null } : { available: false, reason: 'no_language' }),
     recognize: async (bytes) => {
       o.seen.push(Buffer.from(bytes).toString());
@@ -53,6 +54,8 @@ function fakeOcr({ available = true, fail = false } = {}) {
       return { width: 48, height: 12, lines: LINES, text: LINES.map((l) => l.text).join('\n') };
     },
     image: () => ({ width: 48, height: 12, jpeg: JPEG }),
+    sizes: [],
+    jpeg: (bytes, { maxSide, quality }) => { o.sizes.push([maxSide, quality]); return o.big ? Buffer.alloc(o.big) : JPEG; },
   };
   return o;
 }
@@ -74,34 +77,55 @@ async function setup(features, { ocr = null } = {}) {
 }
 
 describe('utils/drive: Drive 1.14 answers', () => {
-  it('cleans answers, scan kinds, converted documents, the new deadline kinds and photo terms', () => {
+  it('cleans answers, scan kinds, converted documents, saved scans, the new deadline kinds, area settings and photo terms', () => {
     const a = drive.normalizeAsk({
       status: 'answered', answer: 'Die Kfz-Versicherung läuft bis 31.12.2026.\r\nKündigen bis 30.11.2026.', terms: ['Kfz', 'Versicherung', 7, ''],
-      sources: [{ nodeId: 5, name: 'Versicherungsschein Kfz 2026.pdf', path: 'Versicherungen', page: 1, quote: '„Vertragslaufzeit …“' }, { nodeId: 'x', name: 'weg.pdf' }],
+      sources: [{ nodeId: 5, name: 'Versicherungsschein Kfz 2026.pdf', path: 'Versicherungen', areaId: 'mine:2', page: null, quote: '„Vertragslaufzeit …“' }, { nodeId: 'x', name: 'weg.pdf' }],
+      areas: ['Meine Dateien', 'Familie Muster'],
+      deadline: { id: 3, kind: 'cancellation', date: '2026-11-30', label: 'Kfz-Versicherung kündigen', nodeId: 5, reminder: null, calendar: null },
     });
     assert.equal(a.status, 'answered');
     assert.equal(a.answer, 'Die Kfz-Versicherung läuft bis 31.12.2026.\nKündigen bis 30.11.2026.');
-    assert.deepEqual(a.sources, [{ nodeId: 5, name: 'Versicherungsschein Kfz 2026.pdf', path: 'Versicherungen', page: 1, quote: '„Vertragslaufzeit …“' }]);
+    assert.deepEqual(a.sources, [{ nodeId: 5, name: 'Versicherungsschein Kfz 2026.pdf', path: 'Versicherungen', areaId: 'mine:2', page: null, quote: '„Vertragslaufzeit …“' }]);
     assert.deepEqual(a.terms, ['Kfz', 'Versicherung', '7']);
+    assert.deepEqual(a.areas, ['Meine Dateien', 'Familie Muster']);
+    assert.deepEqual(a.deadline, { id: 3, kind: 'cancellation', date: '2026-11-30', label: 'Kfz-Versicherung kündigen', reminder: null, calendar: null, nodeId: 5 });
     // an answer without text is "nothing found"; nothing else
-    assert.deepEqual(drive.normalizeAsk({ status: 'answered', answer: '  ', sources: [{ nodeId: 1, name: 'a' }], terms: ['x'] }), { status: 'not_found', answer: null, sources: [], terms: ['x'] });
+    assert.deepEqual(drive.normalizeAsk({ status: 'answered', answer: '  ', sources: [{ nodeId: 1, name: 'a' }], terms: ['x'], areas: ['Familie'], deadline: { id: 1, kind: 'payment', date: '2026-01-01' } }), { status: 'not_found', answer: null, sources: [], terms: ['x'], areas: ['Familie'], deadline: null });
     assert.equal(drive.normalizeAsk({ status: 'maybe' }), null);
 
     assert.deepEqual(drive.normalizeScanClass({ kind: 'table', confidence: 1.4, summary: '3 Spalten\n12 Zeilen' }), { kind: 'table', confidence: 1, summary: '3 Spalten 12 Zeilen' });
     assert.equal(drive.normalizeScanClass({ kind: 'poster' }), null);
-    const conv = drive.normalizeScanConvert({ node: { id: 9, areaId: 'mine:2', name: 'Zähler.xlsx' }, original: null });
-    assert.equal(conv.node.name, 'Zähler.xlsx');
-    assert.equal(conv.original, null);
-    assert.equal(drive.normalizeScanConvert({ node: { id: 'x' } }), null);
+    const data = Buffer.from('PK xlsx');
+    const sha = require('node:crypto').createHash('sha256').update(data).digest('hex');
+    const conv = drive.normalizeScanConvert({ kind: 'table', target: 'xlsx', title: 'Zählerstände', name: 'Zähler.xlsx', folderId: 10, folderPath: 'Haus', text: 'Datum\tStand', file: { name: 'Zähler.xlsx', mime: 'application/x', size: data.length, sha256: sha, data: data.toString('base64') } });
+    assert.equal(conv.file.name, 'Zähler.xlsx');
+    assert.ok(conv.file.data.equals(data));
+    assert.equal(conv.folderId, 10);
+    assert.equal(drive.normalizeScanConvert({ kind: 'printed', target: 'pdf', file: null }).file, null);
+    // bytes that do not match their size or checksum are refused
+    assert.equal(drive.normalizeScanConvert({ target: 'xlsx', file: { name: 'a.xlsx', size: 3, data: data.toString('base64') } }), null);
+    assert.equal(drive.normalizeScanConvert({ target: 'xlsx', file: { name: 'a.xlsx', size: data.length, sha256: 'a'.repeat(64), data: data.toString('base64') } }), null);
+    assert.equal(drive.normalizeScanConvert({ target: 'pptx' }), null);
+    const saved = drive.normalizeScanSave({ node: { id: 9, areaId: 'mine:2', name: 'Zähler.xlsx' }, original: null });
+    assert.equal(saved.node.name, 'Zähler.xlsx');
+    assert.equal(saved.original, null);
+    assert.equal(drive.normalizeScanSave({ node: { id: 'x' } }), null);
 
     const w = drive.normalizeDeadline({ id: 3, kind: 'warranty', date: '2026-12-12', label: 'Geschirrspüler', calendar: { eventId: 'ev-3', at: '2026-11-01T10:00:00Z' } });
     assert.deepEqual(w.calendar, { eventId: 'ev-3', at: Date.parse('2026-11-01T10:00:00Z') });
     assert.equal(drive.normalizeDeadline({ id: 4, kind: 'renewal', date: '2027-01-31' }).calendar, null);
     assert.equal(drive.normalizeDeadline({ id: 4, kind: 'birthday', date: '2027-01-31' }), null);
+    assert.equal(drive.normalizeArea({ id: 'mine:2', rootId: 1, deadlinesToCalendar: true }).deadlinesToCalendar, true);
+    assert.equal(drive.normalizeArea({ id: 'mine:2', rootId: 1 }).deadlinesToCalendar, null);
+    assert.equal(drive.normalizeMe({ settings: { scanKeepOriginal: false } }).settings.scanKeepOriginal, false);
+    assert.equal(drive.normalizeMe({}).settings.scanKeepOriginal, null);
 
-    const ph = drive.normalizePhotos({ items: [{ id: 1, name: 'a.jpg' }], next: null, terms: [{ term: 'Meer', count: 12 }, 'Sonnenuntergang', 'meer', { label: 'Sand' }], total: 38 });
-    assert.deepEqual(ph.terms, [{ term: 'Meer', count: 12 }, { term: 'Sonnenuntergang', count: null }, { term: 'Sand', count: null }]);
+    const ph = drive.normalizePhotos({ items: [{ id: 1, name: 'a.jpg' }], next: null, terms: [{ term: 'sea', label: 'Meer', count: 12 }, 'Sonnenuntergang', { term: 'SEA', label: 'x' }], total: 38 });
+    assert.deepEqual(ph.terms, [{ term: 'sea', label: 'Meer', count: 12 }, { term: 'Sonnenuntergang', label: 'Sonnenuntergang', count: null }]);
     assert.equal(ph.total, 38);
+    // only search.chips
+    assert.deepEqual(drive.normalizePhotos({ items: [], search: { total: 2, chips: [{ label: 'sea', text: 'Meer', count: 2 }] } }), { items: [], next: null, terms: [{ term: 'sea', label: 'Meer', count: 2 }], total: 2 });
     assert.equal(drive.normalizePhotos({ items: [] }).terms, undefined);
   });
 });
@@ -144,7 +168,7 @@ describe('utils/searchable-pdf', () => {
 });
 
 describe('DriveService: Drive 1.14', () => {
-  it('deadlineCalendar: into the family calendar; Familie not there → familie_unavailable', async () => {
+  it('deadlineCalendar: into the family calendar; Familie not there → familie_unavailable; per area on its own', async () => {
     const { srv, svc } = await setup(['docAi', 'deadlineCalendar']);
     srv.setInsight(12, { kind: 'warranty', deadlines: [{ kind: 'warranty', date: '2099-12-12', label: 'Geschirrspüler' }, { kind: 'renewal', date: '2099-01-31', label: 'Fitnessstudio' }] });
     const list = (await svc.deadlines({ from: '2026-01-01', to: '2099-12-31' })).deadlines;
@@ -152,43 +176,51 @@ describe('DriveService: Drive 1.14', () => {
     const r = await svc.calendar(list[1].id);
     assert.equal(r.ok, true);
     assert.equal(r.deadline.calendar.eventId, `ev-${list[1].id}`);
+    assert.deepEqual((await svc.setDeadlinesToCalendar('mine:2', true)).area, { id: 'mine:2', docAi: true, deadlinesToCalendar: true });
+    assert.equal((await svc.areas()).areas.find((a) => a.id === 'mine:2').deadlinesToCalendar, true);
     srv.familie = false;
-    await assert.rejects(svc.calendar(list[0].id), (e) => e.code === 'familie_unavailable');
+    await assert.rejects(svc.calendar(list[0].id), (e) => e.code === 'familie_unavailable' && e.body.reason === 'forbidden');
+    await assert.rejects(svc.setDeadlinesToCalendar('family:1', true), (e) => e.code === 'familie_unavailable');
     assert.deepEqual(srv.state.calendarCalls, [list[1].id, list[0].id]);
+    const { svc: old } = await setup(['docAi']);
+    await assert.rejects(old.setDeadlinesToCalendar('mine:2', true), (e) => e.code === 'unsupported');
   });
 
-  it('docAsk: the answer with its sources; nothing found with the words searched; the limit', async () => {
+  it('docAsk: the answer with its sources and deadline; nothing found with what and where; 3 … 300 characters; the limit', async () => {
     const { srv, svc } = await setup(['docAsk']);
-    srv.answer = (q) => (/Kfz/.test(q) ? { status: 'answered', answer: 'Bis 31.12.2026.', sources: [{ nodeId: 12, name: 'Brief.pdf', path: 'Dokumente', page: 1, quote: 'Laufzeit bis 31.12.2026' }], terms: ['Kfz'] } : null);
+    srv.answer = (q) => (/Kfz/.test(q) ? { status: 'answered', answer: 'Bis 31.12.2026.', sources: [{ nodeId: 12, name: 'Brief.pdf', path: 'Dokumente', areaId: 'mine:2', page: null, quote: 'Laufzeit bis 31.12.2026' }], terms: ['Kfz'], areas: ['Meine Dateien'], deadline: { id: 7, kind: 'cancellation', date: '2026-11-30', label: 'Kündigen', nodeId: 12, reminder: null, calendar: null } } : null);
     const a = await svc.ask('Wann läuft die Kfz-Versicherung ab?');
     assert.equal(a.status, 'answered');
     assert.equal(a.sources[0].quote, 'Laufzeit bis 31.12.2026');
+    assert.equal(a.deadline.nodeId, 12);
     const n = await svc.ask('Wo ist der Mietvertrag?', 'family:1');
     assert.equal(n.status, 'not_found');
     assert.deepEqual(n.terms, ['Mietvertrag?']);
+    assert.deepEqual(n.areas, ['Familie Muster']);
     assert.deepEqual(srv.state.askCalls[1], { q: 'Wo ist der Mietvertrag?', area: 'family:1' });
     srv.askLimited = true;
     await assert.rejects(svc.ask('noch eine Frage'), (e) => e.code === 'rate_limited' && e.status === 429);
-    await assert.rejects(svc.ask('x'), (e) => e.code === 'invalid');
+    await assert.rejects(svc.ask('ab'), (e) => e.code === 'invalid');
+    await assert.rejects(svc.ask('x'.repeat(301)), (e) => e.code === 'invalid');
   });
 
-  it('photoSearch: photos by their labels with the hit chips; without the feature not asked', async () => {
+  it('photoSearch: photos by their labels with the hit chips (term to add, label shown); without the feature not asked', async () => {
     const { srv, svc } = await setup(['photos', 'photoSearch']);
     const beach = srv.mutate.photo(1, 'Strand.jpg', { takenAt: Date.parse('2025-07-01T10:00:00Z') });
     const sunset = srv.mutate.photo(1, 'Abend.jpg', { takenAt: Date.parse('2025-07-02T20:00:00Z') });
     srv.mutate.photo(1, 'Hund.jpg');
-    srv.state.labels.set(beach.id, ['Strand', 'Meer']);
-    srv.state.labels.set(sunset.id, ['Strand', 'Meer', 'Sonnenuntergang']);
+    srv.state.labels.set(beach.id, ['strand', 'meer']);
+    srv.state.labels.set(sunset.id, ['strand', 'meer', 'sonnenuntergang']);
     const r = await svc.photos({ q: 'strand' });
     assert.deepEqual(r.items.map((p) => p.name), ['Abend.jpg', 'Strand.jpg']);
-    assert.deepEqual(r.terms, [{ term: 'Meer', count: 2 }, { term: 'Sonnenuntergang', count: 1 }]);
+    assert.deepEqual(r.terms, [{ term: 'meer', label: 'Meer', count: 2 }, { term: 'sonnenuntergang', label: 'Sonnenuntergang', count: 1 }]);
     assert.equal(r.total, 2);
     assert.deepEqual(srv.state.requests.filter((x) => x.path.endsWith('/api/photos')).pop().query.q, 'strand');
     const { svc: old } = await setup(['photos']);
     await assert.rejects(old.photos({ q: 'strand' }), (e) => e.code === 'unsupported');
   });
 
-  it('scanDocs: printed text → classify with the text read here, the searchable PDF made here, the original kept', async () => {
+  it('scanDocs: printed text → classify with the text read here, the searchable PDF made here and filed with scans/save, the original kept', async () => {
     const ocr = fakeOcr();
     const { srv, svc, changed } = await setup(['scanDocs'], { ocr });
     srv.scanKind = 'printed';
@@ -197,6 +229,7 @@ describe('DriveService: Drive 1.14', () => {
     assert.equal(p.ok, true);
     assert.equal(p.kind, 'printed');
     assert.equal(p.local, true);
+    assert.equal(p.pdf, true);
     assert.equal(p.words, 5);
     assert.equal(p.name, 'Foto');
     assert.equal(p.folderId, 1);
@@ -209,50 +242,84 @@ describe('DriveService: Drive 1.14', () => {
     assert.equal(r.node.name, 'Stadtwerke Rechnung.pdf');
     assert.equal(r.node.parentId, 10);
     assert.equal(srv.state.convertCalls.length, 0);
-    const c = srv.state.commits.pop();
-    assert.equal(c.text, 'Stadtwerke Rechnung\nBetrag 84,20 €');
-    assert.equal(c.onConflict, 'rename');
-    const pdf = srv.state.media.get(c.mediaId).data.toString('latin1');
-    assert.match(pdf, /^%PDF-1\.4/);
+    const c = srv.state.saveCalls.pop();
+    assert.deepEqual({ ...c, mediaId: null }, { mediaId: null, folderId: 10, name: 'Stadtwerke Rechnung.pdf', text: 'Stadtwerke Rechnung\nBetrag 84,20 €', sourceId: 11, keepOriginal: true });
+    assert.match(srv.state.media.get(c.mediaId).data.toString('latin1'), /^%PDF-1\.4/);
     assert.equal(srv.state.nodes.get(11).deleted, false);
     assert.ok(changed.includes(10));
     // the prepared scan is gone
     await assert.rejects(svc.scanSave(p.scanId, { target: 'pdf' }), (e) => e.code === 'not_found');
   });
 
-  it('scanDocs: Excel / Word by Drive (no second original), "Original-Scan behalten" off, "Nur Bild", without the OCR of Windows', async () => {
-    const { srv, svc, changed } = await setup(['scanDocs', 'docAi']);
+  it('scanDocs: Excel by Drive (its bytes uploaded here, filed with scans/save), "Original-Scan behalten" off, "Nur Bild"', async () => {
+    const { srv, svc, changed } = await setup(['scanDocs', 'docAi'], { ocr: fakeOcr({ available: false }) });
     srv.setInsight(11, { kind: 'statement', suggestion: { folderId: 10, folderPath: 'Dokumente', name: '2026 Zählerstände.jpg' } });
     const p = await svc.scanPrepare([11]);
     assert.equal(p.kind, 'table');
     assert.equal(p.local, false);
+    assert.equal(p.pdf, true);
     assert.equal(p.summary, '3 Spalten, 12 Zeilen, Summenzeile');
     assert.deepEqual(p.suggestion, { folderId: 10, folderPath: 'Dokumente', name: '2026 Zählerstände.jpg' });
     assert.deepEqual(srv.state.classifyCalls[0], { mediaIds: ['photoMedia000001'] });
     const r = await svc.scanSave(p.scanId, { target: 'xlsx', folderId: 10, name: '2026 Zählerstände.jpg', keepOriginal: false });
     assert.equal(r.node.name, '2026 Zählerstände.xlsx');
-    assert.deepEqual(srv.state.convertCalls[0], { mediaIds: ['photoMedia000001'], target: 'xlsx', kind: 'table', keepOriginal: false, folderId: 10, name: '2026 Zählerstände.xlsx' });
+    assert.deepEqual(srv.state.convertCalls[0], { mediaIds: ['photoMedia000001'], target: 'xlsx', kind: 'table', folderId: 10, name: '2026 Zählerstände.xlsx' });
+    const sv = srv.state.saveCalls[0];
+    assert.equal(sv.name, '2026 Zählerstände.xlsx');
+    assert.equal(sv.text, 'Datum\tZähler\tStand');
+    assert.equal(sv.keepOriginal, false);
+    assert.match(srv.state.media.get(sv.mediaId).data.toString(), /^PK fake xlsx/);
     assert.equal(srv.state.nodes.get(11).deleted, true);
     assert.ok(changed.includes(1) && changed.includes(10));
 
-    // printed text without the OCR of Windows: Drive makes the PDF
-    const two = srv.mutate.photo(1, 'Brief.png', { mime: 'image/png' });
-    srv.scanKind = 'printed';
-    const q = await svc.scanPrepare([two.id]);
-    const pdf = await svc.scanSave(q.scanId, { target: 'pdf', keepOriginal: true });
-    assert.equal(pdf.local, false);
-    assert.equal(srv.state.convertCalls[1].target, 'pdf');
-    assert.equal(pdf.node.name, 'Brief.pdf');
-
     // "Nur Bild": the picture stays, renamed and moved
+    const two = srv.mutate.photo(1, 'Brief.png', { mime: 'image/png' });
     const img = await svc.scanPrepare([two.id]);
     const kept = await svc.scanSave(img.scanId, { target: 'image', folderId: 10, name: 'Brief vom Amt', keepOriginal: true });
     assert.equal(kept.node.name, 'Brief vom Amt.png');
     assert.equal(kept.node.parentId, 10);
-    assert.equal(srv.state.convertCalls.length, 2);
+    assert.equal(srv.state.convertCalls.length, 1);
   });
 
-  it('scanDocs: several pages; the AI refused → PDF here and "Nur Bild" still; what it refuses', async () => {
+  it('scanDocs without an OCR language: Drive makes the PDF from smaller copies of the pages; too large → once more without; no file → scan_no_file', async () => {
+    const ocr = fakeOcr({ available: false });
+    const { srv, svc } = await setup(['scanDocs'], { ocr });
+    srv.scanKind = 'printed';
+    const a = srv.mutate.photo(1, 'Seite 1.jpg');
+    const b = srv.mutate.photo(1, 'Seite 2.jpg');
+    const p = await svc.scanPrepare([a.id, b.id]);
+    assert.equal(p.local, false);
+    assert.equal(p.pdf, true);
+    const r = await svc.scanSave(p.scanId, { target: 'pdf', keepOriginal: false });
+    assert.equal(r.local, false);
+    assert.equal(r.node.name, 'Seite 1.pdf');
+    assert.equal(srv.state.convertCalls[0].images.length, 2);
+    assert.deepEqual(ocr.sizes[0], [1700, 72]);
+    assert.match(srv.state.media.get(srv.state.saveCalls[0].mediaId).data.toString(), /fake 2 pages/);
+    // both pages into the trash: the first by Drive, the second here
+    assert.equal(srv.state.saveCalls[0].sourceId, a.id);
+    assert.equal(srv.state.nodes.get(a.id).deleted, true);
+    assert.equal(srv.state.nodes.get(b.id).deleted, true);
+
+    // a whiteboard's Word file takes its photo
+    srv.scanKind = 'whiteboard';
+    const wb = srv.mutate.photo(1, 'Tafel.jpg');
+    const q = await svc.scanPrepare([wb.id]);
+    await svc.scanSave(q.scanId, { target: 'docx', keepOriginal: true });
+    assert.equal(srv.state.convertCalls[1].images.length, 1);
+
+    // the pages too large for Drive's limit → asked again without them → no PDF
+    srv.scanKind = 'printed';
+    srv.imagesMax = 10;
+    const c = srv.mutate.photo(1, 'Groß.jpg');
+    const big = await svc.scanPrepare([c.id]);
+    await assert.rejects(svc.scanSave(big.scanId, { target: 'pdf', keepOriginal: true }), (e) => e.code === 'scan_no_file');
+    assert.equal(srv.state.convertCalls[2].images.length, 1);
+    assert.equal(srv.state.convertCalls[3].images, undefined);
+    assert.equal(srv.state.nodes.get(c.id).deleted, false);
+  });
+
+  it('scanDocs: the AI refused → PDF here and "Nur Bild" still; pages that do not fit Drive\'s limit are not sent; what it refuses', async () => {
     const ocr = fakeOcr();
     const { srv, svc } = await setup(['scanDocs'], { ocr });
     const a = srv.mutate.photo(1, 'Seite 1.jpg');
@@ -264,7 +331,7 @@ describe('DriveService: Drive 1.14', () => {
     assert.equal(p.classifyError, 'unsupported');
     assert.equal(p.kind, 'printed');
     const r = await svc.scanSave(p.scanId, { target: 'pdf', keepOriginal: true });
-    assert.match(srv.state.media.get(srv.state.commits.pop().mediaId).data.toString('latin1'), /\/Count 2/);
+    assert.match(srv.state.media.get(srv.state.saveCalls.pop().mediaId).data.toString('latin1'), /\/Count 2/);
     assert.equal(r.node.name, 'Seite 1.pdf');
     await assert.rejects(svc.scanPrepare([12]), (e) => e.code === 'not_picture');
     await assert.rejects(svc.scanPrepare([10]), (e) => e.code === 'invalid');
@@ -273,12 +340,28 @@ describe('DriveService: Drive 1.14', () => {
     await assert.rejects(svc.scanSave(two.scanId, { target: 'image' }), (e) => e.code === 'invalid');
     await assert.rejects(svc.scanSave(two.scanId, { target: 'pptx' }), (e) => e.code === 'invalid');
     assert.deepEqual(svc.scanDiscard(two.scanId), { ok: true });
-    // the OCR failing on this PC: Drive gets no text, the PDF is Drive's
+    // pictures that stay too large at every size: Word without the photo
+    srv.classifyRefused = false;
+    srv.scanKind = 'handwriting';
+    const big = fakeOcr({ available: false, big: 700 * 1024 });
+    const { srv: s2, svc: v2 } = await setup(['scanDocs'], { ocr: big });
+    s2.scanKind = 'handwriting';
+    const h = await v2.scanPrepare([11]);
+    await v2.scanSave(h.scanId, { target: 'docx', keepOriginal: true });
+    assert.equal(s2.state.convertCalls[0].images, undefined);
+    assert.equal(big.sizes.length, 4);
+    // the OCR failing on this PC: Drive gets no text
     const bad = fakeOcr({ fail: true });
-    const { svc: svc2, srv: srv2 } = await setup(['scanDocs'], { ocr: bad });
-    const q = await svc2.scanPrepare([11]);
+    const { svc: svc3, srv: srv3 } = await setup(['scanDocs'], { ocr: bad });
+    const q = await svc3.scanPrepare([11]);
     assert.equal(q.local, false);
-    assert.deepEqual(srv2.state.classifyCalls[0], { mediaIds: ['photoMedia000001'] });
+    assert.deepEqual(srv3.state.classifyCalls[0], { mediaIds: ['photoMedia000001'] });
+    // no OCR at all (an older app): no pictures for Drive, a PDF cannot be made
+    const { svc: svc4, srv: srv4 } = await setup(['scanDocs']);
+    srv4.scanKind = 'printed';
+    const z = await svc4.scanPrepare([11]);
+    assert.equal(z.pdf, false);
+    await assert.rejects(svc4.scanSave(z.scanId, { target: 'pdf', keepOriginal: true }), (e) => e.code === 'scan_no_file');
     // without the feature
     const { svc: none } = await setup(['photos'], { ocr });
     await assert.rejects(none.scanPrepare([11]), (e) => e.code === 'unsupported');
@@ -291,8 +374,8 @@ describe('DriveService: Drive 1.14', () => {
     const handlers = {};
     registerDriveHandlers((ch, fn) => { handlers[ch] = fn; }, { drive: svc, getMainWindow: () => null, log });
     const bad = [
-      ['drive:deadline:calendar', { id: 'x' }], ['drive:ask', { q: '' }], ['drive:ask', { q: 'x'.repeat(501) }], ['drive:ask', { q: 'Frage?', area: 'a b' }],
-      ['drive:photos', { q: 5 }], ['drive:scan:prepare', { ids: [] }], ['drive:scan:prepare', { ids: new Array(21).fill(11) }],
+      ['drive:deadline:calendar', { id: 'x' }], ['drive:ask', { q: '' }], ['drive:ask', { q: 'ab' }], ['drive:ask', { q: 'x'.repeat(301) }], ['drive:area:calendar', { areaId: 'mine:2', on: 'ja' }], ['drive:ask', { q: 'Frage?', area: 'a b' }],
+      ['drive:photos', { q: 5 }], ['drive:scan:prepare', { ids: [] }], ['drive:scan:prepare', { ids: [11, 12, 13, 14, 15, 16, 17, 18, 19] }],
       ['drive:scan:save', { scanId: 'nope', target: 'pdf', keepOriginal: true }], ['drive:scan:save', { scanId: 'a'.repeat(24), target: 'pptx', keepOriginal: true }],
       ['drive:scan:save', { scanId: 'a'.repeat(24), target: 'pdf' }], ['drive:scan:discard', { scanId: 1 }],
     ];
@@ -306,5 +389,9 @@ describe('DriveService: Drive 1.14', () => {
     assert.equal((await handlers['drive:scan:save'](null, { scanId: p.scanId, target: 'docx', keepOriginal: true })).node.name, 'Foto.docx');
     assert.deepEqual(await handlers['drive:scan:discard'](null, { scanId: p.scanId }), { ok: true });
     assert.equal((await handlers['drive:photos'](null, { q: 'Hund' })).ok, true);
+    assert.equal((await handlers['drive:area:calendar'](null, { areaId: 'mine:2', on: true })).area.deadlinesToCalendar, true);
+    srv.familie = false;
+    const refused = await handlers['drive:deadline:calendar'](null, { id: dl.id + 0 });
+    assert.equal(refused.ok, true, 'a second call answers the same');
   });
 });

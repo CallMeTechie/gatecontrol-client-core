@@ -14,6 +14,8 @@
  * and side-effect free (unit-tested directly).
  */
 
+const { createHash } = require('crypto');
+
 const PLUGIN_ID = 'gatecontrol-drive';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
 const PLUGINS_PATH = '/api/v1/client/plugins';
@@ -135,6 +137,8 @@ function normalizeArea(v) {
     storage: storageOf(a.storage),
     // Drive 1.8 ('docAi'): AI for documents on in this area (null: the Drive does not say)
     docAi: typeof a.docAi === 'boolean' ? a.docAi : null,
+    // Drive 1.14 ('deadlineCalendar'): new deadlines of this area into the family calendar on their own (null: not told)
+    deadlinesToCalendar: typeof a.deadlinesToCalendar === 'boolean' ? a.deadlinesToCalendar : null,
   };
 }
 
@@ -265,7 +269,8 @@ function normalizeMe(raw) {
     features: arr(r.features).slice(0, 50).filter((f) => typeof f === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(f)),
     areas: sortAreas(arr(r.areas).slice(0, 500).map(normalizeArea).filter(Boolean)),
     latest: count(r.latest) || 0,
-    settings: { trashDays: count(st.trashDays), versionsDays: count(st.versionsDays) },
+    // Drive 1.14: scanKeepOriginal — the default of "Original-Scan behalten" (null: not told)
+    settings: { trashDays: count(st.trashDays), versionsDays: count(st.versionsDays), scanKeepOriginal: typeof st.scanKeepOriginal === 'boolean' ? st.scanKeepOriginal : null },
     limits: { maxBytes: count(lim.maxBytes) },
     people: arr(r.people).slice(0, 2000).map((p) => {
       const o = obj(p);
@@ -588,8 +593,11 @@ function photoList(v, max) {
 function normalizePhotos(raw) {
   const r = obj(raw) || {};
   const out = { items: photoList(r.items, 500), next: cursorOf(r.next) };
-  if (r.terms !== undefined || r.labels !== undefined) out.terms = photoTerms(r.terms !== undefined ? r.terms : r.labels);
-  if (count(r.total) !== null) out.total = count(r.total);
+  const se = obj(r.search);
+  if (r.terms !== undefined) out.terms = photoTerms(r.terms);
+  else if (se && se.chips !== undefined) out.terms = photoTerms(arr(se.chips).map((c) => (obj(c) ? { term: c.label, label: c.text || c.label, count: c.count } : c)));
+  const total = count(r.total) !== null ? count(r.total) : se ? count(se.total) : null;
+  if (total !== null) out.total = total;
   return out;
 }
 
@@ -787,7 +795,8 @@ const ASK_STATUS = Object.freeze(['answered', 'not_found']);
 const ASK_MAX = 500;
 const SCAN_KINDS = Object.freeze(['printed', 'handwriting', 'table', 'whiteboard', 'other']);
 const SCAN_TARGETS = Object.freeze(['pdf', 'docx', 'xlsx']);
-const SCAN_PAGES_MAX = 20;
+const SCAN_PAGES_MAX = 8;            // Drive: ≤ 8 pictures a scan
+const SCAN_IMAGES_MAX_BYTES = 600 * 1024;   // scans/convert `images` together (else 413 too_large)
 const TERM_MAX = 40;
 
 /** One line of text with its line breaks kept (an answer, a quote) ≤ max, or null. */
@@ -803,8 +812,9 @@ function termOf(v) {
 }
 
 /**
- * POST ask → { status: 'answered' | 'not_found', answer, sources: [{ nodeId, name, path, page, quote }], terms } or
- * null. An answer without text counts as not found; sources without their file are dropped.
+ * POST ask → { status: 'answered' | 'not_found', answer, sources: [{ nodeId, name, path, areaId, page, quote }], terms,
+ * areas: [label] (where it searched), deadline: a deadline of a source the answer names (with nodeId) | null } or null.
+ * An answer without text counts as not found; sources without their file are dropped.
  */
 function normalizeAsk(raw) {
   const r = obj(raw);
@@ -815,10 +825,19 @@ function normalizeAsk(raw) {
     const nodeId = o && posId(o.nodeId);
     const name = o && line(o.name, NAME_MAX);
     if (!nodeId || !name) return null;
-    return { nodeId, name, path: line(o.path, 2000), page: posId(o.page), quote: textBlock(o.quote, 600) };
+    return { nodeId, name, path: line(o.path, 2000), areaId: areaIdOf(o.areaId), page: posId(o.page), quote: textBlock(o.quote, 600) };
   }).filter(Boolean);
   const status = r.status === 'answered' && answer ? 'answered' : 'not_found';
-  return { status, answer: status === 'answered' ? answer : null, sources: status === 'answered' ? sources : [], terms: arr(r.terms).slice(0, 20).map(termOf).filter(Boolean) };
+  const dl = status === 'answered' && obj(r.deadline) ? normalizeDeadline(r.deadline) : null;
+  const deadline = dl ? { ...dl, nodeId: posId(r.deadline.nodeId) } : null;
+  return {
+    status,
+    answer: status === 'answered' ? answer : null,
+    sources: status === 'answered' ? sources : [],
+    terms: arr(r.terms).slice(0, 20).map(termOf).filter(Boolean),
+    areas: arr(r.areas).slice(0, 20).map((x) => line(x, 200)).filter(Boolean),
+    deadline,
+  };
 }
 
 /** POST scans/classify → { kind, confidence: 0…1, summary } or null. */
@@ -829,22 +848,58 @@ function normalizeScanClass(raw) {
   return { kind: r.kind, confidence: c, summary: line(r.summary, 300) };
 }
 
-/** POST scans/convert → { node, original } (original: the kept scan's node, or null) or null. */
+const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+const SCAN_FILE_MAX = 50 * 1024 * 1024;
+
+/**
+ * POST scans/convert → { kind, target, title, name, folderId, folderPath, text, file: { name, mime, size, sha256, data:
+ * Buffer } | null } or null. Drive writes no file itself: `file` holds the document's bytes (checked against size and
+ * sha256) for the media upload and scans/save; null: nothing to file (a PDF without pictures).
+ */
 function normalizeScanConvert(raw) {
+  const r = obj(raw);
+  if (!r || !SCAN_TARGETS.includes(r.target)) return null;
+  let file = null;
+  const f = obj(r.file);
+  if (f) {
+    const size = count(f.size);
+    const data = typeof f.data === 'string' && f.data.length <= SCAN_FILE_MAX * 1.4 && B64_RE.test(f.data) ? Buffer.from(f.data, 'base64') : null;
+    const sha = sha256Of(f.sha256);
+    const name = safeName(line(f.name, NAME_MAX) || '');
+    if (!data || !data.length || size !== data.length || !name || (sha && createHash('sha256').update(data).digest('hex') !== sha)) return null;
+    file = { name, mime: line(f.mime, 120), size, sha256: sha, data };
+  }
+  return {
+    kind: SCAN_KINDS.includes(r.kind) ? r.kind : null,
+    target: r.target,
+    title: line(r.title, 200),
+    name: safeName(line(r.name, NAME_MAX) || ''),
+    folderId: posId(r.folderId),
+    folderPath: line(r.folderPath, 2000),
+    text: typeof r.text === 'string' ? r.text.slice(0, TEXT_MAX) : null,
+    file,
+  };
+}
+
+/** POST scans/save → { node, original } (original: the scan's file while it stays) or null. */
+function normalizeScanSave(raw) {
   const r = obj(raw) || {};
   const node = normalizeNode(r.node);
   if (!node) return null;
   return { node, original: normalizeNode(r.original) };
 }
 
-/** The hit chips of GET photos?q= (the most frequent labels of the hits): strings or { term | label, count }. */
+/**
+ * The hit chips of GET photos?q= (the most frequent other labels of the hits): [{ term (the word to add to q), label
+ * (shown, in the person's language), count }] — also plain strings.
+ */
 function photoTerms(v) {
   const out = [];
   for (const x of arr(v).slice(0, 30)) {
     const o = obj(x);
     const term = termOf(o ? (o.term !== undefined ? o.term : o.label) : x);
     if (!term || out.some((t) => t.term.toLowerCase() === term.toLowerCase())) continue;
-    out.push({ term, count: o ? count(o.count) : null });
+    out.push({ term, label: (o && termOf(o.label)) || term, count: o ? count(o.count) : null });
   }
   return out;
 }
@@ -1206,6 +1261,8 @@ module.exports = {
   normalizeAsk,
   normalizeScanClass,
   normalizeScanConvert,
+  normalizeScanSave,
+  SCAN_IMAGES_MAX_BYTES,
   photoTerms,
   termOf,
   INSIGHT_STATUS,

@@ -22,6 +22,7 @@
  *   recognize(bytes)     → { width, height, lines: [{ text, words: [{ text, x, y, w, h }] }], text }
  *   recognizePixels({ width, height, bgra }) → { lines, text }   (the pixels already ≤ MaxImageDimension)
  *   image(bytes)         → { width, height, jpeg }   the picture for a PDF page (a JPEG stays as it is)
+ *   jpeg(bytes, { maxSide, quality }) → Buffer          a smaller JPEG (for Drive's scans/convert `images`; needs no OCR)
  * Failures throw (WinRtError, or an Error with `code` 'unsupported_os' | 'no_language' | 'bad_image').
  */
 
@@ -328,7 +329,15 @@ function createWindowsOcr({ platform = process.platform, koffi = null, api = nul
     return { width, height, jpeg: isJpeg(bytes) ? Buffer.from(bytes) : img.toJPEG(90) };
   }
 
-  return { available, recognize, recognizePixels, image };
+  /** A JPEG of the picture whose longer side is at most `maxSide` (never enlarged). */
+  function jpeg(bytes, { maxSide = 1600, quality = 70 } = {}) {
+    const { img, width, height } = decode(bytes);
+    const k = Math.max(width, height) > maxSide ? maxSide / Math.max(width, height) : 1;
+    const small = k < 1 ? img.resize({ width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)), quality: 'best' }) : img;
+    return small.toJPEG(quality);
+  }
+
+  return { available, recognize, recognizePixels, image, jpeg };
 }
 
 module.exports = {

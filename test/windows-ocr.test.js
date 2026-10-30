@@ -113,4 +113,13 @@ describe('windows-ocr: recognition', () => {
     assert.equal(images.calls.jpeg, 90);
     assert.equal(png.jpeg[0], 0xff);
   });
+
+  it('jpeg(): a smaller JPEG for Drive (never enlarged), without the OCR', () => {
+    const { ocr, images } = setup({ size: { width: 3400, height: 1700 }, languages: false });
+    assert.equal(ocr.jpeg(Buffer.from('x'), { maxSide: 1700, quality: 72 })[0], 0xff);
+    assert.deepEqual(images.calls.resize, [{ width: 1700, height: 850, quality: 'best' }]);
+    assert.equal(images.calls.jpeg, 72);
+    ocr.jpeg(Buffer.from('x'), { maxSide: 5000, quality: 60 });
+    assert.equal(images.calls.resize.length, 1);
+  });
 });

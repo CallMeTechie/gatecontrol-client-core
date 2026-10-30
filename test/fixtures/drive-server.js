@@ -41,11 +41,15 @@
 // for another address; without 'zipMixed' one folder or ≤ 20 files), 'multiLink' (POST links { nodeIds }: files only,
 // ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
 // Drive 1.14: 'deadlineCalendar' (POST deadlines/<id>/calendar → deadline.calendar; srv.familie = false → 409
-// familie_unavailable; state.calendarCalls), 'docAsk' (POST ask { q, area? }: srv.answer(q) → the answer, default
-// not_found with the words of q as terms; state.askCalls), 'scanDocs' (POST scans/classify { mediaIds, text? } →
-// srv.scanKind (default: 'table'); POST scans/convert { mediaIds, target, kind, folderId?, name?, keepOriginal } → a new
-// node (docx / xlsx / pdf) in folderId; state.classifyCalls / convertCalls), 'photoSearch' (GET photos?q=: the photos
-// whose state.labels (nodeId → [label]) contain a word of q, with terms).
+// familie_unavailable { reason }; state.calendarCalls; PATCH areas/<id> { deadlinesToCalendar }, areas[].deadlinesToCalendar),
+// 'docAsk' (POST ask { q (3 … 300), area? }: srv.answer(q) → the answer, default not_found with the words of q as terms
+// and the areas' labels; state.askCalls; srv.askLimited → 429), 'scanDocs' (POST scans/classify { mediaIds, text? } →
+// srv.scanKind (default: 'table'); POST scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → the
+// document's bytes as `file` (a PDF only with images; srv.imagesMax → 413 too_large above it); POST scans/save
+// { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original } (sourceId into the trash with
+// keepOriginal false); state.classifyCalls / convertCalls / saveCalls; me settings.scanKeepOriginal), 'photoSearch' (GET
+// photos?q=: the photos whose state.labels (nodeId → [label]) contain every word of q, with terms [{ term, label, count }],
+// total and search.chips).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -363,8 +367,12 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.classifyCalls = [];
   state.convertCalls = [];
   state.commits = [];
+  state.saveCalls = [];
+  state.toCalendar = new Set();
   state.labels = new Map();
   srv.familie = true;
+  srv.scanKeepOriginal = true;
+  srv.imagesMax = 600 * 1024;
   srv.answer = null;
   srv.scanKind = 'table';
   // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
@@ -512,11 +520,11 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const seg = route.split('/');
     const get = (id) => { const n = state.nodes.get(Number(id)); return n && !n.deleted ? n : null; };
 
-    const areasNowMe = () => (features && features.includes('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id) })) : areas);
+    const areasNowMe = () => (features && features.includes('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id), ...(features.includes('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) })) : areas);
     if (req.method === 'GET' && route === 'me') {
       return json(res, 200, {
         ok: true, me: { id: 2, name: 'Marc', seat: seat || null, deviceId: '42' }, licence: { valid: licence, tier: 'combo' },
-        areas: seat ? areasNowMe() : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
+        areas: seat ? areasNowMe() : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30, ...(features && features.includes('scanDocs') ? { scanKeepOriginal: srv.scanKeepOriginal } : {}) }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
         ...(features ? { features } : {}),
         ...(features && features.includes('links') ? { links: { node: `${srv.linksBase}/portal#plg-gatecontrol-drive/node/{id}`, drive: `${srv.linksBase}/portal#plg-gatecontrol-drive` } } : {}),
@@ -585,15 +593,19 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, device: devView(d) });
     }
     const has = (f) => !!(features && features.includes(f));
-    const areasNow = () => (has('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id) })) : areas);
+    const areasNow = () => (has('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id), ...(has('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) })) : areas);
     if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas: areasNow() });
     // ── Drive 1.8 'docAi' ──
     if (has('docAi') && seg[0] === 'areas' && seg[1] && req.method === 'PATCH') {
       const a = areas.find((x) => x.id === decodeURIComponent(seg[1]));
       if (!a) return refuse(res, 404, 'not_found');
       if (!(a.role === 'write' || a.role === 'manage')) return refuse(res, 403, 'forbidden');
-      if (body.docAi) state.docAiOff.delete(a.id); else state.docAiOff.add(a.id);
-      return json(res, 200, { ok: true, area: { id: a.id, docAi: !!body.docAi } });
+      if (typeof body.deadlinesToCalendar === 'boolean' && has('deadlineCalendar')) {
+        if (body.deadlinesToCalendar && !srv.familie) return json(res, 409, { ok: false, code: 'familie_unavailable', reason: 'forbidden', error: 'familie_unavailable' });
+        if (body.deadlinesToCalendar) state.toCalendar.add(a.id); else state.toCalendar.delete(a.id);
+      }
+      if (typeof body.docAi === 'boolean') { if (body.docAi) state.docAiOff.delete(a.id); else state.docAiOff.add(a.id); }
+      return json(res, 200, { ok: true, area: { id: a.id, docAi: !state.docAiOff.has(a.id), ...(has('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) } });
     }
     if (seg[0] === 'nodes' && seg[2] === 'insight') {
       if (!has('docAi')) return refuse(res, 404, 'not_found');
@@ -638,7 +650,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       // Drive 1.14 'deadlineCalendar'
       if (d && seg[2] === 'calendar' && req.method === 'POST' && has('deadlineCalendar')) {
         state.calendarCalls.push(d.id);
-        if (!srv.familie) return refuse(res, 409, 'familie_unavailable');
+        // a second call answers the same
+        if (d.calendar) return json(res, 200, { ok: true, deadline: plain() });
+        if (!srv.familie) return json(res, 409, { ok: false, code: 'familie_unavailable', reason: 'forbidden', error: 'familie_unavailable' });
         d.calendar = { eventId: `ev-${d.id}`, at: iso(Date.now()) };
         return json(res, 200, { ok: true, deadline: plain() });
       }
@@ -802,17 +816,38 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const hits = photoList(url.searchParams.get('area')).filter((n) => words.every((w) => (state.labels.get(n.id) || []).some((l) => l.toLowerCase().includes(w))));
       const counts = new Map();
       for (const n of hits) for (const l of state.labels.get(n.id) || []) if (!words.some((w) => l.toLowerCase().includes(w))) counts.set(l, (counts.get(l) || 0) + 1);
-      const terms = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([term, count]) => ({ term, count }));
-      return json(res, 200, { ok: true, ...pageOf(hits), terms, total: hits.length });
+      const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6);
+      // the label is the word to add (lower case); `label` / `text` what is shown
+      const show = (l) => l.charAt(0).toUpperCase() + l.slice(1);
+      const terms = top.map(([l, count]) => ({ term: l.toLowerCase(), label: show(l), count }));
+      return json(res, 200, { ok: true, ...pageOf(hits), terms, total: hits.length, search: { terms: words, labels: words, total: hits.length, chips: top.map(([l, count]) => ({ label: l.toLowerCase(), text: show(l), count })) } });
     }
     if (has('photos') && req.method === 'GET' && route === 'photos') return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
     // ── Drive 1.14 'docAsk' / 'scanDocs' ──
     if (req.method === 'POST' && route === 'ask' && has('docAsk')) {
       state.askCalls.push(body);
-      if (typeof body.q !== 'string' || body.q.length < 2) return json(res, 400, { ok: false, code: 'invalid', field: 'q', error: 'invalid' });
-      if (srv.askLimited) return refuse(res, 429, 'rate_limited');
+      if (typeof body.q !== 'string' || body.q.trim().length < 3 || body.q.length > 300) return json(res, 400, { ok: false, code: 'invalid', field: 'q', error: 'invalid' });
+      if (srv.askLimited) return json(res, 429, { ok: false, code: 'rate_limited', reason: 'questions', error: 'rate_limited' });
       const a = typeof srv.answer === 'function' ? srv.answer(body.q) : null;
-      return json(res, 200, { ok: true, ...(a || { status: 'not_found', answer: null, sources: [], terms: body.q.split(/\s+/).filter((w) => w.length > 3).slice(0, 4) }) });
+      const where = areas.filter((x) => !body.area || x.id === body.area).map((x) => x.label);
+      return json(res, 200, { ok: true, ...(a || { status: 'not_found', answer: null, sources: [], terms: body.q.split(/\s+/).filter((w) => w.length > 3).slice(0, 4), areas: where, deadline: null }) });
+    }
+    if (req.method === 'POST' && route === 'scans/save' && has('scanDocs')) {
+      state.saveCalls.push(body);
+      const parent = get(body.folderId);
+      if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
+      if (!writable(parent)) return refuse(res, 403, 'forbidden');
+      const md = state.media.get(body.mediaId);
+      if (!md) return refuse(res, 409, 'upload_invalid');
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: body.mediaId, sha256: sha(md.data), text: body.text || null });
+      logChange('create', n);
+      let original = null;
+      const src = body.sourceId ? get(body.sourceId) : null;
+      if (src && !src.deleted && !src.isDir) {
+        original = view(src);
+        if (body.keepOriginal === false && writable(src)) { src.deleted = true; src.deletedAt = iso(Date.now()); logChange('delete', src); original = null; }
+      }
+      return json(res, 200, { ok: true, node: view(n), original });
     }
     if (req.method === 'POST' && seg[0] === 'scans' && has('scanDocs')) {
       const ids = Array.isArray(body.mediaIds) ? body.mediaIds : [];
@@ -824,19 +859,22 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       if (seg[1] === 'convert') {
         state.convertCalls.push(body);
-        const parent = get(body.folderId || 1);
-        if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
-        if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        const parent = body.folderId ? get(body.folderId) : null;
+        if (body.folderId && (!parent || !parent.isDir)) return refuse(res, 404, 'not_found');
+        if (parent && !writable(parent)) return refuse(res, 403, 'forbidden');
         const ext = { pdf: 'pdf', docx: 'docx', xlsx: 'xlsx' }[body.target];
         const mime = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }[body.target];
-        if (!ext) return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
-        const data = Buffer.from(`PK fake ${body.target}`);
-        const mediaId = crypto.randomBytes(16).toString('hex');
-        state.media.set(mediaId, { data, mime });
-        const name = freeName(parent.id, body.name || `Scan.${ext}`);
-        const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name, size: data.length, mime, mediaId, sha256: sha(data) });
-        logChange('create', n);
-        return json(res, 200, { ok: true, node: view(n), original: null });
+        if (!ext || (ext === 'xlsx' && body.kind !== 'table')) return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
+        const images = Array.isArray(body.images) ? body.images.map((x) => Buffer.from(x, 'base64')) : [];
+        if (images.reduce((a, b) => a + b.length, 0) > srv.imagesMax) return json(res, 413, { ok: false, code: 'too_large', field: 'images', error: 'too_large' });
+        const text = body.text || (body.kind === 'table' ? 'Datum\tZähler\tStand' : 'Erkannter Text');
+        let data = null;
+        if (ext !== 'pdf') data = Buffer.from(`PK fake ${ext} ${images.length}`);
+        else if (images.length) data = Buffer.from(`%PDF-1.4 fake ${images.length} pages`);
+        const base = String(body.name || `Scan.${ext}`).replace(/\.[A-Za-z0-9]{1,5}$/, '');
+        const name = parent ? freeName(parent.id, `${base}.${ext}`) : `${base}.${ext}`;
+        const file = data ? { name, mime, size: data.length, sha256: sha(data), data: data.toString('base64') } : null;
+        return json(res, 200, { ok: true, kind: body.kind, target: body.target, title: null, name, folderId: parent ? parent.id : null, folderPath: parent ? parent.name : null, text, content: null, file, source: body.text ? 'device' : 'media', usage: { costCents: 0.1 } });
       }
     }
     if (has('photos') && req.method === 'GET' && route === 'photos/months') {
