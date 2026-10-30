@@ -200,4 +200,7 @@ Object.defineProperties(module.exports, {
   // new VaultService({ …, hello: windowsHello.createWindowsHello({ log }) });
   // Drive 1.11 vault lock: new DriveService({ …, consent: windowsHello.createConsentVerifier({ log }) })
   windowsHello: { enumerable: true, get: () => require('./services/windows-hello') },
+  // Drive 1.14 searchable PDFs of scans: the text recognition of Windows (WinRT Windows.Media.Ocr via koffi):
+  // new DriveService({ …, ocr: windowsOcr.createWindowsOcr({ log }) })
+  windowsOcr: { enumerable: true, get: () => require('./services/windows-ocr') },
 });

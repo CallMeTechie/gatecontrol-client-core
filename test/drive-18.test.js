@@ -62,7 +62,7 @@ describe('utils/drive: Drive 1.8 / 1.9 answers', () => {
     });
     assert.equal(ins.title, 'Stadtwerke Rechnung');
     assert.deepEqual(ins.suggestion, { folderId: 10, folderPath: 'Rechnungen/2026', name: '2026-03-14 Stadtwerke Rechnung.pdf' });
-    assert.deepEqual(ins.deadlines, [{ id: 3, kind: 'payment', date: '2026-03-28', label: 'Zahlung', reminder: { at: Date.parse('2026-03-25T07:00:00Z'), daysBefore: 3, sent: false } }]);
+    assert.deepEqual(ins.deadlines, [{ id: 3, kind: 'payment', date: '2026-03-28', label: 'Zahlung', reminder: { at: Date.parse('2026-03-25T07:00:00Z'), daysBefore: 3, sent: false }, calendar: null }]);
     assert.equal(drive.normalizeInsight({ status: 'ready', suggestion: { folderId: 2, folderPath: '' } }).suggestion.folderPath, '');
     assert.equal(drive.normalizeInsight({ status: 'weird' }), null);
     assert.equal(drive.normalizeInsight({ status: 'ready', amount: 5, currency: 'eur' }).currency, null);
