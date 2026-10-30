@@ -12,6 +12,9 @@
  *   - will-redirect: only the app's own pages, nothing is opened.
  *   - setWindowOpenHandler: always deny; http(s) links open in the browser.
  *   - will-attach-webview: always blocked (the apps use no webviews).
+ *   - will-frame-navigate (frames inside a page, e.g. Mail's sandboxed reading
+ *     frame): only about:srcdoc / about:blank load there; http(s) links open in
+ *     the system browser, everything else is blocked.
  *
  * installWindowGuard() hooks app.on('web-contents-created'), so every window
  * (main window, Vault quick search, future ones) is covered without each one
@@ -152,6 +155,21 @@ function guardWebContents(contents, o) {
       return { action: 'deny' };
     });
   }
+  // Frames inside a page (Mail's reading frame): never an own page of the app, never another site in the frame.
+  contents.on('will-frame-navigate', (e) => {
+    if (!e || e.isMainFrame !== false) return;
+    const url = typeof e.url === 'string' ? e.url : '';
+    if (url === 'about:srcdoc' || url === 'about:blank') return;
+    const decision = navigationDecision(url, { appRoots: [], kind: 'open' });
+    try { o.onDecision?.({ kind: 'frame', decision, url }); } catch { /* test hook */ }
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    if (decision === EXTERNAL) {
+      log?.info(`Window guard: frame link to ${describeUrl(url)} opened in the browser`);
+      openExternal(url);
+    } else {
+      log?.warn(`Window guard: frame navigation to ${describeUrl(url)} blocked`);
+    }
+  });
   contents.on('will-attach-webview', (e, webPreferences, params) => {
     if (e && typeof e.preventDefault === 'function') e.preventDefault();
     log?.warn(`Window guard: <webview> blocked (${describeUrl(params && params.src)})`);

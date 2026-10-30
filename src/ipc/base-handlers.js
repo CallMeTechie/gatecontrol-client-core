@@ -27,6 +27,7 @@ const { registerSchoolHandlers } = require('./school-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
+const { registerMailHandlers } = require('./mail-handlers');
 const MapService = require('../services/map-service');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
@@ -181,6 +182,9 @@ const NOTIFY_EVENTS = {
  *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.driveSync] - DriveSync (opt-in with ctx.drive, "Ordner sichern"):
  *   registers drive:sync:*, forwards its events, resets it after server:setup.
+ * @param {object} [ctx.mail] - MailService (opt-in, "Mail"): registers the
+ *   mail:* channels (ipc/mail-handlers.js), forwards its events to the
+ *   main window and resets it (and its offline cache) after a successful server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @returns {string[]} the channels registered via ipcMain.handle
@@ -206,6 +210,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const vaultSvc = ctx.vault || null;
   const driveSvc = ctx.drive || null;
   const driveSync = (driveSvc && ctx.driveSync) || null;
+  const mailSvc = ctx.mail || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
 
   // Registers a core handler unless the client skips or overrides the channel.
@@ -253,6 +258,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // "Ordner sichern": the runs of the old server stop; its folders wait ("anderer Server").
     if (driveSync) {
       Promise.resolve().then(() => driveSync.resetForNewServer()).catch((err) => log.warn(`Drive sync reset failed: ${err.message}`));
+    }
+    // Mail: availability, accounts and the offline cache belong to the old server.
+    if (mailSvc) {
+      Promise.resolve().then(() => mailSvc.resetForNewServer()).catch((err) => log.warn(`Mail reset failed: ${err.message}`));
     }
   }
 
@@ -731,6 +740,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
   if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, getMainWindow, log });
+
+  // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
+  if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

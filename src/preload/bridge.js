@@ -543,6 +543,72 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       },
     },
 
+    // ── Mail (plugin gatecontrol-mail) ───────────────────
+    // Served when the app passes a MailService to registerBaseHandlers
+    // (ipc/mail-handlers.js lists arguments and answers).
+    mail: {
+      status:       () => ipcRenderer.invoke('mail:status'),
+      check:        () => ipcRenderer.invoke('mail:check'),
+      me:           () => ipcRenderer.invoke('mail:me'),
+      // { threads?, swipeLeft?, swipeRight? }
+      settings:     (patch) => ipcRenderer.invoke('mail:settings', { ...(patch || {}) }),
+      providers:    () => ipcRenderer.invoke('mail:providers'),
+      discover:     (email) => ipcRenderer.invoke('mail:discover', { email }),
+      addAccount:   (input) => ipcRenderer.invoke('mail:account:add', { ...(input || {}) }),
+      // "Mit Microsoft anmelden" in the default browser: { accountId? (sign in again), name?, color?, kind? }
+      microsoft:    (opts) => ipcRenderer.invoke('mail:account:microsoft', { ...(opts || {}) }),
+      cancelSignIn: () => ipcRenderer.invoke('mail:signin:cancel'),
+      updateAccount: (id, patch) => ipcRenderer.invoke('mail:account:update', { ...(patch || {}), id }),
+      deleteAccount: (id) => ipcRenderer.invoke('mail:account:delete', { id }),
+      folders:      () => ipcRenderer.invoke('mail:folders'),
+      // { box: 'all' | accountId, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }
+      list:         (query) => ipcRenderer.invoke('mail:list', { ...(query || {}) }),
+      search:       (query) => ipcRenderer.invoke('mail:search', { ...(query || {}) }),
+      thread:       (id) => ipcRenderer.invoke('mail:thread', { id }),
+      message:      (id, opts) => ipcRenderer.invoke('mail:message', { id, markRead: !(opts && opts.markRead === false) }),
+      allowImages:  (id, allow) => ipcRenderer.invoke('mail:images', { id, allow }),
+      flags:        (ids, patch) => ipcRenderer.invoke('mail:flags', { ...(patch || {}), ids }),
+      // 'archive' | 'delete' | 'junk' | 'move' (folderId) | 'tab' (tab)
+      act:          (action, ids, opts) => ipcRenderer.invoke('mail:act', { ...(opts || {}), action, ids }),
+      openAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:open', { ...(opts || {}), id, attachmentId }),
+      saveAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:save', { ...(opts || {}), id, attachmentId }),
+      // file dialog → { ok, paths }; then upload(paths) → { ok, items: [{ mediaId, … }], rejected }
+      pick:         () => ipcRenderer.invoke('mail:pick'),
+      upload:       (paths) => ipcRenderer.invoke('mail:upload', { paths }),
+      uploadDropped: (fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
+          if (p) paths.push(p);
+        }
+        return paths.length ? ipcRenderer.invoke('mail:upload', { paths: paths.slice(0, 20) }) : Promise.resolve({ ok: true, items: [], rejected: [] });
+      },
+      editor:       (html) => ipcRenderer.invoke('mail:editor', { html: html || '' }),
+      createDraft:  (input) => ipcRenderer.invoke('mail:draft:create', { ...(input || {}) }),
+      updateDraft:  (id, input) => ipcRenderer.invoke('mail:draft:update', { ...(input || {}), id }),
+      draft:        (id) => ipcRenderer.invoke('mail:draft:get', { id }),
+      deleteDraft:  (id) => ipcRenderer.invoke('mail:draft:delete', { id }),
+      send:         (id, sendAt) => ipcRenderer.invoke('mail:send', { id, sendAt: sendAt || null }),
+      cancelSend:   (outboxId) => ipcRenderer.invoke('mail:send:cancel', { outboxId }),
+      outbox:       () => ipcRenderer.invoke('mail:outbox'),
+      contacts:     (q) => ipcRenderer.invoke('mail:contacts', { q }),
+      ai:           (id) => ipcRenderer.invoke('mail:ai', { id }),
+      runAi:        (id) => ipcRenderer.invoke('mail:ai:run', { id }),
+      todo:         (id, index) => ipcRenderer.invoke('mail:ai:todo', { id, index }),
+      suggest:      (id, attachmentId) => ipcRenderer.invoke('mail:drive:suggest', { id, attachmentId }),
+      // { folderId?, name?, remember? }
+      saveToDrive:  (id, attachmentId, opts) => ipcRenderer.invoke('mail:drive:save', { ...(opts || {}), id, attachmentId }),
+      saveAll:      (id) => ipcRenderer.invoke('mail:drive:save-all', { id }),
+      filing:       () => ipcRenderer.invoke('mail:filing'),
+      confirmFiling: (id, opts) => ipcRenderer.invoke('mail:filing:confirm', { ...(opts || {}), id }),
+      dismissFiling: (id) => ipcRenderer.invoke('mail:filing:dismiss', { id }),
+      onState:      (cb) => subscribe('mail:state', cb),
+      // lists to reload: { accountId, folderId } (null: all)
+      onChanged:    (cb) => subscribe('mail:changed', cb),
+      onOutbox:     (cb) => subscribe('mail:outbox', cb),
+    },
+
     // ── Shell ────────────────────────────────────────────
     shell: {
       openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
