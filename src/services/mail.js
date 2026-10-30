@@ -37,12 +37,22 @@
  *   opened, encrypted with DPAPI; used when the server cannot be reached;
  *   removed with a new server, a refused token and when Mail goes away.
  * - Live: the plugin's realtime event `mail { kind: 'changed', accountId,
- *   folderId }` → 'changed'; a click on a Mail push (topic `mail`, data
+ *   folderId }` → 'changed' (since Mail 1.1.2 also with messageId, threadId,
+ *   attachmentId: a body / an attachment the provider sent later); a click on a Mail push (topic `mail`, data
  *   { mail: { messageId, accountId } }; `mail_failed` { mail: { outboxId } })
  *   opens the mail / the outbox on the page (NotificationCenter.addClickRoute).
  *
- * Events: 'state' (status()), 'changed' ({ accountId, folderId }) lists to
- * reload, 'outbox' ({}) the outbox changed.
+ * - Loading later (Mail 1.1.2): a mail whose body the provider has not sent
+ *   yet comes with bodyMissing (the snippet as text, a full copy of the cache
+ *   is kept); an embedded picture still on its way (409 busy, reason
+ *   'loading') → 'loading' ({ messageId, attachmentId, retryAfter }).
+ * - Account pictures (Microsoft): avatar(mediaId) → a data: URL, kept by
+ *   media id.
+ *
+ * Events: 'state' (status()), 'changed' ({ accountId, folderId, messageId,
+ * threadId, attachmentId }) lists to reload, 'outbox' ({}) the outbox
+ * changed, 'loading' ({ messageId, attachmentId, retryAfter }) an embedded
+ * picture the frame should ask for again.
  */
 
 const EventEmitter = require('events');
@@ -70,6 +80,7 @@ const DEFAULT_TIMING = {
 const MAX_PATHS = 20;
 const PICTURE_CACHE = 300;
 const PICTURE_CACHE_BYTES = 30 * 1024 * 1024;
+const AVATAR_CACHE = 30;
 const PLACEHOLDER = { de: 'Nachricht schreiben …', en: 'Write your message …' };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
@@ -131,6 +142,7 @@ class MailService extends EventEmitter {
     this._me = null;
     this._signin = null;
     this._pictures = new Map();   // gcmail URL → { mime, data }
+    this._avatars = new Map();    // media id → data: URL
     this._pictureBytes = 0;
     this._filling = new Set();
   }
@@ -150,7 +162,7 @@ class MailService extends EventEmitter {
         if (!ev || ev.event !== 'plugin' || !ev.data || ev.data.plugin !== mail.PLUGIN_ID) return;
         const d = ev.data.data && typeof ev.data.data === 'object' ? ev.data.data : ev.data;
         if (ev.data.type === 'mail' && (d.kind === undefined || d.kind === 'changed')) {
-          this.emit('changed', { accountId: mail.posId(d.accountId), folderId: mail.posId(d.folderId) });
+          this.emit('changed', mail.normalizeChanged(d));
         } else if (ev.data.type === 'outbox' || ev.data.type === 'mail_failed') {
           this.emit('outbox', {});
         }
@@ -193,6 +205,7 @@ class MailService extends EventEmitter {
     this._me = null;
     this._pictures.clear();
     this._pictureBytes = 0;
+    this._avatars.clear();
     this._retry = 0;
     this._scope = this._scopeNow();
     this.cache.setScope(this._scope);
@@ -288,6 +301,7 @@ class MailService extends EventEmitter {
     this._me = null;
     this._pictures.clear();
     this._pictureBytes = 0;
+    this._avatars.clear();
     this.cache.setScope(s);
   }
 
@@ -499,6 +513,11 @@ class MailService extends EventEmitter {
     if (!mid) throw new MailError('invalid id', { code: 'invalid' });
     return this._orCache(async () => {
       let m = await this.api.message(mid);
+      if (m.bodyMissing) {
+        // the provider has not sent the body yet (the snippet stands in): a full copy kept earlier is shown instead
+        const kept = await this.cache.getMessage(mid).catch(() => null);
+        if (kept && !kept.bodyMissing && (kept.html || kept.text)) m = { ...kept, unread: m.unread, flagged: m.flagged };
+      }
       if (m.unread && markRead) {
         try {
           await this.api.flags([mid], { unread: false });
@@ -508,7 +527,7 @@ class MailService extends EventEmitter {
           this.log.debug(`Mail: marking read failed: ${err.code || err.message}`);
         }
       }
-      await this.cache.putMessage(m);
+      if (!m.bodyMissing) await this.cache.putMessage(m);
       return this._withDoc(m);
     }, async () => {
       const m = await this.cache.getMessage(mid);
@@ -749,8 +768,31 @@ class MailService extends EventEmitter {
       return { status: 200, mime: p.mime, data: p.data };
     } catch (err) {
       this.log.debug(`Mail picture not loaded: ${err.code || err.message}`);
+      const busy = mail.busyOf(err);
+      if (busy && target.kind === 'cid') {
+        // still on its way from the provider: the page asks again (after retryAfter or with the live event)
+        this.emit('loading', { messageId: target.messageId, attachmentId: target.attachmentId, retryAfter: busy.retryAfter });
+        return { status: 503, mime: 'text/plain', data: Buffer.alloc(0) };
+      }
       return { status: err && err.status === 403 ? 403 : 404, mime: 'text/plain', data: Buffer.alloc(0) };
     }
+  }
+
+  // ── Account pictures ─────────────────────────────────────
+
+  /** An account's picture (`Account.avatar`) → { ok, mime, url (data:) }, kept by its media id (a new picture has a new one). */
+  async avatar(mediaId) {
+    if (!mail.isMediaId(mediaId)) throw new MailError('invalid media id', { code: 'invalid' });
+    return this._run(async () => {
+      const hit = this._avatars.get(mediaId);
+      if (hit) return { ok: true, ...hit };
+      const acc = ((this._me && this._me.accounts) || []).find((a) => a.avatar && a.avatar.mediaId === mediaId);
+      const p = await this.api.avatar(mediaId, acc ? acc.avatar.mime : null);
+      const v = { mime: p.mime, url: `data:${p.mime};base64,${p.data.toString('base64')}` };
+      this._avatars.set(mediaId, v);
+      while (this._avatars.size > AVATAR_CACHE) this._avatars.delete(this._avatars.keys().next().value);
+      return { ok: true, ...v };
+    });
   }
 
   /** Electron protocol.handle('gcmail', (req) => mail.handleProtocol(req)) → a Response (no caching, no sniffing). */

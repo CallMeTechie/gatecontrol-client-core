@@ -572,6 +572,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       cancelSignIn: () => ipcRenderer.invoke('mail:signin:cancel'),
       updateAccount: (id, patch) => ipcRenderer.invoke('mail:account:update', { ...(patch || {}), id }),
       deleteAccount: (id) => ipcRenderer.invoke('mail:account:delete', { id }),
+      avatar:       (mediaId) => ipcRenderer.invoke('mail:avatar', { mediaId }),
       folders:      () => ipcRenderer.invoke('mail:folders'),
       // { box: 'all' | accountId, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }
       list:         (query) => ipcRenderer.invoke('mail:list', { ...(query || {}) }),
@@ -617,9 +618,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       confirmFiling: (id, opts) => ipcRenderer.invoke('mail:filing:confirm', { ...(opts || {}), id }),
       dismissFiling: (id) => ipcRenderer.invoke('mail:filing:dismiss', { id }),
       onState:      (cb) => subscribe('mail:state', cb),
-      // lists to reload: { accountId, folderId } (null: all)
+      // lists to reload: { accountId, folderId, messageId, threadId, attachmentId } (null: all)
       onChanged:    (cb) => subscribe('mail:changed', cb),
       onOutbox:     (cb) => subscribe('mail:outbox', cb),
+      onLoading:    (cb) => subscribe('mail:loading', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

@@ -191,7 +191,46 @@ function normalizeAccount(v) {
     ai: bool(o.ai),
     attachments: oneOf(ATTACH_MODES, o.attachments, 'off'),
     signature: text(o.signature, 10000) || '',
+    avatar: normalizeAvatar(o.avatar),
   };
+}
+
+/** Raster pictures only (never SVG). */
+const PICTURE_MIME_RE = /^image\/(png|jpe?g|gif|webp|bmp|avif)$/;
+
+/** `Account.avatar` (Mail 1.1.2, Microsoft only) → { mediaId, mime }, else null. */
+function normalizeAvatar(v) {
+  const o = obj(v);
+  if (!o || !isMediaId(o.mediaId)) return null;
+  const mime = typeof o.mime === 'string' ? o.mime.split(';')[0].trim().toLowerCase() : '';
+  return PICTURE_MIME_RE.test(mime) ? { mediaId: o.mediaId, mime } : null;
+}
+
+/**
+ * The live event `mail` `{ kind: 'changed', accountId, folderId }` — since Mail 1.1.2 also with `messageId` (a body
+ * the answer did not wait for is there; with `attachmentId`: that attachment) or `threadId` — → the 'changed' payload.
+ */
+function normalizeChanged(v) {
+  const o = obj(v) || {};
+  return {
+    accountId: posId(o.accountId),
+    folderId: posId(o.folderId),
+    messageId: posId(o.messageId),
+    threadId: posId(o.threadId),
+    attachmentId: posId(o.attachmentId),
+  };
+}
+
+/**
+ * `409 busy { reason?, retryAfter? }` (an error of MailApi, or the IPC failure { code, detail }) → { loading,
+ * retryAfter (s, 1…60, 5 without one) }; null when it is no `busy`. `loading`: an attachment or embedded picture the
+ * provider is still sending.
+ */
+function busyOf(err) {
+  if (!err || err.code !== 'busy') return null;
+  const d = obj(err.detail) || {};
+  const n = Number.isFinite(d.retryAfter) ? Math.round(d.retryAfter) : 5;
+  return { loading: d.reason === 'loading', retryAfter: Math.min(60, Math.max(1, n)) };
 }
 
 /** GET me → { features, limits, microsoft, accounts, unread, settings }. */
@@ -1010,6 +1049,9 @@ module.exports = {
   normalizeAddress,
   normalizeSettings,
   normalizeAccount,
+  normalizeAvatar,
+  normalizeChanged,
+  busyOf,
   normalizeMe,
   normalizeProviders,
   normalizeDiscover,

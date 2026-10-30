@@ -19,13 +19,14 @@
  *   POST   …/api/messages/flags | move | archive | delete | junk | tab
  *   GET    …/api/messages/<id>/attachments/<aid>                     → { mediaId, name, mime, size }
  *   GET    …/api/img/<token> · GET cid/<messageId>/<attachmentId>    pictures of the reading frame (binary)
+ *                                                                    (cid/ and attachments: 409 busy { reason: 'loading', retryAfter } while the provider sends)
  *   POST   …/api/drafts · PUT/GET/DELETE drafts/<id> · POST drafts/<id>/send { sendAt? }
  *   POST   …/api/outbox/<id>/cancel · GET outbox · GET contacts?q
  *   GET|POST …/api/ai/<id> · POST ai/<id>/todo/<index> { action }
  *   POST   …/api/messages/<id>/attachments/<aid>/drive/suggest | drive/save · POST messages/<id>/drive/save-all
  *   GET    …/api/filing · POST filing/<id>/confirm | dismiss
  *   PUT    …/gatecontrol-mail/media (resumable like Drive)           → { mediaId }   attachments from this PC
- *   GET    …/gatecontrol-mail/media/<mediaId>                        an attachment (streamed)
+ *   GET    …/gatecontrol-mail/media/<mediaId>                        an attachment (streamed), an account's picture (avatar)
  *
  * Failures are thrown as MessengerApi's error class { status, code, message }; the plugin's refusal
  * `{ error: { code, … } }` gives `code` and, as `detail`, the other short fields (hint, field, …).
@@ -40,6 +41,7 @@ const { MessengerError: MailError } = MessengerApi;
 const JSON_TIMEOUT_MS = 25000;
 const ACCOUNT_TIMEOUT_MS = 90000;   // adding an account: the server logs in to IMAP and SMTP first
 const IMAGE_TIMEOUT_MS = 20000;
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -268,6 +270,25 @@ class MailApi {
       return { mime, data: Buffer.concat(chunks) };
     }
     throw new MailError('invalid picture', { code: 'invalid' });
+  }
+
+  /**
+   * An account's picture (`Account.avatar`, Mail 1.1.2) → { mime, data: Buffer }: the plugin's media file, a raster
+   * picture of at most 2 MB.
+   */
+  async avatar(mediaId, mimeHint = null) {
+    if (!mail.isMediaId(mediaId)) throw new MailError('invalid media id', { code: 'invalid' });
+    const chunks = [];
+    const { Writable } = require('stream');
+    const sink = new Writable({ write(c, _e, cb) { chunks.push(c); cb(); } });
+    const got = await this.media.streamTo(`${mail.MEDIA_PATH}/${mediaId}`, sink, { maxBytes: AVATAR_MAX_BYTES });
+    const raster = (m) => typeof m === 'string' && /^image\/(png|jpe?g|gif|webp|bmp|avif)$/.test(m);
+    const sent = got && typeof got.mime === 'string' ? got.mime.toLowerCase() : '';
+    // a generic type (octet-stream) takes the account's; another image type (SVG) is refused
+    const mime = raster(sent) ? sent : (!sent.startsWith('image/') && raster(mimeHint) ? mimeHint : null);
+    const data = Buffer.concat(chunks);
+    if (!data.length || !mime) throw new MailError('not a picture', { code: 'invalid' });
+    return { mime, data };
   }
 
   // ── Writing ──────────────────────────────────────────────
