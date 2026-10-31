@@ -26,6 +26,17 @@
  *   POST   …/api/messages/<id>/attachments/<aid>/drive/suggest | drive/save · POST messages/<id>/drive/save-all
  *   GET    …/api/filing · POST filing/<id>/confirm | dismiss
  *   PUT    …/gatecontrol-mail/media (resumable like Drive)           → { mediaId }   attachments from this PC
+ *
+ * Phase 2 (calendar and contacts, client API "C3"):
+ *   GET|POST …/api/calendars · PATCH|DELETE calendars/<id> · POST calendars/subscribe · PATCH overlays/<id>
+ *   PUT    …/api/calendar/settings · GET events?from&to&calendars · GET events/<id>?occurrence
+ *   POST   …/api/events · PATCH|DELETE events/<id> · POST events/<id>/respond
+ *   GET    …/api/invitations · GET invitations/<id> · POST invitations/<id>/respond | apply | dismiss
+ *   GET    …/api/addressbooks · PATCH addressbooks/<id> · PUT cards/settings
+ *   GET|POST …/api/cards · GET|PATCH|DELETE cards/<id> · GET|PUT|DELETE cards/<id>/photo · GET cards/<id>/activity
+ *   GET    …/api/cards/lookup?email · cards/draft?messageId&email · cards/duplicates · cards/export
+ *   POST   …/api/cards/merge · cards/duplicates/ignore · cards/import
+ *   POST   …/api/groups · GET|PATCH|DELETE groups/<id> · POST groups/<id>/members
  *   GET    …/gatecontrol-mail/media/<mediaId>                        an attachment (streamed), an account's picture (avatar)
  *
  * Failures are thrown as MessengerApi's error class { status, code, message }; the plugin's refusal
@@ -354,10 +365,13 @@ class MailApi {
   /** POST ai/<id>: an existing result comes back as it is; `again` asks the AI anew ("Neu erstellen"). */
   async runAi(id, { again = false } = {}) { return mail.normalizeAi(await this.api('POST', `ai/${this._id(id)}`, { body: again ? { again: true } : {}, timeout: 120000 })); }
 
-  async todo(id, index, action = 'family_calendar') {
-    if (!Number.isSafeInteger(index) || index < 0 || index > 50 || action !== 'family_calendar') throw new MailError('invalid todo', { code: 'invalid' });
-    const r = await this.api('POST', `ai/${this._id(id)}/todo/${index}`, { body: { action } });
-    return { where: mail.line(r.where, 300) };
+  /** A to-do of the AI into the family calendar (`family_calendar`) or the person's own calendar (`calendar`, Phase 2). */
+  async todo(id, index, action = 'family_calendar', calendarId = null) {
+    if (!Number.isSafeInteger(index) || index < 0 || index > 50 || (action !== 'family_calendar' && action !== 'calendar')) throw new MailError('invalid todo', { code: 'invalid' });
+    const body = { action };
+    if (action === 'calendar' && calendarId) body.calendarId = this._id(calendarId);
+    const r = await this.api('POST', `ai/${this._id(id)}/todo/${index}`, { body });
+    return { where: mail.line(r.where, 300), eventId: mail.posId(r.eventId) };
   }
 
   // ── Drive ────────────────────────────────────────────────
@@ -413,6 +427,281 @@ class MailApi {
   async dismissFiling(id) {
     await this.api('POST', `filing/${this._id(id)}/dismiss`, { body: {} });
     return { ok: true };
+  }
+
+  // ── Calendar (Phase 2) ───────────────────────────────────
+
+  _bad(what) { return new MailError(`invalid ${what}`, { code: 'invalid' }); }
+
+  async calendars() { return mail.normalizeCalendars(await this.api('GET', 'calendars')); }
+
+  _calendar(r) {
+    const c = mail.normalizeCalendar(r && (r.calendar || r));
+    if (!c) throw new MailError('bad calendar answer', { code: 'bad_response' });
+    return c;
+  }
+
+  async createCalendar({ name, color } = {}) {
+    const body = mail.calendarPatch({ name, color });
+    if (!body || !body.name) throw this._bad('calendar');
+    return this._calendar(await this.api('POST', 'calendars', { body }));
+  }
+
+  async updateCalendar(id, patch) {
+    const body = mail.calendarPatch(patch);
+    if (!body) throw this._bad('calendar');
+    return this._calendar(await this.api('PATCH', `calendars/${this._id(id)}`, { body }));
+  }
+
+  async deleteCalendar(id) {
+    await this.api('DELETE', `calendars/${this._id(id)}`);
+    return { ok: true };
+  }
+
+  async subscribe(input) {
+    const body = mail.subscribeBody(input);
+    if (!body) throw this._bad('subscription');
+    return this._calendar(await this.api('POST', 'calendars/subscribe', { body, timeout: 60000 }));
+  }
+
+  async updateOverlay(id, patch) {
+    const body = mail.overlayPatch(patch);
+    if (typeof id !== 'string' || !/^(?:familie|birthdays|alltag:\d{1,16})$/.test(id) || !body) throw this._bad('overlay');
+    const r = await this.api('PATCH', `overlays/${encodeURIComponent(id)}`, { body });
+    const o = mail.normalizeOverlay(r && (r.overlay || r));
+    if (!o) throw new MailError('bad overlay answer', { code: 'bad_response' });
+    return o;
+  }
+
+  async calSettings(patch) {
+    const body = mail.calSettingsPatch(patch);
+    if (!body) throw this._bad('settings');
+    const r = await this.api('PUT', 'calendar/settings', { body });
+    return mail.normalizeCalPrefs(r.prefs || r);
+  }
+
+  async events(query) {
+    const params = mail.eventsQuery(query);
+    if (!params) throw this._bad('range');
+    return mail.normalizeEvents(await this.api('GET', 'events', { params, timeout: 60000 }));
+  }
+
+  _event(r) {
+    const e = mail.normalizeEvent(r && r.event ? r.event : r);
+    if (!e) throw new MailError('bad event answer', { code: 'bad_response' });
+    return e;
+  }
+
+  async event(id, occurrence = null) {
+    const params = {};
+    if (occurrence !== null && occurrence !== undefined) {
+      if (!mail.occOf(occurrence)) throw this._bad('occurrence');
+      params.occurrence = occurrence;
+    }
+    return this._event(await this.api('GET', `events/${this._id(id)}`, { params, timeout: 60000 }));
+  }
+
+  _saved(r) {
+    const out = mail.normalizeSaved(r);
+    if (!out.event) throw new MailError('bad event answer', { code: 'bad_response' });
+    return out;
+  }
+
+  async createEvent(input) {
+    const body = mail.eventBody(input);
+    if (!body) throw this._bad('event');
+    return this._saved(await this.api('POST', 'events', { body, timeout: 90000 }));
+  }
+
+  async updateEvent(id, input) {
+    const body = mail.eventBody(input, { patch: true });
+    if (!body) throw this._bad('event');
+    return this._saved(await this.api('PATCH', `events/${this._id(id)}`, { body, timeout: 90000 }));
+  }
+
+  async deleteEvent(id, opts) {
+    const params = mail.deleteEventQuery(opts);
+    if (!params) throw this._bad('delete');
+    const r = await this.api('DELETE', `events/${this._id(id)}`, { params, timeout: 90000 });
+    const s = r && typeof r.sent === 'object' && r.sent ? r.sent : {};
+    return { ok: true, sent: { mail: mail.count(s.mail) || 0, internal: mail.count(s.internal) || 0 } };
+  }
+
+  async respondEvent(id, input) {
+    const body = mail.respondBody(input);
+    if (!body) throw this._bad('response');
+    return this._event(await this.api('POST', `events/${this._id(id)}/respond`, { body, timeout: 90000 }));
+  }
+
+  async invitations(state = 'open') {
+    const params = state === 'open' ? { state: 'open' } : {};
+    return mail.normalizeInvitations(await this.api('GET', 'invitations', { params }));
+  }
+
+  _invitation(r) {
+    const i = mail.normalizeInvitation(r && r.invitation ? r.invitation : r);
+    if (!i) throw new MailError('bad invitation answer', { code: 'bad_response' });
+    return i;
+  }
+
+  async invitation(id) { return this._invitation(await this.api('GET', `invitations/${this._id(id)}`)); }
+
+  _inviteResult(r) {
+    const out = mail.normalizeInviteResult(r);
+    if (!out.invitation) throw new MailError('bad invitation answer', { code: 'bad_response' });
+    return out;
+  }
+
+  async respondInvitation(id, input) {
+    const body = mail.respondBody(input, { invitation: true });
+    if (!body) throw this._bad('response');
+    return this._inviteResult(await this.api('POST', `invitations/${this._id(id)}/respond`, { body, timeout: 90000 }));
+  }
+
+  async applyInvitation(id) { return this._inviteResult(await this.api('POST', `invitations/${this._id(id)}/apply`, { body: {}, timeout: 90000 })); }
+
+  async dismissInvitation(id, { decline = false } = {}) {
+    await this.api('POST', `invitations/${this._id(id)}/dismiss`, { body: decline ? { decline: true } : {}, timeout: 90000 });
+    return { ok: true };
+  }
+
+  // ── Contacts (Phase 2) ───────────────────────────────────
+
+  async addressbooks() { return mail.normalizeAddressbooks(await this.api('GET', 'addressbooks')); }
+
+  async updateAddressbook(id, { visible, name } = {}) {
+    const body = {};
+    if (typeof visible === 'boolean') body.visible = visible;
+    if (name !== undefined) { const n = mail.line(name, 80); if (!n) throw this._bad('name'); body.name = n; }
+    if (!Object.keys(body).length) throw this._bad('address book');
+    const r = await this.api('PATCH', `addressbooks/${this._id(id)}`, { body });
+    return mail.normalizeAddressbook(r && (r.addressbook || r));
+  }
+
+  async cardSettings(patch) {
+    const body = mail.cardPrefsPatch(patch);
+    if (!body) throw this._bad('settings');
+    const r = await this.api('PUT', 'cards/settings', { body });
+    return mail.normalizeCardPrefs(r.prefs || r);
+  }
+
+  async cards(query) {
+    const params = mail.cardsQuery(query);
+    if (!params) throw this._bad('query');
+    return mail.normalizeCardList(await this.api('GET', 'cards', { params, timeout: 60000 }));
+  }
+
+  _card(r) {
+    const c = mail.cardOf(r);
+    if (!c) throw new MailError('bad contact answer', { code: 'bad_response' });
+    return c;
+  }
+
+  async card(id) { return this._card(await this.api('GET', `cards/${this._id(id)}`)); }
+
+  async createCard(input) {
+    const body = mail.cardBody(input);
+    if (!body) throw this._bad('contact');
+    return this._card(await this.api('POST', 'cards', { body, timeout: 60000 }));
+  }
+
+  async updateCard(id, input) {
+    const body = mail.cardBody(input, { patch: true });
+    if (!body) throw this._bad('contact');
+    return this._card(await this.api('PATCH', `cards/${this._id(id)}`, { body, timeout: 60000 }));
+  }
+
+  async deleteCard(id) {
+    await this.api('DELETE', `cards/${this._id(id)}`, { timeout: 60000 });
+    return { ok: true };
+  }
+
+  async cardPhoto(id) {
+    const p = mail.normalizeCardPhoto(await this.api('GET', `cards/${this._id(id)}/photo`, { timeout: IMAGE_TIMEOUT_MS }));
+    if (!p) throw new MailError('not a picture', { code: 'invalid' });
+    return p;
+  }
+
+  /** A JPEG / PNG of at most 256 KB (Buffer) as the contact's photo. */
+  async putCardPhoto(id, { mime, data }) {
+    if (!mail.PHOTO_MIMES.includes(mime) || !Buffer.isBuffer(data) || !data.length || data.length > mail.PHOTO_MAX_BYTES) throw new MailError('photo too large', { code: 'too_large' });
+    return this._card(await this.api('PUT', `cards/${this._id(id)}/photo`, { body: { mime, data: data.toString('base64') }, timeout: 60000 }));
+  }
+
+  async deleteCardPhoto(id) { return this._card(await this.api('DELETE', `cards/${this._id(id)}/photo`, { timeout: 60000 })); }
+
+  async lookup(email) {
+    if (!mail.isEmail(email)) throw this._bad('email');
+    return mail.normalizeLookup(await this.api('GET', 'cards/lookup', { params: { email: email.trim().toLowerCase() } }));
+  }
+
+  async activity(id) { return mail.normalizeActivity(await this.api('GET', `cards/${this._id(id)}/activity`, { timeout: 60000 })); }
+
+  async cardDraft({ messageId, email } = {}) {
+    if (!mail.isEmail(email)) throw this._bad('email');
+    const params = { email: email.trim() };
+    if (messageId !== undefined && messageId !== null) params.messageId = this._id(messageId);
+    return mail.normalizeCardDraft(await this.api('GET', 'cards/draft', { params, timeout: 120000 }));
+  }
+
+  async duplicates() { return mail.normalizeDuplicates(await this.api('GET', 'cards/duplicates', { timeout: 60000 })); }
+
+  async merge(input) {
+    const body = mail.mergeBody(input);
+    if (!body) throw this._bad('merge');
+    return this._card(await this.api('POST', 'cards/merge', { body, timeout: 90000 }));
+  }
+
+  async ignoreDuplicates(list) {
+    const ids = mail.idList(list);
+    if (!ids || ids.length < 2 || ids.length > 10) throw this._bad('ids');
+    await this.api('POST', 'cards/duplicates/ignore', { body: { ids } });
+    return { ok: true };
+  }
+
+  /** POST cards/import { addressbookId?, vcf } → { imported, updated, skipped }. */
+  async importVcf(vcf, addressbookId = null) {
+    if (typeof vcf !== 'string' || !vcf.trim() || Buffer.byteLength(vcf, 'utf8') > mail.VCF_MAX_BYTES) throw new MailError('vcf too large', { code: 'too_large' });
+    const body = { vcf };
+    if (addressbookId) body.addressbookId = this._id(addressbookId);
+    const r = await this.api('POST', 'cards/import', { body, timeout: 300000 });
+    return { imported: mail.count(r.imported) || 0, updated: mail.count(r.updated) || 0, skipped: mail.count(r.skipped) || 0 };
+  }
+
+  async exportVcf({ book = 'all', group = null } = {}) {
+    const params = { book: book === 'all' || !book ? 'all' : this._id(book) };
+    if (group) params.group = this._id(group);
+    const out = mail.normalizeExport(await this.api('GET', 'cards/export', { params, timeout: 300000 }));
+    if (!out) throw new MailError('bad export answer', { code: 'bad_response' });
+    return out;
+  }
+
+  async createGroup(input) {
+    const body = mail.groupBody(input);
+    if (!body) throw this._bad('group');
+    const g = mail.normalizeGroup((await this.api('POST', 'groups', { body })).group);
+    if (!g) throw new MailError('bad group answer', { code: 'bad_response' });
+    return g;
+  }
+
+  async updateGroup(id, input) {
+    const body = mail.groupBody(input, { patch: true });
+    if (!body) throw this._bad('group');
+    const r = await this.api('PATCH', `groups/${this._id(id)}`, { body });
+    return mail.normalizeGroup(r && (r.group || r));
+  }
+
+  async deleteGroup(id) {
+    await this.api('DELETE', `groups/${this._id(id)}`);
+    return { ok: true };
+  }
+
+  async group(id) { return mail.normalizeGroupDetail(await this.api('GET', `groups/${this._id(id)}`)); }
+
+  async groupMembers(id, input) {
+    const body = mail.membersBody(input);
+    if (!body) throw this._bad('members');
+    return mail.normalizeGroupDetail(await this.api('POST', `groups/${this._id(id)}/members`, { body }));
   }
 
   // ── Media ────────────────────────────────────────────────

@@ -290,8 +290,9 @@ describe('MailService', () => {
     const asked = srv.state.requests.filter((x) => x.path.endsWith('/api/search'));
     assert.deepEqual(asked[0].query, { box: '2', from: 'sabine@firma.de', lang: 'de' }, 'no words needed');
     assert.equal((await svc.search({ from: 'sabine@firma.de', box: 1 })).items.length, 0, 'only the account');
+    // Phase 2: the person's contact comes first (its id for the sender's page)
     const c = await svc.contacts('tim@firma.de');
-    assert.deepEqual(c.items, [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'person' }]);
+    assert.deepEqual(c.items, [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'contact', contactId: 402, photo: false, groupId: null, members: null }]);
   });
 
   it('offline: the last lists and opened mails come from the encrypted cache (30 days of the inbox filled)', async () => {
@@ -498,7 +499,7 @@ describe('MailService', () => {
     const fw = await svc.createDraft({ replyTo: 101, mode: 'forward', attachments: [{ messageId: 101, attachmentId: 1 }] });
     assert.deepEqual(fw.draft.attachments.map((a) => a.name), ['Rechnung_2026_11.pdf']);
     const c = await svc.contacts('tim');
-    assert.deepEqual(c.items, [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'person' }]);
+    assert.deepEqual(c.items.map((x) => [x.name, x.email, x.source]), [['Tim Brandt', 'tim@firma.de', 'contact']]);
     await svc.deleteDraft(fw.draft.id);
     assert.ok(!srv.state.drafts.has(fw.draft.id));
     assert.ok(svc.editorDoc('<p>x</p>').doc.includes('Nachricht schreiben'));

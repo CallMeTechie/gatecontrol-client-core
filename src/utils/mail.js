@@ -5,7 +5,9 @@
  * accounts — IMAP / SMTP, Microsoft, Gmail — on the own server; contract:
  * the plugin's client API, "C2"): constants, argument checks, cleaned answers
  * of the app API, request bodies, the HTML document of a mail for the
- * sandboxed reading frame and the Microsoft sign-in (PKCE).
+ * sandboxed reading frame and the Microsoft sign-in (PKCE). Phase 2
+ * (calendar and contacts, client API "C3") lives in utils/mail-pim.js and is
+ * exported from here as well.
  *
  * Everything that reaches the renderer goes through the normalizers below:
  * known fields only, strings capped and stripped of control characters,
@@ -26,6 +28,8 @@ const MEDIA_PATH = `/api/v1/client/plugins/${PLUGIN_ID}/media`;
 const TOPIC_PREFIX = `plugin:${PLUGIN_ID}:`;
 const MAIL_TOPIC = `${TOPIC_PREFIX}mail`;
 const FAILED_TOPIC = `${TOPIC_PREFIX}mail_failed`;
+const REMINDER_TOPIC = `${TOPIC_PREFIX}calendar_reminder`;
+const INVITE_TOPIC = `${TOPIC_PREFIX}calendar_invite`;
 /** The scheme the reading frame loads pictures with (img/<token>, cid/<message>/<attachment>), see MailService.handleProtocol. */
 const SCHEME = 'gcmail';
 
@@ -52,8 +56,11 @@ const TODO_KINDS = Object.freeze(['question', 'deadline', 'event', 'amount', 'ta
 const REASONS = Object.freeze(['rule', 'learned', 'ai', 'kind']);
 const OUTBOX_STATES = Object.freeze(['waiting', 'sending', 'failed']);
 const WARNINGS = Object.freeze(['password', 'too_large', 'no_subject']);
-const CONTACT_SOURCES = Object.freeze(['person', 'recent']);
-const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images']);
+const CONTACT_SOURCES = Object.freeze(['contact', 'group', 'person', 'recent']);
+const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay']);
+const INVITES = Object.freeze(['request', 'cancel', 'reply', 'counter']);
+const PIM_STATES = Object.freeze(['ok', 'syncing', 'auth_failed', 'unreachable', 'consent_required', 'none', 'off']);
+const SCOPE_RE = /^[A-Za-z0-9_.:/-]{1,100}$/;
 const MS_SCOPES = Object.freeze(['openid', 'profile', 'email', 'offline_access', 'User.Read', 'Mail.ReadWrite', 'Mail.Send']);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/common';
 const MS_HOSTS = Object.freeze(['login.microsoftonline.com', 'login.microsoft.com']);
@@ -193,7 +200,18 @@ function normalizeAccount(v) {
     attachments: oneOf(ATTACH_MODES, o.attachments, 'off'),
     signature: text(o.signature, 10000) || '',
     avatar: normalizeAvatar(o.avatar),
+    // Phase 2: the account's calendar and address book, the Microsoft rights still missing ("Neu anmelden")
+    calendar: pimSync(o.calendar),
+    contacts: pimSync(o.contacts),
+    missingScopes: arr(o.missingScopes).filter((s) => typeof s === 'string' && SCOPE_RE.test(s)).slice(0, 10),
   };
+}
+
+/** `Account.calendar` / `.contacts` → { sync, state, readOnly, server } (none without the field: an older plugin). */
+function pimSync(v) {
+  const o = obj(v);
+  if (!o) return { sync: false, state: 'none', readOnly: false, server: null };
+  return { sync: bool(o.sync), state: oneOf(PIM_STATES, o.state, 'none'), readOnly: bool(o.readOnly), server: isHost(o.server) ? o.server.toLowerCase() : null };
 }
 
 /** Raster pictures only (never SVG). */
@@ -242,7 +260,7 @@ function normalizeMe(v) {
   const l = obj(o.limits) || {};
   const ms = obj(o.microsoft) || {};
   const clientId = typeof ms.clientId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(ms.clientId) ? ms.clientId : null;
-  const scopes = arr(ms.scopes).filter((s) => typeof s === 'string' && /^[A-Za-z0-9_.:/-]{1,100}$/.test(s)).slice(0, 30);
+  const scopes = arr(ms.scopes).filter((s) => typeof s === 'string' && SCOPE_RE.test(s)).slice(0, 30);
   const u = obj(o.unread) || {};
   const byAccount = {};
   for (const [k, n] of Object.entries(obj(u.byAccount) || {})) {
@@ -260,6 +278,8 @@ function normalizeMe(v) {
       clientId,
       authority: msAuthority(ms.authority) || MS_AUTHORITY,
       scopes: scopes.length ? scopes : MS_SCOPES.slice(),
+      // the administrator's consent link (a company that blocks the new rights passes it on)
+      adminConsentUrl: httpsUrl(ms.adminConsentUrl),
     },
     accounts: arr(o.accounts).map(normalizeAccount).filter(Boolean).slice(0, 50),
     unread: { all: count(u.all) || 0, byAccount },
@@ -343,6 +363,8 @@ function normalizeSummary(v) {
     tab: oneOf(TABS, o.tab, 'relevant'),
     savedToDrive: bool(o.savedToDrive),
     ai: ai && line(ai.summary, 500) ? { summary: line(ai.summary, 500) } : null,
+    // Phase 2: an invitation in the mail (the list's label "Einladung")
+    invite: oneOf(INVITES, o.invite),
   };
 }
 
@@ -418,6 +440,8 @@ function normalizeMessage(v) {
     listUnsubscribe: unsub && (unsub.url || unsub.mail) ? unsub : null,
     // the body is not in the server's copy (and the provider did not give it now): "wird geladen" / try again
     bodyMissing: bool(o.bodyMissing),
+    // Phase 2: the invitation's card above the text (null: none, or Microsoft without the calendar right)
+    invite: o.invite ? require('./mail-pim').normalizeInvitation(o.invite) : null,
   };
 }
 
@@ -483,12 +507,25 @@ function normalizeOutbox(v) {
   };
 }
 
+/**
+ * GET contacts?q= (suggestions while writing) → { items: [{ name, email, source, contactId, photo, groupId, members }] }:
+ * since Phase 2 also the person's contacts (`contact`, one entry per address) and groups (`group`: no address of its
+ * own, the members' addresses go in); without an address only a group with members stays.
+ */
 function normalizeContacts(v) {
   return {
     items: arr(obj(v) && v.items).map((x) => {
       const o = obj(x);
-      const email = o && emailOf(o.email);
-      return email ? { name: line(o.name, 200), email, source: oneOf(CONTACT_SOURCES, o.source, 'recent') } : null;
+      if (!o) return null;
+      const source = oneOf(CONTACT_SOURCES, o.source, 'recent');
+      const email = emailOf(o.email);
+      if (source === 'group') {
+        const members = addresses(o.members, 50).filter((m) => m.email);
+        const name = line(o.name, 200);
+        return members.length && name ? { name, email: null, source, contactId: null, photo: false, groupId: posId(o.groupId), members } : null;
+      }
+      if (!email) return null;
+      return { name: line(o.name, 200), email, source, contactId: posId(o.contactId), photo: bool(o.photo), groupId: null, members: null };
     }).filter(Boolean).slice(0, 10),
   };
 }
@@ -1018,9 +1055,20 @@ function isInboxKey(p) {
   return !o.folder && !o.unread && !o.flagged && !o.attachments && !o.before;
 }
 
-/** The click on a Mail push → { kind: 'message', messageId, accountId } | { kind: 'outbox', outboxId } | null. */
+/**
+ * The click on a Mail push → { kind: 'message', messageId, accountId } | { kind: 'outbox', outboxId } |
+ * { kind: 'event', eventId, occurrence } (a reminder) | { kind: 'invitation', invitationId } | { kind: 'calendar' }
+ * (several reminders at once) | null.
+ */
 function pushTarget(topic, data) {
   const d = obj(data);
+  const c = d && obj(d.calendar);
+  if (c && topic === REMINDER_TOPIC) {
+    const eventId = posId(c.eventId);
+    const occ = typeof c.occurrence === 'string' && /^(\d{10,16}|\d{4}-\d{2}-\d{2})$/.test(c.occurrence) ? c.occurrence : null;
+    return eventId ? { kind: 'event', eventId, occurrence: occ } : { kind: 'calendar' };
+  }
+  if (c && topic === INVITE_TOPIC) return posId(c.invitationId) ? { kind: 'invitation', invitationId: posId(c.invitationId) } : { kind: 'calendar' };
   const m = d && obj(d.mail);
   if (!m) return null;
   if (topic === MAIL_TOPIC && posId(m.messageId)) return { kind: 'message', messageId: posId(m.messageId), accountId: posId(m.accountId) };
@@ -1041,6 +1089,8 @@ module.exports = {
   MEDIA_PATH,
   MAIL_TOPIC,
   FAILED_TOPIC,
+  REMINDER_TOPIC,
+  INVITE_TOPIC,
   SCHEME,
   FRAME_CSP,
   FIT_ID,
@@ -1056,9 +1106,21 @@ module.exports = {
   TABS,
   MODES,
   FEATURES,
+  INVITES,
+  PIM_STATES,
   MS_SCOPES,
   MS_AUTHORITY,
   line,
+  text,
+  obj,
+  arr,
+  bool,
+  oneOf,
+  httpsUrl,
+  webUrl,
+  i18nText,
+  emailOf,
+  isHost,
   posId,
   count,
   msOf,
@@ -1118,3 +1180,6 @@ module.exports = {
   pushTarget,
   errorCode,
 };
+
+// Phase 2 (calendar and contacts): normalizers and request bodies of the client API "C3"
+Object.assign(module.exports, require('./mail-pim'));

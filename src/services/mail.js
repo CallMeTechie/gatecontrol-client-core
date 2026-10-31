@@ -51,10 +51,29 @@
  * - Account pictures (Microsoft): avatar(mediaId) → a data: URL, kept by
  *   media id.
  *
+ * Phase 2 — calendar and contacts (client API "C3"):
+ * - Calendar: the calendars with the overlays and settings (the device's
+ *   time zone is set when it differs), own calendars and iCal subscriptions,
+ *   the occurrences of a range, an event (its HTML description as a frame
+ *   document like a mail), new / change / delete (one occurrence or the
+ *   series), answers, invitations (the card in a mail).
+ * - Contacts: address books, groups, every contact as a summary (loaded once,
+ *   then only the changes with `since`; searched on this PC), a contact, its
+ *   photo (a picture of this PC made 512 px JPEG with nativeImage), lookup of
+ *   a sender, its mails and events, "Als Kontakt speichern", duplicates and
+ *   merge, vCard import / export through the file dialogs, calls (tel:).
+ * - Offline read only (services/mail-cache.js pim.bin): calendars, the
+ *   occurrences −30 … +90 days, the events and contacts opened, all contact
+ *   summaries, photos; changes need the server.
+ * - Live: `calendar` and `contacts` events of the plugin → 'calendar' /
+ *   'contacts'; a reminder push opens the event, an internal invitation the
+ *   invitation (pushTarget).
+ *
  * Events: 'state' (status()), 'changed' ({ accountId, folderId, messageId,
  * threadId, attachmentId }) lists to reload, 'outbox' ({}) the outbox
  * changed, 'loading' ({ messageId, attachmentId, retryAfter }) an embedded
- * picture the frame should ask for again.
+ * picture the frame should ask for again, 'calendar' ({ kind, … } see
+ * utils/mail-pim.js normalizeCalendarLive), 'contacts' ({ kind, … }).
  */
 
 const EventEmitter = require('events');
@@ -83,6 +102,11 @@ const MAX_PATHS = 20;
 const PICTURE_CACHE = 300;
 const PICTURE_CACHE_BYTES = 30 * 1024 * 1024;
 const AVATAR_CACHE = 30;
+const CARD_PAGES = 60;                       // ≤ 60 × 200 contacts in the summary list
+const CARD_SYNC_MS = 20 * 1000;              // the list is asked for changes at most this often (live events: at once)
+const FILL_MS = 15 * 60 * 1000;              // the offline window of the calendar is filled at most this often
+const PHOTO_PX = 512;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const PLACEHOLDER = { de: 'Nachricht schreiben …', en: 'Write your message …' };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
@@ -108,11 +132,13 @@ class MailService extends EventEmitter {
    * @param {(url: string) => Promise<boolean>} [opts.openExternal] - the default browser (tests)
    * @param {Function} [opts.startListener] - loopback receiver of the Microsoft sign-in (tests)
    * @param {(n: number) => Buffer} [opts.random]
+   * @param {object} [opts.nativeImage] - Electron nativeImage: a contact's photo made 512 px JPEG
+   * @param {() => string} [opts.timeZone] - the device's IANA time zone (tests)
    */
   constructor({
     apiClient, log, api = null, shell = null, dialog = null, getMainWindow = null, tempDir = null, cacheDir = null,
     protect = null, getLang = null, pushClient = null, notificationCenter = null, timing = {}, now = Date.now,
-    openExternal = null, startListener = null, random = null,
+    openExternal = null, startListener = null, random = null, nativeImage = null, timeZone = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -147,6 +173,14 @@ class MailService extends EventEmitter {
     this._avatars = new Map();    // media id → data: URL
     this._pictureBytes = 0;
     this._filling = new Set();
+    this.nativeImage = nativeImage;
+    this.timeZone = typeof timeZone === 'function' ? timeZone : () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } };
+    this._zoneSet = false;
+    this._calFillAt = 0;
+    this._cardSync = null;
+    this._cardSyncAt = 0;
+    this._cardsStale = true;
+    this._photoWaiting = new Map();
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -157,8 +191,12 @@ class MailService extends EventEmitter {
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
       const onHello = () => {
-        if (this._state.state !== 'available') this.check().catch(() => {});
-        else this.emit('changed', { accountId: null, folderId: null });
+        if (this._state.state !== 'available') { this.check().catch(() => {}); return; }
+        this.emit('changed', { accountId: null, folderId: null });
+        // what changed while the push channel was gone: the calendar and the contacts load again
+        this._cardsStale = true;
+        this.emit('calendar', { kind: 'calendars' });
+        this.emit('contacts', { kind: 'addressbooks' });
       };
       const onEvent = (ev) => {
         if (!ev || ev.event !== 'plugin' || !ev.data || ev.data.plugin !== mail.PLUGIN_ID) return;
@@ -167,6 +205,16 @@ class MailService extends EventEmitter {
           this.emit('changed', mail.normalizeChanged(d));
         } else if (ev.data.type === 'outbox' || ev.data.type === 'mail_failed') {
           this.emit('outbox', {});
+        } else if (ev.data.type === 'calendar') {
+          const c = mail.normalizeCalendarLive(d);
+          if (c && c.kind === 'changed') this._calFillAt = 0;
+          if (c) this.emit('calendar', c);
+        } else if (ev.data.type === 'contacts') {
+          const c = mail.normalizeContactsLive(d);
+          if (!c) return;
+          this._cardsStale = true;
+          if (c.kind === 'addressbooks') this.cache.resetCards().catch(() => {});
+          this.emit('contacts', c);
         }
       };
       pc.on('hello', onHello);
@@ -209,6 +257,7 @@ class MailService extends EventEmitter {
     this._pictureBytes = 0;
     this._avatars.clear();
     this._retry = 0;
+    this._resetPim();
     this._scope = this._scopeNow();
     this.cache.setScope(this._scope);
     this.cache.clear().catch(() => {});
@@ -304,7 +353,16 @@ class MailService extends EventEmitter {
     this._pictures.clear();
     this._pictureBytes = 0;
     this._avatars.clear();
+    this._resetPim();
     this.cache.setScope(s);
+  }
+
+  _resetPim() {
+    this._zoneSet = false;
+    this._calFillAt = 0;
+    this._cardSyncAt = 0;
+    this._cardsStale = true;
+    this._photoWaiting.clear();
   }
 
   _need() {
@@ -411,8 +469,10 @@ class MailService extends EventEmitter {
   async signInMicrosoft({ accountId = null, name, color, kind } = {}) {
     return this._run(async () => {
       if (this._signin) throw new MailError('a sign-in is running', { code: 'busy' });
-      const me = await this._meFresh();
+      const me = accountId ? await this.api.me().then((x) => { this._me = x; return x; }) : await this._meFresh();
       if (!me.features.includes('microsoft') || !me.microsoft.clientId) throw new MailError('Microsoft sign-in not set up', { code: 'ms_unavailable' });
+      // signing in again (Phase 2 "Neu anmelden"): the account's address is the hint, the scopes come fresh from me
+      const again = accountId ? me.accounts.find((a) => a.id === mail.posId(accountId)) : null;
       const { verifier, challenge } = mail.pkcePair(this.random);
       const state = b64u(this.random(24));
       const listener = await this.startListener({ state, getLang: () => this._lang(), log: this.log });
@@ -420,7 +480,7 @@ class MailService extends EventEmitter {
       try {
         const url = mail.msAuthorizeUrl({
           authority: me.microsoft.authority, clientId: me.microsoft.clientId, redirectUri: listener.redirectUri,
-          scopes: me.microsoft.scopes, state, challenge,
+          scopes: me.microsoft.scopes, state, challenge, loginHint: again ? again.email : null,
         });
         if (!url || !(await this.openExternal(url))) {
           listener.close('browser_failed');
@@ -725,7 +785,14 @@ class MailService extends EventEmitter {
   /** The AI's result (an existing one as it is; `again`: "Neu erstellen"). */
   async runAi(id, { again = false } = {}) { return this._run(async () => ({ ok: true, ai: await this.api.runAi(id, { again }) })); }
 
-  async todo(id, index) { return this._run(async () => ({ ok: true, ...(await this.api.todo(id, index)) })); }
+  /** A to-do into the family calendar, or (`action: 'calendar'`) into the person's own calendar. */
+  async todo(id, index, { action = 'family_calendar', calendarId = null } = {}) {
+    return this._run(async () => {
+      const r = await this.api.todo(id, index, action, calendarId);
+      if (action === 'calendar') this.emit('calendar', { kind: 'changed', calendarId: mail.posId(calendarId), accountId: null, from: null, to: null });
+      return { ok: true, ...r };
+    });
+  }
 
   // ── Drive ────────────────────────────────────────────────
 
@@ -746,6 +813,446 @@ class MailService extends EventEmitter {
   async confirmFiling(id, opts) { return this._run(async () => ({ ok: true, ...(await this.api.confirmFiling(id, opts || {})) })); }
 
   async dismissFiling(id) { return this._run(async () => this.api.dismissFiling(id)); }
+
+  // ── Calendar (Phase 2) ───────────────────────────────────
+
+  /** GET calendars → { ok, calendars, overlays, prefs, consent, offline? }; the device's time zone is set when it differs. */
+  async calendars() {
+    return this._orCache(async () => {
+      let c = await this.api.calendars();
+      const zone = this.timeZone();
+      if (!this._zoneSet && zone && c.prefs.timeZone !== zone && mail.calSettingsPatch({ timeZone: zone })) {
+        this._zoneSet = true;
+        try { c = { ...c, prefs: await this.api.calSettings({ timeZone: zone }) }; } catch (err) { this.log.debug(`Mail time zone not set: ${err.code || err.message}`); }
+      }
+      this._zoneSet = true;
+      await this.cache.putCalendars(c);
+      this._fillCalendar(c);
+      return { ok: true, ...c };
+    }, async () => {
+      const c = await this.cache.getCalendars();
+      return c ? { ok: true, ...c } : null;
+    });
+  }
+
+  /** The offline window (−30 … +90 days) of the visible calendars, in the background (at most every 15 min). */
+  _fillCalendar(c) {
+    if (this.now() - this._calFillAt < FILL_MS) return;
+    this._calFillAt = this.now();
+    const day = new Date(this.now());
+    day.setHours(0, 0, 0, 0);
+    const start = day.getTime() - 30 * DAY_MS;
+    const parts = [[start, start + 60 * DAY_MS], [start + 60 * DAY_MS, start + 120 * DAY_MS]];
+    const calendars = [...c.calendars.filter((x) => x.visible).map((x) => x.id), ...c.overlays.filter((x) => x.visible).map((x) => x.id)];
+    if (!calendars.length) return;
+    (async () => {
+      for (const [from, to] of parts) {
+        const p = mail.eventsQuery({ from, to, calendars });
+        if (!p) continue;
+        const r = await this.api.events(p);
+        await this.cache.putRange(mail.eventsKey(p), from, to, r);
+      }
+    })().catch((err) => { this._calFillAt = 0; this.log.debug(`Mail calendar offline fill stopped: ${err.code || err.message}`); });
+  }
+
+  async _calChanged(fn, calendarId = null) {
+    const r = await this._run(fn);
+    this._calFillAt = 0;
+    this.emit('calendar', calendarId ? { kind: 'changed', calendarId, accountId: null, from: null, to: null } : { kind: 'calendars' });
+    return r;
+  }
+
+  async createCalendar(input) { return this._calChanged(async () => ({ ok: true, calendar: await this.api.createCalendar(input || {}) })); }
+
+  async updateCalendar(id, patch) { return this._calChanged(async () => ({ ok: true, calendar: await this.api.updateCalendar(id, patch || {}) })); }
+
+  async deleteCalendar(id) { return this._calChanged(async () => this.api.deleteCalendar(id)); }
+
+  async subscribe(input) { return this._calChanged(async () => ({ ok: true, calendar: await this.api.subscribe(input || {}) })); }
+
+  async updateOverlay(id, patch) { return this._calChanged(async () => ({ ok: true, overlay: await this.api.updateOverlay(id, patch || {}) })); }
+
+  async calSettings(patch) { return this._run(async () => ({ ok: true, prefs: await this.api.calSettings(patch || {}) })); }
+
+  /** GET events → { ok, items, overlays, pending, offline? } (offline: what the cached ranges hold of it). */
+  async events(query) {
+    const params = mail.eventsQuery(query);
+    if (!params) throw new MailError('invalid range', { code: 'invalid' });
+    const key = mail.eventsKey(params);
+    return this._orCache(async () => {
+      const r = await this.api.events(params);
+      await this.cache.putRange(key, params.from, params.to, r);
+      return { ok: true, ...r };
+    }, async () => {
+      const r = await this.cache.getRange(key, params.from, params.to, params.calendars || null);
+      return r ? { ok: true, items: r.items, overlays: r.overlays, pending: [], cachedAt: r.at } : null;
+    });
+  }
+
+  /** The description of an event as a frame document (its HTML like a mail's: no scripts, own CSP), light and dark. */
+  _eventDocs(ev) {
+    if (!ev.descriptionHtml) return { doc: null, docDark: null };
+    const lang = this._lang();
+    const m = { id: null, html: ev.descriptionHtml, text: ev.description, attachments: [], imagesBlocked: true };
+    return { doc: mail.mailDocument(m, { lang }), docDark: mail.mailDocument(m, { lang, dark: true }) };
+  }
+
+  /** GET events/<id>?occurrence → { ok, event, doc, docDark, offline? }. */
+  async event(id, occurrence = null) {
+    const eid = mail.posId(id);
+    const occ = occurrence ? mail.occOf(occurrence) : null;
+    if (!eid || (occurrence && !occ)) throw new MailError('invalid id', { code: 'invalid' });
+    const key = occ ? `${eid}:${occ}` : String(eid);
+    return this._orCache(async () => {
+      const ev = await this.api.event(eid, occ);
+      await this.cache.putEvent(key, ev);
+      return { ok: true, event: ev, ...this._eventDocs(ev) };
+    }, async () => {
+      const ev = await this.cache.getEvent(key);
+      return ev ? { ok: true, event: ev, ...this._eventDocs(ev) } : null;
+    });
+  }
+
+  async _eventChanged(fn, calendarId) {
+    const r = await this._run(fn);
+    const ev = r && r.event;
+    if (ev) await this.cache.dropEvent(ev.eventId);
+    this._calFillAt = 0;
+    this.emit('calendar', { kind: 'changed', calendarId: (ev && ev.calendarId) || mail.posId(calendarId), accountId: null, from: null, to: null });
+    return r;
+  }
+
+  /** POST events → { ok, event, sent }. */
+  async createEvent(input) { return this._eventChanged(async () => ({ ok: true, ...(await this.api.createEvent(input || {})) }), input && input.calendarId); }
+
+  /** PATCH events/<id> → { ok, event, sent }; a changed event elsewhere: { ok: false, code: 'conflict', detail: … } with `current`. */
+  async updateEvent(id, input) {
+    try {
+      return await this._eventChanged(async () => ({ ok: true, ...(await this.api.updateEvent(id, input || {})) }), input && input.calendarId);
+    } catch (err) {
+      if (err && err.code === 'conflict') {
+        const b = err.body && err.body.error && typeof err.body.error === 'object' ? err.body.error : {};
+        const current = mail.normalizeEvent(b.current);
+        await this.cache.dropEvent(mail.posId(id)).catch(() => {});
+        return { ok: false, code: 'conflict', error: 'conflict', status: 409, current };
+      }
+      throw err;
+    }
+  }
+
+  async deleteEvent(id, opts) {
+    return this._run(async () => {
+      const r = await this.api.deleteEvent(id, opts || {});
+      await this.cache.dropEvent(mail.posId(id));
+      this._calFillAt = 0;
+      this.emit('calendar', { kind: 'changed', calendarId: null, accountId: null, from: null, to: null });
+      return r;
+    });
+  }
+
+  async respondEvent(id, input) { return this._eventChanged(async () => ({ ok: true, event: await this.api.respondEvent(id, input || {}) })); }
+
+  async invitations(state = 'open') { return this._run(async () => ({ ok: true, ...(await this.api.invitations(state)) })); }
+
+  async invitation(id) { return this._run(async () => ({ ok: true, invitation: await this.api.invitation(id) })); }
+
+  async _inviteChanged(fn) {
+    const r = await this._run(fn);
+    this._calFillAt = 0;
+    if (r.event) await this.cache.dropEvent(r.event.eventId);
+    this.emit('calendar', { kind: 'changed', calendarId: r.event ? r.event.calendarId : null, accountId: null, from: null, to: null });
+    return r;
+  }
+
+  async respondInvitation(id, input) { return this._inviteChanged(async () => ({ ok: true, ...(await this.api.respondInvitation(id, input || {})) })); }
+
+  async applyInvitation(id) { return this._inviteChanged(async () => ({ ok: true, ...(await this.api.applyInvitation(id)) })); }
+
+  async dismissInvitation(id, opts) { return this._inviteChanged(async () => this.api.dismissInvitation(id, opts || {})); }
+
+  // ── Contacts (Phase 2) ───────────────────────────────────
+
+  async addressbooks() {
+    return this._orCache(async () => {
+      const b = await this.api.addressbooks();
+      await this.cache.putBooks(b);
+      return { ok: true, ...b };
+    }, async () => {
+      const b = await this.cache.getBooks();
+      return b ? { ok: true, ...b } : null;
+    });
+  }
+
+  async updateAddressbook(id, patch) {
+    return this._run(async () => {
+      const book = await this.api.updateAddressbook(id, patch || {});
+      // shown or hidden: the summaries of all contacts load anew
+      await this.cache.resetCards();
+      this._cardsStale = true;
+      return { ok: true, addressbook: book };
+    });
+  }
+
+  async cardSettings(patch) {
+    return this._run(async () => {
+      const prefs = await this.api.cardSettings(patch || {});
+      if (patch && (patch.sort !== undefined || patch.show !== undefined)) { await this.cache.resetCards(); this._cardsStale = true; }
+      return { ok: true, prefs };
+    });
+  }
+
+  /** All CardSummaries on this PC: the whole list the first time, then the changes since its version. */
+  _syncCards() {
+    if (this._cardSync) return this._cardSync;
+    this._cardSync = (async () => {
+      const have = await this.cache.getCards();
+      const since = have && !this._cardsStale && this.now() - this._cardSyncAt < CARD_SYNC_MS ? null : have;
+      if (have && !since) return have;
+      const all = [];
+      let deleted = [];
+      let version = 0;
+      let cursor = null;
+      for (let i = 0; i < CARD_PAGES; i += 1) {
+        const page = await this.api.cards({ book: 'all', limit: 200, cursor: cursor || undefined, since: have ? have.version : undefined });
+        all.push(...page.items);
+        deleted = deleted.concat(page.deleted);
+        version = Math.max(version, page.version);
+        cursor = page.next;
+        if (!cursor) break;
+      }
+      this._cardsStale = false;
+      this._cardSyncAt = this.now();
+      await this.cache.putCards({ version, items: all, deleted, full: !have });
+      return this.cache.getCards();
+    })().finally(() => { this._cardSync = null; });
+    return this._cardSync;
+  }
+
+  /**
+   * The contacts list ({ q, book: 'all' | id, group }) → { ok, items, version, offline? }: searched on this PC in the
+   * summaries kept current (offline the ones kept).
+   */
+  async cards(query = {}) {
+    const q = query && typeof query === 'object' ? query : {};
+    if (!mail.cardsQuery({ q: q.q, book: q.book, group: q.group })) throw new MailError('invalid query', { code: 'invalid' });
+    return this._orCache(async () => {
+      const all = await this._syncCards();
+      return { ok: true, items: mail.filterCards(all ? all.items : [], q), version: all ? all.version : 0 };
+    }, async () => {
+      const all = await this.cache.getCards();
+      return all ? { ok: true, items: mail.filterCards(all.items, q), version: all.version, cachedAt: all.at } : null;
+    });
+  }
+
+  async card(id) {
+    const cid = mail.posId(id);
+    if (!cid) throw new MailError('invalid id', { code: 'invalid' });
+    return this._orCache(async () => {
+      const card = await this.api.card(cid);
+      await this.cache.putCard(card);
+      return { ok: true, card };
+    }, async () => {
+      const card = await this.cache.getCard(cid);
+      return card ? { ok: true, card } : null;
+    });
+  }
+
+  async _cardChanged(card) {
+    await this.cache.putCard(card);
+    this._cardsStale = true;
+    this.emit('contacts', { kind: 'changed', addressbookId: card.addressbookId, contactIds: [card.id] });
+  }
+
+  async createCard(input) { return this._run(async () => { const card = await this.api.createCard(input || {}); await this._cardChanged(card); return { ok: true, card }; }); }
+
+  /** PATCH cards/<id> → { ok, card }; changed elsewhere: { ok: false, code: 'conflict', current }. */
+  async updateCard(id, input) {
+    try {
+      return await this._run(async () => { const card = await this.api.updateCard(id, input || {}); await this._cardChanged(card); return { ok: true, card }; });
+    } catch (err) {
+      if (err && err.code === 'conflict') {
+        const b = err.body && err.body.error && typeof err.body.error === 'object' ? err.body.error : {};
+        return { ok: false, code: 'conflict', error: 'conflict', status: 409, current: mail.normalizeCard(b.current) };
+      }
+      throw err;
+    }
+  }
+
+  async deleteCard(id) {
+    return this._run(async () => {
+      await this.api.deleteCard(id);
+      await this.cache.dropCard(mail.posId(id));
+      this._cardsStale = true;
+      this.emit('contacts', { kind: 'changed', addressbookId: null, contactIds: [mail.posId(id)] });
+      return { ok: true };
+    });
+  }
+
+  /** A contact's photo → { ok, mime, url (data:) } (kept by its etag; offline the one kept). */
+  async cardPhoto(id, etag = null) {
+    const cid = mail.posId(id);
+    if (!cid) throw new MailError('invalid id', { code: 'invalid' });
+    const tag = typeof etag === 'string' && etag.length <= 120 ? etag : null;
+    const out = (p) => ({ ok: true, mime: p.mime, url: `data:${p.mime};base64,${p.data}` });
+    const hit = await this.cache.getPhoto(cid, tag);
+    if (hit) return out(hit);
+    if (this._photoWaiting.has(cid)) return this._photoWaiting.get(cid);
+    const p = this._orCache(async () => {
+      const ph = await this.api.cardPhoto(cid);
+      await this.cache.putPhoto(cid, tag, ph);
+      return out(ph);
+    }, async () => {
+      const ph = await this.cache.getPhoto(cid, null);
+      return ph ? out(ph) : null;
+    }).finally(() => this._photoWaiting.delete(cid));
+    this._photoWaiting.set(cid, p);
+    return p;
+  }
+
+  /** A picture of this PC as the contact's photo (file dialog; made 512 px JPEG) → { ok, card } | { ok: false, code: 'cancelled' }. */
+  async setCardPhoto(id) {
+    if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new MailError('no dialog', { code: 'unsupported' });
+    const cid = mail.posId(id);
+    if (!cid) throw new MailError('invalid id', { code: 'invalid' });
+    return this._run(async () => {
+      const win = this.getMainWindow();
+      const opts = { properties: ['openFile'], filters: [{ name: 'Bilder', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] };
+      const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
+      if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', cancelled: true };
+      const photo = await this._photoFile(r.filePaths[0]);
+      const card = await this.api.putCardPhoto(cid, photo);
+      await this.cache.putPhoto(cid, card.photo ? card.photo.etag : null, { mime: photo.mime, data: photo.data.toString('base64') });
+      await this._cardChanged(card);
+      return { ok: true, card };
+    });
+  }
+
+  /** A picture file → { mime, data } as JPEG of at most 512 px (nativeImage), else the file as it is when small enough. */
+  async _photoFile(file) {
+    const st = await fs.promises.stat(file);
+    if (!st.isFile() || st.size <= 0 || st.size > 30 * 1024 * 1024) throw new MailError('not a picture', { code: 'invalid' });
+    const buf = await fs.promises.readFile(file);
+    if (this.nativeImage && typeof this.nativeImage.createFromBuffer === 'function') {
+      let img = this.nativeImage.createFromBuffer(buf);
+      if (img && !img.isEmpty()) {
+        const { width, height } = img.getSize();
+        if (width > PHOTO_PX || height > PHOTO_PX) {
+          img = width >= height ? img.resize({ width: PHOTO_PX, quality: 'good' }) : img.resize({ height: PHOTO_PX, quality: 'good' });
+        }
+        for (const q of [85, 70, 55]) {
+          const jpeg = img.toJPEG(q);
+          if (jpeg.length && jpeg.length <= mail.PHOTO_MAX_BYTES) return { mime: 'image/jpeg', data: jpeg };
+        }
+      }
+      throw new MailError('not a picture', { code: 'invalid' });
+    }
+    const mime = buf[0] === 0xFF && buf[1] === 0xD8 ? 'image/jpeg' : (buf.subarray(1, 4).toString() === 'PNG' ? 'image/png' : null);
+    if (!mime) throw new MailError('not a picture', { code: 'invalid' });
+    if (buf.length > mail.PHOTO_MAX_BYTES) throw new MailError('photo too large', { code: 'too_large' });
+    return { mime, data: buf };
+  }
+
+  async deleteCardPhoto(id) {
+    return this._run(async () => {
+      const card = await this.api.deleteCardPhoto(id);
+      await this._cardChanged(card);
+      return { ok: true, card };
+    });
+  }
+
+  /** The sender's page: GET cards/lookup → { ok, card, person, recent } (the card kept for offline). */
+  async lookup(email) {
+    return this._run(async () => {
+      const r = await this.api.lookup(email);
+      if (r.card) await this.cache.putCard(r.card);
+      return { ok: true, ...r };
+    });
+  }
+
+  async activity(id) { return this._run(async () => ({ ok: true, ...(await this.api.activity(id)) })); }
+
+  async cardDraft(input) { return this._run(async () => ({ ok: true, ...(await this.api.cardDraft(input || {})) })); }
+
+  async duplicates() { return this._run(async () => ({ ok: true, ...(await this.api.duplicates()) })); }
+
+  async merge(input) {
+    return this._run(async () => {
+      const card = await this.api.merge(input || {});
+      // others went or were linked: the whole list again
+      await this.cache.resetCards();
+      this._cardsStale = true;
+      await this._cardChanged(card);
+      return { ok: true, card };
+    });
+  }
+
+  async ignoreDuplicates(ids) { return this._run(async () => this.api.ignoreDuplicates(ids)); }
+
+  /** "vCard importieren": a .vcf of this PC (file dialog, ≤ 5 MB) → { ok, imported, updated, skipped } | { ok: false, code: 'cancelled' }. */
+  async importVcf({ addressbookId = null } = {}) {
+    if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new MailError('no dialog', { code: 'unsupported' });
+    return this._run(async () => {
+      const win = this.getMainWindow();
+      const opts = { properties: ['openFile'], filters: [{ name: 'vCard', extensions: ['vcf', 'vcard'] }] };
+      const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
+      if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', cancelled: true };
+      const st = await fs.promises.stat(r.filePaths[0]);
+      if (!st.isFile() || st.size <= 0) throw new MailError('empty file', { code: 'empty' });
+      if (st.size > mail.VCF_MAX_BYTES) throw new MailError('file too large', { code: 'too_large' });
+      const vcf = (await fs.promises.readFile(r.filePaths[0])).toString('utf8').replace(/^\uFEFF/, '');
+      if (!/BEGIN:VCARD/i.test(vcf)) throw new MailError('not a vCard', { code: 'invalid_vcard' });
+      const out = await this.api.importVcf(vcf, addressbookId);
+      this._cardsStale = true;
+      this.emit('contacts', { kind: 'addressbooks' });
+      return { ok: true, ...out };
+    });
+  }
+
+  /** "vCard exportieren" ({ book, group }) → save dialog → { ok, path } | { ok: false, code: 'cancelled' }. */
+  async exportVcf({ book = 'all', group = null } = {}) {
+    if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new MailError('no dialog', { code: 'unsupported' });
+    return this._run(async () => {
+      const out = await this.api.exportVcf({ book, group });
+      const win = this.getMainWindow();
+      const opts = { defaultPath: safeFileName(out.name, 'kontakte.vcf'), filters: [{ name: 'vCard', extensions: ['vcf'] }] };
+      const r = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
+      if (!r || r.canceled || !r.filePath) return { ok: false, code: 'cancelled', cancelled: true };
+      await fs.promises.writeFile(r.filePath, Buffer.from(out.data, 'base64'));
+      return { ok: true, path: r.filePath };
+    });
+  }
+
+  async _groupsChanged(fn) {
+    const r = await this._run(fn);
+    this._cardsStale = true;
+    this.emit('contacts', { kind: 'groups' });
+    return r;
+  }
+
+  async createGroup(input) { return this._groupsChanged(async () => ({ ok: true, group: await this.api.createGroup(input || {}) })); }
+
+  async updateGroup(id, input) { return this._groupsChanged(async () => ({ ok: true, group: await this.api.updateGroup(id, input || {}) })); }
+
+  async deleteGroup(id) { return this._groupsChanged(async () => this.api.deleteGroup(id)); }
+
+  async group(id) { return this._run(async () => ({ ok: true, ...(await this.api.group(id)) })); }
+
+  async groupMembers(id, input) { return this._groupsChanged(async () => ({ ok: true, ...(await this.api.groupMembers(id, input || {})) })); }
+
+  /** "Anrufen": tel:<number> to the system (digits, + and the usual separators only). */
+  async call(number) {
+    const n = typeof number === 'string' ? number.trim() : '';
+    if (!n || n.length > 40 || !/^\+?[0-9 ()/.-]{3,40}$/.test(n) || (n.match(/\d/g) || []).length < 3) throw new MailError('invalid number', { code: 'invalid' });
+    if (!this.shell || typeof this.shell.openExternal !== 'function') throw new MailError('no shell', { code: 'unsupported' });
+    const tel = `tel:${n.replace(/[^\d+]/g, '')}`;
+    try {
+      await this.shell.openExternal(tel);
+      return { ok: true };
+    } catch (err) {
+      this.log.warn(`tel: not opened: ${err.message}`);
+      return { ok: false, code: 'open_failed', error: 'no app for calls' };
+    }
+  }
 
   // ── Pictures of the reading frame (protocol gcmail:) ─────
 

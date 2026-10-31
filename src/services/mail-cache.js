@@ -15,6 +15,13 @@
  * %APPDATA%\…\mail-cache\<hash of server + token>. Without DPAPI the cache
  * lives in memory only. clear() removes everything (new server, the device's
  * token refused, the plugin gone or not allowed any more).
+ *
+ * Phase 2 (calendar and contacts, read only offline) in its own file
+ * (pim.bin): the calendar list, the occurrences of the ranges loaded (−30 …
+ * +90 days around today are kept), the events opened (200), the address
+ * books, every CardSummary (kept current with `since`), the contacts opened
+ * (500) and their photos (500, the least recently used go; one file each,
+ * ph-<id>.bin).
  */
 
 const crypto = require('crypto');
@@ -27,6 +34,14 @@ const MAX_ITEMS = 3000;
 const MAX_MESSAGES = 500;
 const MAX_LISTS = 100;
 const WRITE_DELAY_MS = 800;
+const PIM_RANGES = 40;
+const PIM_EVENTS = 200;
+const PIM_CARDS = 500;
+const PIM_PHOTOS = 500;
+const PIM_KEEP_BEFORE_MS = 30 * 24 * 60 * 60 * 1000;
+const PIM_KEEP_AFTER_MS = 90 * 24 * 60 * 60 * 1000;
+
+const emptyPim = () => ({ calendars: null, ranges: {}, events: {}, books: null, cards: null, cardDetails: {}, photos: {} });
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -50,6 +65,11 @@ class MailCache {
     this._timer = null;
     this._dirty = false;
     this._dirtyMessages = new Set();
+    this._pim = null;            // see emptyPim()
+    this._pimLoading = null;
+    this._pimDirty = false;
+    this._photos = new Map();    // card id → { mime, data } (base64) read this session
+    this._dirtyPhotos = new Set();
   }
 
   _disk() {
@@ -74,6 +94,9 @@ class MailCache {
     this._index = null;
     this._messages.clear();
     this._loading = null;
+    this._pim = null;
+    this._pimLoading = null;
+    this._photos.clear();
   }
 
   async _read(file) {
@@ -107,6 +130,10 @@ class MailCache {
   _touch(messageId = null) {
     this._dirty = true;
     if (messageId) this._dirtyMessages.add(messageId);
+    this._schedule();
+  }
+
+  _schedule() {
     if (this._timer || !this._disk()) return;
     this._timer = setTimeout(() => { this._timer = null; this.flush().catch(() => {}); }, WRITE_DELAY_MS);
     if (this._timer.unref) this._timer.unref();
@@ -116,6 +143,7 @@ class MailCache {
   async flush() {
     clearTimeout(this._timer);
     this._timer = null;
+    await this._flushPim();
     if (!this._dirty || !this._index || !this._disk()) return;
     const dir = this._folder();
     if (!dir) return;
@@ -251,6 +279,213 @@ class MailCache {
     }
   }
 
+  // ── Calendar and contacts (Phase 2) ──────────────────────
+
+  async _loadPim() {
+    if (this._pim) return this._pim;
+    if (!this._pimLoading) {
+      this._pimLoading = (async () => {
+        let p = null;
+        const dir = this._disk() ? this._folder() : null;
+        if (dir) {
+          try { p = await this._read(path.join(dir, 'pim.bin')); } catch { p = null; }
+        }
+        this._pim = p && typeof p === 'object' && p.ranges && p.events && p.cardDetails && p.photos ? p : emptyPim();
+        return this._pim;
+      })();
+    }
+    return this._pimLoading;
+  }
+
+  _touchPim(photoId = null) {
+    this._pimDirty = true;
+    if (photoId) this._dirtyPhotos.add(photoId);
+    this._schedule();
+  }
+
+  async _flushPim() {
+    if (!this._pimDirty || !this._pim || !this._disk()) return;
+    const dir = this._folder();
+    if (!dir) return;
+    this._pimDirty = false;
+    // taken now: another scope (setScope) may start while this is written
+    const pim = this._pim;
+    const photos = [...this._dirtyPhotos].map((id) => [id, pim.photos[id] ? this._photos.get(id) : null]);
+    this._dirtyPhotos.clear();
+    try {
+      await fs.promises.mkdir(dir, { recursive: true });
+      for (const [id, ph] of photos) {
+        const file = path.join(dir, `ph-${id}.bin`);
+        if (ph) await this._write(file, ph);
+        else await fs.promises.rm(file, { force: true });
+      }
+      await this._write(path.join(dir, 'pim.bin'), pim);
+    } catch (err) {
+      this.log.warn(`Mail calendar / contacts cache not written: ${err.code || err.message}`);
+    }
+  }
+
+  async getCalendars() { return (await this._loadPim()).calendars; }
+
+  async putCalendars(c) { (await this._loadPim()).calendars = c; this._touchPim(); }
+
+  /** The occurrences of an events query (GET events); ranges far from today are not kept. */
+  async putRange(key, from, to, data) {
+    const p = await this._loadPim();
+    const now = this.now();
+    if (to < now - PIM_KEEP_BEFORE_MS || from > now + PIM_KEEP_AFTER_MS) return;
+    p.ranges[key] = { at: now, from, to, items: data.items || [], overlays: data.overlays || [] };
+    const keys = Object.keys(p.ranges);
+    for (const k of keys) {
+      const r = p.ranges[k];
+      if (r.to < now - PIM_KEEP_BEFORE_MS || r.from > now + PIM_KEEP_AFTER_MS) delete p.ranges[k];
+    }
+    const left = Object.keys(p.ranges);
+    if (left.length > PIM_RANGES) {
+      left.sort((a, b) => p.ranges[a].at - p.ranges[b].at);
+      for (const k of left.slice(0, left.length - PIM_RANGES)) delete p.ranges[k];
+    }
+    this._touchPim();
+  }
+
+  /**
+   * The occurrences of [from, to) offline: the query itself when it was loaded, else what the loaded ranges hold of it
+   * (newest first, each occurrence once; `calendars`: only these ids / overlay ids) → { items, overlays, at } | null.
+   */
+  async getRange(key, from, to, calendars = null) {
+    const p = await this._loadPim();
+    if (p.ranges[key]) { const r = p.ranges[key]; return { items: r.items.slice(), overlays: r.overlays.slice(), at: r.at }; }
+    const hits = Object.values(p.ranges).filter((r) => r.from < to && r.to > from).sort((a, b) => b.at - a.at);
+    if (!hits.length) return null;
+    const want = calendars ? new Set(String(calendars).split(',')) : null;
+    const seen = new Set();
+    const items = [];
+    const overlays = [];
+    for (const r of hits) {
+      for (const x of r.items) {
+        if (seen.has(x.key) || x.start >= to || x.end <= from || (want && !want.has(String(x.calendarId)))) continue;
+        seen.add(x.key);
+        items.push(x);
+      }
+      for (const x of r.overlays) {
+        if (seen.has(x.key) || x.start >= to || x.end <= from || (want && !want.has(x.overlayId))) continue;
+        seen.add(x.key);
+        overlays.push(x);
+      }
+    }
+    items.sort((a, b) => a.start - b.start);
+    return { items, overlays, at: hits[hits.length - 1].at };
+  }
+
+  async getEvent(key) { const e = (await this._loadPim()).events[key]; return e ? e.ev : null; }
+
+  async putEvent(key, ev) {
+    const p = await this._loadPim();
+    p.events[key] = { at: this.now(), ev };
+    const keys = Object.keys(p.events);
+    if (keys.length > PIM_EVENTS) {
+      keys.sort((a, b) => p.events[a].at - p.events[b].at);
+      for (const k of keys.slice(0, keys.length - PIM_EVENTS)) delete p.events[k];
+    }
+    this._touchPim();
+  }
+
+  /** An event changed or went: its cached details go (all of its occurrences). */
+  async dropEvent(eventId) {
+    const p = await this._loadPim();
+    for (const k of Object.keys(p.events)) if (k === String(eventId) || k.startsWith(`${eventId}:`)) delete p.events[k];
+    this._touchPim();
+  }
+
+  async getBooks() { return (await this._loadPim()).books; }
+
+  async putBooks(b) { (await this._loadPim()).books = b; this._touchPim(); }
+
+  /** Every CardSummary of the person: { version, items, at } | null. */
+  async getCards() {
+    const c = (await this._loadPim()).cards;
+    return c ? { version: c.version, items: c.items.slice(), at: c.at } : null;
+  }
+
+  /** All of them (`full`), or the changes since the version kept (items replace, `deleted` go). */
+  async putCards({ version, items, deleted = [], full = false }) {
+    const p = await this._loadPim();
+    let list = full || !p.cards ? items : p.cards.items;
+    if (!full && p.cards) {
+      const gone = new Set([...deleted, ...items.map((c) => c.id)]);
+      list = list.filter((c) => !gone.has(c.id)).concat(items);
+      for (const id of deleted) { delete p.cardDetails[id]; this._dropPhoto(p, id); }
+    }
+    p.cards = { version, items: list, at: this.now() };
+    this._touchPim();
+  }
+
+  /** The list must be loaded anew (a merge, an address book shown or hidden). */
+  async resetCards() {
+    const p = await this._loadPim();
+    p.cards = null;
+    this._touchPim();
+  }
+
+  async getCard(id) { const c = (await this._loadPim()).cardDetails[id]; return c ? c.card : null; }
+
+  async putCard(card) {
+    if (!card || !card.id) return;
+    const p = await this._loadPim();
+    p.cardDetails[card.id] = { at: this.now(), card };
+    const keys = Object.keys(p.cardDetails);
+    if (keys.length > PIM_CARDS) {
+      keys.sort((a, b) => p.cardDetails[a].at - p.cardDetails[b].at);
+      for (const k of keys.slice(0, keys.length - PIM_CARDS)) delete p.cardDetails[k];
+    }
+    this._touchPim();
+  }
+
+  async dropCard(id) {
+    const p = await this._loadPim();
+    delete p.cardDetails[id];
+    if (p.cards) p.cards.items = p.cards.items.filter((c) => c.id !== id);
+    this._dropPhoto(p, id);
+    this._touchPim();
+  }
+
+  _dropPhoto(p, id) {
+    if (!p.photos[id] && !this._photos.has(id)) return;
+    delete p.photos[id];
+    this._photos.delete(id);
+    this._dirtyPhotos.add(id);
+  }
+
+  /** A contact's photo kept for its etag → { mime, data } | null. */
+  async getPhoto(id, etag) {
+    const p = await this._loadPim();
+    const meta = p.photos[id];
+    if (!meta || (etag && meta.etag !== etag)) return null;
+    meta.at = this.now();
+    if (this._photos.has(id)) return this._photos.get(id);
+    if (!this._disk()) return null;
+    try {
+      const ph = await this._read(path.join(this._folder(), `ph-${id}.bin`));
+      this._photos.set(id, ph);
+      return ph;
+    } catch {
+      delete p.photos[id];
+      return null;
+    }
+  }
+
+  async putPhoto(id, etag, photo) {
+    const p = await this._loadPim();
+    p.photos[id] = { at: this.now(), etag: etag || null };
+    this._photos.set(id, photo);
+    this._touchPim(id);
+    const keys = Object.keys(p.photos);
+    if (keys.length > PIM_PHOTOS) {
+      keys.sort((a, b) => p.photos[a].at - p.photos[b].at);
+      for (const k of keys.slice(0, keys.length - PIM_PHOTOS)) this._dropPhoto(p, Number(k));
+    }
+  }
+
   /** Everything of every server goes (memory and disk). */
   async clear() {
     clearTimeout(this._timer);
@@ -260,6 +495,11 @@ class MailCache {
     this._messages.clear();
     this._dirty = false;
     this._dirtyMessages.clear();
+    this._pim = null;
+    this._pimLoading = null;
+    this._pimDirty = false;
+    this._photos.clear();
+    this._dirtyPhotos.clear();
     const base = this.dir();
     if (base) await fs.promises.rm(base, { recursive: true, force: true }).catch(() => {});
   }
