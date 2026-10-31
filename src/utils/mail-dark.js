@@ -124,9 +124,12 @@ function toLab({ r, g, b }) {
 
 /** OKLab → linear sRGB (may lie outside 0…1). */
 function labToLinear(L, a, b) {
-  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-  const s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
   return [
     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
     -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
@@ -189,7 +192,8 @@ function darkText(c, bg = null, bgBefore = null) {
   let A = lab.a;
   let B = lab.b;
   if (L < P_TX) {
-    L = LAB_TX.L - (LAB_TX.L - P_TX) * (L / P_TX) ** 3;
+    const t = L / P_TX;
+    L = LAB_TX.L - (LAB_TX.L - P_TX) * t * t * t;
     A += LAB_TX.a;
     B += LAB_TX.b;
   }
@@ -255,7 +259,7 @@ function firstColor(value) {
 const BG_PROP_RE = /^(background|border|outline|column-rule|box-shadow)(-|$)/;
 const TEXT_PROP_RE = /^(color|text-decoration|text-decoration-color|-webkit-text-fill-color|caret-color|text-emphasis-color)$/;
 
-/** Splits a declaration list on ';' outside brackets and strings: [{ text, prop, colon }]. */
+/** Splits a declaration list on ";" outside brackets and strings (the parts, joined again with ";"). */
 function splitDeclarations(css) {
   const parts = [];
   let depth = 0;

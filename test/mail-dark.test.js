@@ -85,6 +85,9 @@ describe('mail in the dark: the HTML', () => {
     assert.ok(out.includes('<p style=color:#e6eaf0>'));
     assert.ok(out.includes('<body text="#e6eaf0" link="#3585e6">'));
     assert.equal(dark.darkHtml('<p>Hallo</p>'), '<p>Hallo</p>');
+    // a long style attribute is no problem for the pattern
+    const long = `<td style="${'color:#000;'.repeat(5000)}">x</td>`;
+    assert.ok(dark.darkHtml(long).startsWith('<td style="color:#e6eaf0;color:#e6eaf0;'));
   });
 
   it('the frame document: dark page, the same CSP without scripts, #gc-fit; the original stays light', () => {
