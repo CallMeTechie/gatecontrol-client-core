@@ -38,6 +38,13 @@ const EMAIL_TYPES = Object.freeze(['home', 'work', 'other']);
 const PHONE_TYPES = Object.freeze(['mobile', 'home', 'work', 'fax', 'other']);
 const ADDRESS_TYPES = Object.freeze(['home', 'work', 'other']);
 const DUP_REASONS = Object.freeze(['email', 'phone', 'name']);
+// Mail 1.4.0: the GC contact as the master — merges, conflicts, favourites
+const MERGE_MODES = Object.freeze(['auto', 'manual', 'migrated']);
+const MERGE_REASONS = Object.freeze(['email', 'phone', 'name', 'link']);
+const CONFLICT_FIELDS = Object.freeze(['phones', 'addresses', 'company', 'department', 'title', 'birthday']);
+const CONFLICT_MODES = Object.freeze(['replace', 'add']);
+const LINKED_DELETE = Object.freeze(['keep', 'delete']);
+const FAVORITES_MAX = 50;
 const CARD_SORTS = Object.freeze(['family', 'given']);
 const CARD_SHOWS = Object.freeze(['given_family', 'family_given']);
 const PHOTO_MIMES = Object.freeze(['image/jpeg', 'image/png']);
@@ -686,6 +693,15 @@ function normalizeCardSummary(v) {
     linked: ids(o.linked, 20),
     gcUserId: posId(o.gcUserId),
     updatedAt: msOf(o.updatedAt),
+    // Mail 1.4.0 (null from servers before: the new parts stay hidden)
+    favorite: typeof o.favorite === 'boolean' ? o.favorite : null,
+    mainPhone: line(o.mainPhone, 60),
+    conflicts: o.conflicts === undefined || o.conflicts === null ? null : (count(o.conflicts) || 0),
+    masterId: posId(o.masterId),
+    sources: Array.isArray(o.sources) ? o.sources.map((x) => {
+      const b = obj(x);
+      return b && posId(b.addressbookId) ? { addressbookId: posId(b.addressbookId), source: oneOf(BOOK_SOURCES, b.source, 'local'), accountId: posId(b.accountId) } : null;
+    }).filter(Boolean).slice(0, 20) : null,
   };
 }
 
@@ -761,7 +777,206 @@ function normalizeCard(v) {
     }).filter(Boolean).slice(0, 20),
     gcUserId: posId(o.gcUserId),
     updatedAt: msOf(o.updatedAt),
+    // Mail 1.4.0 (null from servers before: the new parts stay hidden)
+    favorite: typeof o.favorite === 'boolean' ? o.favorite : null,
+    mainPhone: phoneOf(o.mainPhone),
+    mainPhoneChosen: bool(o.mainPhoneChosen),
+    masterId: posId(o.masterId),
+    conflicts: Array.isArray(o.conflicts) ? o.conflicts.map(normalizeConflict).filter(Boolean).slice(0, 100) : null,
+    sources: Array.isArray(o.sources) ? o.sources.map(normalizeSource).filter(Boolean).slice(0, 20) : null,
   };
+}
+
+/** A number { value, type }, or null. */
+function phoneOf(v) {
+  const p = obj(v);
+  const value = p && line(p.value, 60);
+  return value ? { value, type: oneOf(PHONE_TYPES, p.type, 'other') } : null;
+}
+
+/** A `Source` of a GC contact (1.4.0: the card in an address book, its account), or null. */
+function normalizeSource(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  if (!id) return null;
+  return {
+    id,
+    addressbookId: posId(o.addressbookId),
+    addressbook: line(o.addressbook, 120) || '',
+    source: oneOf(BOOK_SOURCES, o.source, 'local'),
+    accountId: posId(o.accountId),
+    account: emailOf(o.account),
+  };
+}
+
+/** The value of a conflict's field: a number, an address, a date or a text; null when not understood. */
+function conflictValue(field, v) {
+  if (v === null || v === undefined) return null;
+  if (field === 'phones') return phoneOf(v);
+  if (field === 'addresses') return addressOf(v);
+  if (field === 'birthday') return typeof v === 'string' && BIRTHDAY_RE.test(v) ? v : null;
+  return line(v, 200);
+}
+
+/** A `Conflict` (1.4.0: a linked card has another value of the same kind), or null. */
+function normalizeConflict(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  if (!id || !CONFLICT_FIELDS.includes(o.field)) return null;
+  const value = conflictValue(o.field, o.value);
+  if (!value) return null;
+  const type = o.field === 'phones' ? PHONE_TYPES : (o.field === 'addresses' ? ADDRESS_TYPES : []);
+  return {
+    id,
+    field: o.field,
+    type: type.includes(o.type) ? o.type : null,
+    value,
+    replaces: conflictValue(o.field, o.replaces),
+    source: normalizeSource(o.source),
+    at: msOf(o.at),
+  };
+}
+
+/** { card, writeBack } of PATCH cards (1.4.0) → [{ id, addressbookId, ok, code }]. */
+function normalizeWriteBack(v) {
+  return arr(v).map((x) => {
+    const w = obj(x);
+    const id = w && posId(w.id);
+    return id ? { id, addressbookId: posId(w.addressbookId), ok: w.ok === true, code: w.ok === true ? null : (codeOf(w.code) ? w.code : 'error') } : null;
+  }).filter(Boolean).slice(0, 20);
+}
+
+/** A `Merge` of the protocol (1.4.0), or null. */
+function normalizeMerge(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  if (!id) return null;
+  return {
+    id,
+    masterId: posId(o.masterId),
+    mode: oneOf(MERGE_MODES, o.mode, 'manual'),
+    created: bool(o.created),
+    reason: MERGE_REASONS.includes(o.reason) ? o.reason : null,
+    at: msOf(o.at),
+    undoneAt: msOf(o.undoneAt),
+    cards: arr(o.cards).map((x) => {
+      const c = obj(x);
+      const cid = c && posId(c.id);
+      return cid ? { id: cid, name: line(c.name, 200) || '', addressbookId: posId(c.addressbookId), addressbook: line(c.addressbook, 120) || '', source: oneOf(BOOK_SOURCES, c.source, 'local'), removed: bool(c.removed) } : null;
+    }).filter(Boolean).slice(0, 20),
+  };
+}
+
+/** GET cards/merges → { items: [Merge] }. */
+function normalizeMerges(v) {
+  return { items: arr(obj(v) && v.items).map(normalizeMerge).filter(Boolean).slice(0, 200) };
+}
+
+/** POST cards/merge/auto → { merged, open, items: [Merge] }. */
+function normalizeAutoMerge(v) {
+  const o = obj(v) || {};
+  return { merged: count(o.merged) || 0, open: count(o.open) || 0, items: arr(o.items).map(normalizeMerge).filter(Boolean).slice(0, 200) };
+}
+
+/** `Preview` of a merge ("So wird der Kontakt", 1.4.0), or null. */
+function normalizePreview(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const f = cardFields(o);
+  return {
+    id: posId(o.id),
+    name: f.name,
+    emails: f.emails,
+    phones: f.phones,
+    company: f.company,
+    department: f.department,
+    title: f.title,
+    addresses: f.addresses,
+    birthday: f.birthday,
+    note: f.note,
+    urls: f.urls,
+    mainPhone: phoneOf(o.mainPhone),
+    photoFrom: posId(o.photoFrom),
+    sources: arr(o.sources).map(normalizeSource).filter(Boolean).slice(0, 20),
+    conflicts: arr(o.conflicts).map((x) => {
+      const c = obj(x);
+      if (!c || !CONFLICT_FIELDS.includes(c.field)) return null;
+      const value = conflictValue(c.field, c.value);
+      return value ? { field: c.field, value, source: normalizeSource(c.source) } : null;
+    }).filter(Boolean).slice(0, 50),
+  };
+}
+
+/** GET cards/conflicts → { items: [{ card: CardSummary, conflicts: [Conflict] }] }. */
+function normalizeConflicts(v) {
+  return {
+    items: arr(obj(v) && v.items).map((x) => {
+      const o = obj(x);
+      const card = o && normalizeCardSummary(o.card);
+      const list = card ? arr(o.conflicts).map(normalizeConflict).filter(Boolean).slice(0, 100) : [];
+      return card && list.length ? { card, conflicts: list } : null;
+    }).filter(Boolean).slice(0, 500),
+  };
+}
+
+/** GET / PUT cards/favorites → { items: [{ id, name, photo, photoEtag, phone, email }] } (in their order). */
+function normalizeFavorites(v) {
+  return {
+    items: arr(obj(v) && v.items).map((x) => {
+      const o = obj(x);
+      const id = o && posId(o.id);
+      if (!id) return null;
+      const email = emailOf(o.email);
+      return { id, name: line(o.name, 200) || email || '', photo: bool(o.photo), photoEtag: line(o.photoEtag, 120), phone: phoneOf(o.phone), email };
+    }).filter(Boolean).slice(0, FAVORITES_MAX),
+  };
+}
+
+/** GET events/upcoming → { timeZone, today, items, more } (the calendar widget of the start page, 1.4.0). */
+function normalizeUpcoming(v) {
+  const o = obj(v) || {};
+  return {
+    timeZone: tzOf(o.timeZone),
+    today: dateOf(o.today),
+    items: arr(o.items).map((x) => {
+      const e = obj(x);
+      if (!e || typeof e.key !== 'string' || !KEY_RE.test(e.key)) return null;
+      const start = msOf(e.start);
+      const end = msOf(e.end);
+      if (start === null || end === null) return null;
+      const allDay = bool(e.allDay);
+      const eventId = posId(e.eventId);
+      // a series' occurrence: the key is "<eventId>:<occurrence>" (to open that one)
+      const occurrence = eventId && e.key.startsWith(`${eventId}:`) ? occOf(e.key.slice(String(eventId).length + 1)) : null;
+      return {
+        key: e.key,
+        eventId,
+        occurrence,
+        calendarId: posId(e.calendarId),
+        overlayId: typeof e.overlayId === 'string' && OVERLAY_RE.test(e.overlayId) ? e.overlayId : null,
+        color: colorOf(e.color),
+        title: line(e.title, TITLE_MAX) || '',
+        start,
+        end,
+        allDay,
+        ...(allDay ? { startDate: dateOf(e.startDate), endDate: dateOf(e.endDate) } : {}),
+        day: dateOf(e.day),
+        location: line(e.location, 300),
+        online: m.httpsUrl(e.online),
+        myResponse: MY_RESPONSES.includes(e.myResponse) ? e.myResponse : null,
+        tentative: bool(e.tentative),
+      };
+    }).filter(Boolean).slice(0, 20),
+    more: count(o.more) || 0,
+  };
+}
+
+/** GET events/upcoming → params ({ days 1…7, limit 1…20 }), or null. */
+function upcomingQuery(q) {
+  const o = obj(q) || {};
+  const days = o.days === undefined || o.days === null ? 2 : intIn(o.days, 1, 7);
+  const limit = o.limit === undefined || o.limit === null ? 8 : intIn(o.limit, 1, 20);
+  return days && limit ? { days, limit } : null;
 }
 
 /** { card } of POST / PATCH cards (or the card itself) → Card, or null. */
@@ -794,14 +1009,29 @@ function normalizeCardDraft(v) {
   return { draft: cardFields(obj(o.draft) || {}), existing: o.existing ? normalizeCard(o.existing) : null };
 }
 
-/** GET cards/duplicates → { items: [{ key, reason, cards }] }. */
+/**
+ * GET cards/duplicates(?details=1) → { items: [{ key, reason, cards, certain, details, preview }] }. Mail 1.4.0 adds
+ * `certain` and, with details, each card in full with its source and the preview of the merge; before: null.
+ */
 function normalizeDuplicates(v) {
   return {
     items: arr(obj(v) && v.items).map((x) => {
       const o = obj(x);
       const cards = o ? arr(o.cards).map(normalizeCardSummary).filter(Boolean).slice(0, 10) : [];
       if (cards.length < 2) return null;
-      return { key: typeof o.key === 'string' && KEY_RE.test(o.key) ? o.key : cards.map((c) => c.id).join('-'), reason: oneOf(DUP_REASONS, o.reason, 'name'), cards };
+      const details = Array.isArray(o.details) ? o.details.map((d) => {
+        const e = obj(d);
+        const card = e && normalizeCard(e.card);
+        return card ? { card, source: normalizeSource(e.source) } : null;
+      }).filter(Boolean).slice(0, 10) : null;
+      return {
+        key: typeof o.key === 'string' && KEY_RE.test(o.key) ? o.key : cards.map((c) => c.id).join('-'),
+        reason: oneOf(DUP_REASONS, o.reason, 'name'),
+        cards,
+        certain: typeof o.certain === 'boolean' ? o.certain : null,
+        details,
+        preview: o.preview ? normalizePreview(o.preview) : null,
+      };
     }).filter(Boolean).slice(0, 500),
   };
 }
@@ -935,6 +1165,12 @@ function cardBody(v, { patch = false } = {}) {
     if (!Array.isArray(o.groups) || o.groups.length > 200 || !o.groups.every((g) => posId(g))) return null;
     b.groups = [...new Set(o.groups.map(posId))];
   }
+  // Mail 1.4.0: GateControl's own (never to the provider) — the favourite and the main number of a contact
+  if (patch && o.favorite !== undefined) { if (typeof o.favorite !== 'boolean') return null; b.favorite = o.favorite; }
+  if (patch && o.mainPhone !== undefined) {
+    if (o.mainPhone !== null && (typeof o.mainPhone !== 'string' || !o.mainPhone.trim() || o.mainPhone.length > 60 || !/\d/.test(o.mainPhone))) return null;
+    b.mainPhone = o.mainPhone === null ? null : o.mainPhone.trim();
+  }
   if (patch && o.etag !== undefined && o.etag !== null) { if (typeof o.etag !== 'string' || !ETAG_RE.test(o.etag)) return null; b.etag = o.etag; }
   const fields = Object.keys(b).filter((k) => k !== 'etag' && k !== 'addressbookId');
   if (!fields.length) return null;
@@ -957,12 +1193,14 @@ function cardPrefsPatch(v) {
   return Object.keys(b).length ? b : null;
 }
 
-/** POST cards/merge → the body, or null. */
+/** POST cards/merge → the body, or null. `primaryId` is optional since Mail 1.4.0 (a hint; servers before need it). */
 function mergeBody(v) {
   const o = obj(v);
   const list = o && Array.isArray(o.ids) ? ids(o.ids, 10) : [];
-  if (list.length < 2 || list.length !== o.ids.length || !list.includes(posId(o.primaryId))) return null;
-  const b = { ids: list, primaryId: posId(o.primaryId) };
+  const hasPrimary = o && o.primaryId !== undefined && o.primaryId !== null;
+  if (list.length < 2 || list.length !== o.ids.length || (hasPrimary && !list.includes(posId(o.primaryId)))) return null;
+  const b = { ids: list };
+  if (hasPrimary) b.primaryId = posId(o.primaryId);
   if (o.pick !== undefined && o.pick !== null) {
     const p = obj(o.pick);
     if (!p) return null;
@@ -977,6 +1215,48 @@ function mergeBody(v) {
     if (Object.keys(pick).length) b.pick = pick;
   }
   return b;
+}
+
+/** POST cards/merge/preview { ids (2…10) } → the body, or null. */
+function previewBody(v) {
+  const o = obj(v);
+  const list = o && Array.isArray(o.ids) ? ids(o.ids, 10) : [];
+  return list.length >= 2 && list.length === o.ids.length ? { ids: list } : null;
+}
+
+/** POST cards/<id>/unmerge { ids?, keepMaster? } and POST cards/merges/<id>/undo { keepMaster? } → the body, or null. */
+function unmergeBody(v, { withIds = true } = {}) {
+  const o = obj(v) || {};
+  const b = {};
+  if (withIds && o.ids !== undefined && o.ids !== null) {
+    const list = Array.isArray(o.ids) ? ids(o.ids, 20) : [];
+    if (!list.length || list.length !== o.ids.length) return null;
+    b.ids = list;
+  }
+  if (o.keepMaster !== undefined && o.keepMaster !== null) { if (typeof o.keepMaster !== 'boolean') return null; b.keepMaster = o.keepMaster; }
+  return b;
+}
+
+/** POST cards/<id>/conflicts/<cid>/accept { mode? } → the body, or null. */
+function acceptBody(v) {
+  const o = obj(v) || {};
+  if (o.mode === undefined || o.mode === null) return {};
+  return CONFLICT_MODES.includes(o.mode) ? { mode: o.mode } : null;
+}
+
+/** PUT cards/favorites { ids } (the order; ≤ 50) → the body, or null. */
+function favoritesBody(v) {
+  const o = obj(v);
+  if (!o || !Array.isArray(o.ids) || o.ids.length > FAVORITES_MAX) return null;
+  const list = ids(o.ids, FAVORITES_MAX);
+  return list.length === o.ids.length ? { ids: list } : null;
+}
+
+/** DELETE cards/<id>?linked=keep|delete → params ({} without), or null. */
+function deleteCardQuery(v) {
+  const o = obj(v) || {};
+  if (o.linked === undefined || o.linked === null) return {};
+  return LINKED_DELETE.includes(o.linked) ? { linked: o.linked } : null;
 }
 
 /** POST groups / PATCH groups/<id> → the body, or null. */
@@ -1018,12 +1298,18 @@ function normalizeCalendarLive(v) {
   return null;
 }
 
-/** The live event `contacts` → { kind: 'changed', addressbookId, contactIds } | { kind: 'addressbooks' } | { kind: 'groups' } | null. */
+/**
+ * The live event `contacts` → { kind: 'changed', addressbookId, contactIds } | { kind: 'addressbooks' } | { kind: 'groups' }
+ * | Mail 1.4.0: { kind: 'merged', masterId, contactIds, auto } | { kind: 'conflicts', contactIds } | { kind: 'favorites' } | null.
+ */
 function normalizeContactsLive(v) {
   const o = obj(v) || {};
   if (o.kind === 'changed') return { kind: 'changed', addressbookId: posId(o.addressbookId), contactIds: ids(o.contactIds, 50) };
   if (o.kind === 'addressbooks') return { kind: 'addressbooks' };
   if (o.kind === 'groups') return { kind: 'groups' };
+  if (o.kind === 'merged') return { kind: 'merged', masterId: posId(o.masterId), contactIds: ids(o.contactIds, 50), auto: bool(o.auto) };
+  if (o.kind === 'conflicts') return { kind: 'conflicts', contactIds: ids(o.contactIds, 50) };
+  if (o.kind === 'favorites') return { kind: 'favorites' };
   return null;
 }
 
@@ -1047,7 +1333,7 @@ function filterCards(items, { q = '', book = 'all', group = null } = {}) {
   if (!bookId) for (const c of items) for (const l of c.linked || []) linkedAway.add(l);
   return items.filter((c) => {
     if (bookId && c.addressbookId !== bookId) return false;
-    if (!bookId && linkedAway.has(c.id)) return false;
+    if (!bookId && (linkedAway.has(c.id) || c.masterId)) return false;
     if (groupId && !(c.groups || []).includes(groupId)) return false;
     if (!words) return true;
     const hay = fold([c.name, c.company, c.title, ...(c.emails || [])].filter(Boolean).join(' '));
@@ -1071,6 +1357,8 @@ module.exports = {
   PHONE_TYPES,
   ADDRESS_TYPES,
   PHOTO_MIMES,
+  CONFLICT_FIELDS,
+  FAVORITES_MAX,
   RANGE_MAX_MS,
   PHOTO_MAX_BYTES,
   VCF_MAX_BYTES,
@@ -1111,6 +1399,17 @@ module.exports = {
   normalizeActivity,
   normalizeCardDraft,
   normalizeDuplicates,
+  normalizeSource,
+  normalizeConflict,
+  normalizeConflicts,
+  normalizeWriteBack,
+  normalizeMerge,
+  normalizeMerges,
+  normalizeAutoMerge,
+  normalizePreview,
+  normalizeFavorites,
+  normalizeUpcoming,
+  upcomingQuery,
   normalizeGroupDetail,
   normalizeCardPhoto,
   normalizeExport,
@@ -1118,6 +1417,11 @@ module.exports = {
   cardBody,
   cardPrefsPatch,
   mergeBody,
+  previewBody,
+  unmergeBody,
+  acceptBody,
+  favoritesBody,
+  deleteCardQuery,
   groupBody,
   membersBody,
   normalizeCalendarLive,

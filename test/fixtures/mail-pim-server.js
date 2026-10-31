@@ -5,8 +5,12 @@
 // conflict, create / change / delete / respond, invitations (one in mail 106), address books, contacts with summaries,
 // `since` and tombstones, photos, lookup, activity, "Als Kontakt speichern", duplicates and merge, vCard import / export,
 // groups and their members; GET contacts?q= with contacts and groups.
+// Mail 1.4.0 (`pimState(now, { master: true })`, mailServer({ contactsMaster: true })): the GC contact as the master —
+// a linked Outlook card with a conflict and the protocol of its automatic merge, an uncertain duplicate ("Schatzimausi 💞"
+// and "Sabrina Martin", one number), favourites with a main number, writeBack, unmerge / undo, the calendar widget
+// (events/upcoming). Without it the new paths answer 404 not_found like a server before 1.4.0.
 //
-//   pimState(now) → the state (state.calendars, events, invitations, books, cards, groups, …)
+//   pimState(now, { master }) → the state (state.calendars, events, invitations, books, cards, groups, …)
 //   pimRoute({ req, route, seg, url, body, state, json, err, sum }) → true when answered
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -17,7 +21,7 @@ const midnight = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); retur
 const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fold = (s) => String(s || '').toLowerCase().replace(/ß/g, 'ss').normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-function pimState(now) {
+function pimState(now, { master = false } = {}) {
   const day0 = midnight(now);
   const at = (days, h, mi = 0) => { const d = new Date(day0); d.setDate(d.getDate() + days); d.setHours(h, mi, 0, 0); return d.getTime(); };
   const sabine = { name: 'Sabine Keller', email: 'sabine@firma.de' };
@@ -55,6 +59,12 @@ function pimState(now) {
     version: 10,
     nextId: 9000,
     sent: [],
+    // Mail 1.4.0
+    master,
+    conflicts: [],
+    merges: [],
+    origins: [],
+    dismissed: [],
   };
   const ev = (e) => state.events.set(e.id, {
     location: null, online: null, status: 'confirmed', busy: 'busy', myResponse: null, attendees: [], organizer: null, description: '', descriptionHtml: null,
@@ -81,7 +91,7 @@ function pimState(now) {
 
   const card = (c) => state.cards.set(c.id, {
     emails: [], phones: [], company: null, department: null, title: null, addresses: [], birthday: null, note: '', urls: [], groups: [], linkId: null,
-    version: (state.version += 1), updatedAt: now, ...c, name: { display: '', given: '', family: '', middle: null, prefix: null, suffix: null, nickname: null, ...c.name },
+    favorite: 0, mainPhone: null, version: (state.version += 1), updatedAt: now, ...c, name: { display: '', given: '', family: '', middle: null, prefix: null, suffix: null, nickname: null, ...c.name },
   });
   card({
     id: 401, addressbookId: 2, name: { display: 'Sabine Keller', given: 'Sabine', family: 'Keller' }, emails: [{ value: 'sabine@firma.de', type: 'work', primary: true }, { value: 'sabine.k@gmx.de', type: 'home', primary: false }],
@@ -96,7 +106,212 @@ function pimState(now) {
   state.photos.set(401, { mime: 'image/png', data: PNG.toString('base64'), etag: 'ph401' });
   state.groups.set(501, { id: 501, name: 'Team Vertrieb', color: '#79B8FF', members: [{ id: 801, contactId: 401, name: 'Sabine Keller', email: 'sabine@firma.de' }, { id: 802, contactId: 402, name: 'Tim Brandt', email: 'tim@firma.de' }] });
   state.groups.set(502, { id: 502, name: 'Familie', color: null, members: [{ id: 803, contactId: 402, name: 'Tim Brandt', email: 'tim@firma.de' }, { id: 804, contactId: null, name: 'Oma', email: 'oma@example.com' }] });
+  if (master) {
+    // after the run of 1.4.0: "Sabine Keller" of Meine Kontakte is the GC contact, the Outlook card is linked to it; the
+    // Outlook card has another mobile number (a conflict); her second address came from Outlook (writeBack goes there)
+    const m = state.cards.get(405);
+    Object.assign(m, {
+      emails: [{ value: 'sabine@firma.de', type: 'work', primary: true }, { value: 'sabine.k@gmx.de', type: 'home', primary: false }],
+      phones: [{ value: '0170 1234567', type: 'mobile' }, { value: '0221 3004012', type: 'work' }], company: 'Keller GmbH', title: 'Projektleitung',
+      addresses: [{ type: 'work', street: 'Hansaring 12', postalCode: '50670', city: 'Köln', region: '', country: '' }], birthday: '1981-03-14', note: 'Mittwochs im Homeoffice.',
+    });
+    state.cards.get(401).linkId = 405;
+    for (const g of state.groups.values()) for (const x of g.members) if (x.contactId === 401) x.contactId = 405;
+    state.photos.set(405, { mime: 'image/png', data: PNG.toString('base64'), etag: 'ph405' });
+    state.origins.push({ cardId: 405, field: 'emails', key: 'sabine.k@gmx.de', sourceId: 401 }, { cardId: 405, field: 'phones', key: '2213004012', sourceId: 401 });
+    state.conflicts.push({ id: 951, cardId: 405, sourceId: 401, field: 'phones', type: 'mobile', value: { value: '0171 2345678', type: 'mobile' }, replaces: { value: '0170 1234567', type: 'mobile' }, at: now - DAY });
+    state.merges.push({ id: 901, masterId: 405, mode: 'auto', created: false, reason: 'email', at: now - DAY, undoneAt: null, removed: [],
+      cards: [{ id: 405, name: 'Sabine Keller', addressbookId: 1, addressbook: 'Meine Kontakte', source: 'local', removed: false }, { id: 401, name: 'Sabine Keller', addressbookId: 2, addressbook: 'Firma · M365', source: 'graph', removed: false }] });
+    // an uncertain duplicate: one number, names that do not match
+    card({ id: 407, addressbookId: 2, name: { display: 'Schatzimausi 💞', given: '', family: '' }, phones: [{ value: '+49 172 3334444', type: 'mobile' }], birthday: '--07-21' });
+    card({ id: 408, addressbookId: 1, name: { display: 'Sabrina Martin', given: 'Sabrina', family: 'Martin' }, emails: [{ value: 'sabrina@example.com', type: 'home', primary: true }], phones: [{ value: '0172 3334444', type: 'mobile' }, { value: '0221 777888', type: 'home' }],
+      addresses: [{ type: 'home', street: 'Ringstraße 3', postalCode: '50667', city: 'Köln', region: '', country: '' }] });
+    state.photos.set(407, { mime: 'image/png', data: PNG.toString('base64'), etag: 'ph407' });
+    // favourites: Tim (his mobile number), Anna (no number: the tile opens her)
+    state.cards.get(402).favorite = 1;
+    state.cards.get(403).favorite = 2;
+  }
   return state;
+}
+
+// ── Mail 1.4.0: the GC contact as the master ───────────────
+
+const digitsOf = (v) => String(v || '').replace(/\D/g, '').replace(/^(?:00?49)/, '').slice(-9);
+const valueKey = (field, v) => {
+  if (field === 'phones') return digitsOf(v && v.value);
+  if (field === 'emails') return String((v && v.value) || '').toLowerCase();
+  if (field === 'addresses') return fold([v && v.street, v && v.postalCode, v && v.city].join('|'));
+  return fold(typeof v === 'string' ? v : JSON.stringify(v));
+};
+const hasEmoji = (s) => /\p{Extended_Pictographic}/u.test(String(s || ''));
+
+/** The main number of card `c`: the chosen one, else the first mobile number, else the first. */
+function mainPhoneOf(c) {
+  const chosen = c.mainPhone ? c.phones.find((p) => digitsOf(p.value) === c.mainPhone) : null;
+  return chosen || c.phones.find((p) => p.type === 'mobile') || c.phones[0] || null;
+}
+
+function sourceOf(state, c) {
+  const b = state.books.find((x) => x.id === c.addressbookId) || {};
+  return { id: c.id, addressbookId: c.addressbookId, addressbook: b.name || '', source: b.source || 'local', accountId: b.accountId || null, account: b.accountId === 2 ? 'max@firma.de' : (b.accountId === 1 ? 'max@gmx.de' : null) };
+}
+
+function conflictView(state, x) {
+  return { id: x.id, field: x.field, type: x.type, value: x.value, replaces: x.replaces, source: sourceOf(state, state.cards.get(x.sourceId)), at: x.at };
+}
+
+/** Names alike (1.4.0 rule 2.2, simplified): the same folded, the words of one in the other's, or one without a name. */
+function similar(a, b) {
+  const words = (c) => fold(display(c)).split(/\s+/).filter((w) => w && !/\p{Extended_Pictographic}/u.test(w));
+  const x = words(a);
+  const y = words(b);
+  if (!a.name.display && !a.name.given && !a.name.family) return true;
+  if (!b.name.display && !b.name.given && !b.name.family) return true;
+  if (x.join(' ') === y.join(' ')) return true;
+  return x.length > 0 && y.length > 0 && (x.every((w) => y.includes(w)) || y.every((w) => x.includes(w)));
+}
+
+function union(state, cards) {
+  const local = cards.filter((c) => state.books.find((b) => b.id === c.addressbookId).source === 'local');
+  const keep = local.sort((a, b) => a.id - b.id)[0] || null;
+  const list = (field) => {
+    const out = [];
+    for (const c of cards) for (const v of c[field]) if (!out.some((o) => valueKey(field, o) === valueKey(field, v))) out.push(v);
+    return out;
+  };
+  const named = cards.find((c) => hasEmoji(c.name.display)) || [...cards].sort((a, b) => display(b).length - display(a).length)[0];
+  const first = (k) => (keep && keep[k]) || (cards.find((c) => c[k]) || {})[k] || null;
+  const photoFrom = (keep && state.photos.has(keep.id) ? keep : cards.find((c) => state.photos.has(c.id))) || null;
+  const conflicts = [];
+  for (const k of ['company', 'title']) {
+    const v = first(k);
+    for (const c of cards) if (c[k] && v && c[k] !== v) conflicts.push({ field: k, value: c[k], source: sourceOf(state, c) });
+  }
+  return {
+    keep, conflicts,
+    fields: {
+      name: { ...named.name, display: display(named) }, emails: list('emails'), phones: list('phones'), addresses: list('addresses'), urls: list('urls'),
+      company: first('company'), department: first('department'), title: first('title'), birthday: cards.map((c) => c.birthday).find((x) => x && !x.startsWith('--')) || first('birthday'),
+      note: [...new Set(cards.map((c) => c.note).filter(Boolean))].join('\n\n'),
+    },
+    photoFrom: photoFrom ? photoFrom.id : null,
+  };
+}
+
+function previewOf(state, cards) {
+  const u = union(state, cards);
+  const main = mainPhoneOf({ phones: u.fields.phones, mainPhone: null });
+  return { id: u.keep ? u.keep.id : null, ...u.fields, birthday: u.fields.birthday, mainPhone: main, photoFrom: u.photoFrom, sources: cards.map((c) => sourceOf(state, c)), conflicts: u.conflicts };
+}
+
+/** The duplicate groups over the shown entries (a master stands for its links) → [{ key, reason, ids, certain }]. */
+function dupGroups(state) {
+  const visible = state.books.filter((b) => b.visible).map((b) => b.id);
+  const entries = [...state.cards.values()].filter((c) => visible.includes(c.addressbookId) && !c.linkId);
+  const ignored = (a, b) => state.ignored.some((ig) => ig.includes(a.id) && ig.includes(b.id));
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < entries.length; i += 1) {
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const a = entries[i];
+      const b = entries[j];
+      if (ignored(a, b)) continue;
+      const mail = a.emails.some((e) => b.emails.some((f) => e.value.toLowerCase() === f.value.toLowerCase()));
+      const phone = !mail && a.phones.some((p) => b.phones.some((q) => digitsOf(p.value) && digitsOf(p.value) === digitsOf(q.value)));
+      const name = !mail && !phone && !a.emails.length && !b.emails.length && fold(display(a)) === fold(display(b)) && !!display(a);
+      if (!mail && !phone && !name) continue;
+      const key = [a.id, b.id].sort((x, y) => x - y).join('-');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, reason: mail ? 'email' : (phone ? 'phone' : 'name'), ids: [a.id, b.id], certain: (mail || phone) && similar(a, b) });
+    }
+  }
+  return [...out.filter((g) => !g.certain), ...out.filter((g) => g.certain)];
+}
+
+function mergeCards(state, ids, mode, reason) {
+  const cards = ids.map((x) => state.cards.get(x)).filter(Boolean);
+  const u = union(state, cards);
+  let m = u.keep;
+  const created = !m;
+  if (!m) {
+    m = { id: (state.nextId += 1), addressbookId: 1, emails: [], phones: [], company: null, department: null, title: null, addresses: [], birthday: null, note: '', urls: [], linkId: null, favorite: 0, mainPhone: null, name: {} };
+    state.cards.set(m.id, m);
+  }
+  Object.assign(m, u.fields, { name: { display: '', given: '', family: '', middle: null, prefix: null, suffix: null, nickname: null, ...u.fields.name } });
+  if (u.photoFrom && u.photoFrom !== m.id && !state.photos.has(m.id)) state.photos.set(m.id, { ...state.photos.get(u.photoFrom), etag: `ph${m.id}` });
+  const fav = cards.map((c) => c.favorite).filter((x) => x > 0);
+  m.favorite = fav.length ? Math.min(...fav) : 0;
+  const removed = [];
+  for (const c of cards) {
+    if (c.id === m.id) continue;
+    if (state.books.find((b) => b.id === c.addressbookId).source === 'local') {
+      removed.push(JSON.parse(JSON.stringify(c)));
+      state.cards.delete(c.id);
+      state.tombstones.push({ id: c.id, version: (state.version += 1) });
+    } else {
+      c.linkId = m.id;
+      c.version = (state.version += 1);
+    }
+  }
+  m.version = (state.version += 1);
+  const books = (c) => state.books.find((b) => b.id === c.addressbookId);
+  const mg = { id: (state.nextId += 1), masterId: m.id, mode, created, reason, at: Date.now(), undoneAt: null, removed,
+    cards: cards.map((c) => ({ id: c.id, name: display(c), addressbookId: c.addressbookId, addressbook: books(c).name, source: books(c).source, removed: removed.some((r) => r.id === c.id) })) };
+  state.merges.push(mg);
+  return { m, mg };
+}
+
+/** Loosen links `ids` of master `m` (all without); the merges' GC cards back, a created master gone when no link is left. */
+function loosen(state, m, ids, keepMaster) {
+  const links = [...state.cards.values()].filter((c) => c.linkId === m.id);
+  const targets = ids ? links.filter((l) => ids.includes(l.id)) : links;
+  for (const t of targets) {
+    t.linkId = null;
+    t.version = (state.version += 1);
+    state.ignored.push([m.id, t.id]);
+    state.conflicts = state.conflicts.filter((x) => !(x.cardId === m.id && x.sourceId === t.id));
+  }
+  const restored = [];
+  let card = m;
+  if (links.length === targets.length) {
+    for (const mg of state.merges.filter((x) => x.masterId === m.id && !x.undoneAt)) {
+      for (const r of mg.removed) { state.cards.set(r.id, { ...r, version: (state.version += 1) }); restored.push(r.id); state.ignored.push([r.id, m.id]); }
+      mg.undoneAt = Date.now();
+      if (mg.created && !keepMaster) { state.cards.delete(m.id); state.tombstones.push({ id: m.id, version: (state.version += 1) }); card = null; }
+    }
+  }
+  if (card) card.version = (state.version += 1);
+  return { card: card ? fullCard(state, card) : null, unlinked: targets.map((x) => x.id), restored };
+}
+
+/** GET events/upcoming: from now to the end of today + days − 1, all-day ones of a day first. */
+function upcoming(state, q) {
+  const days = Math.min(Math.max(Number(q.days) || 2, 1), 7);
+  const limit = Math.min(Math.max(Number(q.limit) || 8, 1), 20);
+  const now = Date.now();
+  const to = (() => { const d = new Date(midnight(now)); d.setDate(d.getDate() + days); return d.getTime(); })();
+  const color = new Map(state.calendars.map((c) => [c.id, c.color]));
+  const list = [];
+  for (const e of state.events.values()) {
+    const cal = state.calendars.find((c) => c.id === e.calendarId);
+    if (!cal || !cal.visible) continue;
+    for (const o of occurrences(state, e, now, to)) {
+      if (o.status === 'cancelled' || o.myResponse === 'declined') continue;
+      list.push({ key: o.key, eventId: o.eventId, calendarId: o.calendarId, overlayId: null, color: color.get(o.calendarId), title: o.title, start: o.start, end: o.end, allDay: o.allDay,
+        ...(o.allDay ? { startDate: o.startDate, endDate: o.endDate } : {}), location: o.location, online: o.online ? o.online.url : null, myResponse: o.myResponse, tentative: o.myResponse === 'needs_action' || o.status === 'tentative' });
+    }
+  }
+  for (const o of state.overlayItems) {
+    const ov = state.overlays.find((x) => x.id === o.overlayId);
+    if (!ov || !ov.visible || o.end <= now || o.start >= to) continue;
+    list.push({ key: o.key, eventId: null, calendarId: null, overlayId: o.overlayId, color: ov.color, title: o.title, start: o.start, end: o.end, allDay: !!o.allDay,
+      ...(o.allDay ? { startDate: o.startDate, endDate: o.endDate } : {}), location: o.location || null, online: null, myResponse: null, tentative: false });
+  }
+  const today = ymd(now);
+  for (const x of list) x.day = x.allDay ? (x.startDate < today ? today : x.startDate) : ymd(Math.max(x.start, now));
+  list.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0) || (b.allDay ? 1 : 0) - (a.allDay ? 1 : 0) || a.start - b.start);
+  return { timeZone: 'Europe/Berlin', today, items: list.slice(0, limit), more: Math.max(0, list.length - limit) };
 }
 
 // ── views ──────────────────────────────────────────────────
@@ -165,6 +380,17 @@ function summary(state, c) {
     emails: c.emails.map((e) => e.value).slice(0, 3), phone: c.phones[0] ? c.phones[0].value : null, photo: !!ph, photoEtag: ph ? ph.etag : null,
     groups: [...state.groups.values()].filter((g) => g.members.some((m) => m.contactId === c.id)).map((g) => g.id),
     linked: [...state.cards.values()].filter((x) => x.linkId === c.id).map((x) => x.id), gcUserId: null, updatedAt: c.updatedAt,
+    ...(state.master ? masterSummary(state, c) : {}),
+  };
+}
+
+function masterSummary(state, c) {
+  const main = mainPhoneOf(c);
+  const links = [...state.cards.values()].filter((x) => x.linkId === c.id);
+  const src = (x) => { const b = state.books.find((y) => y.id === x.addressbookId); return { addressbookId: b.id, source: b.source, accountId: b.accountId }; };
+  return {
+    phone: main ? main.value : null, favorite: c.favorite > 0, mainPhone: main ? main.value : null, conflicts: state.conflicts.filter((x) => x.cardId === c.id).length,
+    masterId: c.linkId || null, sources: [c, ...links].map(src).filter((x, i, a) => a.findIndex((y) => y.addressbookId === x.addressbookId) === i),
   };
 }
 
@@ -177,6 +403,11 @@ function fullCard(state, c) {
     photo: ph ? { etag: ph.etag, mime: ph.mime } : null, groups: summary(state, c).groups,
     linked: [...state.cards.values()].filter((x) => x.linkId === c.id).map((x) => ({ id: x.id, addressbookId: x.addressbookId, source: state.books.find((b) => b.id === x.addressbookId).source })),
     gcUserId: null, updatedAt: c.updatedAt,
+    ...(state.master ? {
+      favorite: c.favorite > 0, mainPhone: mainPhoneOf(c), mainPhoneChosen: !!c.mainPhone, masterId: c.linkId || null,
+      conflicts: state.conflicts.filter((x) => x.cardId === c.id).map((x) => conflictView(state, x)),
+      sources: [c, ...[...state.cards.values()].filter((x) => x.linkId === c.id)].map((x) => sourceOf(state, x)),
+    } : {}),
   };
 }
 
@@ -244,6 +475,7 @@ function pimRoute({ req, route, seg, url, body, state: all, json, err, sum }) {
     return json(200, { prefs: state.calPrefs }), true;
   }
   if (seg[0] === 'events') {
+    if (n === 2 && seg[1] === 'upcoming' && m === 'GET' && state.master) return json(200, upcoming(state, q)), true;
     if (n === 1 && m === 'GET') {
       const from = Number(q.from);
       const to = Number(q.to);
@@ -389,6 +621,10 @@ function pimRoute({ req, route, seg, url, body, state: all, json, err, sum }) {
       const [given, ...rest] = nm.split(' ');
       return json(200, { draft: { name: { display: nm, given: given || '', family: rest.join(' ') }, emails: [{ value: e, type: 'work', primary: true }], phones: [{ value: '0221 555 12 34', type: 'work' }], company: 'Stadtwerke', title: null, addresses: [], birthday: null, note: '', urls: [], groups: [] }, existing: existing ? fullCard(state, existing) : null }), true;
     }
+    if (state.master) {
+      const r = masterRoute({ state, m, n, seg, q, body, json, err });
+      if (r) return true;
+    }
     if (n === 2 && seg[1] === 'duplicates' && m === 'GET') {
       const byMail = new Map();
       for (const c of state.cards.values()) {
@@ -434,14 +670,48 @@ function pimRoute({ req, route, seg, url, body, state: all, json, err, sum }) {
     const book = state.books.find((b) => b.id === c.addressbookId);
     if (n === 2 && m === 'GET') return json(200, fullCard(state, c)), true;
     if (n === 2 && m === 'PATCH') {
-      if (!book.writable) return err(409, 'read_only'), true;
+      const ownOnly = state.master && Object.keys(body).every((k) => ['favorite', 'mainPhone', 'etag'].includes(k));
+      if (!book.writable && !ownOnly) return err(409, 'read_only'), true;
       if (body.etag && body.etag !== `"v${c.version}"`) return err(409, 'conflict', { current: fullCard(state, c) }), true;
-      applyCard(state, c, body);
       state.lastCardBody = body;
-      return json(200, { card: fullCard(state, c) }), true;
+      if (!state.master) {
+        applyCard(state, c, body);
+        return json(200, { card: fullCard(state, c) }), true;
+      }
+      if (body.mainPhone !== undefined && body.mainPhone !== null && !(body.phones || c.phones).some((p) => digitsOf(p.value) === digitsOf(body.mainPhone))) return err(400, 'invalid', { field: 'mainPhone' }), true;
+      if (body.favorite === true && !(c.favorite > 0)) {
+        const favs = [...state.cards.values()].filter((x) => x.favorite > 0);
+        if (favs.length >= 50) return err(409, 'limit', { max: 50 }), true;
+        c.favorite = Math.max(0, ...favs.map((x) => x.favorite)) + 1;
+      } else if (body.favorite === false) c.favorite = 0;
+      if (body.mainPhone !== undefined) c.mainPhone = body.mainPhone === null ? null : digitsOf(body.mainPhone);
+      // a value taken over from a linked card that the change removes goes back to that card (writeBack)
+      const writeBack = [];
+      for (const field of ['emails', 'phones', 'addresses']) {
+        if (!body[field]) continue;
+        const now = new Set(body[field].map((v) => valueKey(field, v)));
+        for (const o of state.origins.filter((x) => x.cardId === c.id && x.field === field && !now.has(x.key))) {
+          const src = state.cards.get(o.sourceId);
+          if (!src || writeBack.some((w) => w.id === src.id)) continue;
+          const sb = state.books.find((b) => b.id === src.addressbookId);
+          writeBack.push(sb.writable ? { id: src.id, addressbookId: sb.id, ok: true } : { id: src.id, addressbookId: sb.id, ok: false, code: 'read_only' });
+        }
+      }
+      const fields = Object.fromEntries(Object.entries(body).filter(([k]) => !['favorite', 'mainPhone', 'etag'].includes(k)));
+      if (Object.keys(fields).length) applyCard(state, c, fields);
+      else c.version = (state.version += 1);
+      return json(200, { card: fullCard(state, c), writeBack }), true;
     }
     if (n === 2 && m === 'DELETE') {
+      if (state.master && q.linked !== undefined && q.linked !== 'keep' && q.linked !== 'delete') return err(400, 'invalid', { field: 'linked' }), true;
       if (!book.writable) return err(409, 'read_only'), true;
+      if (state.master) {
+        state.lastDelete = { id: c.id, linked: q.linked || null };
+        for (const l of [...state.cards.values()].filter((x) => x.linkId === c.id)) {
+          const lb = state.books.find((b) => b.id === l.addressbookId);
+          if (q.linked === 'delete' && lb.writable) { state.cards.delete(l.id); state.tombstones.push({ id: l.id, version: (state.version += 1) }); } else { l.linkId = null; l.version = (state.version += 1); }
+        }
+      }
       state.cards.delete(c.id);
       state.tombstones.push({ id: c.id, version: (state.version += 1) });
       for (const g of state.groups.values()) g.members = g.members.filter((x) => x.contactId !== c.id);
@@ -486,6 +756,91 @@ function pimRoute({ req, route, seg, url, body, state: all, json, err, sum }) {
       g.members = g.members.filter((x) => !(body.remove || []).includes(x.id));
       return json(200, { group: out(g), members: g.members }), true;
     }
+  }
+  return false;
+}
+
+/** The paths of Mail 1.4.0 below cards/ (only with `state.master`) → true when answered. */
+function masterRoute({ state, m, n, seg, q, body, json, err }) {
+  const reply = (st, b) => { json(st, b); return true; };
+  if (n === 2 && seg[1] === 'duplicates' && m === 'GET') {
+    const details = q.details === '1' || q.details === 'true';
+    return reply(200, {
+      items: dupGroups(state).map((g) => {
+        const cards = g.ids.map((x) => state.cards.get(x));
+        const item = { key: g.key, reason: g.reason, certain: g.certain, cards: cards.map((c) => summary(state, c)) };
+        if (details) { item.details = cards.map((c) => ({ card: fullCard(state, c), source: sourceOf(state, c) })); item.preview = previewOf(state, cards); }
+        return item;
+      }),
+    });
+  }
+  if (n === 3 && seg[1] === 'merge' && seg[2] === 'preview' && m === 'POST') {
+    const cards = (body.ids || []).map((x) => state.cards.get(x)).filter(Boolean);
+    if (cards.length < 2) return reply(400, { error: { code: 'invalid', field: 'ids' } });
+    return reply(200, { preview: previewOf(state, cards) });
+  }
+  if (n === 2 && seg[1] === 'merge' && m === 'POST') {
+    const ids = body.ids || [];
+    if (ids.length < 2 || ids.some((x) => !state.cards.has(x))) return reply(404, { error: { code: 'not_found' } });
+    state.lastMerge = body;
+    const { m: master, mg } = mergeCards(state, ids, 'manual', null);
+    return reply(200, { card: fullCard(state, master), mergeId: mg.id });
+  }
+  if (n === 3 && seg[1] === 'merge' && seg[2] === 'auto' && m === 'POST') {
+    const done = [];
+    for (const g of dupGroups(state).filter((x) => x.certain)) done.push(mergeCards(state, g.ids, 'auto', g.reason).mg);
+    return reply(200, { merged: done.length, open: dupGroups(state).length, items: done.map(({ removed, ...x }) => x) });
+  }
+  if (n === 2 && seg[1] === 'merges' && m === 'GET') return reply(200, { items: [...state.merges].reverse().slice(0, Number(q.limit) || 50).map(({ removed, ...x }) => x) });
+  if (n === 4 && seg[1] === 'merges' && seg[3] === 'undo' && m === 'POST') {
+    const mg = state.merges.find((x) => x.id === Number(seg[2]));
+    if (!mg || mg.undoneAt) return reply(404, { error: { code: 'not_found' } });
+    const master = state.cards.get(mg.masterId);
+    if (!master) return reply(404, { error: { code: 'not_found' } });
+    const r = loosen(state, master, null, body.keepMaster === true);
+    mg.undoneAt = mg.undoneAt || Date.now();
+    state.lastUndo = { id: mg.id, ...body };
+    return reply(200, r);
+  }
+  if (n === 2 && seg[1] === 'conflicts' && m === 'GET') {
+    const ids = [...new Set(state.conflicts.map((x) => x.cardId))];
+    return reply(200, { items: ids.map((x) => ({ card: summary(state, state.cards.get(x)), conflicts: state.conflicts.filter((y) => y.cardId === x).map((y) => conflictView(state, y)) })) });
+  }
+  if (n === 2 && seg[1] === 'favorites') {
+    const out = () => ({ items: [...state.cards.values()].filter((c) => c.favorite > 0 && !c.linkId).sort((a, b) => a.favorite - b.favorite).map((c) => {
+      const p = mainPhoneOf(c);
+      const ph = state.photos.get(c.id);
+      return { id: c.id, name: display(c), photo: !!ph, photoEtag: ph ? ph.etag : null, phone: p ? { value: p.value, type: p.type } : null, email: c.emails[0] ? c.emails[0].value : null };
+    }) });
+    if (m === 'GET') return reply(200, out());
+    if (m === 'PUT') {
+      if (!Array.isArray(body.ids) || body.ids.length > 50 || body.ids.some((x) => !state.cards.has(x))) return reply(400, { error: { code: 'invalid', field: 'ids' } });
+      for (const c of state.cards.values()) c.favorite = 0;
+      body.ids.forEach((x, i) => { state.cards.get(x).favorite = i + 1; });
+      return reply(200, out());
+    }
+  }
+  const c = state.cards.get(Number(seg[1]));
+  if (!c) return false;
+  if (n === 3 && seg[2] === 'unmerge' && m === 'POST') {
+    const links = [...state.cards.values()].filter((x) => x.linkId === c.id).map((x) => x.id);
+    if (body.ids && body.ids.some((x) => !links.includes(x))) return reply(404, { error: { code: 'not_found' } });
+    state.lastUnmerge = { id: c.id, ...body };
+    return reply(200, loosen(state, c, body.ids || null, body.keepMaster === true));
+  }
+  if (n === 5 && seg[2] === 'conflicts' && (seg[4] === 'accept' || seg[4] === 'dismiss') && m === 'POST') {
+    const x = state.conflicts.find((y) => y.id === Number(seg[3]) && y.cardId === c.id);
+    if (!x) return reply(404, { error: { code: 'not_found' } });
+    state.conflicts = state.conflicts.filter((y) => y !== x);
+    if (seg[4] === 'dismiss') { state.dismissed.push({ cardId: c.id, sourceId: x.sourceId, field: x.field, key: valueKey(x.field, x.value) }); c.version = (state.version += 1); return reply(200, { card: fullCard(state, c) }); }
+    const mode = body.mode || (x.replaces ? 'replace' : 'add');
+    state.lastAccept = { id: x.id, mode };
+    if (Array.isArray(c[x.field])) {
+      const i = mode === 'replace' && x.replaces ? c[x.field].findIndex((v) => valueKey(x.field, v) === valueKey(x.field, x.replaces)) : -1;
+      if (i >= 0) c[x.field][i] = x.value; else c[x.field].push(x.value);
+    } else c[x.field] = x.value;
+    c.version = (state.version += 1);
+    return reply(200, { card: fullCard(state, c) });
   }
   return false;
 }

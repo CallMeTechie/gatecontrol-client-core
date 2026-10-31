@@ -36,6 +36,10 @@
  *   GET|POST …/api/cards · GET|PATCH|DELETE cards/<id> · GET|PUT|DELETE cards/<id>/photo · GET cards/<id>/activity
  *   GET    …/api/cards/lookup?email · cards/draft?messageId&email · cards/duplicates · cards/export
  *   POST   …/api/cards/merge · cards/duplicates/ignore · cards/import
+ * Mail 1.4.0 (the GC contact as the master; servers before answer 404 not_found):
+ *   GET    …/api/cards/duplicates?details=1 · cards/merges · cards/conflicts · cards/favorites · events/upcoming
+ *   POST   …/api/cards/merge/preview · cards/merge/auto · cards/merges/<id>/undo · cards/<id>/unmerge
+ *   POST   …/api/cards/<id>/conflicts/<cid>/accept | dismiss · PUT cards/favorites · DELETE cards/<id>?linked
  *   POST   …/api/groups · GET|PATCH|DELETE groups/<id> · POST groups/<id>/members
  *   GET    …/gatecontrol-mail/media/<mediaId>                        an attachment (streamed), an account's picture (avatar)
  *
@@ -605,14 +609,21 @@ class MailApi {
     return this._card(await this.api('POST', 'cards', { body, timeout: 60000 }));
   }
 
-  async updateCard(id, input) {
+  async updateCard(id, input) { return (await this.patchCard(id, input)).card; }
+
+  /** PATCH cards/<id> → { card, writeBack } (1.4.0: what went back to the providers; [] before). */
+  async patchCard(id, input) {
     const body = mail.cardBody(input, { patch: true });
     if (!body) throw this._bad('contact');
-    return this._card(await this.api('PATCH', `cards/${this._id(id)}`, { body, timeout: 60000 }));
+    const r = await this.api('PATCH', `cards/${this._id(id)}`, { body, timeout: 60000 });
+    return { card: this._card(r), writeBack: mail.normalizeWriteBack(r && r.writeBack) };
   }
 
-  async deleteCard(id) {
-    await this.api('DELETE', `cards/${this._id(id)}`, { timeout: 60000 });
+  /** DELETE cards/<id> (1.4.0: `linked` 'keep' | 'delete' — the linked cards at their providers too). */
+  async deleteCard(id, { linked = null } = {}) {
+    const params = mail.deleteCardQuery({ linked });
+    if (!params) throw this._bad('linked');
+    await this.api('DELETE', `cards/${this._id(id)}`, { params, timeout: 60000 });
     return { ok: true };
   }
 
@@ -644,12 +655,88 @@ class MailApi {
     return mail.normalizeCardDraft(await this.api('GET', 'cards/draft', { params, timeout: 120000 }));
   }
 
-  async duplicates() { return mail.normalizeDuplicates(await this.api('GET', 'cards/duplicates', { timeout: 60000 })); }
+  /** GET cards/duplicates (`details`: 1.4.0 — each card in full with its source and the preview of the merge). */
+  async duplicates({ details = false } = {}) {
+    return mail.normalizeDuplicates(await this.api('GET', 'cards/duplicates', { params: details ? { details: 1 } : undefined, timeout: 90000 }));
+  }
 
-  async merge(input) {
+  async merge(input) { return (await this.mergeCards(input)).card; }
+
+  /** POST cards/merge → { card, mergeId } (1.4.0: always a GC contact; mergeId null before). */
+  async mergeCards(input) {
     const body = mail.mergeBody(input);
     if (!body) throw this._bad('merge');
-    return this._card(await this.api('POST', 'cards/merge', { body, timeout: 90000 }));
+    const r = await this.api('POST', 'cards/merge', { body, timeout: 90000 });
+    return { card: this._card(r), mergeId: mail.posId(r && r.mergeId) };
+  }
+
+  /** POST cards/merge/preview { ids } → Preview ("So wird der Kontakt"). */
+  async mergePreview(ids) {
+    const body = mail.previewBody({ ids });
+    if (!body) throw this._bad('ids');
+    const p = mail.normalizePreview((await this.api('POST', 'cards/merge/preview', { body, timeout: 60000 })).preview);
+    if (!p) throw new MailError('bad preview answer', { code: 'bad_response' });
+    return p;
+  }
+
+  /** POST cards/merge/auto → { merged, open, items: [Merge] } (the certain duplicates now). */
+  async autoMerge() { return mail.normalizeAutoMerge(await this.api('POST', 'cards/merge/auto', { body: {}, timeout: 120000 })); }
+
+  /** GET cards/merges?limit → { items: [Merge] } (newest first). */
+  async merges(limit = 50) {
+    const n = Number.isSafeInteger(limit) && limit >= 1 && limit <= 200 ? limit : 50;
+    return mail.normalizeMerges(await this.api('GET', 'cards/merges', { params: { limit: n }, timeout: 60000 }));
+  }
+
+  _unmerged(r) {
+    const o = r && typeof r === 'object' ? r : {};
+    return { card: o.card ? mail.normalizeCard(o.card) : null, unlinked: mail.idList(o.unlinked) || [], restored: mail.idList(o.restored) || [] };
+  }
+
+  /** POST cards/merges/<id>/undo { keepMaster? } → { card | null, unlinked, restored } ("Rückgängig"). */
+  async undoMerge(id, opts = {}) {
+    const body = mail.unmergeBody(opts, { withIds: false });
+    if (!body) throw this._bad('undo');
+    return this._unmerged(await this.api('POST', `cards/merges/${this._id(id)}/undo`, { body, timeout: 90000 }));
+  }
+
+  /** POST cards/<id>/unmerge { ids?, keepMaster? } → { card | null, unlinked, restored } ("Verknüpfung lösen"). */
+  async unmerge(id, opts = {}) {
+    const body = mail.unmergeBody(opts);
+    if (!body) throw this._bad('unmerge');
+    return this._unmerged(await this.api('POST', `cards/${this._id(id)}/unmerge`, { body, timeout: 90000 }));
+  }
+
+  /** GET cards/conflicts → { items: [{ card, conflicts }] }. */
+  async conflicts() { return mail.normalizeConflicts(await this.api('GET', 'cards/conflicts', { timeout: 60000 })); }
+
+  /** POST cards/<id>/conflicts/<cid>/accept { mode? } → Card ("Übernehmen": replace, "Zusätzlich": add). */
+  async acceptConflict(id, cid, mode = null) {
+    const body = mail.acceptBody({ mode });
+    if (!body) throw this._bad('mode');
+    return this._card(await this.api('POST', `cards/${this._id(id)}/conflicts/${this._id(cid)}/accept`, { body, timeout: 60000 }));
+  }
+
+  /** POST cards/<id>/conflicts/<cid>/dismiss → Card ("Verwerfen"). */
+  async dismissConflict(id, cid) {
+    return this._card(await this.api('POST', `cards/${this._id(id)}/conflicts/${this._id(cid)}/dismiss`, { body: {}, timeout: 60000 }));
+  }
+
+  /** GET cards/favorites → { items } (in their order). */
+  async favorites() { return mail.normalizeFavorites(await this.api('GET', 'cards/favorites')); }
+
+  /** PUT cards/favorites { ids } → { items } (the order; cards not named are no favourites any more). */
+  async putFavorites(ids) {
+    const body = mail.favoritesBody({ ids });
+    if (!body) throw this._bad('ids');
+    return mail.normalizeFavorites(await this.api('PUT', 'cards/favorites', { body }));
+  }
+
+  /** GET events/upcoming?days&limit → { timeZone, today, items, more } (the calendar widget of the start page). */
+  async upcoming(query = {}) {
+    const params = mail.upcomingQuery(query);
+    if (!params) throw this._bad('query');
+    return mail.normalizeUpcoming(await this.api('GET', 'events/upcoming', { params }));
   }
 
   async ignoreDuplicates(list) {
