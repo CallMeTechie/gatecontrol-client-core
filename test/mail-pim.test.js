@@ -101,6 +101,7 @@ describe('utils/mail-pim', () => {
     assert.equal(ev.series, null, 'Mail 1.2.0: no series field');
     assert.deepEqual(mail.normalizeEvent({ eventId: 3, start: 10, series: { start: 5, end: 8, allDay: 'x' } }).series, { start: 5, end: 8, allDay: false });
     assert.equal(mail.normalizeEvent({ eventId: 3, start: 10, series: { start: 'x' } }).series, null);
+    assert.deepEqual(mail.normalizeEvent({ eventId: 3, start: 10, series: { start: 5, end: 8, allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' } }).series, { start: 5, end: 8, allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' });
     const inv = mail.normalizeInvitation({ id: 4, start: 10, method: 'counter', state: 'weird', counts: { accepted: 3 }, proposed: { start: 30, end: 40 }, recurrence: { summary: { de: 'jeden Dienstag' } }, calendarChoices: [1, 1, 'x', 2] });
     assert.deepEqual([inv.method, inv.state, inv.counts.accepted, inv.counts.declined, inv.proposed.end, inv.recurrence.summary.en, inv.calendarChoices], ['counter', 'open', 3, 0, 40, 'jeden Dienstag', [1, 2]]);
     assert.equal(mail.normalizeInvitation({ id: 4 }), null, 'a start is needed');
@@ -488,7 +489,7 @@ describe('MailService – contacts', () => {
 
 describe('mail IPC – calendar and contacts', () => {
   it('checks arguments and forwards the live events', async () => {
-    const { svc } = await setup();
+    const { svc, srv } = await setup();
     const handlers = {};
     const sent = [];
     const win = { isDestroyed: () => false, webContents: { send: (ch, p) => sent.push([ch, p]) } };
@@ -509,6 +510,13 @@ describe('mail IPC – calendar and contacts', () => {
     assert.equal((await call('mail:card:merge', { ids: [1], primaryId: 'x' })).code, 'invalid');
     assert.equal((await call('mail:call', { number: 5 })).code, 'invalid');
     assert.equal((await call('mail:card:update', { id: 404, company: 'X' })).code, 'read_only');
+    // Mail 1.3.0: a shift of a series the server refuses → its reason reaches the page
+    const tr = (await call('mail:event:get', { id: 304 })).event;
+    assert.deepEqual(tr.series && [tr.series.allDay, typeof tr.series.start], [false, 'number'], 'a series carries its master\'s times');
+    srv.state.fail['PATCH events/:id'] = { status: 400, code: 'invalid', extra: { field: 'start', reason: 'series_shift' } };
+    const shift = await call('mail:event:update', { id: 304, start: tr.start + 3600000, end: tr.end + 3600000, scope: 'series' });
+    assert.deepEqual([shift.ok, shift.code, shift.detail.field, shift.detail.reason], [false, 'invalid', 'start', 'series_shift']);
+    delete srv.state.fail['PATCH events/:id'];
     assert.equal((await call('mail:overlay:update', { id: 'birthdays', visible: false })).overlay.visible, false);
     svc.emit('calendar', { kind: 'calendars' });
     svc.emit('contacts', { kind: 'groups' });

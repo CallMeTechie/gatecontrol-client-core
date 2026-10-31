@@ -261,13 +261,15 @@ function normalizeRecurrence(v) {
   };
 }
 
-/** `series` of an event of a series (Mail 1.3.0) → { start, end, allDay }, or null. */
+/** `series` of an event of a series (Mail 1.3.0: DTSTART / DTEND of the master) → { start, end, allDay, startDate?, endDate? }, or null. */
 function seriesOf(v) {
   const o = obj(v);
   const start = o && msOf(o.start);
   if (!start) return null;
   const end = msOf(o.end);
-  return { start, end: end && end >= start ? end : start, allDay: bool(o.allDay) };
+  const allDay = bool(o.allDay);
+  // all-day series: their dates as well (endDate inclusive)
+  return { start, end: end && end >= start ? end : start, allDay, ...allDayDates(o, allDay) };
 }
 
 /** GET events/<id> → `Event` (Occurrence + description, organizer, attendees, rights, etag), or null. */

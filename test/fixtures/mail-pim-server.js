@@ -128,7 +128,9 @@ function fullEvent(state, e, occ = null) {
     ...base, key: occ ? base.key : String(e.id), occurrence: occ || null,
     description: e.description, descriptionHtml: e.descriptionHtml, organizer: e.organizer,
     attendees: e.attendees.map((a) => ({ name: a.name, email: a.email, role: a.role || 'required', response: a.response || 'needs_action', self: a.email === 'max@firma.de', contactId: [...state.cards.values()].find((c) => c.emails.some((x) => x.value === a.email))?.id || null })),
-    reminders: e.reminders, recurrence: e.recurrence, seriesId: occ ? e.id : null, readOnly: !cal.writable, canRespond: cal.writable && attendeeOf, canEdit: cal.writable && !attendeeOf, canDelete: cal.writable,
+    reminders: e.reminders, recurrence: e.recurrence, seriesId: occ ? e.id : null,
+    // Mail 1.3.0: DTSTART / DTEND of the series' master (null for a single event)
+    series: e.recurrence ? { start: e.start, end: e.end, allDay: e.allDay, ...(e.allDay ? { startDate: e.startDate, endDate: e.endDate } : {}) } : null, readOnly: !cal.writable, canRespond: cal.writable && attendeeOf, canEdit: cal.writable && !attendeeOf, canDelete: cal.writable,
     categories: [], invitationId: [...state.invitations.values()].find((i) => i.eventId === e.id && (i.state === 'open' || i.state === 'answered'))?.id || null,
     url: null, createdAt: e.createdAt, updatedAt: e.updatedAt, etag: `"${e.updatedAt}-${e.sequence}"`,
   };
