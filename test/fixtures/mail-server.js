@@ -6,9 +6,10 @@
 // Alle Posteingänge), search, threads, a mail (HTML with img/<token> and cid:, imagesBlocked), the image proxy
 // img/<token> and cid/<m>/<a> (PNG, client sign-in required), flags / move / archive / delete / junk / tab,
 // attachments as media, drafts (reply filled by the server), send with undo / sendAt, outbox, contacts, AI,
-// Drive suggest / save / save-all, filing, and the core media routes (PUT, GET).
+// Drive suggest / save / save-all, filing, and the core media routes (PUT, GET). Phase 2 (calendar, invitations,
+// contacts, groups — client API "C3") in test/fixtures/mail-pim-server.js: srv.state.pim.
 //
-//   const srv = await mailServer({ plugin, allowed, features });
+//   const srv = await mailServer({ plugin, allowed, features, invite });   invite: mail 106 with an invitation
 //   srv.url, srv.state (requests, accounts, messages, drafts, outbox, media, uploads, …),
 //   srv.state.fail = { '<METHOD> <route>': { status, code, extra } } — refuse a route with { error: { code, …extra } }
 //   (e.g. 'GET cid/:id/:id': { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } }),
@@ -16,6 +17,7 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { pimState, pimRoute, contactSuggestions, invitationView } = require('./mail-pim-server');
 
 const PLUGIN = 'gatecontrol-mail';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
@@ -23,7 +25,7 @@ const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 const DAY = 24 * 60 * 60 * 1000;
 
-async function mailServer({ plugin = true, allowed = true, features = ['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images'], clientId = 'abcd-1234-efgh-5678', token = 'gc_token', now = Date.now() } = {}) {
+async function mailServer({ plugin = true, allowed = true, features = ['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay'], clientId = 'abcd-1234-efgh-5678', token = 'gc_token', now = Date.now(), invite = false } = {}) {
   let nextId = 1000;
   const state = {
     plugin,
@@ -35,8 +37,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     uploads: [],
     settings: { threads: true, swipeLeft: 'archive', swipeRight: 'read' },
     accounts: [
-      { id: 1, provider: 'gmx', email: 'max@gmx.de', name: 'Privat · GMX', color: '#F5B544', kind: 'personal', state: 'ok', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: 'Max' },
-      { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '', avatar: { mediaId: 'avatar2abcdef', mime: 'image/png' } },
+      { id: 1, provider: 'gmx', email: 'max@gmx.de', name: 'Privat · GMX', color: '#F5B544', kind: 'personal', state: 'ok', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: 'Max', calendar: { sync: true, state: 'ok', readOnly: false, server: 'caldav.gmx.net' }, contacts: { sync: true, state: 'ok', readOnly: true, server: 'carddav.gmx.net' }, missingScopes: [] },
+      { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '', avatar: { mediaId: 'avatar2abcdef', mime: 'image/png' }, calendar: { sync: true, state: 'ok', readOnly: false, server: null }, contacts: { sync: true, state: 'ok', readOnly: false, server: null }, missingScopes: [] },
     ],
     passwords: new Map([[1, 'geheim']]),
     folders: [
@@ -59,6 +61,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     microsoft: [],          // { code, codeVerifier, redirectUri }
     msCodes: new Map(),     // code → challenge
     todos: [],
+    pim: pimState(now),     // Phase 2: calendar and contacts (mail-pim-server.js)
   };
   // the Microsoft account's picture (Account.avatar, Mail 1.1.2)
   state.media.set('avatar2abcdef', { bytes: PNG, mime: 'image/png' });
@@ -83,6 +86,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
   addMsg({ id: 104, accountId: 1, folderId: 11, from: { name: 'Elektromarkt', address: 'news@elektromarkt.de' }, subject: 'Nur heute: 20 %', snippet: 'Newsletter', date: now - 5 * 60 * 60 * 1000, tab: 'other', unread: true });
   // a mail whose body is not in the server's copy (bodyMissing)
   addMsg({ id: 105, accountId: 2, folderId: 21, from: { name: 'Tim Brandt', address: 'tim@firma.de' }, subject: 'Alte Unterlagen', snippet: 'Inhalt fehlt', date: now - 6 * 60 * 60 * 1000, bodyMissing: true });
+  // Phase 2 (`invite: true`): an invitation (the card above the text; Summary.invite labels the row)
+  if (invite) addMsg({ id: 106, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Einladung: Sprint-Review', snippet: 'Sabine Keller hat dich eingeladen', date: now - 30 * 60 * 1000, unread: true, invite: 'request', inviteId: 701, text: 'Bitte die Zahlen mitbringen.' });
   // older inbox mails of account 1 (pages, the offline cache fills 30 days back)
   for (let i = 0; i < 60; i += 1) {
     addMsg({ id: 200 + i, accountId: 1, folderId: 11, from: { name: `Absender ${i}`, address: `a${i}@example.com` }, subject: `Alte Mail ${i}`, snippet: 'alt', date: now - (i + 1) * DAY });
@@ -92,13 +97,14 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
   const sum = (m) => ({
     id: m.id, accountId: m.accountId, folderId: m.folderId, threadId: m.threadId, threadCount: m.threadCount, from: m.from,
     to: m.to.slice(0, 3), subject: m.subject, snippet: m.snippet, date: m.date, unread: m.unread, flagged: m.flagged, answered: m.answered,
-    hasAttachments: m.hasAttachments, tab: m.tab, savedToDrive: m.savedToDrive, ai: m.ai,
+    hasAttachments: m.hasAttachments, tab: m.tab, savedToDrive: m.savedToDrive, ai: m.ai, invite: m.invite || null,
   });
   // since Mail 1.1.2 a body not here after ~12 s comes as bodyMissing with the snippet as text
   const full = (m) => ({
     ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.bodyMissing ? m.snippet : m.text, trackers: m.trackers,
     imagesBlocked: m.imagesBlocked && !m.imagesAllowed,
     html: m.bodyMissing ? null : m.html, attachments: m.attachments, listUnsubscribe: m.listUnsubscribe, bodyMissing: !!m.bodyMissing,
+    invite: m.inviteId && state.pim.invitations.has(m.inviteId) && state.features.includes('calendar') ? invitationView(state.pim, state.pim.invitations.get(m.inviteId)) : null,
   });
   const inbox = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'inbox');
   const trash = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'trash');
@@ -193,7 +199,11 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       return json(res, 200, {
         features: state.features,
         limits: { accountsMax: 5, quotaBytes: 5 * 1024 ** 3, usedBytes: 123456789, retentionMonths: 12 },
-        microsoft: { clientId: state.features.includes('microsoft') ? clientId : null, authority: 'https://login.microsoftonline.com/common', scopes: ['openid', 'profile', 'email', 'offline_access', 'User.Read', 'Mail.ReadWrite', 'Mail.Send'] },
+        microsoft: {
+          clientId: state.features.includes('microsoft') ? clientId : null, authority: 'https://login.microsoftonline.com/common',
+          scopes: ['openid', 'profile', 'email', 'offline_access', 'User.Read', 'Mail.ReadWrite', 'Mail.Send', ...(state.features.includes('calendar') ? ['Calendars.ReadWrite'] : []), ...(state.features.includes('contacts') ? ['Contacts.ReadWrite'] : [])],
+          adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?client_id=abcd-1234-efgh-5678',
+        },
         accounts: state.accounts,
         unread: { all: Object.values(byAccount).reduce((a, b) => a + b, 0), byAccount },
         settings: state.settings,
@@ -235,6 +245,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
         const a = state.accounts.find((x) => x.id === Number(seg[1]));
         if (!a) return err(res, 404, 'not_found');
         a.state = 'ok';
+        // signed in again: the rights granted now (state.grantScopes = false: the company still blocks them)
+        if (state.grantScopes !== false) a.missingScopes = [];
         return json(res, 200, { account: a });
       }
       const a = { id: ++nextId, provider: 'm365', email: 'neu@firma.de', name: body.name || 'Firma', color: body.color || '#79B8FF', kind: body.kind || 'business', state: 'syncing', error: null, push: 'all', ai: true, attachments: 'suggest', signature: '' };
@@ -439,7 +451,8 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     if (req.method === 'GET' && route === 'contacts') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
       const all = [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'person' }, { name: 'Sabine Keller', email: 'sabine@firma.de', source: 'recent' }, { name: 'Kaputt', email: 'no-at-sign', source: 'recent' }];
-      return json(res, 200, { items: all.filter((c) => `${c.name} ${c.email}`.toLowerCase().includes(q)) });
+      const own = contactSuggestions(state, q);
+      return json(res, 200, { items: [...own, ...all.filter((c) => `${c.name} ${c.email}`.toLowerCase().includes(q) && !own.some((x) => x.email === c.email))].slice(0, 10) });
     }
 
     // ── AI ──
@@ -455,8 +468,9 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
         return json(res, 200, r);
       }
       if (req.method === 'POST' && seg[2] === 'todo') {
-        if (!state.features.includes('familyCalendar')) return err(res, 409, 'familie_unavailable');
         state.todos.push({ id, index: Number(seg[3]), body });
+        if (body.action === 'calendar') return json(res, 200, { where: 'Privat · 28.11.', eventId: 999 });
+        if (!state.features.includes('familyCalendar')) return err(res, 409, 'familie_unavailable');
         return json(res, 200, { where: 'Familienkalender · 28.11.' });
       }
     }
@@ -470,6 +484,9 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       if (seg[2] === 'confirm') return json(res, 200, { savedTo: { nodeId: 7001, where: body.folderId ? 'Meine Dateien › Gewählt' : f.suggestion.where } });
       return json(res, 200, { ok: true });
     }
+
+    // ── Phase 2: calendar and contacts ──
+    if (pimRoute({ req, route, seg, url, body, state, json: (st, b) => json(res, st, b), err: (st, code, extra) => err(res, st, code, extra), sum })) return undefined;
 
     return err(res, 404, 'not_found');
   });

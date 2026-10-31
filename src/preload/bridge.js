@@ -609,7 +609,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       ai:           (id) => ipcRenderer.invoke('mail:ai', { id }),
       // an existing result as it is; again: true asks the AI anew ("Neu erstellen")
       runAi:        (id, again) => ipcRenderer.invoke('mail:ai:run', { id, again: again === true }),
-      todo:         (id, index) => ipcRenderer.invoke('mail:ai:todo', { id, index }),
+      // into the family calendar; { action: 'calendar', calendarId? } into the person's own calendar (Phase 2)
+      todo:         (id, index, opts) => ipcRenderer.invoke('mail:ai:todo', { ...(opts || {}), id, index }),
       suggest:      (id, attachmentId) => ipcRenderer.invoke('mail:drive:suggest', { id, attachmentId }),
       // { folderId?, name?, remember? }
       saveToDrive:  (id, attachmentId, opts) => ipcRenderer.invoke('mail:drive:save', { ...(opts || {}), id, attachmentId }),
@@ -622,6 +623,60 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onChanged:    (cb) => subscribe('mail:changed', cb),
       onOutbox:     (cb) => subscribe('mail:outbox', cb),
       onLoading:    (cb) => subscribe('mail:loading', cb),
+
+      // ── Calendar (Phase 2; ipc/mail-handlers.js) ──
+      calendars:      () => ipcRenderer.invoke('mail:cal:list'),
+      createCalendar: (input) => ipcRenderer.invoke('mail:cal:create', { ...(input || {}) }),
+      updateCalendar: (id, patch) => ipcRenderer.invoke('mail:cal:update', { ...(patch || {}), id }),
+      deleteCalendar: (id) => ipcRenderer.invoke('mail:cal:delete', { id }),
+      subscribe:      (input) => ipcRenderer.invoke('mail:cal:subscribe', { ...(input || {}) }),
+      calSettings:    (patch) => ipcRenderer.invoke('mail:cal:settings', { ...(patch || {}) }),
+      updateOverlay:  (id, patch) => ipcRenderer.invoke('mail:overlay:update', { ...(patch || {}), id }),
+      // { from, to (ms, ≤ 62 days), calendars?: [id | overlay id] }
+      events:         (query) => ipcRenderer.invoke('mail:events', { ...(query || {}) }),
+      event:          (id, occurrence) => ipcRenderer.invoke('mail:event:get', { id, occurrence: occurrence || null }),
+      createEvent:    (input) => ipcRenderer.invoke('mail:event:create', { ...(input || {}) }),
+      updateEvent:    (id, input) => ipcRenderer.invoke('mail:event:update', { ...(input || {}), id }),
+      // { scope: 'occurrence' | 'series', occurrence?, notify?, comment? }
+      deleteEvent:    (id, opts) => ipcRenderer.invoke('mail:event:delete', { ...(opts || {}), id }),
+      respondEvent:   (id, input) => ipcRenderer.invoke('mail:event:respond', { ...(input || {}), id }),
+      invitations:    (state) => ipcRenderer.invoke('mail:invitations', { state: state === 'all' ? 'all' : 'open' }),
+      invitation:     (id) => ipcRenderer.invoke('mail:invitation:get', { id }),
+      respondInvitation: (id, input) => ipcRenderer.invoke('mail:invitation:respond', { ...(input || {}), id }),
+      applyInvitation:   (id) => ipcRenderer.invoke('mail:invitation:apply', { id }),
+      dismissInvitation: (id, decline) => ipcRenderer.invoke('mail:invitation:dismiss', { id, decline: decline === true }),
+      // live: { kind: 'changed', calendarId, … } | { kind: 'calendars' } | { kind: 'invitation', … } | { kind: 'conflict', eventId }
+      onCalendar:     (cb) => subscribe('mail:calendar', cb),
+
+      // ── Contacts (Phase 2) ──
+      addressbooks:   () => ipcRenderer.invoke('mail:books'),
+      updateAddressbook: (id, patch) => ipcRenderer.invoke('mail:book:update', { ...(patch || {}), id }),
+      cardSettings:   (patch) => ipcRenderer.invoke('mail:card:settings', { ...(patch || {}) }),
+      // { q?, book?: 'all' | id, group? } — searched on this PC in the summaries kept current
+      cards:          (query) => ipcRenderer.invoke('mail:cards', { ...(query || {}) }),
+      card:           (id) => ipcRenderer.invoke('mail:card:get', { id }),
+      createCard:     (input) => ipcRenderer.invoke('mail:card:create', { ...(input || {}) }),
+      updateCard:     (id, input) => ipcRenderer.invoke('mail:card:update', { ...(input || {}), id }),
+      deleteCard:     (id) => ipcRenderer.invoke('mail:card:delete', { id }),
+      cardPhoto:      (id, etag) => ipcRenderer.invoke('mail:card:photo', { id, etag: etag || null }),
+      setCardPhoto:   (id) => ipcRenderer.invoke('mail:card:photo:set', { id }),
+      deleteCardPhoto: (id) => ipcRenderer.invoke('mail:card:photo:delete', { id }),
+      lookup:         (email) => ipcRenderer.invoke('mail:card:lookup', { email }),
+      activity:       (id) => ipcRenderer.invoke('mail:card:activity', { id }),
+      cardDraft:      (email, messageId) => ipcRenderer.invoke('mail:card:draft', { email, messageId: messageId || null }),
+      duplicates:     () => ipcRenderer.invoke('mail:card:duplicates'),
+      merge:          (input) => ipcRenderer.invoke('mail:card:merge', { ...(input || {}) }),
+      ignoreDuplicates: (ids) => ipcRenderer.invoke('mail:card:ignore', { ids }),
+      importVcf:      (addressbookId) => ipcRenderer.invoke('mail:card:import', { addressbookId: addressbookId || null }),
+      exportVcf:      (opts) => ipcRenderer.invoke('mail:card:export', { ...(opts || {}) }),
+      createGroup:    (input) => ipcRenderer.invoke('mail:group:create', { ...(input || {}) }),
+      updateGroup:    (id, input) => ipcRenderer.invoke('mail:group:update', { ...(input || {}), id }),
+      deleteGroup:    (id) => ipcRenderer.invoke('mail:group:delete', { id }),
+      group:          (id) => ipcRenderer.invoke('mail:group:get', { id }),
+      groupMembers:   (id, change) => ipcRenderer.invoke('mail:group:members', { ...(change || {}), id }),
+      call:           (number) => ipcRenderer.invoke('mail:call', { number }),
+      // live: { kind: 'changed', addressbookId, contactIds } | { kind: 'addressbooks' } | { kind: 'groups' }
+      onContacts:     (cb) => subscribe('mail:contacts', cb),
     },
 
     // ── Shell ────────────────────────────────────────────
