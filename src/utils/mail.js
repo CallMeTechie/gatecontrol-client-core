@@ -16,6 +16,7 @@
  */
 
 const crypto = require('crypto');
+const mailDark = require('./mail-dark');
 
 const PLUGIN_ID = 'gatecontrol-mail';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
@@ -903,17 +904,28 @@ const FIT_ID = 'gc-fit';
  * page like mail programs show it. Pictures, tables, long links and preformatted text stay inside the width; the
  * mail sits in #gc-fit, which the window sets smaller (CSS zoom) when it is still wider (a newsletter's table of a
  * fixed 600 px) — measured from outside, the frame runs no script.
+ *
+ * [dark]: the mail as the Outlook app shows it while it is dark (utils/mail-dark.js): its colours changed before
+ * it is shown — light backgrounds dark, dark text light, the hue kept, pictures never — on the app's dark page.
+ * The original (light) stays what the server sent: answering and forwarding use the server's copy.
  */
-function mailDocument(message, { lang = 'de' } = {}) {
+function mailDocument(message, { lang = 'de', dark = false } = {}) {
   const m = message || {};
-  const body = m.html ? rewriteSources(m.html, m) : `<div class="gc-text">${textToHtml(m.text || '')}</div>`;
+  let body = m.html ? rewriteSources(m.html, m) : `<div class="gc-text">${textToHtml(m.text || '')}</div>`;
+  if (dark && m.html) body = mailDark.darkHtml(body);
+  const css = dark
+    ? `html,body{margin:0;padding:0}${mailDark.darkPageCss()}body{padding:16px;font:14px/1.5 "Segoe UI",system-ui,sans-serif;overflow-wrap:anywhere}`
+      + `img{max-width:100%;height:auto}img[data-gc-blocked]{display:inline-block;min-width:16px;min-height:16px;background:${mailDark.DARK.placeholder};border-radius:3px}`
+      + `.gc-text{white-space:pre-wrap}blockquote{margin:0 0 0 8px;padding-left:10px;border-left:3px solid ${mailDark.DARK.line};color:${mailDark.DARK.muted}}`
+      + `table{max-width:100%}td,th{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:${mailDark.DARK.link};overflow-wrap:anywhere;word-break:break-word}`
+    : ':root{color-scheme:light}html,body{margin:0;padding:0;background:#fff;color:#1A1D22}body{padding:16px;font:14px/1.5 "Segoe UI",system-ui,sans-serif;overflow-wrap:anywhere}'
+      + 'img{max-width:100%;height:auto}img[data-gc-blocked]{display:inline-block;min-width:16px;min-height:16px;background:#EEF1F5;border-radius:3px}'
+      + '.gc-text{white-space:pre-wrap}blockquote{margin:0 0 0 8px;padding-left:10px;border-left:3px solid #D5DBE3;color:#4A5563}'
+      + 'table{max-width:100%}td,th{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#1A56C4;overflow-wrap:anywhere;word-break:break-word}';
   return '<!doctype html><html lang="' + (lang === 'en' ? 'en' : 'de') + '"><head><meta charset="utf-8">'
     + `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">`
-    + '<meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_blank">'
-    + '<style>html,body{margin:0;padding:0;background:#fff;color:#1A1D22}body{padding:16px;font:14px/1.5 "Segoe UI",system-ui,sans-serif;overflow-wrap:anywhere}'
-    + 'img{max-width:100%;height:auto}img[data-gc-blocked]{display:inline-block;min-width:16px;min-height:16px;background:#EEF1F5;border-radius:3px}'
-    + '.gc-text{white-space:pre-wrap}blockquote{margin:0 0 0 8px;padding-left:10px;border-left:3px solid #D5DBE3;color:#4A5563}'
-    + 'table{max-width:100%}td,th{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#1A56C4;overflow-wrap:anywhere;word-break:break-word}</style>'
+    + `<meta name="referrer" content="no-referrer"><meta name="color-scheme" content="${dark ? 'dark' : 'light'}"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_blank">`
+    + `<style>${css}</style>`
     + `</head><body><div id="${FIT_ID}">${body}</div></body></html>`;
 }
 

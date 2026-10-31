@@ -21,8 +21,10 @@
  * - Read: folders, lists (Alle Posteingänge / an account, Relevant / Sonstige),
  *   search, threads, a mail (marked read when opened) with its HTML as the
  *   document of a sandboxed frame (utils/mail.js mailDocument: no scripts, own
- *   CSP, pictures only through gcmail:). handleProtocol() serves gcmail://img/
- *   <token> and gcmail://cid/<message>/<attachment> with the client's sign-in.
+ *   CSP, pictures only through gcmail:) — as sent (doc) and with its colours
+ *   for the dark app (docDark, utils/mail-dark.js; the page picks one).
+ *   handleProtocol() serves gcmail://img/<token> and gcmail://cid/<message>/
+ *   <attachment> with the client's sign-in.
  * - Act: read / unread, flag, move, archive, delete, junk, Relevant / Sonstige.
  * - Write: drafts (reply / reply all / forward filled by the server), files
  *   of this PC as attachments (media upload), Drive files (copy or link), send
@@ -499,15 +501,21 @@ class MailService extends EventEmitter {
   async thread(threadId) {
     return this._run(async () => {
       const t = await this.api.thread(threadId);
-      return { ok: true, items: t.items.map((m) => ({ ...m, doc: mail.mailDocument(m, { lang: this._lang() }) })) };
+      return { ok: true, items: t.items.map((m) => ({ ...m, ...this._docs(m) })) };
     });
   }
 
-  _withDoc(m, extra = {}) {
-    return { ok: true, message: m, doc: mail.mailDocument(m, { lang: this._lang() }), ...extra };
+  /** The frame documents of a mail: doc (as sent, light) and docDark (its colours for the dark app, utils/mail-dark.js). */
+  _docs(m) {
+    const lang = this._lang();
+    return { doc: mail.mailDocument(m, { lang }), docDark: mail.mailDocument(m, { lang, dark: true }) };
   }
 
-  /** A mail with its frame document → { ok, message, doc, offline? }; an unread one is marked read (markRead). */
+  _withDoc(m, extra = {}) {
+    return { ok: true, message: m, ...this._docs(m), ...extra };
+  }
+
+  /** A mail with its frame documents → { ok, message, doc, docDark, offline? }; an unread one is marked read (markRead). */
   async message(id, { markRead = true } = {}) {
     const mid = mail.posId(id);
     if (!mid) throw new MailError('invalid id', { code: 'invalid' });

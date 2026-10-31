@@ -20,8 +20,8 @@
  *   mail:folders           () → { ok, accounts: [{ accountId, folders }], offline? }
  *   mail:list              ({ box?, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }) → { ok, items, next, counts, offline? }
  *   mail:search            ({ q?, box?, from?, after?, before?, attachments?, unread?, cursor? }) → { ok, items, next, remote } (q or from)
- *   mail:thread            ({ id }) → { ok, items: [Message + doc] }
- *   mail:message           ({ id, markRead? }) → { ok, message, doc, offline? }
+ *   mail:thread            ({ id }) → { ok, items: [Message + doc + docDark] }
+ *   mail:message           ({ id, markRead? }) → { ok, message, doc, docDark, offline? }
  *   mail:images            ({ id, allow: 'once' | 'sender' }) → { ok, message, doc }
  *   mail:flags             ({ ids, unread?, flagged? }) → { ok, items? }
  *   mail:act               ({ action: 'archive'|'delete'|'junk'|'move'|'tab', ids, folderId?, tab? }) → { ok, items? }
