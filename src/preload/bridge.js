@@ -657,16 +657,33 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       card:           (id) => ipcRenderer.invoke('mail:card:get', { id }),
       createCard:     (input) => ipcRenderer.invoke('mail:card:create', { ...(input || {}) }),
       updateCard:     (id, input) => ipcRenderer.invoke('mail:card:update', { ...(input || {}), id }),
-      deleteCard:     (id) => ipcRenderer.invoke('mail:card:delete', { id }),
+      // opts.linked (Mail 1.4.0): 'keep' (default) | 'delete' — the linked cards at their providers too
+      deleteCard:     (id, opts) => ipcRenderer.invoke('mail:card:delete', { id, linked: (opts && opts.linked) || null }),
       cardPhoto:      (id, etag) => ipcRenderer.invoke('mail:card:photo', { id, etag: etag || null }),
       setCardPhoto:   (id) => ipcRenderer.invoke('mail:card:photo:set', { id }),
       deleteCardPhoto: (id) => ipcRenderer.invoke('mail:card:photo:delete', { id }),
       lookup:         (email) => ipcRenderer.invoke('mail:card:lookup', { email }),
       activity:       (id) => ipcRenderer.invoke('mail:card:activity', { id }),
       cardDraft:      (email, messageId) => ipcRenderer.invoke('mail:card:draft', { email, messageId: messageId || null }),
-      duplicates:     () => ipcRenderer.invoke('mail:card:duplicates'),
+      // opts.details (Mail 1.4.0): each card in full with its source and the preview of the merge
+      duplicates:     (opts) => ipcRenderer.invoke('mail:card:duplicates', { details: !!(opts && opts.details) }),
       merge:          (input) => ipcRenderer.invoke('mail:card:merge', { ...(input || {}) }),
       ignoreDuplicates: (ids) => ipcRenderer.invoke('mail:card:ignore', { ids }),
+      // Mail 1.4.0: the GC contact as the master ({ ok, unsupported } from servers before)
+      mergePreview:   (ids) => ipcRenderer.invoke('mail:card:preview', { ids }),
+      autoMerge:      () => ipcRenderer.invoke('mail:card:merge:auto'),
+      merges:         (limit) => ipcRenderer.invoke('mail:card:merges', { limit: limit || 50 }),
+      undoMerge:      (id, opts) => ipcRenderer.invoke('mail:card:merge:undo', { ...(opts || {}), id }),
+      unmerge:        (id, opts) => ipcRenderer.invoke('mail:card:unmerge', { ...(opts || {}), id }),
+      conflicts:      () => ipcRenderer.invoke('mail:card:conflicts'),
+      acceptConflict: (id, conflictId, mode) => ipcRenderer.invoke('mail:card:conflict:accept', { id, conflictId, mode: mode || null }),
+      dismissConflict: (id, conflictId) => ipcRenderer.invoke('mail:card:conflict:dismiss', { id, conflictId }),
+      setFavorite:    (id, on) => ipcRenderer.invoke('mail:card:favorite', { id, on: on === true }),
+      setMainPhone:   (id, value) => ipcRenderer.invoke('mail:card:main-phone', { id, value: typeof value === 'string' ? value : null }),
+      favorites:      () => ipcRenderer.invoke('mail:favorites'),
+      setFavorites:   (ids) => ipcRenderer.invoke('mail:favorites:set', { ids }),
+      // { days?: 1…7 (2), limit?: 1…20 (8) } — the calendar widget of the start page
+      upcoming:       (query) => ipcRenderer.invoke('mail:upcoming', { ...(query || {}) }),
       importVcf:      (addressbookId) => ipcRenderer.invoke('mail:card:import', { addressbookId: addressbookId || null }),
       exportVcf:      (opts) => ipcRenderer.invoke('mail:card:export', { ...(opts || {}) }),
       createGroup:    (input) => ipcRenderer.invoke('mail:group:create', { ...(input || {}) }),
@@ -676,6 +693,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       groupMembers:   (id, change) => ipcRenderer.invoke('mail:group:members', { ...(change || {}), id }),
       call:           (number) => ipcRenderer.invoke('mail:call', { number }),
       // live: { kind: 'changed', addressbookId, contactIds } | { kind: 'addressbooks' } | { kind: 'groups' }
+      //       | 1.4.0: { kind: 'merged', masterId, contactIds, auto } | { kind: 'conflicts', contactIds } | { kind: 'favorites' }
       onContacts:     (cb) => subscribe('mail:contacts', cb),
     },
 

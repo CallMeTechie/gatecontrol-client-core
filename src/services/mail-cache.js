@@ -41,7 +41,8 @@ const PIM_PHOTOS = 500;
 const PIM_KEEP_BEFORE_MS = 30 * 24 * 60 * 60 * 1000;
 const PIM_KEEP_AFTER_MS = 90 * 24 * 60 * 60 * 1000;
 
-const emptyPim = () => ({ calendars: null, ranges: {}, events: {}, books: null, cards: null, cardDetails: {}, photos: {} });
+const emptyPim = () => ({ calendars: null, ranges: {}, events: {}, books: null, cards: null, cardDetails: {}, photos: {}, extra: {} });
+const EXTRA_KEYS = 20;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -291,6 +292,7 @@ class MailCache {
           try { p = await this._read(path.join(dir, 'pim.bin')); } catch { p = null; }
         }
         this._pim = p && typeof p === 'object' && p.ranges && p.events && p.cardDetails && p.photos ? p : emptyPim();
+        if (!this._pim.extra || typeof this._pim.extra !== 'object') this._pim.extra = {};
         return this._pim;
       })();
     }
@@ -484,6 +486,23 @@ class MailCache {
       keys.sort((a, b) => p.photos[a].at - p.photos[b].at);
       for (const k of keys.slice(0, keys.length - PIM_PHOTOS)) this._dropPhoto(p, Number(k));
     }
+  }
+
+  /** A small answer kept for offline (Mail 1.4.0: the favourites, the calendar widget) → its value | null. */
+  async getExtra(key) {
+    const x = (await this._loadPim()).extra[key];
+    return x ? x.value : null;
+  }
+
+  async putExtra(key, value) {
+    const p = await this._loadPim();
+    p.extra[key] = { at: this.now(), value };
+    const keys = Object.keys(p.extra);
+    if (keys.length > EXTRA_KEYS) {
+      keys.sort((a, b) => p.extra[a].at - p.extra[b].at);
+      for (const k of keys.slice(0, keys.length - EXTRA_KEYS)) delete p.extra[k];
+    }
+    this._touchPim();
   }
 
   /** Everything of every server goes (memory and disk). */

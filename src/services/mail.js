@@ -1065,10 +1065,18 @@ class MailService extends EventEmitter {
 
   async createCard(input) { return this._run(async () => { const card = await this.api.createCard(input || {}); await this._cardChanged(card); return { ok: true, card }; }); }
 
-  /** PATCH cards/<id> → { ok, card }; changed elsewhere: { ok: false, code: 'conflict', current }. */
+  /**
+   * PATCH cards/<id> → { ok, card, writeBack }; changed elsewhere: { ok: false, code: 'conflict', current }. `writeBack`
+   * (Mail 1.4.0): what went back to the providers ([{ id, addressbookId, ok, code }]; [] before).
+   */
   async updateCard(id, input) {
     try {
-      return await this._run(async () => { const card = await this.api.updateCard(id, input || {}); await this._cardChanged(card); return { ok: true, card }; });
+      return await this._run(async () => {
+        const { card, writeBack } = await this.api.patchCard(id, input || {});
+        await this._cardChanged(card);
+        if (input && input.favorite !== undefined) this.emit('contacts', { kind: 'favorites' });
+        return { ok: true, card, writeBack };
+      });
     } catch (err) {
       if (err && err.code === 'conflict') {
         const b = err.body && err.body.error && typeof err.body.error === 'object' ? err.body.error : {};
@@ -1078,15 +1086,24 @@ class MailService extends EventEmitter {
     }
   }
 
-  async deleteCard(id) {
+  /** DELETE cards/<id> (`linked`: 'keep' | 'delete' — 1.4.0, the linked cards at their providers too; default keep). */
+  async deleteCard(id, { linked = null } = {}) {
     return this._run(async () => {
-      await this.api.deleteCard(id);
+      await this.api.deleteCard(id, { linked });
       await this.cache.dropCard(mail.posId(id));
+      // linked cards loosened (or gone): the whole list again
+      if (linked) await this.cache.resetCards();
       this._cardsStale = true;
       this.emit('contacts', { kind: 'changed', addressbookId: null, contactIds: [mail.posId(id)] });
       return { ok: true };
     });
   }
+
+  /** A favourite or not (Mail 1.4.0; GateControl's own, never to the provider) → { ok, card }. */
+  async setFavorite(id, on) { return this.updateCard(id, { favorite: on === true }); }
+
+  /** The main number ("Als Hauptnummer"; null: the first mobile number again) → { ok, card }. */
+  async setMainPhone(id, value) { return this.updateCard(id, { mainPhone: typeof value === 'string' ? value : null }); }
 
   /** A contact's photo → { ok, mime, url (data:) } (kept by its etag; offline the one kept). */
   async cardPhoto(id, etag = null) {
@@ -1173,16 +1190,125 @@ class MailService extends EventEmitter {
 
   async cardDraft(input) { return this._run(async () => ({ ok: true, ...(await this.api.cardDraft(input || {})) })); }
 
-  async duplicates() { return this._run(async () => ({ ok: true, ...(await this.api.duplicates()) })); }
+  /** Possible duplicates (`details`: Mail 1.4.0 — the cards in full with their sources and the preview). */
+  async duplicates({ details = false } = {}) { return this._run(async () => ({ ok: true, ...(await this.api.duplicates({ details: details === true })) })); }
 
+  /** → { ok, card, mergeId } (Mail 1.4.0: always a GC contact, `card.id` may be new). */
   async merge(input) {
     return this._run(async () => {
-      const card = await this.api.merge(input || {});
+      const { card, mergeId } = await this.api.mergeCards(input || {});
       // others went or were linked: the whole list again
       await this.cache.resetCards();
       this._cardsStale = true;
       await this._cardChanged(card);
-      return { ok: true, card };
+      return { ok: true, card, mergeId };
+    });
+  }
+
+  /**
+   * A path of Mail 1.4.0: a server before answers 404 not_found → { ok: true, unsupported: true, …empty } (the apps
+   * hide what it is for).
+   */
+  async _newer(fn, empty) {
+    try {
+      return await this._run(fn);
+    } catch (err) {
+      if (err && err.status === 404 && err.code === 'not_found') return { ok: true, unsupported: true, ...empty };
+      throw err;
+    }
+  }
+
+  async _merged(fn) {
+    const r = await this._run(fn);
+    await this.cache.resetCards();
+    this._cardsStale = true;
+    if (r.card) await this.cache.putCard(r.card);
+    this.emit('contacts', { kind: 'merged', masterId: r.card ? r.card.id : null, contactIds: [...r.unlinked, ...r.restored].slice(0, 50), auto: false });
+    return { ok: true, ...r };
+  }
+
+  /** "So wird der Kontakt" → { ok, preview }. */
+  async mergePreview(ids) { return this._run(async () => ({ ok: true, preview: await this.api.mergePreview(ids) })); }
+
+  /** The certain duplicates merged now → { ok, merged, open, items }. */
+  async autoMerge() {
+    return this._run(async () => {
+      const r = await this.api.autoMerge();
+      if (r.merged) { await this.cache.resetCards(); this._cardsStale = true; this.emit('contacts', { kind: 'merged', masterId: null, contactIds: [], auto: true }); }
+      return { ok: true, ...r };
+    });
+  }
+
+  /** "Automatisch zusammengeführt": the protocol → { ok, items } ({ unsupported } before 1.4.0). */
+  async merges(limit = 50) { return this._newer(async () => ({ ok: true, ...(await this.api.merges(limit)) }), { items: [] }); }
+
+  /** "Rückgängig" of a merge → { ok, card | null, unlinked, restored }. */
+  async undoMerge(id, opts) { return this._merged(() => this.api.undoMerge(id, opts || {})); }
+
+  /** "Verknüpfung lösen" ({ ids?, keepMaster? }) → { ok, card | null, unlinked, restored }. */
+  async unmerge(id, opts) { return this._merged(() => this.api.unmerge(id, opts || {})); }
+
+  /** Contacts with a different value at a linked card → { ok, items } ({ unsupported } before 1.4.0). */
+  async conflicts() { return this._newer(async () => ({ ok: true, ...(await this.api.conflicts()) }), { items: [] }); }
+
+  /** "Übernehmen" (`mode` 'replace' | 'add'; default the server's) → { ok, card }. */
+  async acceptConflict(id, conflictId, mode = null) {
+    return this._run(async () => { const card = await this.api.acceptConflict(id, conflictId, mode); await this._cardChanged(card); return { ok: true, card }; });
+  }
+
+  /** "Verwerfen" → { ok, card }. */
+  async dismissConflict(id, conflictId) {
+    return this._run(async () => { const card = await this.api.dismissConflict(id, conflictId); await this._cardChanged(card); return { ok: true, card }; });
+  }
+
+  /** The favourites (in their order; offline the ones kept) → { ok, items, offline? } ({ unsupported } before 1.4.0). */
+  async favorites() {
+    return this._orCache(async () => {
+      try {
+        const r = await this.api.favorites();
+        await this.cache.putExtra('favorites', r.items);
+        return { ok: true, ...r };
+      } catch (err) {
+        if (err && err.status === 404 && err.code === 'not_found') return { ok: true, unsupported: true, items: [] };
+        throw err;
+      }
+    }, async () => {
+      const items = await this.cache.getExtra('favorites');
+      return items ? { ok: true, items } : null;
+    });
+  }
+
+  /** The favourites' order (cards not named are no favourites any more) → { ok, items }. */
+  async setFavorites(ids) {
+    return this._run(async () => {
+      const r = await this.api.putFavorites(ids);
+      await this.cache.putExtra('favorites', r.items);
+      this._cardsStale = true;
+      this.emit('contacts', { kind: 'favorites' });
+      return { ok: true, ...r };
+    });
+  }
+
+  /**
+   * The calendar widget of the start page ({ days 1…7, limit 1…20 }) → { ok, timeZone, today, items, more, offline? }
+   * (offline the last answer; { unsupported } before 1.4.0).
+   */
+  async upcoming(query = {}) {
+    const q = mail.upcomingQuery(query);
+    if (!q) throw new MailError('invalid query', { code: 'invalid' });
+    const key = `upcoming:${q.days}:${q.limit}`;
+    return this._orCache(async () => {
+      try {
+        const r = await this.api.upcoming(q);
+        await this.cache.putExtra(key, r);
+        return { ok: true, ...r };
+      } catch (err) {
+        if (err && err.status === 404 && err.code === 'not_found') return { ok: true, unsupported: true, timeZone: null, today: null, items: [], more: 0 };
+        throw err;
+      }
+    }, async () => {
+      const r = await this.cache.getExtra(key);
+      return r ? { ok: true, ...r } : null;
     });
   }
 

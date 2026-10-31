@@ -74,17 +74,31 @@
  *   mail:cards             ({ q?, book?, group? }) → { ok, items, version, offline? }   searched on this PC
  *   mail:card:get          ({ id }) → { ok, card, offline? }
  *   mail:card:create       ({ addressbookId?, name, emails, … }) → { ok, card }
- *   mail:card:update       ({ id, …fields, etag }) → { ok, card } | { ok: false, code: 'conflict', current }
- *   mail:card:delete       ({ id }) → { ok }
+ *   mail:card:update       ({ id, …fields, etag }) → { ok, card, writeBack } | { ok: false, code: 'conflict', current }
+ *   mail:card:delete       ({ id, linked? 'keep' | 'delete' }) → { ok }
  *   mail:card:photo        ({ id, etag? }) → { ok, mime, url }
  *   mail:card:photo:set    ({ id }) → file dialog → { ok, card } | { ok: false, code: 'cancelled' }
  *   mail:card:photo:delete ({ id }) → { ok, card }
  *   mail:card:lookup       ({ email }) → { ok, card, person, recent }
  *   mail:card:activity     ({ id }) → { ok, mails, events }
  *   mail:card:draft        ({ email, messageId? }) → { ok, draft, existing }
- *   mail:card:duplicates   () → { ok, items }
- *   mail:card:merge        ({ ids, primaryId, pick? }) → { ok, card }
+ *   mail:card:duplicates   ({ details? }) → { ok, items }
+ *   mail:card:merge        ({ ids, primaryId?, pick? }) → { ok, card, mergeId }
  *   mail:card:ignore       ({ ids }) → { ok }
+ * Mail 1.4.0 — the GC contact as the master, favourites, the calendar widget ({ ok, unsupported } from servers before):
+ *   mail:card:preview      ({ ids }) → { ok, preview }
+ *   mail:card:merge:auto   () → { ok, merged, open, items }
+ *   mail:card:merges       ({ limit? }) → { ok, items }
+ *   mail:card:merge:undo   ({ id, keepMaster? }) → { ok, card, unlinked, restored }
+ *   mail:card:unmerge      ({ id, ids?, keepMaster? }) → { ok, card, unlinked, restored }
+ *   mail:card:conflicts    () → { ok, items }
+ *   mail:card:conflict:accept  ({ id, conflictId, mode? }) → { ok, card }
+ *   mail:card:conflict:dismiss ({ id, conflictId }) → { ok, card }
+ *   mail:card:favorite     ({ id, on }) → { ok, card }
+ *   mail:card:main-phone   ({ id, value | null }) → { ok, card }
+ *   mail:favorites         () → { ok, items, offline? }
+ *   mail:favorites:set     ({ ids }) → { ok, items }
+ *   mail:upcoming          ({ days?, limit? }) → { ok, timeZone, today, items, more, offline? }
  *   mail:card:import       ({ addressbookId? }) → file dialog → { ok, imported, updated, skipped } | { ok: false, code: 'cancelled' }
  *   mail:card:export       ({ book?, group? }) → save dialog → { ok, path } | { ok: false, code: 'cancelled' }
  *   mail:group:create      ({ name, color? }) → { ok, group }
@@ -265,15 +279,30 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:card:get', byId(async (a) => s.card(a.id)));
   handle('mail:card:create', wrap(async (a) => s.createCard(pick(a, CARD_KEYS))));
   handle('mail:card:update', byId(async (a) => s.updateCard(a.id, pick(a, CARD_KEYS))));
-  handle('mail:card:delete', byId(async (a) => s.deleteCard(a.id)));
+  handle('mail:card:delete', byId(async (a) => (a.linked === undefined || a.linked === null || a.linked === 'keep' || a.linked === 'delete' ? s.deleteCard(a.id, { linked: a.linked || null }) : invalid())));
   handle('mail:card:photo', byId(async (a) => (optStr(a.etag, 120) ? s.cardPhoto(a.id, a.etag || null) : invalid())));
   handle('mail:card:photo:set', byId(async (a) => s.setCardPhoto(a.id)));
   handle('mail:card:photo:delete', byId(async (a) => s.deleteCardPhoto(a.id)));
   handle('mail:card:lookup', wrap(async (a) => (isStr(a.email, 320) ? s.lookup(a.email) : invalid())));
   handle('mail:card:activity', byId(async (a) => s.activity(a.id)));
   handle('mail:card:draft', wrap(async (a) => (isStr(a.email, 320) && (a.messageId === undefined || a.messageId === null || isId(a.messageId)) ? s.cardDraft({ email: a.email, messageId: a.messageId || null }) : invalid())));
-  handle('mail:card:duplicates', wrap(async () => s.duplicates()));
-  handle('mail:card:merge', wrap(async (a) => (isIds(a.ids) && isId(a.primaryId) ? s.merge(pick(a, ['ids', 'primaryId', 'pick'])) : invalid())));
+  handle('mail:card:duplicates', wrap(async (a) => s.duplicates({ details: a.details === true })));
+  handle('mail:card:merge', wrap(async (a) => (isIds(a.ids) && (a.primaryId === undefined || a.primaryId === null || isId(a.primaryId)) ? s.merge(pick(a, ['ids', 'primaryId', 'pick'])) : invalid())));
+  handle('mail:card:preview', wrap(async (a) => (isIds(a.ids) && a.ids.length <= 10 ? s.mergePreview(a.ids) : invalid())));
+  handle('mail:card:merge:auto', wrap(async () => s.autoMerge()));
+  handle('mail:card:merges', wrap(async (a) => (a.limit === undefined || a.limit === null || (isId(a.limit) && a.limit <= 200) ? s.merges(a.limit || 50) : invalid())));
+  handle('mail:card:merge:undo', byId(async (a) => (a.keepMaster === undefined || typeof a.keepMaster === 'boolean' ? s.undoMerge(a.id, pick(a, ['keepMaster'])) : invalid())));
+  handle('mail:card:unmerge', byId(async (a) => ((a.ids === undefined || a.ids === null || (isIds(a.ids) && a.ids.length <= 20)) && (a.keepMaster === undefined || typeof a.keepMaster === 'boolean')
+    ? s.unmerge(a.id, pick(a, ['ids', 'keepMaster'])) : invalid())));
+  handle('mail:card:conflicts', wrap(async () => s.conflicts()));
+  handle('mail:card:conflict:accept', byId(async (a) => (isId(a.conflictId) && (a.mode === undefined || a.mode === null || a.mode === 'replace' || a.mode === 'add') ? s.acceptConflict(a.id, a.conflictId, a.mode || null) : invalid())));
+  handle('mail:card:conflict:dismiss', byId(async (a) => (isId(a.conflictId) ? s.dismissConflict(a.id, a.conflictId) : invalid())));
+  handle('mail:card:favorite', byId(async (a) => (typeof a.on === 'boolean' ? s.setFavorite(a.id, a.on) : invalid())));
+  handle('mail:card:main-phone', byId(async (a) => (a.value === null || isStr(a.value, 60) ? s.setMainPhone(a.id, a.value) : invalid())));
+  handle('mail:favorites', wrap(async () => s.favorites()));
+  handle('mail:favorites:set', wrap(async (a) => (Array.isArray(a.ids) && a.ids.length <= 50 && a.ids.every(isId) ? s.setFavorites(a.ids) : invalid())));
+  handle('mail:upcoming', wrap(async (a) => ((a.days === undefined || (Number.isSafeInteger(a.days) && a.days >= 1 && a.days <= 7)) && (a.limit === undefined || (Number.isSafeInteger(a.limit) && a.limit >= 1 && a.limit <= 20))
+    ? s.upcoming(pick(a, ['days', 'limit'])) : invalid())));
   handle('mail:card:ignore', wrap(async (a) => (isIds(a.ids) ? s.ignoreDuplicates(a.ids) : invalid())));
   handle('mail:card:import', wrap(async (a) => (a.addressbookId === undefined || a.addressbookId === null || isId(a.addressbookId) ? s.importVcf({ addressbookId: a.addressbookId || null }) : invalid())));
   handle('mail:card:export', wrap(async (a) => ((a.book === undefined || a.book === null || a.book === 'all' || isId(a.book)) && (a.group === undefined || a.group === null || isId(a.group))
