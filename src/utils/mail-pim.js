@@ -126,7 +126,8 @@ function normalizeCalPrefs(v) {
     timeZone: tzOf(o.timeZone),
     reminders: o.reminders !== false,
     defaultReminder: o.defaultReminder === undefined ? 15 : rem,
-    allDayReminder: intIn(o.allDayReminder, 0, 10080) ?? 1080,
+    // minutes before midnight of the all-day event's day (like a VALARM TRIGGER on its DTSTART): 360 = 18:00 the day before
+    allDayReminder: intIn(o.allDayReminder, 0, 10080) ?? 360,
   };
 }
 

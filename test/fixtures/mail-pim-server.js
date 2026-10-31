@@ -32,7 +32,7 @@ function pimState(now) {
       { id: 'familie', source: 'familie', name: 'Familie', color: '#F5B544', visible: true },
       { id: 'birthdays', source: 'birthdays', name: 'Geburtstage', color: '#FF8080', visible: true },
     ],
-    calPrefs: { defaultCalendarId: 1, view: 'week', weekStart: 1, workWeek: false, timeZone: 'Europe/Berlin', reminders: true, defaultReminder: 15, allDayReminder: 1080 },
+    calPrefs: { defaultCalendarId: 1, view: 'week', weekStart: 1, workWeek: false, timeZone: 'Europe/Berlin', reminders: true, defaultReminder: 15, allDayReminder: 360 },
     consent: [],
     events: new Map(),
     overlayItems: [

@@ -74,7 +74,10 @@ describe('utils/mail-pim', () => {
     assert.deepEqual([c.calendars[0].color, c.calendars[0].accountId, c.calendars[0].maxReminders, c.calendars[0].state, c.calendars[0].error.code], ['#ABCDEF', 2, 1, 'consent_required', 'consent_required']);
     assert.deepEqual([c.calendars[1].source, c.calendars[1].color, c.calendars[1].visible], ['local', '#46E0A0', true]);
     assert.deepEqual(c.overlays.map((o) => [o.id, o.source]), [['familie', 'familie'], ['alltag:7', 'alltag']]);
-    assert.deepEqual([c.prefs.view, c.prefs.weekStart, c.prefs.defaultReminder, c.prefs.timeZone, c.prefs.allDayReminder], ['week', 0, null, null, 1080]);
+    assert.deepEqual([c.prefs.view, c.prefs.weekStart, c.prefs.defaultReminder, c.prefs.timeZone, c.prefs.allDayReminder], ['week', 0, null, null, 360]);
+    // the all-day reminder: minutes before midnight of the day — the default 360 is 18:00 the day before; a stored value stays
+    const ad = (allDayReminder) => mail.normalizeCalPrefs({ allDayReminder }).allDayReminder;
+    assert.deepEqual([ad(undefined), ad(1080), ad(0), ad(10080), ad(10081), ad(-1), ad(360.5), ad('360')], [360, 1080, 0, 10080, 360, 360, 360, 360]);
     assert.deepEqual(c.consent, [{ accountId: 2, missing: ['Calendars.ReadWrite'] }]);
   });
 
