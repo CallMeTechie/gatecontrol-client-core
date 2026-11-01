@@ -206,6 +206,15 @@ describe('DriveService.overview / IPC (Drive 1.18)', () => {
     assert.equal(r.overview.assembled, false);
     assert.equal(r.overview.todo.review, 12);
     assert.equal(srv.overviewCalls, 1);
+    // the tiles and their texts, ready for the page
+    assert.deepEqual(r.view.tiles, ['todo', 'recent', 'activity', 'memories', 'people', 'places']);
+    assert.equal(r.view.todoCount, 4);
+    assert.equal(r.view.deadlines.length, 2);
+    assert.equal(r.view.memories.length, 1);
+    assert.deepEqual(r.view.activity[0], { key: 'photos', n: 14, name: 'Mama', file: null, folder: 'Urlaub 2026' });
+    assert.equal(r.view.activityArea, 'Familie');
+    assert.equal(r.view.storageFill, 0.212);
+    assert.deepEqual(r.view.map.bubble, { lat: 50.94, lon: 6.96, count: 3871 });
   });
 
   it('without overview: built from the endpoints of the features there are', async () => {

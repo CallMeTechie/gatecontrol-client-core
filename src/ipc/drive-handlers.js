@@ -96,7 +96,7 @@
  *   drive:deadline:calendars () → { ok, family, mail: [{ id, name, account: { id, label, kind }, color }] }   Drive 1.17
  *   drive:deadline:targets () → { ok, targets: [{ areaId, label, target }] }                                Drive 1.17
  *   drive:deadline:target ({ areaId, target: null | { kind: 'family' } | { kind: 'mail', calendarId, label? } }) → { ok, targets }
- *   drive:overview        () → { ok, overview }                                       Drive 1.18 (built from the rest without 'overview')
+ *   drive:overview        () → { ok, overview, view }                                       Drive 1.18 (built from the rest without 'overview')
  *   drive:ask             ({ q: 3…300, area? }) → { ok, status, answer, sources, terms, areas, deadline }   Drive 1.14 'docAsk'
  *   drive:photos          ({ …, q }) → { ok, items, next, terms, total }            Drive 1.14 'photoSearch'
  *   drive:scan:status     () → { ok, supported, local, reason }                      Drive 1.14 'scanDocs'

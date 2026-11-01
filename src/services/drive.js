@@ -1236,13 +1236,16 @@ class DriveService extends EventEmitter {
   // ── Drive 1.18: the overview ───────────────────────────
 
   /**
-   * The page "Übersicht" → { ok, overview } (utils/drive-overview.js). With 'overview' GET overview; else built from
+   * The page "Übersicht" → { ok, overview, view } (utils/drive-overview.js; view: the tiles and their texts). With 'overview' GET overview; else built from
    * the endpoints this Drive has (a part that fails is left out, like one whose feature is off).
    */
   async overview() {
     return this._run(async () => {
       const f = (await this._meFresh()).features || [];
-      if (f.includes('overview')) return { ok: true, overview: await this.api.overview() };
+      if (f.includes('overview')) {
+        const overview = await this.api.overview();
+        return { ok: true, overview, view: OV.overviewView(overview, this.now()) };
+      }
       const soft = (on, fn) => (on ? fn().catch(() => null) : Promise.resolve(null));
       const now = this.now();
       const d = new Date(now);
@@ -1255,7 +1258,8 @@ class DriveService extends EventEmitter {
         soft(f.includes('photoPlaces'), () => this.api.photoPlaces({})),
         soft(true, () => this.api.areas()),
       ]);
-      return { ok: true, overview: OV.assembleOverview({ now, deadlines, classes, memories, people, places, areas: areas && areas.areas }) };
+      const overview = OV.assembleOverview({ now, deadlines, classes, memories, people, places, areas: areas && areas.areas });
+      return { ok: true, overview, view: OV.overviewView(overview, now) };
     });
   }
 

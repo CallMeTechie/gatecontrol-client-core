@@ -308,6 +308,24 @@ function mapView(places) {
   return { bbox: [Math.max(-180, bubble.lon - 4), Math.max(-85, bubble.lat - 2.5), Math.min(180, bubble.lon + 4), Math.min(85, bubble.lat + 2.5)], bubble };
 }
 
+/**
+ * What the page shows of an overview at `now`: the tiles in order, the number of "Zu erledigen", each deadline's day,
+ * each memory's label, each row of "Neu in …" as text parts and its folder, the area of the heading, how full the
+ * storage is and the small map (box and bubble). The page only puts it into words (its locale).
+ */
+function overviewView(ov, now = Date.now()) {
+  return {
+    tiles: overviewTiles(ov),
+    todoCount: todoCount(ov && ov.todo),
+    deadlines: ov && ov.todo ? ov.todo.deadlines.map((d) => ({ id: d.id, when: deadlineWhen(d.date, now) })) : [],
+    memories: ov ? ov.memories.map((m) => memoryLabel(m, now)) : [],
+    activity: ov ? ov.activity.map((a) => ({ ...activityLine(a), folder: folderName(a.folder && a.folder.path) })) : [],
+    activityArea: activityArea(ov && ov.activity),
+    storageFill: storageFill(ov && ov.storage),
+    map: mapView(ov && ov.places),
+  };
+}
+
 module.exports = {
   ACTIVITY_KINDS,
   TILES,
@@ -327,4 +345,5 @@ module.exports = {
   folderName,
   storageFill,
   mapView,
+  overviewView,
 };
