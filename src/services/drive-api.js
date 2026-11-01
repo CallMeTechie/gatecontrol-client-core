@@ -61,6 +61,8 @@
  *   GET    …/api/people · people/<id> · people/<id>/similar · people/<id>/uncertain?limit
  *   PATCH  …/api/people/<id> { name?, hidden?, contact? } · POST people/<id>/merge { into }
  *   POST   …/api/people/<id>/confirm { faceIds, yes } · POST faces/<id>/move { person }   Drive 1.16 'photoPeople'
+ *   GET    …/api/overview                                        Drive 1.18 'overview': the page "Übersicht" in one call
+ *   GET    …/api/photos/classes                                  Drive 1.13 'photoClasses': { work, private, review }
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -75,6 +77,7 @@ const axios = require('axios');
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
 const drive = require('../utils/drive');
+const OV = require('../utils/drive-overview');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -800,6 +803,16 @@ class DriveApi {
     if (!f || (person !== null && !p)) throw new DriveError('invalid face', { code: 'invalid' });
     await this.api('POST', `faces/${encodeURIComponent(String(f))}/move`, { body: { person: p } });
     return {};
+  }
+
+  /** Drive 1.18 'overview': GET overview → the overview (utils/drive-overview.js normalizeOverview) */
+  async overview() {
+    return OV.normalizeOverview(await this.api('GET', 'overview', { timeout: 30000 }));
+  }
+
+  /** Drive 1.13 'photoClasses': GET photos/classes → { work, private, review } or null */
+  async photoClasses() {
+    return OV.normalizePhotoClasses(await this.api('GET', 'photos/classes'));
   }
 
   /** GET photos/memories?date=YYYY-MM-DD → { groups: [{ yearsAgo, date, items }] } */

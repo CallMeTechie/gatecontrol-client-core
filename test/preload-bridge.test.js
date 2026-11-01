@@ -63,7 +63,7 @@ describe('createBridgeApi', () => {
       'config:import-qr', 'config:set', 'dns:leak-test',
       'drive:album', 'drive:album:create', 'drive:album:delete', 'drive:album:items', 'drive:album:update', 'drive:albums',
       'drive:area:calendar', 'drive:area:docai', 'drive:areas', 'drive:ask', 'drive:cache', 'drive:cache:clear', 'drive:check', 'drive:deadline:calendar', 'drive:deadline:calendars', 'drive:deadline:remind', 'drive:deadline:target', 'drive:deadline:targets', 'drive:deadlines', 'drive:face:move', 'drive:folder', 'drive:guard', 'drive:guard:decide', 'drive:hello-settings', 'drive:import', 'drive:insight', 'drive:insight:apply', 'drive:insight:run', 'drive:last-folder', 'drive:last-folder:set', 'drive:link:create', 'drive:link:end',
-      'drive:links', 'drive:map:tile', 'drive:me', 'drive:mkdir', 'drive:move', 'drive:office', 'drive:open', 'drive:ops:cancel', 'drive:ops:check', 'drive:ops:start', 'drive:ops:undo',
+      'drive:links', 'drive:map:tile', 'drive:me', 'drive:mkdir', 'drive:move', 'drive:office', 'drive:open', 'drive:ops:cancel', 'drive:ops:check', 'drive:ops:start', 'drive:ops:undo', 'drive:overview',
       'drive:people', 'drive:person', 'drive:person:confirm', 'drive:person:merge', 'drive:person:similar', 'drive:person:uncertain', 'drive:person:update',
       'drive:photos', 'drive:photos:geo:delete', 'drive:photos:map', 'drive:photos:memories', 'drive:photos:months', 'drive:photos:places', 'drive:photos:settings', 'drive:photos:settings:set', 'drive:photos:suggest',
       'drive:pick', 'drive:pick-folders', 'drive:portal', 'drive:preview', 'drive:preview:node', 'drive:purge',

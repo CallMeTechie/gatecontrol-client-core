@@ -105,6 +105,10 @@
  * - Drive 1.17 'deadlineMailCalendar': deadlines into a calendar of the mail plugin too — the calendars to choose
  *   (deadlines/calendars), the person's own target per area (deadlines/targets), "In Kalender eintragen" with a target.
  *
+ * - Drive 1.18 'overview': the page's "Übersicht" (overview()) in one call; an older Drive's overview is built here from
+ *   what it has (deadlines, photos/memories, people, photos/places, photos/classes, the storage of the areas), without
+ *   "Zuletzt geöffnet" and "Neu in …" (utils/drive-overview.js).
+ *
  * - Drive 1.16 (only with the features `me` reports): 'photoPlaces' — pictures and videos carry where they were taken
  *   (EXIF GPS / the video's ©xyz, utils/taken-at.js) with the commit unless the person switched keepGeo off; the
  *   places, the map's clusters (the tiles come from services/map-service.js like the chats' maps), photos of a place,
@@ -135,6 +139,7 @@ const DriveOps = require('./drive-ops');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
+const OV = require('../utils/drive-overview');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
@@ -1225,6 +1230,36 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       await this._feature('photos');
       return { ok: true, ...(await this.api.memories(date)) };
+    });
+  }
+
+  // ── Drive 1.18: the overview ───────────────────────────
+
+  /**
+   * The page "Übersicht" → { ok, overview, view } (utils/drive-overview.js; view: the tiles and their texts). With 'overview' GET overview; else built from
+   * the endpoints this Drive has (a part that fails is left out, like one whose feature is off).
+   */
+  async overview() {
+    return this._run(async () => {
+      const f = (await this._meFresh()).features || [];
+      if (f.includes('overview')) {
+        const overview = await this.api.overview();
+        return { ok: true, overview, view: OV.overviewView(overview, this.now()) };
+      }
+      const soft = (on, fn) => (on ? fn().catch(() => null) : Promise.resolve(null));
+      const now = this.now();
+      const d = new Date(now);
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const [deadlines, classes, memories, people, places, areas] = await Promise.all([
+        soft(f.includes('docAi'), () => this.api.deadlines({ from: today })),
+        soft(f.includes('photoClasses'), () => this.api.photoClasses()),
+        soft(f.includes('photos'), () => this.api.memories(today)),
+        soft(f.includes('photoPeople'), () => this.api.people()),
+        soft(f.includes('photoPlaces'), () => this.api.photoPlaces({})),
+        soft(true, () => this.api.areas()),
+      ]);
+      const overview = OV.assembleOverview({ now, deadlines, classes, memories, people, places, areas: areas && areas.areas });
+      return { ok: true, overview, view: OV.overviewView(overview, now) };
     });
   }
 
