@@ -42,6 +42,8 @@
 // ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
 // Drive 1.14: 'deadlineCalendar' (POST deadlines/<id>/calendar → deadline.calendar; srv.familie = false → 409
 // familie_unavailable { reason }; state.calendarCalls; PATCH areas/<id> { deadlinesToCalendar }, areas[].deadlinesToCalendar),
+// Drive 1.17: 'deadlineMailCalendar' (GET deadlines/calendars, GET|PUT deadlines/targets, POST deadlines/<id>/calendar
+// { target: { kind: 'mail', calendarId } }; srv.mail = false → 409 mail_unavailable; srv.mailCalendars; state.targets),
 // 'docAsk' (POST ask { q (3 … 300), area? }: srv.answer(q) → the answer, default not_found with the words of q as terms
 // and the areas' labels; state.askCalls; srv.askLimited → 429), 'scanDocs' (POST scans/classify { mediaIds, text? } →
 // srv.scanKind (default: 'table'); POST scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → the
@@ -379,6 +381,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.toCalendar = new Set();
   state.labels = new Map();
   srv.familie = true;
+  // Drive 1.17 'deadlineMailCalendar': the person's mail calendars (srv.mail = false: 409 mail_unavailable), targets per area
+  srv.mail = true;
+  srv.mailCalendars = [
+    { id: 'cal-1', name: 'Kalender', account: { id: 'acc-1', label: 'Outlook', kind: 'microsoft' }, color: '#3366ff', writable: true },
+    { id: 'cal-2', name: 'Privat', account: { id: 'acc-2', label: 'Posteo', kind: 'caldav' }, color: null, writable: true },
+  ];
+  state.targets = new Map();
+  state.calendarBodies = [];
   srv.scanKeepOriginal = true;
   srv.imagesMax = 600 * 1024;
   srv.answer = null;
@@ -680,14 +690,47 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         const to = url.searchParams.get('to') || '9999-12-31';
         const list = state.deadlines.filter((d) => d.date >= from && d.date <= to && get(d.nodeId) && !get(d.nodeId).encrypted)
           .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id))
-          .map(({ nodeId, ...d }) => ({ ...d, node: { ...view(get(nodeId)), path: '' } }));
+          .map(({ nodeId, entries, ...d }) => ({ ...d, node: { ...view(get(nodeId)), path: '' } }));
         return json(res, 200, { ok: true, deadlines: list });
       }
       const d = state.deadlines.find((x) => x.id === Number(seg[1]));
-      const plain = () => { const { nodeId, ...x } = d; return x; };
+      const plain = () => { const { nodeId, entries, ...x } = d; return x; };
       // Drive 1.14 'deadlineCalendar'
+      if (seg.length === 2 && seg[1] === 'calendars' && req.method === 'GET' && has('deadlineMailCalendar')) {
+        return json(res, 200, { ok: true, family: srv.familie, mail: srv.mail ? srv.mailCalendars.map(({ writable, ...c }) => c) : [] });
+      }
+      if (seg.length === 2 && seg[1] === 'targets' && has('deadlineMailCalendar')) {
+        const rows = () => areasNow().filter((a) => a.docAi).map((a) => ({ areaId: a.id, label: a.label, target: state.targets.has(a.id) ? state.targets.get(a.id) : (state.toCalendar.has(a.id) ? { kind: 'family' } : null) }));
+        if (req.method === 'GET') return json(res, 200, { ok: true, targets: rows() });
+        if (req.method === 'PUT') {
+          for (const t of Array.isArray(body.targets) ? body.targets : []) {
+            if (!rows().some((r) => r.areaId === t.areaId)) return refuse(res, 404, 'not_found');
+            const tg = t.target;
+            if (tg && tg.kind === 'mail') {
+              const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
+              if (!c) return refuse(res, 404, 'not_found');
+              state.targets.set(t.areaId, { kind: 'mail', calendarId: c.id, label: `${c.account.label} · ${c.name}` });
+            } else if (tg && tg.kind === 'family') state.targets.set(t.areaId, { kind: 'family' });
+            else if (tg === null) state.targets.set(t.areaId, null);
+            else return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
+          }
+          return json(res, 200, { ok: true, targets: rows() });
+        }
+      }
       if (d && seg[2] === 'calendar' && req.method === 'POST' && has('deadlineCalendar')) {
         state.calendarCalls.push(d.id);
+        state.calendarBodies.push(body);
+        const tg = body && body.target;
+        if (tg && tg.kind === 'mail' && has('deadlineMailCalendar')) {
+          d.entries = d.entries || {};
+          if (d.entries[tg.calendarId]) return json(res, 200, { ok: true, deadline: { ...plain(), calendar: d.entries[tg.calendarId] } });
+          if (!srv.mail) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'auth_expired', error: 'mail_unavailable' });
+          const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
+          if (!c) return refuse(res, 404, 'not_found');
+          d.entries[c.id] = { eventId: `mev-${d.id}`, at: iso(Date.now()), target: { kind: 'mail', label: c.account.label } };
+          d.calendar = d.entries[c.id];
+          return json(res, 200, { ok: true, deadline: plain() });
+        }
         // a second call answers the same
         if (d.calendar) return json(res, 200, { ok: true, deadline: plain() });
         if (!srv.familie) return json(res, 409, { ok: false, code: 'familie_unavailable', reason: 'forbidden', error: 'familie_unavailable' });

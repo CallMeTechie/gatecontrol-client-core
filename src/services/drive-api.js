@@ -51,6 +51,8 @@
  *   POST   …/api/scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → { …, file { …, data } | null }
  *   POST   …/api/scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original }
  *   PATCH  …/api/areas/<id> { deadlinesToCalendar }               Drive 1.14: new deadlines of the area into the calendar
+ *   GET    …/api/deadlines/calendars · GET|PUT deadlines/targets   Drive 1.17 'deadlineMailCalendar': the family calendar or
+ *          a mail calendar, the person's target per area; POST deadlines/<id>/calendar { target? }
  *   GET    …/api/photos?q=                                       Drive 1.14 'photoSearch': photos by their labels (+ terms)
  *   GET    …/api/photos?place=&bbox=&person=&districts=1&with=people · photos/months (the same filters)
  *   GET    …/api/photos/places · photos/map?bbox&zoom · photos/suggest?q   Drive 1.16 'photoPlaces' / 'photoPeople'
@@ -944,9 +946,36 @@ class DriveApi {
     return this._deadline(this.api('DELETE', `deadlines/${this._id(id)}/remind`));
   }
 
-  /** Drive 1.14 'deadlineCalendar': POST deadlines/<id>/calendar → deadline (with `calendar`; 409 familie_unavailable) */
-  calendar(id) {
-    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/calendar`, { body: {}, timeout: 60000 }));
+  /**
+   * Drive 1.14 'deadlineCalendar': POST deadlines/<id>/calendar → deadline (with `calendar`; 409 familie_unavailable).
+   * Drive 1.17 'deadlineMailCalendar': target { kind: 'mail', calendarId } into a mail calendar (409 mail_unavailable).
+   */
+  calendar(id, target = null) {
+    let body = {};
+    if (target !== null && target !== undefined && target.kind !== 'family') {
+      const t = drive.deadlineTargetBody(target);
+      if (!t) throw new DriveError('invalid target', { code: 'invalid' });
+      body = { target: t };
+    }
+    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/calendar`, { body, timeout: 60000 }));
+  }
+
+  /** Drive 1.17: GET deadlines/calendars → { family, mail: [{ id, name, account, color }] } */
+  async deadlineCalendars() {
+    return drive.normalizeDeadlineCalendars(await this.api('GET', 'deadlines/calendars', { timeout: 60000 }));
+  }
+
+  /** Drive 1.17: GET deadlines/targets → { targets: [{ areaId, label, target }] } (the person's own) */
+  async deadlineTargets() {
+    return drive.normalizeDeadlineTargets(await this.api('GET', 'deadlines/targets'));
+  }
+
+  /** Drive 1.17: PUT deadlines/targets { targets: [{ areaId, target }] } → { targets } (target null: off) */
+  async setDeadlineTarget(areaId, target) {
+    const a = drive.areaIdOf(areaId);
+    const t = drive.deadlineTargetBody(target);
+    if (!a || t === undefined) throw new DriveError('invalid', { code: 'invalid' });
+    return drive.normalizeDeadlineTargets(await this.api('PUT', 'deadlines/targets', { body: { targets: [{ areaId: a, target: t }] }, timeout: 60000 }));
   }
 
   // ── Drive 1.14: questions, scans ─────────────────────────

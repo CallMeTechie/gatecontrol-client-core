@@ -736,10 +736,75 @@ function insightShort(v) {
   return { status: o.status, kind: o.status === 'ready' && DOC_KINDS.includes(o.kind) ? o.kind : null };
 }
 
+// ── Drive 1.17 'deadlineMailCalendar': deadlines into a calendar of the mail plugin too ──
+
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Where deadlines go → null (off) | { kind: 'family', label } | { kind: 'mail', calendarId, label }. The entry of a
+ * deadline names only kind and label (calendarId null).
+ */
+function normalizeDeadlineTarget(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const label = line(o.label, 200);
+  if (o.kind === 'family') return { kind: 'family', label };
+  if (o.kind === 'mail') return { kind: 'mail', calendarId: line(o.calendarId, 200), label };
+  return null;
+}
+
+/** A target as Drive takes it (null: off) or undefined when it is not one. */
+function deadlineTargetBody(t) {
+  if (t === null) return null;
+  const o = obj(t);
+  if (!o) return undefined;
+  if (o.kind === 'family') return { kind: 'family' };
+  const calendarId = o.kind === 'mail' ? line(o.calendarId, 200) : null;
+  if (!calendarId) return undefined;
+  const label = line(o.label, 200);
+  return label ? { kind: 'mail', calendarId, label } : { kind: 'mail', calendarId };
+}
+
+/** GET deadlines/calendars → { family, mail: [{ id, name, account: { id, label, kind }, color }] } (one row per id). */
+function normalizeDeadlineCalendars(raw) {
+  const r = obj(raw) || {};
+  const seen = new Set();
+  const mail = [];
+  for (const v of arr(r.mail).slice(0, 200)) {
+    const c = obj(v);
+    const id = c && line(c.id, 200);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const a = obj(c.account) || {};
+    mail.push({
+      id,
+      name: line(c.name, 200) || id,
+      account: { id: line(a.id, 200) || '', label: line(a.label, 200) || '', kind: line(a.kind, 40) },
+      color: typeof c.color === 'string' && COLOR_RE.test(c.color) ? c.color : null,
+    });
+  }
+  return { family: bool(r.family), mail };
+}
+
+/** GET|PUT deadlines/targets → { targets: [{ areaId, label, target }] } (the person's own target per area). */
+function normalizeDeadlineTargets(raw) {
+  const r = obj(raw) || {};
+  const seen = new Set();
+  const targets = [];
+  for (const v of arr(r.targets).slice(0, 200)) {
+    const t = obj(v);
+    const areaId = t && areaIdOf(t.areaId);
+    if (!areaId || seen.has(areaId)) continue;
+    seen.add(areaId);
+    targets.push({ areaId, label: line(t.label, 200) || areaId, target: normalizeDeadlineTarget(t.target) });
+  }
+  return { targets };
+}
+
 /**
  * A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent } | null,
- * calendar: { eventId, at } | null, node? } or null. calendar (Drive 1.14 'deadlineCalendar'): the person's entry in
- * the family calendar.
+ * calendar: { eventId, at, target } | null, node? } or null. calendar (Drive 1.14 'deadlineCalendar'): the person's
+ * entry in the family calendar; Drive 1.17 names its target ({ kind, label }; null: the family calendar, older Drives).
  */
 function normalizeDeadline(v) {
   const o = obj(v);
@@ -756,7 +821,7 @@ function normalizeDeadline(v) {
     date,
     label: line(o.label, 200),
     reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent) } : null,
-    calendar: c && (eventId || c.at) ? { eventId, at: msOf(c.at) } : null,
+    calendar: c && (eventId || c.at) ? { eventId, at: msOf(c.at), target: normalizeDeadlineTarget(c.target) } : null,
   };
   if (o.node !== undefined) out.node = normalizeNode(o.node);
   return out;
@@ -1571,6 +1636,10 @@ module.exports = {
   normalizeInsight,
   normalizeDeadline,
   normalizeDeadlines,
+  normalizeDeadlineTarget,
+  deadlineTargetBody,
+  normalizeDeadlineCalendars,
+  normalizeDeadlineTargets,
   importLink,
   VAULT_ID_RE,
   VAULT_DEVICE_RE,
