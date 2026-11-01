@@ -113,12 +113,12 @@ describe('DriveService: Drive 1.17', () => {
     assert.deepEqual(t1.find((t) => t.areaId === 'mine:2').target, { kind: 'mail', calendarId: 'cal-1', label: 'Outlook · Kalender' });
     assert.equal((await svc.setDeadlineTarget('mine:2', null)).targets.find((t) => t.areaId === 'mine:2').target, null);
     await assert.rejects(svc.setDeadlineTarget('mine:2', { kind: 'mail' }), (e) => e.code === 'invalid');
-    await assert.rejects(svc.setDeadlineTarget('mine:2', { kind: 'mail', calendarId: 'gone' }), (e) => e.code === 'not_found');
+    await assert.rejects(svc.setDeadlineTarget('mine:2', { kind: 'mail', calendarId: 'gone' }), (e) => e.code === 'mail_unavailable' && e.body.reason === 'not_found');
 
     srv.setInsight(12, { kind: 'contract', deadlines: [{ kind: 'cancellation', date: '2099-11-30', label: 'Kfz-Versicherung kündigen' }, { kind: 'payment', date: '2099-12-01', label: 'Zahlen' }] });
     const list = (await svc.deadlines({ from: '2026-01-01', to: '2099-12-31' })).deadlines;
     const r = await svc.calendar(list[0].id, { kind: 'mail', calendarId: 'cal-1', label: 'Outlook · Kalender' });
-    assert.deepEqual(r.deadline.calendar.target, { kind: 'mail', calendarId: null, label: 'Outlook' });
+    assert.deepEqual(r.deadline.calendar.target, { kind: 'mail', calendarId: null, label: 'Outlook · Kalender' });
     // the same target again: the entry there
     assert.equal((await svc.calendar(list[0].id, { kind: 'mail', calendarId: 'cal-1' })).deadline.calendar.eventId, r.deadline.calendar.eventId);
     // the family calendar as before (no target in the body)
@@ -168,6 +168,6 @@ describe('IPC: Drive 1.17', () => {
     srv.setInsight(12, { kind: 'contract', deadlines: [{ kind: 'cancellation', date: '2099-11-30' }] });
     const [d] = (await svc.deadlines({ from: '2026-01-01', to: '2099-12-31' })).deadlines;
     const r = await handlers['drive:deadline:calendar'](null, { id: d.id, target: { kind: 'mail', calendarId: 'cal-2', label: 'Posteo · Privat' } });
-    assert.deepEqual(r.deadline.calendar.target, { kind: 'mail', calendarId: null, label: 'Posteo' });
+    assert.deepEqual(r.deadline.calendar.target, { kind: 'mail', calendarId: null, label: 'Posteo · Privat' });
   });
 });

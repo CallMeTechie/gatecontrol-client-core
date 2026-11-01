@@ -708,7 +708,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
             const tg = t.target;
             if (tg && tg.kind === 'mail') {
               const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
-              if (!c) return refuse(res, 404, 'not_found');
+              if (!c) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'not_found', error: 'mail_unavailable' });
               state.targets.set(t.areaId, { kind: 'mail', calendarId: c.id, label: `${c.account.label} · ${c.name}` });
             } else if (tg && tg.kind === 'family') state.targets.set(t.areaId, { kind: 'family' });
             else if (tg === null) state.targets.set(t.areaId, null);
@@ -726,8 +726,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
           if (d.entries[tg.calendarId]) return json(res, 200, { ok: true, deadline: { ...plain(), calendar: d.entries[tg.calendarId] } });
           if (!srv.mail) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'auth_expired', error: 'mail_unavailable' });
           const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
-          if (!c) return refuse(res, 404, 'not_found');
-          d.entries[c.id] = { eventId: `mev-${d.id}`, at: iso(Date.now()), target: { kind: 'mail', label: c.account.label } };
+          if (!c) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'not_found', error: 'mail_unavailable' });
+          d.entries[c.id] = { eventId: `mev-${d.id}`, at: iso(Date.now()), target: { kind: 'mail', label: `${c.account.label} · ${c.name}` } };
           d.calendar = d.entries[c.id];
           return json(res, 200, { ok: true, deadline: plain() });
         }
