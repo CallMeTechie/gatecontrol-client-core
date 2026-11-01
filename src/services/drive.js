@@ -102,6 +102,9 @@
  *   behalten" off: the first picture into the trash by Drive, the other pages here). 'deadlineCalendar' also: per area
  *   new deadlines into the calendar on their own (PATCH areas/<id> { deadlinesToCalendar }).
  *
+ * - Drive 1.17 'deadlineMailCalendar': deadlines into a calendar of the mail plugin too — the calendars to choose
+ *   (deadlines/calendars), the person's own target per area (deadlines/targets), "In Kalender eintragen" with a target.
+ *
  * - Drive 1.16 (only with the features `me` reports): 'photoPlaces' — pictures and videos carry where they were taken
  *   (EXIF GPS / the video's ©xyz, utils/taken-at.js) with the commit unless the person switched keepGeo off; the
  *   places, the map's clusters (the tiles come from services/map-service.js like the chats' maps), photos of a place,
@@ -1493,11 +1496,39 @@ class DriveService extends EventEmitter {
 
   // ── Drive 1.14: the family calendar, questions, scans become documents ──
 
-  /** "In den Familienkalender" of a deadline → { ok, deadline } (409 familie_unavailable: Familie not there / refused) */
-  async calendar(deadlineId) {
+  /**
+   * "In den Familienkalender" of a deadline → { ok, deadline } (409 familie_unavailable: Familie not there / refused);
+   * Drive 1.17 "In Kalender eintragen": target { kind: 'mail', calendarId } (409 mail_unavailable { reason }).
+   */
+  async calendar(deadlineId, target = null) {
     return this._run(async () => {
-      await this._feature('deadlineCalendar');
-      return { ok: true, deadline: await this.api.calendar(deadlineId) };
+      const mail = !!(target && target.kind === 'mail');
+      await this._feature(mail ? 'deadlineMailCalendar' : 'deadlineCalendar');
+      return { ok: true, deadline: await this.api.calendar(deadlineId, mail ? target : null) };
+    });
+  }
+
+  /** Drive 1.17: the calendars a deadline can go to → { ok, family, mail: [{ id, name, account, color }] } */
+  async deadlineCalendars() {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.deadlineCalendars()) };
+    });
+  }
+
+  /** Drive 1.17: the person's target per area for new deadlines → { ok, targets: [{ areaId, label, target }] } */
+  async deadlineTargets() {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.deadlineTargets()) };
+    });
+  }
+
+  /** Drive 1.17: "Fristen aus <Bereich>" → { ok, targets } (target null: off, { kind: 'family' }, { kind: 'mail', calendarId, label }) */
+  async setDeadlineTarget(areaId, target) {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.setDeadlineTarget(areaId, target)) };
     });
   }
 

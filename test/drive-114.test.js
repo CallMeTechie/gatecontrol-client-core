@@ -113,7 +113,7 @@ describe('utils/drive: Drive 1.14 answers', () => {
     assert.equal(drive.normalizeScanSave({ node: { id: 'x' } }), null);
 
     const w = drive.normalizeDeadline({ id: 3, kind: 'warranty', date: '2026-12-12', label: 'Geschirrspüler', calendar: { eventId: 'ev-3', at: '2026-11-01T10:00:00Z' } });
-    assert.deepEqual(w.calendar, { eventId: 'ev-3', at: Date.parse('2026-11-01T10:00:00Z') });
+    assert.deepEqual(w.calendar, { eventId: 'ev-3', at: Date.parse('2026-11-01T10:00:00Z'), target: null });
     assert.equal(drive.normalizeDeadline({ id: 4, kind: 'renewal', date: '2027-01-31' }).calendar, null);
     assert.equal(drive.normalizeDeadline({ id: 4, kind: 'birthday', date: '2027-01-31' }), null);
     assert.equal(drive.normalizeArea({ id: 'mine:2', rootId: 1, deadlinesToCalendar: true }).deadlinesToCalendar, true);

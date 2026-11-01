@@ -91,6 +91,11 @@
  *   drive:link:create     ({ ids, mode: 'view'|'download', expires, pin? }) → { ok, link }   one link for several ('multiLink')
  *   drive:deadline:calendar ({ id }) → { ok, deadline }                            Drive 1.14 'deadlineCalendar'
  *   drive:area:calendar   ({ areaId, on }) → { ok, area: { id, docAi, deadlinesToCalendar } }   Drive 1.14 'deadlineCalendar'
+ *   drive:deadline:calendar ({ id, target? }) → { ok, deadline }   Drive 1.17 'deadlineMailCalendar': target { kind: 'mail',
+ *                         calendarId, label? } into a mail calendar (409 mail_unavailable); none / { kind: 'family' } as before
+ *   drive:deadline:calendars () → { ok, family, mail: [{ id, name, account: { id, label, kind }, color }] }   Drive 1.17
+ *   drive:deadline:targets () → { ok, targets: [{ areaId, label, target }] }                                Drive 1.17
+ *   drive:deadline:target ({ areaId, target: null | { kind: 'family' } | { kind: 'mail', calendarId, label? } }) → { ok, targets }
  *   drive:ask             ({ q: 3…300, area? }) → { ok, status, answer, sources, terms, areas, deadline }   Drive 1.14 'docAsk'
  *   drive:photos          ({ …, q }) → { ok, items, next, terms, total }            Drive 1.14 'photoSearch'
  *   drive:scan:status     () → { ok, supported, local, reason }                      Drive 1.14 'scanDocs'
@@ -422,7 +427,16 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, get
   handle('drive:ops:undo', wrap(async (a) => (isOpId(a.id) ? s.opUndo(String(a.id)) : invalid())));
   handle('drive:zip', wrap(async (a) => (isIds(a.ids) && optStr(a.name, 255) ? s.zip(a.ids, { name: a.name || null }) : invalid())));
   // ── Drive 1.14 ─────────────────────────────────────────
-  handle('drive:deadline:calendar', byId(async (a) => s.calendar(a.id)));
+  // Drive 1.17: a target is null / { kind: 'family' } / { kind: 'mail', calendarId (≤ 200), label? (≤ 200) }
+  const isTarget = (t) => t === null || (t !== undefined && typeof t === 'object' && !Array.isArray(t) && (
+    (t.kind === 'family') || (t.kind === 'mail' && isStr(t.calendarId, 200) && optStr(t.label, 200))));
+  handle('drive:deadline:calendar', byId(async (a) => {
+    if (a.target !== undefined && a.target !== null && !isTarget(a.target)) return invalid();
+    return s.calendar(a.id, a.target || null);
+  }));
+  handle('drive:deadline:calendars', wrap(async () => s.deadlineCalendars()));
+  handle('drive:deadline:targets', wrap(async () => s.deadlineTargets()));
+  handle('drive:deadline:target', wrap(async (a) => (optArea(a.areaId) && a.areaId && isTarget(a.target) ? s.setDeadlineTarget(a.areaId, a.target) : invalid())));
   handle('drive:ask', wrap(async (a) => (isStr(a.q, 300) && a.q.trim().length >= 3 && optArea(a.area) ? s.ask(a.q, a.area || null) : invalid())));
   handle('drive:scan:status', wrap(async () => s.scanStatus()));
   handle('drive:scan:prepare', wrap(async (a) => (isIds(a.ids, 8) ? s.scanPrepare(a.ids) : invalid())));

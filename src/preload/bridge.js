@@ -506,8 +506,12 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       setDocAi:     (areaId, on) => ipcRenderer.invoke('drive:area:docai', { areaId, on: !!on }),
       // Drive 1.14: a deadline into the family calendar ('deadlineCalendar'), a question to the documents ('docAsk'),
       // "In Dokument umwandeln" of pictures ('scanDocs': prepare → save as pdf / docx / xlsx / image, or discard)
-      calendar:     (id) => ipcRenderer.invoke('drive:deadline:calendar', { id }),
+      calendar:     (id, target) => ipcRenderer.invoke('drive:deadline:calendar', target ? { id, target } : { id }),
       setDeadlinesToCalendar: (areaId, on) => ipcRenderer.invoke('drive:area:calendar', { areaId, on: !!on }),
+      // Drive 1.17 'deadlineMailCalendar': the calendars to choose (family, mail), the person's target per area
+      deadlineCalendars: () => ipcRenderer.invoke('drive:deadline:calendars'),
+      deadlineTargets: () => ipcRenderer.invoke('drive:deadline:targets'),
+      setDeadlineTarget: (areaId, target) => ipcRenderer.invoke('drive:deadline:target', { areaId, target: target || null }),
       ask:          (q, area) => ipcRenderer.invoke('drive:ask', { q, area: area || null }),
       scan: {
         status:  () => ipcRenderer.invoke('drive:scan:status'),
