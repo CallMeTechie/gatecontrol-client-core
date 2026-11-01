@@ -166,7 +166,7 @@ const NOTIFY_EVENTS = {
  *   events to the main window and resets it after a successful server:setup.
  * @param {object} [ctx.chatNotifier] - ChatNotifier; its 'navigate' (toast
  *   click) reaches the renderer as chat:navigate
- * @param {object} [ctx.maps] - MapService for chat:map:* (default: one with
+ * @param {object} [ctx.maps] - MapService for chat:map:* and drive:map:tile (default: one with
  *   the app's name and version as User-Agent, OpenStreetMap / Nominatim)
  * @param {object} [ctx.school] - SchoolService (opt-in, "Schule"): registers
  *   the school:* channels (ipc/school-handlers.js), forwards its events to the
@@ -707,16 +707,19 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Benachrichtigungen (notification center, opt-in) ────
   if (notificationCenter) registerNotifyHandlers(handle, { notificationCenter, getMainWindow, log });
 
+  // OpenStreetMap tiles / addresses for the chats' maps and Drive's photo map (one service: one queue, one cache)
+  const maps = ctx.maps || (messenger || driveSvc ? new MapService({
+    log,
+    userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
+    getLang: () => getLocale(),
+  }) : null);
+
   // ── Chats (messenger, opt-in) ───────────────────────────
   if (messenger) {
     registerMessengerHandlers(handle, {
       messenger,
       chatNotifier: ctx.chatNotifier || null,
-      maps: ctx.maps || new MapService({
-        log,
-        userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
-        getLang: () => getLocale(),
-      }),
+      maps,
       getMainWindow,
       log,
       dialog,
@@ -739,7 +742,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
-  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, getMainWindow, log });
+  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, getMainWindow, log });
 
   // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
   if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });

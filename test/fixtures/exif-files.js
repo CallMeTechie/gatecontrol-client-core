@@ -3,8 +3,12 @@
 // Pictures and videos built byte by byte for utils/taken-at.js (Drive 1.7 'takenAt'):
 // a TIFF with EXIF dates, and that TIFF inside a JPEG, a HEIC, a WebP and a PNG; an MP4.
 
-/** A TIFF (little / big endian): IFD0 { DateTime?, ExifIFD } → Exif IFD { DateTimeOriginal?, OffsetTimeOriginal? } */
-function tiff({ le = true, original = '2026:07:14 18:03:22', offset = '+02:00', dateTime = '2026:07:20 09:00:00' } = {}) {
+/**
+ * A TIFF (little / big endian): IFD0 { DateTime?, ExifIFD, GPS IFD? } → Exif IFD { DateTimeOriginal?, OffsetTimeOriginal? };
+ * `gps`: { lat: [d, m, s], latRef: 'N' | 'S', lon: [d, m, s], lonRef: 'E' | 'W' } (Drive 1.16 'photoPlaces'), each value a
+ * RATIONAL (seconds with 1/100).
+ */
+function tiff({ le = true, original = '2026:07:14 18:03:22', offset = '+02:00', dateTime = '2026:07:20 09:00:00', gps = null } = {}) {
   const parts = [];
   const u16 = (v) => { const b = Buffer.alloc(2); if (le) b.writeUInt16LE(v); else b.writeUInt16BE(v); return b; };
   const u32 = (v) => { const b = Buffer.alloc(4); if (le) b.writeUInt32LE(v); else b.writeUInt32BE(v); return b; };
@@ -27,9 +31,35 @@ function tiff({ le = true, original = '2026:07:14 18:03:22', offset = '+02:00', 
   for (const t of exifTags) { t.at = exifDataAt; exifDataAt += t.data.length; exifData.push(t.data); }
   const entry = (tag, type, count, value) => Buffer.concat([u16(tag), u16(type), u32(count), value]);
   const strEntry = (t) => entry(t.tag, 2, t.data.length, t.data.length <= 4 ? Buffer.concat([t.data, Buffer.alloc(4 - t.data.length)]) : u32(t.at));
+  // the GPS IFD (after the Exif IFD's strings): refs inline, the three RATIONALs of lat / lon behind it
+  let gpsBuf = null;
+  const gpsAt = exifDataAt;
+  if (gps) {
+    const n = 4;
+    const ratAt = gpsAt + ifdSize(n);
+    const rat = (vals) => Buffer.concat(vals.map((v) => Buffer.concat([u32(Math.round(v * 100)), u32(100)])));
+    const refEntry = (tag, ref) => entry(tag, 2, 2, Buffer.from(`${ref}\0\0\0`, 'latin1'));
+    gpsBuf = Buffer.concat([u16(n), refEntry(1, gps.latRef), entry(2, 5, 3, u32(ratAt)), refEntry(3, gps.lonRef), entry(4, 5, 3, u32(ratAt + 24)), u32(0), rat(gps.lat), rat(gps.lon)]);
+  }
+  const extra = gps ? 1 : 0;
+  // IFD0 grows by the GPS entry: everything behind it moves by 12
+  if (gps) {
+    for (const t of ifd0Tags) t.at += 12;
+    for (const t of exifTags) t.at += 12;
+  }
+  const shift = gps ? 12 : 0;
   parts.push(Buffer.from(le ? 'II' : 'MM', 'latin1'), u16(42), u32(ifd0At));
-  parts.push(u16(ifd0Tags.length + 1), ...ifd0Tags.map(strEntry), entry(0x8769, 4, 1, u32(exifAt)), u32(0), ...ifd0Data);
+  parts.push(u16(ifd0Tags.length + 1 + extra), ...ifd0Tags.map(strEntry), entry(0x8769, 4, 1, u32(exifAt + shift)), ...(gps ? [entry(0x8825, 4, 1, u32(gpsAt + shift))] : []), u32(0), ...ifd0Data);
   parts.push(u16(exifTags.length), ...exifTags.map(strEntry), u32(0), ...exifData);
+  if (gpsBuf) {
+    // the RATIONAL offsets were written before the shift
+    const fixed = Buffer.from(gpsBuf);
+    const rd = (o) => (le ? fixed.readUInt32LE(o) : fixed.readUInt32BE(o));
+    const wr = (o, v) => (le ? fixed.writeUInt32LE(v, o) : fixed.writeUInt32BE(v, o));
+    wr(2 + 12 + 8, rd(2 + 12 + 8) + shift);
+    wr(2 + 36 + 8, rd(2 + 36 + 8) + shift);
+    parts.push(fixed);
+  }
   return Buffer.concat(parts);
 }
 
@@ -73,8 +103,8 @@ function heic(t) {
   return file;
 }
 
-/** An MP4 with `moov` after a large `mdat` (not "fast start"). */
-function mp4(secsSince1904, version = 0) {
+/** An MP4 with `moov` after a large `mdat` (not "fast start"); `xyz`: the position as phones write it (udta › ©xyz). */
+function mp4(secsSince1904, version = 0, xyz = null) {
   const ftyp = box('ftyp', Buffer.from('isom', 'latin1'), be32(512), Buffer.from('isomiso2mp41', 'latin1'));
   const mdat = box('mdat', Buffer.alloc(200000));
   let times;
@@ -85,7 +115,8 @@ function mp4(secsSince1904, version = 0) {
     times = b;
   } else times = Buffer.concat([be32(secsSince1904), be32(secsSince1904)]);
   const mvhd = box('mvhd', full(version), times, Buffer.alloc(80));
-  return Buffer.concat([ftyp, mdat, box('moov', mvhd, box('trak', Buffer.alloc(16)))]);
+  const udta = xyz ? [box('udta', box('\u00a9xyz', be16(Buffer.byteLength(xyz, 'latin1')), be16(0x15c7), Buffer.from(xyz, 'latin1')))] : [];
+  return Buffer.concat([ftyp, mdat, box('moov', mvhd, box('trak', Buffer.alloc(16)), ...udta)]);
 }
 
 function webp(t) {

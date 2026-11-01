@@ -471,6 +471,28 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       deleteAlbum:  (id) => ipcRenderer.invoke('drive:album:delete', { id }),
       addToAlbum:   (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids }),
       removeFromAlbum: (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids, remove: true }),
+      // Drive 1.16 'photoPlaces' / 'photoPeople': photos(opts) also takes place, bbox, person, districts, withPeople;
+      // filter: { area?, q?, person? }
+      photoMonthsBy: (area, filter) => ipcRenderer.invoke('drive:photos:months', { ...(filter || {}), area: area || null }),
+      photoPlaces:  (filter) => ipcRenderer.invoke('drive:photos:places', { ...(filter || {}) }),
+      photoMap:     (bbox, zoom, filter) => ipcRenderer.invoke('drive:photos:map', { ...(filter || {}), bbox, zoom }),
+      photoSuggest: (q) => ipcRenderer.invoke('drive:photos:suggest', { q }),
+      photoSettings: () => ipcRenderer.invoke('drive:photos:settings'),
+      // patch: { keepGeo?, stripGeoOnShare?, people?, peopleKids? } — people: false deletes all face data
+      setPhotoSettings: (patch) => ipcRenderer.invoke('drive:photos:settings:set', { ...(patch || {}) }),
+      deletePhotoGeo: () => ipcRenderer.invoke('drive:photos:geo:delete'),
+      people:       () => ipcRenderer.invoke('drive:people'),
+      person:       (id) => ipcRenderer.invoke('drive:person', { id }),
+      // patch: { name?, hidden?, contact?: { kind: 'family' | 'contact', id, name } | null }
+      updatePerson: (id, patch) => ipcRenderer.invoke('drive:person:update', { ...(patch || {}), id }),
+      mergePerson:  (id, into) => ipcRenderer.invoke('drive:person:merge', { id, into }),
+      similarPeople: (id) => ipcRenderer.invoke('drive:person:similar', { id }),
+      uncertainFaces: (id, limit) => ipcRenderer.invoke('drive:person:uncertain', { id, limit: limit || null }),
+      confirmFaces: (id, faceIds, yes) => ipcRenderer.invoke('drive:person:confirm', { id, faceIds, yes: !!yes }),
+      // person null: "Nicht diese Person"
+      moveFace:     (faceId, person) => ipcRenderer.invoke('drive:face:move', { id: faceId, person: person === undefined ? null : person }),
+      // an OpenStreetMap tile of the photo map (the main process loads it, like the chats' maps)
+      mapTile:      (z, x, y) => ipcRenderer.invoke('drive:map:tile', { z, x, y }),
       // Drive 1.7 'storage' (all: administrators)
       storage:      (all) => ipcRenderer.invoke('drive:storage', { all: !!all }),
       pruneVersions: (areaId, keep) => ipcRenderer.invoke('drive:storage:prune', { areaId, keep }),
