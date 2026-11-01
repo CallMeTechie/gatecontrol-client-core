@@ -482,6 +482,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       setPhotoSettings: (patch) => ipcRenderer.invoke('drive:photos:settings:set', { ...(patch || {}) }),
       deletePhotoGeo: () => ipcRenderer.invoke('drive:photos:geo:delete'),
       people:       () => ipcRenderer.invoke('drive:people'),
+      // Drive 1.18: the page "Übersicht" (with 'overview' in one call, else built from the rest)
+      overview:     () => ipcRenderer.invoke('drive:overview'),
       person:       (id) => ipcRenderer.invoke('drive:person', { id }),
       // patch: { name?, hidden?, contact?: { kind: 'family' | 'contact', id, name } | null }
       updatePerson: (id, patch) => ipcRenderer.invoke('drive:person:update', { ...(patch || {}), id }),

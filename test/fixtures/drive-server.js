@@ -60,6 +60,8 @@
 // with=people), both: photos?q= matching names of people and places (search.people / search.places), photos/suggest,
 // GET / PUT photos/settings { keepGeo, stripGeoOnShare (only with srv.stripGeo = true), people, peopleKids }
 // (people: false deletes all faces → deleted).
+// Drive 1.18: 'overview' (GET overview → srv.overview, the calls in srv.overviewCalls), 'photoClasses' (GET photos/classes
+// → srv.classes, for the overview of an older Drive).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -1200,6 +1202,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const m = new Map();
       for (const n of photoList(url.searchParams.get('area'))) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
       return json(res, 200, { ok: true, months: [...m].map(([month, count]) => ({ month, count })) });
+    }
+    // Drive 1.18 'overview': the overview the test put into srv.overview (the requests counted in srv.overviewCalls)
+    if (has('overview') && req.method === 'GET' && route === 'overview') {
+      srv.overviewCalls = (srv.overviewCalls || 0) + 1;
+      return json(res, 200, { ok: true, ...(srv.overview || { todo: null, recent: [], memories: [], people: null, places: null, activity: [], storage: null }) });
+    }
+    // Drive 1.13 'photoClasses': the counts of the chips (srv.classes)
+    if (has('photoClasses') && req.method === 'GET' && route === 'photos/classes') {
+      return json(res, 200, { ok: true, ...(srv.classes || { work: 0, private: 0, review: 0 }) });
     }
     if (has('photos') && req.method === 'GET' && route === 'photos/memories') {
       const d = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
