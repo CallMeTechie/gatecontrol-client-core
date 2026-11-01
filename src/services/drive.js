@@ -102,6 +102,15 @@
  *   behalten" off: the first picture into the trash by Drive, the other pages here). 'deadlineCalendar' also: per area
  *   new deadlines into the calendar on their own (PATCH areas/<id> { deadlinesToCalendar }).
  *
+ * - Drive 1.16 (only with the features `me` reports): 'photoPlaces' — pictures and videos carry where they were taken
+ *   (EXIF GPS / the video's ©xyz, utils/taken-at.js) with the commit unless the person switched keepGeo off; the
+ *   places, the map's clusters (the tiles come from services/map-service.js like the chats' maps), photos of a place,
+ *   a box of the map, the settings (keepGeo, stripGeoOnShare) and "Orte löschen" (DELETE photos/geo).
+ *   'photoPeople' — the people the phones recognised (the faces are found on the devices only; this PC finds none):
+ *   people, a person with "Ist das auch …?" (uncertain faces), "Zusammen mit", naming (a name taken merges both),
+ *   hiding, merging, "Sieht aus wie …", a face to another person, photos of people; `people: false` deletes all face
+ *   data. Both: suggestions while typing (photos/suggest) and the marks of a search (people, places).
+ *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
  * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
@@ -126,7 +135,7 @@ const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
-const { takenAt: readTakenAt, isMediaName } = require('../utils/taken-at');
+const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
@@ -1173,20 +1182,38 @@ class DriveService extends EventEmitter {
     });
   }
 
-  /** GET photos → { ok, items, next } — Drive 1.14 'photoSearch': with `q` the photos by what is on them (+ terms, total) */
-  async photos({ area = null, before = null, limit = 100, q = null } = {}) {
+  /**
+   * GET photos → { ok, items, next } — Drive 1.14 'photoSearch': with `q` the photos by what is on them (+ terms,
+   * total); Drive 1.16: `q` also matches names of people and places (→ marks), photos of a place (`place`, with
+   * `districts` its districts) or a box of the map (`bbox`) need 'photoPlaces', of people (`person`, one id or
+   * several) and `withPeople` (the people on each photo) 'photoPeople'.
+   */
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false } = {}) {
     return this._run(async () => {
-      await this._feature(q ? 'photoSearch' : 'photos');
-      const r = await this.api.photos({ area, before, limit, q });
+      await this._feature('photos');
+      if (q) await this._searchFeature();
+      if (place || bbox) await this._feature('photoPlaces');
+      if (person || withPeople) await this._feature('photoPeople');
+      const r = await this.api.photos({ area, before, limit, q, place, bbox, person, districts, withPeople });
       for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
       return { ok: true, ...r };
     });
   }
 
-  async photoMonths(area = null) {
+  /** A search of photos needs 'photoSearch' (labels) or, Drive 1.16, 'photoPlaces' / 'photoPeople' (names). */
+  async _searchFeature() {
+    for (const f of ['photoSearch', 'photoPlaces', 'photoPeople']) if (await this.api.has(f).catch(() => false)) return;
+    throw new DriveError('Drive cannot do photoSearch', { code: 'unsupported' });
+  }
+
+  /** photos/months → { ok, months } — Drive 1.16 with the filters of photos (q, place, person) */
+  async photoMonths(area = null, { q = null, place = null, person = null } = {}) {
     return this._run(async () => {
       await this._feature('photos');
-      return { ok: true, ...(await this.api.photoMonths(area)) };
+      if (q) await this._searchFeature();
+      if (place) await this._feature('photoPlaces');
+      if (person) await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.photoMonths(area, q || place || person ? { q, place, person } : null)) };
     });
   }
 
@@ -1195,6 +1222,128 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       await this._feature('photos');
       return { ok: true, ...(await this.api.memories(date)) };
+    });
+  }
+
+  // ── Drive 1.16: places and people ────────────────────────
+
+  /** The places of the photos (most first) → { ok, places } */
+  async photoPlaces(filter = {}) {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      if (filter && filter.person) await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.photoPlaces(filter || {})) };
+    });
+  }
+
+  /** The clusters of photos in a box of the map at a zoom → { ok, clusters } */
+  async photoMap({ bbox, zoom, ...filter } = {}) {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      return { ok: true, ...(await this.api.photoMap({ bbox, zoom, ...filter })) };
+    });
+  }
+
+  /** Suggestions while typing: people, places, labels → { ok, people, places, labels } */
+  async photoSuggest(q) {
+    return this._run(async () => {
+      if (!(await this.api.has('photoPlaces').catch(() => false)) && !(await this.api.has('photoPeople').catch(() => false))) {
+        throw new DriveError('Drive cannot do photoPlaces / photoPeople', { code: 'unsupported' });
+      }
+      return { ok: true, ...(await this.api.photoSuggest(q)) };
+    });
+  }
+
+  async _placesOrPeople() {
+    const [places, people] = await Promise.all([this.api.has('photoPlaces').catch(() => false), this.api.has('photoPeople').catch(() => false)]);
+    if (!places && !people) throw new DriveError('Drive cannot do photoPlaces / photoPeople', { code: 'unsupported' });
+    return { places, people };
+  }
+
+  /** The person's settings of places and people → { ok, keepGeo, stripGeoOnShare, people, peopleKids } */
+  async photoSettings() {
+    return this._run(async () => {
+      await this._placesOrPeople();
+      return { ok: true, ...(await this.api.photoSettings()) };
+    });
+  }
+
+  /**
+   * Changes them ({ keepGeo?, stripGeoOnShare?, people?, peopleKids? }); `people: false` deletes all face data
+   * ("Alle Gesichtsdaten löschen") → { ok, …settings, deleted }.
+   */
+  async setPhotoSettings(patch = {}) {
+    return this._run(async () => {
+      const f = await this._placesOrPeople();
+      const p = patch || {};
+      if ((p.keepGeo !== undefined || p.stripGeoOnShare !== undefined) && !f.places) throw new DriveError('Drive cannot do photoPlaces', { code: 'unsupported' });
+      if ((p.people !== undefined || p.peopleKids !== undefined) && !f.people) throw new DriveError('Drive cannot do photoPeople', { code: 'unsupported' });
+      return { ok: true, ...(await this.api.setPhotoSettings(p)) };
+    });
+  }
+
+  /** "Orte löschen": the places of every photo this person uploaded → { ok, deleted } */
+  async deletePhotoGeo() {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      return { ok: true, ...(await this.api.deletePhotoGeo()) };
+    });
+  }
+
+  async people() {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.people()) };
+    });
+  }
+
+  async person(id) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.person(id)) };
+    });
+  }
+
+  /** Name ("" removes it; a name taken merges both → mergedInto), hide / show, link with a family member or contact. */
+  async updatePerson(id, patch = {}) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.updatePerson(id, patch || {})) };
+    });
+  }
+
+  async mergePerson(id, into) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.mergePerson(id, into)) };
+    });
+  }
+
+  async similarPeople(id) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.similarPeople(id)) };
+    });
+  }
+
+  async uncertainFaces(id, limit = 50) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.uncertainFaces(id, limit)) };
+    });
+  }
+
+  async confirmFaces(id, faceIds, yes) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.confirmFaces(id, faceIds, yes)) };
+    });
+  }
+
+  async moveFace(faceId, person = null) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.moveFace(faceId, person)) };
     });
   }
 
@@ -1825,12 +1974,20 @@ class DriveService extends EventEmitter {
     return !!(this._meCache && this._meCache.guard && this._meCache.guard.locked);
   }
 
-  /** What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'), when a photo was taken (1.7 'takenAt'). */
+  /**
+   * What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'), when a photo was taken
+   * (1.7 'takenAt') and where (1.16 'photoPlaces', not with keepGeo off).
+   */
   async _commitExtra(file, name, size) {
     const extra = {};
-    if (size > 0 && isMediaName(name) && await this.api.has('takenAt').catch(() => false)) {
-      const at = await readTakenAt(file, { name }).catch(() => null);
-      if (at) extra.takenAt = at;
+    if (size > 0 && isMediaName(name)) {
+      const wantAt = await this.api.has('takenAt').catch(() => false);
+      const wantGeo = typeof this.api.geoAllowed === 'function' && await this.api.geoAllowed().catch(() => false);
+      if (wantAt || wantGeo) {
+        const r = await readShot(file, { name, geo: wantGeo }).catch(() => ({ takenAt: null, geo: null }));
+        if (wantAt && r.takenAt) extra.takenAt = r.takenAt;
+        if (wantGeo && r.geo) extra.geo = r.geo;
+      }
     }
     if (size > 0 && isPdf(name)) {
       const text = await Promise.resolve(this.readPdfText(file, { size })).catch(() => null);

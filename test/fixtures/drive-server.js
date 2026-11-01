@@ -50,6 +50,14 @@
 // keepOriginal false); state.classifyCalls / convertCalls / saveCalls; me settings.scanKeepOriginal), 'photoSearch' (GET
 // photos?q=: the photos whose state.labels (nodeId → [label]) contain every word of q, with terms [{ term, label, count }],
 // total and search.chips).
+// Drive 1.16: 'photoPlaces' (uploads/commit { geo } kept on the node unless keepGeo is off, photo items with geo / located
+// (the place from srv.gazetteer: Hamburg, Köln, Palma with districts), GET photos?place=&bbox=&districts=1, photos/places,
+// photos/map (a grid per zoom), DELETE photos/geo; srv.setGeo(id, lat, lon), srv.addPhoto({ name, takenAt, geo })),
+// 'photoPeople' (state.people via srv.addPerson({ name, hidden, contact, nodes, uncertain }), GET people, people/<id>,
+// PATCH (a name taken merges), merge, similar (state.similar), uncertain, confirm, faces/<id>/move, photos?person=,
+// with=people), both: photos?q= matching names of people and places (search.people / search.places), photos/suggest,
+// GET / PUT photos/settings { keepGeo, stripGeoOnShare (only with srv.stripGeo = true), people, peopleKids }
+// (people: false deletes all faces → deleted).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -375,6 +383,36 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   srv.imagesMax = 600 * 1024;
   srv.answer = null;
   srv.scanKind = 'table';
+  // Drive 1.16 'photoPlaces' / 'photoPeople'
+  state.photoSettings = { keepGeo: true, stripGeoOnShare: true, people: false, peopleKids: false };
+  state.people = new Map();      // id → { id, name, hidden, contact, faces: [{ faceId, nodeId, box }], uncertain: [{ faceId, nodeId, box, score }] }
+  state.similar = new Map();     // person id → [{ id, score }]
+  state.peopleProgress = { done: 0, total: 0 };
+  state.refusedFaces = new Set();
+  // stripGeoOnShare: Drive 1.16.0 does not report it (its deviations: share links are served by GateControl itself);
+  // srv.stripGeo = true reports it like the contract has it
+  srv.stripGeo = false;
+  // the places the fake knows (the plugin: GeoNames, offline), with their districts
+  srv.gazetteer = [
+    { key: 'geonames:2911298', name: 'Hamburg', en: 'Hamburg', region: 'Hamburg', country: 'DE', lat: 53.5511, lon: 9.9937, districts: [{ name: 'Altona', lat: 53.55, lon: 9.935 }, { name: 'St. Pauli', lat: 53.556, lon: 9.964 }, { name: 'HafenCity', lat: 53.541, lon: 10.0 }] },
+    { key: 'geonames:2886242', name: 'Köln', en: 'Cologne', region: 'Nordrhein-Westfalen', country: 'DE', lat: 50.9375, lon: 6.9603, districts: [{ name: 'Deutz', lat: 50.936, lon: 6.976 }, { name: 'Altstadt-Nord', lat: 50.94, lon: 6.955 }] },
+    { key: 'geonames:2512989', name: 'Palma', en: 'Palma', region: 'Balearische Inseln', country: 'ES', lat: 39.5696, lon: 2.6502, districts: [] },
+  ];
+  srv.setGeo = (id, lat, lon) => { const n = state.nodes.get(id); n.geo = lat === null ? null : { lat, lon }; };
+  // a person with a face on each of `nodes` (and uncertain ones on `uncertain`) → the person
+  srv.addPerson = ({ name = null, hidden = false, contact = null, nodes = [], uncertain = [] } = {}) => {
+    const p = { id: ++nextId, name, hidden, contact, faces: [], uncertain: [] };
+    for (const nodeId of nodes) p.faces.push({ faceId: ++nextId, nodeId, box: [0.3, 0.2, 0.25, 0.3] });
+    for (const nodeId of uncertain) p.uncertain.push({ faceId: ++nextId, nodeId, box: [0.5, 0.1, 0.2, 0.25], score: 0.36 });
+    state.people.set(p.id, p);
+    return p;
+  };
+  // a photo (image/jpeg) in Meine Dateien › Fotos, taken at `takenAt`, at `geo` → the node
+  srv.addPhoto = ({ name, takenAt = Date.now(), geo = null, parentId = 1 } = {}) => {
+    const mediaId = `ppMedia${String(++nextId).padStart(9, '0')}`;
+    state.media.set(mediaId, { data: Buffer.from(`jpeg ${name}`), mime: 'image/jpeg' });
+    return node({ id: ++nextId, areaId: 'mine:2', parentId, name, size: 8, mime: 'image/jpeg', mediaId, takenAt: iso(takenAt), mtime: iso(takenAt), geo });
+  };
   // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
   srv.setInsight = (id, ins) => {
     const deadlines = (ins.deadlines || []).map((d) => {
@@ -810,6 +848,244 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const items = rest.slice(0, limit);
       return { items: items.map(photo), next: rest.length > limit ? new Date(when(items[items.length - 1])).toISOString() : null };
     };
+    // ── Drive 1.16 'photoPlaces' / 'photoPeople' ──
+    const fold = (v) => String(v || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const near = (a, b, d) => Math.abs(a.lat - b.lat) <= d && Math.abs(a.lon - b.lon) <= d;
+    const placeOfNode = (n) => {
+      if (!n.geo) return null;
+      const g = srv.gazetteer.find((x) => near(x, n.geo, 0.5));
+      if (!g) return null;
+      const d = g.districts.find((x) => near(x, n.geo, 0.012));
+      return { key: g.key, name: g.name, district: d ? d.name : null, region: g.region, country: g.country, g };
+    };
+    const alive = (nodeId) => { const n = state.nodes.get(nodeId); return n && !n.deleted ? n : null; };
+    const personNodes = (p) => [...new Set(p.faces.map((f) => f.nodeId))].filter(alive);
+    const onPhoto = (p, n) => p.faces.some((f) => f.nodeId === n.id);
+    const ppPhoto = (n, withPeople) => {
+      const out = photo(n);
+      if (has('photoPlaces')) {
+        const pl = placeOfNode(n);
+        out.geo = n.geo ? { lat: n.geo.lat, lon: n.geo.lon, place: pl ? { key: pl.key, name: pl.name, district: pl.district, region: pl.region, country: pl.country } : null } : null;
+        out.located = !!n.geo;
+      }
+      if (withPeople && has('photoPeople')) out.people = [...state.people.values()].filter((p) => p.name && !p.hidden && onPhoto(p, n)).map((p) => p.id);
+      return out;
+    };
+    const personView = (p) => {
+      const nodes = personNodes(p);
+      const f = p.faces.find((x) => alive(x.nodeId));
+      return { id: p.id, name: p.name, count: nodes.length, hidden: !!p.hidden, contact: p.contact || null, cover: f ? { faceId: f.faceId, nodeId: f.nodeId, box: f.box, item: photo(alive(f.nodeId)) } : null };
+    };
+    // q of Drive 1.16: every word matches a person's name, a place (name, district, region, country, also English) or a label
+    const wordStarts = (text, w) => fold(text).split(/[\s,.()-]+/).some((t) => t.startsWith(w));
+    const matchQ = (n, words) => {
+      const marks = { people: [], places: [] };
+      for (const w of words) {
+        const people = has('photoPeople') ? [...state.people.values()].filter((p) => p.name && !p.hidden && wordStarts(p.name, w) && onPhoto(p, n)) : [];
+        const pl = has('photoPlaces') ? placeOfNode(n) : null;
+        const place = pl && [pl.name, pl.g.en, pl.district, pl.region, pl.country === 'DE' ? 'Deutschland Germany' : pl.country === 'ES' ? 'Spanien Spain' : ''].some((x) => x && wordStarts(x, w)) ? pl : null;
+        const label = (state.labels.get(n.id) || []).some((l) => fold(l).includes(w));
+        if (!people.length && !place && !label) return null;
+        for (const p of people) if (!marks.people.some((x) => x.id === p.id)) marks.people.push({ id: p.id, name: p.name });
+        if (place && !marks.places.some((x) => x.key === place.key)) marks.places.push({ key: place.key, name: place.name });
+      }
+      return marks;
+    };
+    const pp = has('photoPlaces') || has('photoPeople');
+    const ppFilter = (list) => {
+      const sp = url.searchParams;
+      let out = list;
+      if (has('photoPlaces') && sp.get('place')) out = out.filter((n) => { const pl = placeOfNode(n); return pl && pl.key === sp.get('place'); });
+      if (has('photoPlaces') && sp.get('bbox')) {
+        const [w, s, e, nn] = sp.get('bbox').split(',').map(Number);
+        out = out.filter((n) => n.geo && n.geo.lat >= s && n.geo.lat <= nn && (w <= e ? n.geo.lon >= w && n.geo.lon <= e : n.geo.lon >= w || n.geo.lon <= e));
+      }
+      if (has('photoPeople') && sp.get('person')) {
+        const ids = sp.get('person').split(',').map(Number);
+        out = out.filter((n) => ids.every((id) => { const p = state.people.get(id); return p && onPhoto(p, n); }));
+      }
+      const marks = { people: [], places: [] };
+      if (sp.get('q')) {
+        const words = fold(sp.get('q')).split(/\s+/).filter(Boolean);
+        out = out.filter((n) => {
+          const m = matchQ(n, words);
+          if (!m) return false;
+          for (const p of m.people) if (!marks.people.some((x) => x.id === p.id)) marks.people.push(p);
+          for (const p of m.places) if (!marks.places.some((x) => x.key === p.key)) marks.places.push(p);
+          return true;
+        });
+      }
+      return { list: out, marks };
+    };
+    if (pp && has('photos') && req.method === 'GET' && route === 'photos' && ['q', 'place', 'bbox', 'person', 'with'].some((k) => url.searchParams.get(k))) {
+      const { list, marks } = ppFilter(photoList(url.searchParams.get('area')));
+      const page = pageOf(list);
+      const withPeople = url.searchParams.get('with') === 'people';
+      page.items = page.items.map((it) => ppPhoto(state.nodes.get(it.id), withPeople));
+      const out = { ok: true, ...page };
+      if (url.searchParams.get('q')) {
+        const words = fold(url.searchParams.get('q')).split(/\s+/).filter(Boolean);
+        const counts = new Map();
+        for (const n of list) for (const l of state.labels.get(n.id) || []) if (!words.some((w) => fold(l).includes(w))) counts.set(l, (counts.get(l) || 0) + 1);
+        out.terms = has('photoSearch') ? [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, count]) => ({ term: l.toLowerCase(), label: l.charAt(0).toUpperCase() + l.slice(1), count })) : [];
+        out.total = list.length;
+        out.search = { people: marks.people, places: marks.places, total: list.length };
+      }
+      if (url.searchParams.get('districts') === '1' && url.searchParams.get('place')) {
+        const d = new Map();
+        for (const n of list) { const pl = placeOfNode(n); if (pl && pl.district) d.set(pl.district, (d.get(pl.district) || 0) + 1); }
+        out.districts = [...d].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+      }
+      return json(res, 200, out);
+    }
+    if (has('photoPlaces') && has('photos') && req.method === 'GET' && route === 'photos' && !url.searchParams.get('q')) {
+      return json(res, 200, { ok: true, ...((pg) => ({ ...pg, items: pg.items.map((it) => ppPhoto(state.nodes.get(it.id), false)) }))(pageOf(photoList(url.searchParams.get('area')))) });
+    }
+    if (pp && has('photos') && req.method === 'GET' && route === 'photos/months' && ['q', 'place', 'person'].some((k) => url.searchParams.get(k))) {
+      const m = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
+      return json(res, 200, { ok: true, months: [...m].map(([month, count]) => ({ month, count })) });
+    }
+    if (has('photoPlaces') && req.method === 'GET' && route === 'photos/places') {
+      const by = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) {
+        const pl = placeOfNode(n);
+        if (!pl) continue;
+        const row = by.get(pl.key) || { key: pl.key, name: pl.name, region: pl.region, country: pl.country, count: 0, lat: pl.g.lat, lon: pl.g.lon, from: null, to: null, cover: ppPhoto(n, false) };
+        row.count++;
+        const t = when(n);
+        row.from = row.from === null || t < Date.parse(row.from) ? iso(t) : row.from;
+        row.to = row.to === null || t > Date.parse(row.to) ? iso(t) : row.to;
+        by.set(pl.key, row);
+      }
+      return json(res, 200, { ok: true, places: [...by.values()].sort((a, b) => b.count - a.count) });
+    }
+    if (has('photoPlaces') && req.method === 'GET' && route === 'photos/map') {
+      const z = Number(url.searchParams.get('zoom'));
+      const b = String(url.searchParams.get('bbox') || '').split(',').map(Number);
+      if (!(z >= 0 && z <= 19) || b.length !== 4 || b.some((x) => !Number.isFinite(x))) return json(res, 400, { ok: false, code: 'invalid', field: 'bbox', error: 'invalid' });
+      srv.mapCalls = (srv.mapCalls || 0) + 1;
+      const cell = 360 / 2 ** z / 4;
+      const cells = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) {
+        if (!n.geo) continue;
+        const k = `${Math.floor(n.geo.lat / cell)}|${Math.floor(n.geo.lon / cell)}`;
+        const c = cells.get(k) || { lat: 0, lon: 0, count: 0, keys: new Set(), cover: ppPhoto(n, false) };
+        c.lat += n.geo.lat; c.lon += n.geo.lon; c.count++;
+        const pl = placeOfNode(n);
+        c.keys.add(pl ? pl.key : null);
+        cells.set(k, c);
+      }
+      const clusters = [...cells.values()].slice(0, 200).map((c) => ({ lat: c.lat / c.count, lon: c.lon / c.count, count: c.count, key: c.keys.size === 1 ? [...c.keys][0] : null, cover: c.cover }));
+      return json(res, 200, { ok: true, clusters });
+    }
+    if (pp && req.method === 'GET' && route === 'photos/suggest') {
+      const q = fold(url.searchParams.get('q')).trim();
+      const ppl = has('photoPeople') ? [...state.people.values()].filter((p) => p.name && !p.hidden && wordStarts(p.name, q)).slice(0, 5).map((p) => ({ id: p.id, name: p.name, count: personNodes(p).length })) : [];
+      const places = [];
+      if (has('photoPlaces')) {
+        for (const g of srv.gazetteer) {
+          const count = photoList(null).filter((n) => { const pl = placeOfNode(n); return pl && pl.key === g.key; }).length;
+          if (count && (wordStarts(g.name, q) || wordStarts(g.en, q))) places.push({ key: g.key, name: g.name, sub: g.region, count });
+        }
+      }
+      const lc = new Map();
+      for (const [, ls] of state.labels) for (const l of ls) if (fold(l).startsWith(q)) lc.set(l.toLowerCase(), (lc.get(l.toLowerCase()) || 0) + 1);
+      const labels = [...lc].slice(0, 5).map(([label, count]) => ({ label, text: label.charAt(0).toUpperCase() + label.slice(1), count }));
+      return json(res, 200, { ok: true, people: ppl, places: places.slice(0, 5), labels });
+    }
+    if (pp && route === 'photos/settings' && (req.method === 'GET' || req.method === 'PUT' || req.method === 'PATCH')) {
+      const st = state.photoSettings;
+      const view2 = (extra = {}) => ({ ok: true, keepGeo: st.keepGeo, ...(srv.stripGeo ? { stripGeoOnShare: st.stripGeoOnShare } : {}), people: st.people, peopleKids: st.peopleKids, workFolder: null, ...extra });
+      if (req.method === 'GET') return json(res, 200, view2());
+      for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) if (body[k] !== undefined && typeof body[k] !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: k, error: 'invalid' });
+      let deleted;
+      for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) if (body[k] !== undefined) st[k] = body[k];
+      if (body.people === false) {
+        deleted = [...state.people.values()].reduce((a, p) => a + p.faces.length + p.uncertain.length, 0);
+        state.people.clear();
+        state.similar.clear();
+      }
+      return json(res, 200, view2(deleted !== undefined ? { deleted } : {}));
+    }
+    if (has('photoPlaces') && req.method === 'DELETE' && route === 'photos/geo') {
+      let deleted = 0;
+      for (const n of state.nodes.values()) if (n.geo && n.createdBy === 2) { n.geo = null; deleted++; }
+      return json(res, 200, { ok: true, deleted });
+    }
+    if (has('photoPeople') && seg[0] === 'people') {
+      if (seg.length === 1 && req.method === 'GET') {
+        return json(res, 200, { ok: true, people: [...state.people.values()].map(personView), progress: state.peopleProgress });
+      }
+      const p = state.people.get(Number(seg[1]));
+      if (!p) return refuse(res, 404, 'not_found');
+      if (seg.length === 2 && req.method === 'GET') {
+        const nodes = personNodes(p).map(alive);
+        const together = [...state.people.values()].filter((o) => o !== p && o.name && !o.hidden)
+          .map((o) => ({ id: o.id, name: o.name, count: nodes.filter((n) => onPhoto(o, n)).length })).filter((x) => x.count).sort((a, b) => b.count - a.count);
+        const pc = new Map();
+        for (const n of nodes) { const pl = placeOfNode(n); if (pl) pc.set(pl.key, { key: pl.key, name: pl.name, count: ((pc.get(pl.key) || {}).count || 0) + 1 }); }
+        const ys = nodes.map((n) => new Date(when(n)).getUTCFullYear());
+        return json(res, 200, { ok: true, ...personView(p), together, places: [...pc.values()].sort((a, b) => b.count - a.count), uncertain: p.uncertain.length, years: ys.length ? { from: Math.min(...ys), to: Math.max(...ys) } : null });
+      }
+      const mergeInto = (from, into) => {
+        into.faces.push(...from.faces);
+        into.uncertain.push(...from.uncertain.filter((f) => !into.faces.some((x) => x.nodeId === f.nodeId)));
+        state.people.delete(from.id);
+        state.similar.delete(from.id);
+      };
+      if (seg.length === 2 && req.method === 'PATCH') {
+        if (body.name !== undefined && (typeof body.name !== 'string' || body.name.length > 200)) return json(res, 400, { ok: false, code: 'invalid', field: 'name', error: 'invalid' });
+        if (body.hidden !== undefined && typeof body.hidden !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: 'hidden', error: 'invalid' });
+        if (body.hidden !== undefined) p.hidden = body.hidden;
+        if (body.contact !== undefined) p.contact = body.contact;
+        if (body.name !== undefined) {
+          const name = body.name.trim();
+          const other = name ? [...state.people.values()].find((o) => o !== p && o.name && o.name.toLowerCase() === name.toLowerCase()) : null;
+          if (other) { mergeInto(p, other); return json(res, 200, { ok: true, person: personView(other), mergedInto: other.id }); }
+          p.name = name || null;
+        }
+        return json(res, 200, { ok: true, person: personView(p), mergedInto: null });
+      }
+      if (seg[2] === 'merge' && req.method === 'POST') {
+        const into = state.people.get(Number(body.into));
+        if (!into || into === p) return json(res, 400, { ok: false, code: 'invalid', field: 'into', error: 'invalid' });
+        mergeInto(p, into);
+        return json(res, 200, { ok: true, person: personView(into) });
+      }
+      if (seg[2] === 'similar' && req.method === 'GET') {
+        const list = (state.similar.get(p.id) || []).map((s) => ({ ...s, o: state.people.get(s.id) })).filter((s) => s.o);
+        return json(res, 200, { ok: true, people: list.slice(0, 3).map((s) => ({ id: s.o.id, name: s.o.name, count: personNodes(s.o).length, score: s.score })) });
+      }
+      if (seg[2] === 'uncertain' && req.method === 'GET') {
+        const limit = Number(url.searchParams.get('limit') || 50);
+        return json(res, 200, { ok: true, faces: p.uncertain.filter((f) => alive(f.nodeId)).slice(0, limit).map((f) => ({ faceId: f.faceId, box: f.box, score: f.score, item: photo(alive(f.nodeId)) })) });
+      }
+      if (seg[2] === 'confirm' && req.method === 'POST') {
+        if (!Array.isArray(body.faceIds) || typeof body.yes !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: 'faceIds', error: 'invalid' });
+        const ids = new Set(body.faceIds.map(Number));
+        const picked = p.uncertain.filter((f) => ids.has(f.faceId));
+        p.uncertain = p.uncertain.filter((f) => !ids.has(f.faceId));
+        if (body.yes) p.faces.push(...picked.map(({ faceId, nodeId, box }) => ({ faceId, nodeId, box })));
+        else for (const f of picked) state.refusedFaces.add(`${p.id}|${f.faceId}`);
+        return json(res, 200, { ok: true, person: personView(p) });
+      }
+    }
+    if (has('photoPeople') && seg[0] === 'faces' && seg[2] === 'move' && req.method === 'POST') {
+      const fid = Number(seg[1]);
+      const from = [...state.people.values()].find((p) => p.faces.some((f) => f.faceId === fid) || p.uncertain.some((f) => f.faceId === fid));
+      if (!from) return refuse(res, 404, 'not_found');
+      const face = from.faces.find((f) => f.faceId === fid) || from.uncertain.find((f) => f.faceId === fid);
+      from.faces = from.faces.filter((f) => f.faceId !== fid);
+      from.uncertain = from.uncertain.filter((f) => f.faceId !== fid);
+      state.refusedFaces.add(`${from.id}|${fid}`);
+      if (body.person !== null && body.person !== undefined) {
+        const to = state.people.get(Number(body.person));
+        if (!to) return json(res, 400, { ok: false, code: 'invalid', field: 'person', error: 'invalid' });
+        to.faces.push({ faceId: face.faceId, nodeId: face.nodeId, box: face.box });
+      }
+      return json(res, 200, { ok: true });
+    }
     if (has('photos') && req.method === 'GET' && route === 'photos' && url.searchParams.get('q')) {
       if (!has('photoSearch')) return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
       const words = url.searchParams.get('q').toLowerCase().split(/\s+/).filter(Boolean);
@@ -1141,6 +1417,12 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const mtime = body.mtime ? iso(Number(body.mtime)) : null;
       if (body.takenAt !== undefined && !Number.isFinite(Date.parse(body.takenAt))) return json(res, 400, { ok: false, code: 'invalid', field: 'takenAt', error: 'invalid' });
       const takenAt = body.takenAt !== undefined && features && features.includes('takenAt') ? iso(Date.parse(body.takenAt)) : null;
+      // Drive 1.16 'photoPlaces': WGS84, 6 decimals; dropped with the person's keepGeo off
+      if (body.geo !== undefined && features && features.includes('photoPlaces')) {
+        const g = body.geo;
+        if (!g || typeof g.lat !== 'number' || typeof g.lon !== 'number' || Math.abs(g.lat) > 90 || Math.abs(g.lon) > 180) return json(res, 400, { ok: false, code: 'invalid', field: 'geo', error: 'invalid' });
+      }
+      const geo = body.geo && features && features.includes('photoPlaces') && state.photoSettings.keepGeo ? { lat: Math.round(body.geo.lat * 1e6) / 1e6, lon: Math.round(body.geo.lon * 1e6) / 1e6 } : null;
       if (t && !t.isDir && ((body.baseRev != null && body.baseRev === t.rev) || body.onConflict === 'version')) {
         (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
         t.mediaId = empty ? null : body.mediaId;
@@ -1148,6 +1430,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         t.sha256 = empty ? EMPTY_SHA : sha(md.data);
         t.mtime = mtime;
         t.takenAt = takenAt;
+        t.geo = geo;
         t.rev += 1;
         if (t.deleteAt) { t.deleteAt = null; t.deletedOnDevice = null; }
         if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
@@ -1155,7 +1438,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, node: view(t), created: false });
       }
       if (t && body.onConflict !== 'rename') return json(res, 409, { ok: false, code: t.isDir ? 'exists' : 'conflict', error: 'conflict', current: view(t) });
-      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime, takenAt });
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime, takenAt, geo });
       if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
       logChange('create', n);
       return json(res, 200, { ok: true, node: view(n), created: true });

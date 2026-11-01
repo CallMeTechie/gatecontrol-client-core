@@ -567,6 +567,7 @@ function normalizePhoto(v) {
   if (!id || !name) return null;
   const mime = line(o.mime, 100);
   const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
+  const geo = photoGeoOf(o.geo);
   return {
     id,
     name,
@@ -579,6 +580,11 @@ function normalizePhoto(v) {
     // Drive 1.7: a boolean (1.1.0 nodes: an object) – the picture is loaded by mediaId, or by the node
     preview: o.preview === true || !!obj(o.preview),
     mediaId,
+    // Drive 1.16 'photoPlaces': where it was taken ({ lat, lon, place }) or null
+    geo,
+    located: o.located === undefined ? !!geo : bool(o.located),
+    // Drive 1.16 'photoPeople' (with=people): the named people on it, else null
+    people: Array.isArray(o.people) ? o.people.slice(0, 50).map(personIdOf).filter(Boolean) : null,
   };
 }
 
@@ -598,6 +604,9 @@ function normalizePhotos(raw) {
   else if (se && se.chips !== undefined) out.terms = photoTerms(arr(se.chips).map((c) => (obj(c) ? { term: c.label, label: c.text || c.label, count: c.count } : c)));
   const total = count(r.total) !== null ? count(r.total) : se ? count(se.total) : null;
   if (total !== null) out.total = total;
+  // Drive 1.16: the people and places a search recognised (marks), the districts of a place (districts=1)
+  if (se && (se.people !== undefined || se.places !== undefined)) out.marks = searchMarks(se);
+  if (r.districts !== undefined) out.districts = districtsOf(r.districts);
   return out;
 }
 
@@ -912,6 +921,272 @@ function importLink(base) {
   const u = httpsUrl(base);
   if (!u) return null;
   return `${new URL(u).origin}/portal?drive=import#${APP_ROUTE}`;
+}
+
+// ── Drive 1.16: places and people ('photoPlaces', 'photoPeople') ──
+
+const PLACE_KEY_RE = /^[A-Za-z0-9:_.-]{1,100}$/;
+const PERSON_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const COUNTRY_RE = /^[A-Z]{2}$/;
+const CONTACT_KINDS = Object.freeze(['family', 'contact']);
+const FACE_MODEL = 'sface-2021dec';
+const PEOPLE_MAX = 5000;
+
+const placeKeyOf = (v) => (typeof v === 'string' && PLACE_KEY_RE.test(v) ? v : null);
+/** A person's or a face's id (number or token) or null. */
+const personIdOf = (v) => posId(v) || (typeof v === 'string' && PERSON_ID_RE.test(v) ? v : null);
+const faceIdOf = personIdOf;
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
+
+/** WGS84 → { lat, lon } (6 decimals, like the plugin keeps them) or null (out of range, 0/0). */
+function latLonOf(lat, lon) {
+  const a = num(lat);
+  const o = num(lon);
+  if (a === null || o === null || Math.abs(a) > 90 || Math.abs(o) > 180 || (a === 0 && o === 0)) return null;
+  return { lat: Math.round(a * 1e6) / 1e6, lon: Math.round(o * 1e6) / 1e6 };
+}
+
+/** `geo` of uploads/commit and PUT nodes/<id>/geo: { lat, lon } → the body, else null. */
+function geoBody(v) {
+  const o = obj(v);
+  return o ? latLonOf(o.lat, o.lon) : null;
+}
+
+/** A bounding box [w, s, e, n] (or "w,s,e,n") → "w,s,e,n" for a query, else null (w > e: across the date line). */
+function bboxOf(v) {
+  const parts = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : [];
+  if (parts.length !== 4) return null;
+  const [w, s, e, n] = parts.map(num);
+  if ([w, s, e, n].some((x) => x === null) || Math.abs(w) > 180 || Math.abs(e) > 180 || Math.abs(s) > 90 || Math.abs(n) > 90 || s > n) return null;
+  return [w, s, e, n].map((x) => String(Math.round(x * 1e6) / 1e6)).join(',');
+}
+
+/** `place` of a photo's geo → { key, name, district, region, country } or null. */
+function placeOf(v) {
+  const o = obj(v);
+  const key = o && placeKeyOf(o.key);
+  const name = o && line(o.name, 200);
+  if (!key || !name) return null;
+  return {
+    key,
+    name,
+    district: line(o.district, 200),
+    region: line(o.region, 200),
+    country: typeof o.country === 'string' && COUNTRY_RE.test(o.country.toUpperCase()) ? o.country.toUpperCase() : null,
+  };
+}
+
+/** `geo` of a photo / node → { lat, lon, place } or null. */
+function photoGeoOf(v) {
+  const o = obj(v);
+  const p = o && latLonOf(o.lat, o.lon);
+  return p ? { ...p, place: placeOf(o.place) } : null;
+}
+
+/** A face's box [x, y, w, h] (0 … 1 of the upright picture) or null. */
+function faceBoxOf(v) {
+  if (!Array.isArray(v) || v.length !== 4) return null;
+  const b = v.map(num);
+  if (b.some((x) => x === null || x < -0.05 || x > 1.05) || b[2] <= 0 || b[3] <= 0) return null;
+  return b.map((x) => Math.min(1, Math.max(0, Math.round(x * 1e4) / 1e4)));
+}
+
+/** A person's link to a family member or a contact → { kind, id, name } or null. */
+function contactOf(v) {
+  const o = obj(v);
+  if (!o || !CONTACT_KINDS.includes(o.kind)) return null;
+  const id = posId(o.id) || (typeof o.id === 'string' && /^[A-Za-z0-9:_.@-]{1,120}$/.test(o.id) ? o.id : null);
+  const name = line(o.name, 200);
+  return id && name ? { kind: o.kind, id, name } : null;
+}
+
+/** `contact` for PATCH people/<id>: { kind, id, name } | null → the body's value; undefined when not valid. */
+function contactBody(v) {
+  if (v === null) return null;
+  return contactOf(v) || undefined;
+}
+
+/** A face shown cut out of a photo: { faceId, nodeId, box, item } (cover of a person) or null. */
+function faceCoverOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const box = faceBoxOf(o.box);
+  const item = normalizePhoto(o.item);
+  if (!box || !item) return null;
+  return { faceId: faceIdOf(o.faceId), nodeId: posId(o.nodeId) || item.id, box, item };
+}
+
+/** A person of GET people → { id, name, count, hidden, cover, contact } or null. */
+function normalizePerson(v) {
+  const o = obj(v);
+  const id = o && personIdOf(o.id);
+  if (!id) return null;
+  return { id, name: line(o.name, 200), count: count(o.count) || 0, hidden: bool(o.hidden), cover: faceCoverOf(o.cover), contact: contactOf(o.contact) };
+}
+
+/** { id, name, count } rows (together with, similar …) */
+function personRefs(v, max = 50) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const id = o && personIdOf(o.id);
+    if (!id) return null;
+    const out = { id, name: line(o.name, 200), count: count(o.count) || 0 };
+    if (num(o.score) !== null) out.score = Math.max(-1, Math.min(1, num(o.score)));
+    return out;
+  }).filter(Boolean);
+}
+
+/** { key, name, count } rows (the places of a person) */
+function placeRefs(v, max = 50) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const key = o && placeKeyOf(o.key);
+    const name = o && line(o.name, 200);
+    return key && name ? { key, name, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
+}
+
+/** GET people → { people, progress: { done, total } | null } */
+function normalizePeople(raw) {
+  const r = obj(raw) || {};
+  const p = obj(r.progress);
+  const done = p && count(p.done);
+  const total = p && count(p.total);
+  return {
+    people: arr(r.people).slice(0, PEOPLE_MAX).map(normalizePerson).filter(Boolean),
+    progress: done !== null && total !== null && p ? { done: Math.min(done, total), total } : null,
+  };
+}
+
+/** GET people/<id> → { person, together, places, uncertain, years: { from, to } | null } or null (the person flat or as `person`). */
+function normalizePersonDetail(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const person = normalizePerson(obj(r.person) || r);
+  if (!person) return null;
+  const src = obj(r.person) && r.together === undefined ? r.person : r;
+  const y = obj(src.years);
+  const year = (v) => { const n = count(v); return n !== null && n >= 1800 && n <= 2200 ? n : null; };
+  const years = y && year(y.from) && year(y.to) ? { from: Math.min(year(y.from), year(y.to)), to: Math.max(year(y.from), year(y.to)) } : null;
+  return { person, together: personRefs(src.together), places: placeRefs(src.places), uncertain: count(src.uncertain) || 0, years };
+}
+
+/** PATCH people/<id> → { person, mergedInto } (mergedInto: the person it went into because the name was taken) */
+function normalizePersonUpdate(raw) {
+  const r = obj(raw) || {};
+  const person = normalizePerson(r.person);
+  return person ? { person, mergedInto: personIdOf(r.mergedInto) } : null;
+}
+
+/** GET people/<id>/similar → { people: [{ id, name, count, score }] } (≤ 3, the closest first) */
+function normalizeSimilar(raw) {
+  const r = obj(raw) || {};
+  return { people: personRefs(r.people, 3).sort((a, b) => (b.score || 0) - (a.score || 0)) };
+}
+
+/** GET people/<id>/uncertain → { faces: [{ faceId, box, item, score }] } */
+function normalizeUncertain(raw) {
+  const r = obj(raw) || {};
+  return {
+    faces: arr(r.faces).slice(0, 200).map((x) => {
+      const o = obj(x);
+      const faceId = o && faceIdOf(o.faceId);
+      const box = o && faceBoxOf(o.box);
+      const item = o && normalizePhoto(o.item);
+      return faceId && box && item ? { faceId, box, item, score: num(o.score) } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** GET photos/places → { places: [{ key, name, region, country, count, lat, lon, from, to, cover }] } (most photos first) */
+function normalizePlaces(raw) {
+  const r = obj(raw) || {};
+  const places = arr(r.places).slice(0, 2000).map((x) => {
+    const o = obj(x);
+    const key = o && placeKeyOf(o.key);
+    const name = o && line(o.name, 200);
+    const p = o && latLonOf(o.lat, o.lon);
+    if (!key || !name) return null;
+    return {
+      key, name,
+      region: line(o.region, 200),
+      country: typeof o.country === 'string' && COUNTRY_RE.test(o.country.toUpperCase()) ? o.country.toUpperCase() : null,
+      count: count(o.count) || 0,
+      lat: p ? p.lat : null, lon: p ? p.lon : null,
+      from: msOf(o.from), to: msOf(o.to),
+      cover: normalizePhoto(o.cover),
+    };
+  }).filter(Boolean);
+  places.sort((a, b) => b.count - a.count);
+  return { places };
+}
+
+/** GET photos/map → { clusters: [{ lat, lon, count, key, cover }] } (≤ 200 from the plugin; a few more are kept) */
+function normalizeMap(raw) {
+  const r = obj(raw) || {};
+  return {
+    clusters: arr(r.clusters).slice(0, 500).map((x) => {
+      const o = obj(x);
+      const p = o && latLonOf(o.lat, o.lon);
+      const n = o && posId(o.count);
+      return p && n ? { lat: p.lat, lon: p.lon, count: n, key: placeKeyOf(o.key), cover: normalizePhoto(o.cover) } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** GET photos/suggest → { people: [{ id, name, count }], places: [{ key, name, sub, count }], labels: [{ label, text, count }] } */
+function normalizeSuggest(raw) {
+  const r = obj(raw) || {};
+  return {
+    people: personRefs(r.people, 5).filter((p) => p.name),
+    places: arr(r.places).slice(0, 5).map((x) => {
+      const o = obj(x);
+      const key = o && placeKeyOf(o.key);
+      const name = o && line(o.name, 200);
+      return key && name ? { key, name, sub: line(o.sub, 200), count: count(o.count) || 0 } : null;
+    }).filter(Boolean),
+    labels: arr(r.labels).slice(0, 5).map((x) => {
+      const o = obj(x);
+      const label = o && termOf(o.label);
+      return label ? { label, text: line(o.text, 100) || label, count: count(o.count) || 0 } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** The marks of a search (GET photos?q= `search.people` / `search.places`) → { people: [{ id, name }], places: [{ key, name }] } */
+function searchMarks(se) {
+  const o = obj(se);
+  if (!o) return { people: [], places: [] };
+  return {
+    people: personRefs(o.people, 10).filter((p) => p.name).map((p) => ({ id: p.id, name: p.name })),
+    places: placeRefs(o.places, 10).map((p) => ({ key: p.key, name: p.name })),
+  };
+}
+
+/**
+ * GET / PUT photos/settings (per person) → { keepGeo, stripGeoOnShare, people, peopleKids, deleted } — stripGeoOnShare
+ * null when the plugin does not report it (then the switch is not shown); deleted: what `people: false` /
+ * DELETE photos/geo removed, else null. Other settings (Drive 1.13 work folder …) are left out.
+ */
+function normalizePhotoSettings(raw) {
+  const r = obj(raw) || {};
+  const s = obj(r.settings) || r;
+  return {
+    keepGeo: s.keepGeo !== false,
+    stripGeoOnShare: typeof s.stripGeoOnShare === 'boolean' ? s.stripGeoOnShare : null,
+    people: bool(s.people),
+    peopleKids: bool(s.peopleKids),
+    deleted: count(r.deleted !== undefined ? r.deleted : s.deleted),
+  };
+}
+
+/** The districts of a place (GET photos?place=&districts=1) → [{ name, count }] */
+function districtsOf(v) {
+  return arr(v).slice(0, 200).map((x) => {
+    const o = obj(x);
+    const name = o && line(o.name, 200);
+    return name ? { name, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
 }
 
 // ── Drive 1.9: vault folders, office ───────────────────────
@@ -1254,6 +1529,30 @@ function errorCode(err) {
 }
 
 module.exports = {
+  CONTACT_KINDS,
+  FACE_MODEL,
+  placeKeyOf,
+  personIdOf,
+  faceIdOf,
+  latLonOf,
+  geoBody,
+  bboxOf,
+  photoGeoOf,
+  faceBoxOf,
+  contactOf,
+  contactBody,
+  normalizePerson,
+  normalizePeople,
+  normalizePersonDetail,
+  normalizePersonUpdate,
+  normalizeSimilar,
+  normalizeUncertain,
+  normalizePlaces,
+  normalizeMap,
+  normalizeSuggest,
+  normalizePhotoSettings,
+  searchMarks,
+  districtsOf,
   ASK_STATUS,
   SCAN_KINDS,
   SCAN_TARGETS,

@@ -1,9 +1,10 @@
 'use strict';
 
 /**
- * When a photo or video was taken (Drive 1.7 'takenAt'): read from the file
- * itself, without dependencies, and sent with `uploads/commit` (the page
- * "Drive" and "Ordner sichern").
+ * When a photo or video was taken (Drive 1.7 'takenAt') and where (Drive 1.16
+ * 'photoPlaces': the GPS position): read from the file itself, without
+ * dependencies, and sent with `uploads/commit` (the page "Drive" and "Ordner
+ * sichern").
  *
  * - JPEG (APP1 "Exif"), TIFF and the raw formats built on it (DNG, CR2, NEF,
  *   ARW, ORF, RW2), HEIC / HEIF / AVIF (the item "Exif" of the box `meta`),
@@ -12,6 +13,9 @@
  *   time counts as local time of this PC (the plugin's README).
  * - MP4 / MOV / 3GP (videos): `mvhd` creation_time of the box `moov`
  *   (UTC, seconds since 1904); 0 is "unknown".
+ * - Where: the GPS IFD of the same EXIF (GPSLatitude / GPSLongitude with
+ *   their refs, WGS84), for videos `moov › udta › ©xyz` (ISO 6709, what
+ *   phones write). 0/0 and anything out of range count as "no position".
  *
  * Only a few small reads per file (at most ~1 MB is looked at); anything
  * unexpected gives null, then the server takes the file's mtime itself.
@@ -100,10 +104,34 @@ function bufferSource(buf) {
 
 // ── TIFF / EXIF ───────────────────────────────────────────
 
-const TAG = { exifIfd: 0x8769, dateTime: 0x0132, original: 0x9003, offsetTime: 0x9010, offsetOriginal: 0x9011 };
+const TAG = { exifIfd: 0x8769, gpsIfd: 0x8825, dateTime: 0x0132, original: 0x9003, offsetTime: 0x9010, offsetOriginal: 0x9011 };
+const MAIN_TAGS = [TAG.exifIfd, TAG.gpsIfd, TAG.dateTime, TAG.original, TAG.offsetTime, TAG.offsetOriginal];
+// GPS IFD: GPSLatitudeRef (N/S), GPSLatitude (3 RATIONAL), GPSLongitudeRef (E/W), GPSLongitude
+const GPS = { latRef: 0x0001, lat: 0x0002, lonRef: 0x0003, lon: 0x0004 };
+const GPS_TAGS = [GPS.latRef, GPS.lat, GPS.lonRef, GPS.lon];
 
-/** The tags of one IFD at `base + off` → Map tag → string (ASCII tags) / number (LONG pointers). */
-async function readIfd(src, base, off, le) {
+/** A position → { lat, lon } (6 decimals) or null: out of range, not a number, or 0/0 (no fix). */
+function geoOf(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  if (lat === 0 && lon === 0) return null;
+  const r = (v) => Math.round(v * 1e6) / 1e6;
+  return { lat: r(lat), lon: r(lon) };
+}
+
+/** Degrees, minutes, seconds (EXIF RATIONALs) and a ref ('S' / 'W': negative) → degrees or NaN. */
+function dms(parts, ref) {
+  if (!Array.isArray(parts) || parts.length < 1 || parts.some((v) => !Number.isFinite(v) || v < 0)) return NaN;
+  const [d, m = 0, s = 0] = parts;
+  if (m >= 60 || s >= 60) return NaN;
+  const v = d + m / 60 + s / 3600;
+  return ref === 'S' || ref === 'W' ? -v : v;
+}
+
+/**
+ * The tags of one IFD at `base + off` (only those in `want`) → Map tag → string (ASCII tags) / number (LONG pointers)
+ * / [numbers] (RATIONALs).
+ */
+async function readIfd(src, base, off, le, want = MAIN_TAGS) {
   const head = await src.read(base + off, 2);
   if (head.length < 2) return null;
   const n = le ? head.readUInt16LE(0) : head.readUInt16BE(0);
@@ -116,10 +144,23 @@ async function readIfd(src, base, off, le) {
   for (let i = 0; i < n; i++) {
     const e = i * 12;
     const tag = u16(e);
-    if (![TAG.exifIfd, TAG.dateTime, TAG.original, TAG.offsetTime, TAG.offsetOriginal].includes(tag)) continue;
+    if (!want.includes(tag)) continue;
     const type = u16(e + 2);
     const count = u32(e + 4);
-    if (tag === TAG.exifIfd && (type === 4 || type === 13)) { out.set(tag, u32(e + 8)); continue; }
+    if ((tag === TAG.exifIfd || tag === TAG.gpsIfd) && (type === 4 || type === 13)) { out.set(tag, u32(e + 8)); continue; }
+    if (type === 5 && count >= 1 && count <= 4) {
+      // RATIONAL: numerator / denominator (2 × LONG), always at an offset
+      const raw = await src.read(base + u32(e + 8), count * 8);
+      if (raw.length < count * 8) continue;
+      const vals = [];
+      for (let k = 0; k < count; k++) {
+        const num = le ? raw.readUInt32LE(k * 8) : raw.readUInt32BE(k * 8);
+        const den = le ? raw.readUInt32LE(k * 8 + 4) : raw.readUInt32BE(k * 8 + 4);
+        vals.push(den ? num / den : NaN);
+      }
+      out.set(tag, vals);
+      continue;
+    }
     if (type !== 2 || !count || count > 64) continue;
     const raw = count <= 4 ? buf.subarray(e + 8, e + 8 + count) : await src.read(base + u32(e + 8), count);
     out.set(tag, raw.toString('latin1').replace(/\0.*$/s, ''));
@@ -127,8 +168,16 @@ async function readIfd(src, base, off, le) {
   return out;
 }
 
-/** The date of a TIFF structure starting at `base` → { iso, ms } or null. */
-async function tiffDate(src, base, opts = {}) {
+/** The GPS IFD at `off` → { lat, lon } or null. */
+async function gpsOf(src, base, off, le) {
+  const g = await readIfd(src, base, off, le, GPS_TAGS);
+  if (!g || !g.has(GPS.lat) || !g.has(GPS.lon)) return null;
+  const ref = (t) => String(g.get(t) || '').trim().toUpperCase().slice(0, 1);
+  return geoOf(dms(g.get(GPS.lat), ref(GPS.latRef)), dms(g.get(GPS.lon), ref(GPS.lonRef)));
+}
+
+/** Date and position of a TIFF structure starting at `base` → { date: { iso, ms } | null, geo: { lat, lon } | null } or null. */
+async function tiffMeta(src, base, opts = {}) {
   const h = await src.read(base, 8);
   if (h.length < 8) return null;
   const order = h.toString('latin1', 0, 2);
@@ -142,12 +191,14 @@ async function tiffDate(src, base, opts = {}) {
   if (!t0) return null;
   let tx = null;
   if (t0.has(TAG.exifIfd)) tx = await readIfd(src, base, t0.get(TAG.exifIfd), le).catch(() => null);
-  if (tx && tx.has(TAG.original)) {
-    const r = parseExifDate(tx.get(TAG.original), tx.get(TAG.offsetOriginal) || null, opts);
-    if (r) return r;
+  const geo = opts.geo !== false && t0.has(TAG.gpsIfd) ? await gpsOf(src, base, t0.get(TAG.gpsIfd), le).catch(() => null) : null;
+  let date = null;
+  if (tx && tx.has(TAG.original)) date = parseExifDate(tx.get(TAG.original), tx.get(TAG.offsetOriginal) || null, opts);
+  if (!date) {
+    const dt = (tx && tx.get(TAG.dateTime)) || t0.get(TAG.dateTime);
+    date = dt ? parseExifDate(dt, (tx && tx.get(TAG.offsetTime)) || null, opts) : null;
   }
-  const dt = (tx && tx.get(TAG.dateTime)) || t0.get(TAG.dateTime);
-  return dt ? parseExifDate(dt, (tx && tx.get(TAG.offsetTime)) || null, opts) : null;
+  return { date, geo };
 }
 
 /** EXIF data that may start with "Exif\0\0" → the TIFF's start. */
@@ -158,7 +209,7 @@ async function exifBase(src, pos) {
 
 // ── JPEG ──────────────────────────────────────────────────
 
-async function jpegDate(src, opts) {
+async function jpegMeta(src, opts) {
   let pos = 2;
   while (pos + 4 <= Math.min(src.size, MAX_SCAN)) {
     const m = await src.read(pos, 4);
@@ -171,8 +222,8 @@ async function jpegDate(src, opts) {
     if (marker === 0xe1) {
       const id = await src.read(pos + 4, 6);
       if (id.toString('latin1', 0, 4) === 'Exif') {
-        const r = await tiffDate(src, pos + 10, opts);
-        if (r) return r;
+        const r = await tiffMeta(src, pos + 10, opts);
+        if (r && (r.date || r.geo)) return r;
       }
     }
     pos += 2 + len;
@@ -210,8 +261,8 @@ async function boxes(src, start, end) {
 
 const uintN = (buf, o, n) => (n === 0 ? 0 : n === 2 ? buf.readUInt16BE(o) : n === 4 ? buf.readUInt32BE(o) : n === 8 ? Number(buf.readBigUInt64BE(o)) : NaN);
 
-/** HEIF: the item "Exif" (iinf) and where it is (iloc) → { iso, ms } or null. */
-async function heifDate(src, top, opts) {
+/** HEIF: the item "Exif" (iinf) and where it is (iloc) → { date, geo } or null. */
+async function heifMeta(src, top, opts) {
   const meta = top.find((b) => b.type === 'meta');
   if (!meta || meta.end - meta.start > MAX_SCAN) return null;
   const kids = await boxes(src, meta.start + 4, meta.end); // `meta` is a full box
@@ -271,80 +322,102 @@ async function heifDate(src, top, opts) {
     if (h.length < 4) return null;
     const skip = h.readUInt32BE(0);
     if (skip > 64) return null;
-    return tiffDate(src, await exifBase(src, at + 4 + skip), opts);
+    return tiffMeta(src, await exifBase(src, at + 4 + skip), opts);
   }
   return null;
 }
 
-/** MP4 / MOV: moov › mvhd creation_time (UTC since 1904) → { iso, ms } or null. */
-async function movieDate(src, top, opts) {
+/** ISO 6709 "+52.5200+013.4050+034.000/" (©xyz of a video) → { lat, lon } or null. */
+function iso6709(s) {
+  const m = /^\s*([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)/.exec(String(s || ''));
+  return m ? geoOf(Number(m[1]), Number(m[2])) : null;
+}
+
+/** MP4 / MOV: moov › mvhd creation_time (UTC since 1904), moov › udta › ©xyz (the position) → { date, geo } or null. */
+async function movieMeta(src, top, opts) {
   const moov = top.find((b) => b.type === 'moov');
   if (!moov) return null;
   const kids = await boxes(src, moov.start, Math.min(moov.end, moov.start + MAX_SCAN));
+  let geo = null;
+  const udta = kids.find((b) => b.type === 'udta');
+  if (opts.geo !== false && udta) {
+    const xyz = (await boxes(src, udta.start, Math.min(udta.end, udta.start + 64 * 1024))).find((b) => b.type === '\u00a9xyz');
+    if (xyz && xyz.end - xyz.start <= 256) {
+      const b = await src.read(xyz.start, xyz.end - xyz.start);
+      // a 16-bit length and a 16-bit language, then the text
+      const len = b.length >= 4 ? b.readUInt16BE(0) : 0;
+      geo = iso6709(b.toString('latin1', 4, 4 + Math.min(len, b.length - 4)));
+    }
+  }
+  let date = null;
   const mvhd = kids.find((b) => b.type === 'mvhd');
-  if (!mvhd) return null;
-  const h = await src.read(mvhd.start, 12);
-  if (h.length < 8) return null;
-  const secs = h[0] === 1 ? (h.length >= 12 ? Number(h.readBigUInt64BE(4)) : 0) : h.readUInt32BE(4);
-  if (!secs) return null;
-  const ms = MAC_EPOCH + secs * 1000;
-  if (!plausible(ms, opts.now) || ms < Date.UTC(1971, 0, 1)) return null;
-  return { iso: new Date(ms).toISOString(), ms };
+  const h = mvhd ? await src.read(mvhd.start, 12) : Buffer.alloc(0);
+  if (h.length >= 8) {
+    const secs = h[0] === 1 ? (h.length >= 12 ? Number(h.readBigUInt64BE(4)) : 0) : h.readUInt32BE(4);
+    const ms = MAC_EPOCH + secs * 1000;
+    if (secs && plausible(ms, opts.now) && ms >= Date.UTC(1971, 0, 1)) date = { iso: new Date(ms).toISOString(), ms };
+  }
+  return date || geo ? { date, geo } : null;
 }
 
-async function bmffDate(src, opts) {
+async function bmffMeta(src, opts) {
   // the top-level boxes may lie anywhere (moov after a large mdat): only their heads are read
   const top = await boxes(src, 0, src.size);
   const ftyp = top.find((b) => b.type === 'ftyp');
   if (!ftyp) return null;
   if (top.some((b) => b.type === 'meta')) {
-    const r = await heifDate(src, top, opts).catch(() => null);
-    if (r) return r;
+    const r = await heifMeta(src, top, opts).catch(() => null);
+    if (r && (r.date || r.geo)) return r;
   }
-  return movieDate(src, top, opts);
+  return movieMeta(src, top, opts);
 }
 
 // ── RIFF (WebP) / PNG ─────────────────────────────────────
 
-async function webpDate(src, opts) {
+async function webpMeta(src, opts) {
   let pos = 12;
   for (let i = 0; i < 64 && pos + 8 <= Math.min(src.size, MAX_SCAN * 16); i++) {
     const h = await src.read(pos, 8);
     if (h.length < 8) return null;
     const type = h.toString('latin1', 0, 4);
     const len = h.readUInt32LE(4);
-    if (type === 'EXIF') return tiffDate(src, await exifBase(src, pos + 8), opts);
+    if (type === 'EXIF') return tiffMeta(src, await exifBase(src, pos + 8), opts);
     pos += 8 + len + (len & 1);
   }
   return null;
 }
 
-async function pngDate(src, opts) {
+async function pngMeta(src, opts) {
   let pos = 8;
   for (let i = 0; i < 256 && pos + 8 <= src.size; i++) {
     const h = await src.read(pos, 8);
     if (h.length < 8) return null;
     const len = h.readUInt32BE(0);
     const type = h.toString('latin1', 4, 8);
-    if (type === 'eXIf') return tiffDate(src, await exifBase(src, pos + 8), opts);
+    if (type === 'eXIf') return tiffMeta(src, await exifBase(src, pos + 8), opts);
     if (type === 'IDAT' || type === 'IEND') return null;
     pos += 12 + len;
   }
   return null;
 }
 
+/** Date and position of a source (format by its first bytes) → { date: { iso, ms } | null, geo: { lat, lon } | null }. */
+async function shotOf(src, opts = {}) {
+  const o = { now: Number.isFinite(opts.now) ? opts.now : Date.now(), geo: opts.geo !== false };
+  const h = await src.read(0, 16);
+  let r = null;
+  if (h.length < 12) r = null;
+  else if (h[0] === 0xff && h[1] === 0xd8) r = await jpegMeta(src, o);
+  else if (h.toString('latin1', 0, 2) === 'II' || h.toString('latin1', 0, 2) === 'MM') r = await tiffMeta(src, 0, o);
+  else if (h.toString('latin1', 4, 8) === 'ftyp') r = await bmffMeta(src, o);
+  else if (h.toString('latin1', 0, 4) === 'RIFF' && h.toString('latin1', 8, 12) === 'WEBP') r = await webpMeta(src, o);
+  else if (h.readUInt32BE(0) === 0x89504e47) r = await pngMeta(src, o);
+  return { date: (r && r.date) || null, geo: (r && r.geo) || null };
+}
+
 /** The date of a source (format by its first bytes) → { iso, ms } or null. */
 async function takenAtOf(src, opts = {}) {
-  const o = { now: Number.isFinite(opts.now) ? opts.now : Date.now() };
-  const h = await src.read(0, 16);
-  if (h.length < 12) return null;
-  if (h[0] === 0xff && h[1] === 0xd8) return jpegDate(src, o);
-  const two = h.toString('latin1', 0, 2);
-  if (two === 'II' || two === 'MM') return tiffDate(src, 0, o);
-  if (h.toString('latin1', 4, 8) === 'ftyp') return bmffDate(src, o);
-  if (h.toString('latin1', 0, 4) === 'RIFF' && h.toString('latin1', 8, 12) === 'WEBP') return webpDate(src, o);
-  if (h.readUInt32BE(0) === 0x89504e47) return pngDate(src, o);
-  return null;
+  return (await shotOf(src, { ...opts, geo: false })).date;
 }
 
 /**
@@ -365,4 +438,23 @@ async function takenAt(file, { name = null, now } = {}) {
   }
 }
 
-module.exports = { takenAt, takenAtOf, isMediaName, parseExifDate, bufferSource, plausible };
+/**
+ * When and where the photo / video `file` was taken (one read for both) → { takenAt: ISO string | null,
+ * geo: { lat, lon } | null }. `geo: false` leaves the position out. Never throws; only pictures / videos are opened.
+ */
+async function shot(file, { name = null, now, geo = true } = {}) {
+  const none = { takenAt: null, geo: null };
+  if (!isMediaName(name || file)) return none;
+  let src = null;
+  try {
+    src = await fileSource(file);
+    const r = await shotOf(src, { now, geo });
+    return { takenAt: r.date ? r.date.iso : null, geo: geo ? r.geo : null };
+  } catch {
+    return none;
+  } finally {
+    if (src) await src.close().catch(() => {});
+  }
+}
+
+module.exports = { takenAt, takenAtOf, shot, shotOf, geoOf, iso6709, isMediaName, parseExifDate, bufferSource, plausible };

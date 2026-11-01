@@ -54,7 +54,8 @@
  *   file that differs stays next to it as a conflict copy that is not
  *   uploaded (with files new on the PC since then: "zurückgehalten").
  * - PDFs with a text layer: their text goes with the commit (search);
- *   pictures and videos carry when they were taken (Drive 1.7 'takenAt').
+ *   pictures and videos carry when they were taken (Drive 1.7 'takenAt') and where (Drive 1.16 'photoPlaces', EXIF GPS,
+ *   not with the person's keepGeo off).
  * - Time travel (Drive 1.7 'timeTravel', DriveService event 'timetravel'):
  *   every folder of this PC whose Drive folder is the folder sent back in
  *   time, lies in it or holds it runs at once.
@@ -104,7 +105,7 @@ const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
-const { takenAt: readTakenAt, isMediaName } = require('../utils/taken-at');
+const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
 
@@ -889,8 +890,9 @@ class DriveSync extends EventEmitter {
       // Drive 1.5: Drive keeps the 30 days of "Nur sichern"; 1.6: the entropy goes with each commit
       ctx.deleteAfter = await this._has('deleteAfter');
       ctx.guard = await this._has('guard');
-      // Drive 1.7: when a photo / video was taken goes with its commit
+      // Drive 1.7: when a photo / video was taken goes with its commit; 1.16 'photoPlaces': where (not with keepGeo off)
       ctx.takenAt = await this._has('takenAt');
+      ctx.geo = typeof this.api.geoAllowed === 'function' ? await this.api.geoAllowed().catch(() => false) : false;
       await this._ensureTarget(ctx);
       const touched = await this._pullRemote(ctx);
       if (q.remote && !q.full && !touched && !rt.dirty && rt.watching && st.base && Object.keys(st.base).length) {
@@ -1607,9 +1609,10 @@ class DriveSync extends EventEmitter {
       const text = await Promise.resolve(this.readPdfText(abs, { size })).catch(() => null);
       if (text) send.text = text;
     }
-    if (ctx.takenAt && size > 0 && isMediaName(name)) {
-      const at = await readTakenAt(abs, { name }).catch(() => null);
-      if (at) send.takenAt = at;
+    if ((ctx.takenAt || ctx.geo) && size > 0 && isMediaName(name)) {
+      const r = await readShot(abs, { name, geo: !!ctx.geo }).catch(() => ({ takenAt: null, geo: null }));
+      if (ctx.takenAt && r.takenAt) send.takenAt = r.takenAt;
+      if (ctx.geo && r.geo) send.geo = r.geo;
     }
     return { send, ent };
   }

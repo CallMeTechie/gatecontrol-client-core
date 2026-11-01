@@ -114,7 +114,7 @@ describe('utils/drive: Drive 1.7 answers', () => {
 
     const ph = drive.normalizePhotos({ items: [{ id: 5, name: 'a.jpg', mime: 'image/jpeg', size: 9, takenAt: '2026-07-14T18:03:22+02:00', areaId: 'mine:2', parentId: 1, preview: true }, { id: 6, name: 'v.mp4', mime: 'video/mp4', preview: false, mediaId: 'abcdef123456' }, { id: 'x' }], next: '2026-07-01T00:00:00.000Z' });
     assert.equal(ph.items.length, 2);
-    assert.deepEqual(ph.items[0], { id: 5, name: 'a.jpg', mime: 'image/jpeg', kind: 'image', size: 9, takenAt: Date.parse('2026-07-14T16:03:22Z'), areaId: 'mine:2', parentId: 1, preview: true, mediaId: null });
+    assert.deepEqual(ph.items[0], { id: 5, name: 'a.jpg', mime: 'image/jpeg', kind: 'image', size: 9, takenAt: Date.parse('2026-07-14T16:03:22Z'), areaId: 'mine:2', parentId: 1, preview: true, mediaId: null, geo: null, located: false, people: null });
     assert.equal(ph.items[1].kind, 'video');
     assert.equal(ph.items[1].mediaId, 'abcdef123456');
     assert.equal(ph.next, '2026-07-01T00:00:00.000Z');

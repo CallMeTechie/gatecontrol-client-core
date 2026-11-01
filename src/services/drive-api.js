@@ -52,6 +52,13 @@
  *   POST   …/api/scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original }
  *   PATCH  …/api/areas/<id> { deadlinesToCalendar }               Drive 1.14: new deadlines of the area into the calendar
  *   GET    …/api/photos?q=                                       Drive 1.14 'photoSearch': photos by their labels (+ terms)
+ *   GET    …/api/photos?place=&bbox=&person=&districts=1&with=people · photos/months (the same filters)
+ *   GET    …/api/photos/places · photos/map?bbox&zoom · photos/suggest?q   Drive 1.16 'photoPlaces' / 'photoPeople'
+ *   GET|PUT …/api/photos/settings { keepGeo, stripGeoOnShare, people, peopleKids } · DELETE photos/geo
+ *          (uploads/commit takes `geo { lat, lon }`)
+ *   GET    …/api/people · people/<id> · people/<id>/similar · people/<id>/uncertain?limit
+ *   PATCH  …/api/people/<id> { name?, hidden?, contact? } · POST people/<id>/merge { into }
+ *   POST   …/api/people/<id>/confirm { faceIds, yes } · POST faces/<id>/move { person }   Drive 1.16 'photoPeople'
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -455,7 +462,7 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null, encrypted = null }) {
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null, geo = null, encrypted = null }) {
     // Drive 1.9 ('vault'): into a vault only the ciphertext with { nameCipher, keyVersion } (name: the opaque name of a
     // file of the vault for a new version) — never text, takenAt, entropy
     if (encrypted) return this._commitEncrypted({ mediaId, parentId, name, mtime, onConflict, baseRev, ...encrypted });
@@ -471,6 +478,8 @@ class DriveApi {
     if (Number.isFinite(entropy) && entropy >= 0 && entropy <= 8) body.entropy = Math.round(entropy * 1000) / 1000;
     // Drive 1.7 ('takenAt'): when the photo / video was taken (ISO with the offset; the caller sends it only to such Drives)
     if (typeof takenAt === 'string' && takenAt.length <= 40 && Number.isFinite(Date.parse(takenAt))) body.takenAt = takenAt;
+    // Drive 1.16 ('photoPlaces'): where it was taken (the caller sends it only to such Drives, and only with keepGeo)
+    if (geo && drive.geoBody(geo)) body.geo = drive.geoBody(geo);
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
     return c;
@@ -601,19 +610,194 @@ class DriveApi {
    * GET photos?area=&before=&limit= → { items, next } (newest first by takenAt); Drive 1.14 'photoSearch': with `q` the
    * photos whose labels match (→ also { terms, total }).
    */
-  async photos({ area = null, before = null, limit = 100, q = null } = {}) {
-    const params = { ...this._area(area), ...this._page({ before, limit }) };
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false } = {}) {
+    const params = { ...this._photoFilter({ area, q, place, bbox, person }), ...this._page({ before, limit }) };
+    if (districts && params.place) params.districts = 1;
+    if (withPeople) params.with = 'people';
+    return drive.normalizePhotos(await this.api('GET', 'photos', { params }));
+  }
+
+  /**
+   * The filters of GET photos, photos/months, photos/places and photos/map: area, q (labels; Drive 1.16 also names of
+   * people and places), Drive 1.16 place (a place key), bbox ([w, s, e, n]), person (one id or several: photos with all).
+   */
+  _photoFilter({ area = null, q = null, place = null, bbox = null, person = null } = {}) {
+    const params = { ...this._area(area) };
     if (q !== null && q !== undefined && q !== '') {
       const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
       if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });
       params.q = text;
     }
-    return drive.normalizePhotos(await this.api('GET', 'photos', { params }));
+    if (place !== null && place !== undefined && place !== '') {
+      if (!drive.placeKeyOf(place)) throw new DriveError('invalid place', { code: 'invalid' });
+      params.place = place;
+    }
+    if (bbox !== null && bbox !== undefined && bbox !== '') {
+      const b = drive.bboxOf(bbox);
+      if (!b) throw new DriveError('invalid bbox', { code: 'invalid' });
+      params.bbox = b;
+    }
+    if (person !== null && person !== undefined && person !== '') {
+      const ids = (Array.isArray(person) ? person : [person]).map(drive.personIdOf);
+      if (!ids.length || ids.length > 10 || ids.some((x) => !x)) throw new DriveError('invalid person', { code: 'invalid' });
+      params.person = [...new Set(ids.map(String))].join(',');
+    }
+    return params;
   }
 
-  /** GET photos/months?area= → { months: [{ month, count }] } */
-  async photoMonths(area = null) {
-    return drive.normalizeMonths(await this.api('GET', 'photos/months', { params: this._area(area) }));
+  /** GET photos/months?area= → { months: [{ month, count }] } (Drive 1.16: with the filters of `photos`) */
+  async photoMonths(area = null, filter = null) {
+    const params = filter ? this._photoFilter({ ...filter, area }) : this._area(area);
+    return drive.normalizeMonths(await this.api('GET', 'photos/months', { params }));
+  }
+
+  // ── Drive 1.16: places and people ('photoPlaces' / 'photoPeople') ──
+
+  /** GET photos/places?area=&q=&person= → { places: [{ key, name, region, country, count, lat, lon, from, to, cover }] } */
+  async photoPlaces({ area = null, q = null, person = null } = {}) {
+    return drive.normalizePlaces(await this.api('GET', 'photos/places', { params: this._photoFilter({ area, q, person }) }));
+  }
+
+  /** GET photos/map?bbox=<w,s,e,n>&zoom=<0..19>&… → { clusters: [{ lat, lon, count, key, cover }] } */
+  async photoMap({ bbox, zoom, area = null, q = null, person = null } = {}) {
+    const b = drive.bboxOf(bbox);
+    const z = drive.count(zoom);
+    if (!b || z === null || z > 19) throw new DriveError('invalid map', { code: 'invalid' });
+    return drive.normalizeMap(await this.api('GET', 'photos/map', { params: { ...this._photoFilter({ area, q, person }), bbox: b, zoom: z } }));
+  }
+
+  /** GET photos/suggest?q= → { people, places, labels } (≤ 5 each) for the suggestions while typing */
+  async photoSuggest(q) {
+    const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+    if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });
+    return drive.normalizeSuggest(await this.api('GET', 'photos/suggest', { params: { q: text } }));
+  }
+
+  /** GET photos/settings → { keepGeo, stripGeoOnShare, people, peopleKids } (per person; remembered for the commits) */
+  async photoSettings() {
+    const s = drive.normalizePhotoSettings(await this.api('GET', 'photos/settings'));
+    this._photoSettings = { s, at: Date.now() };
+    return s;
+  }
+
+  /**
+   * PUT photos/settings with the fields given (keepGeo, stripGeoOnShare, people, peopleKids) → the settings;
+   * `people: false` deletes every face, person and name of this person (→ deleted).
+   */
+  async setPhotoSettings(patch = {}) {
+    const body = {};
+    for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) {
+      if (patch[k] === undefined) continue;
+      if (typeof patch[k] !== 'boolean') throw new DriveError('invalid setting', { code: 'invalid' });
+      body[k] = patch[k];
+    }
+    if (!Object.keys(body).length) throw new DriveError('invalid setting', { code: 'invalid' });
+    const s = drive.normalizePhotoSettings(await this.api('PUT', 'photos/settings', { body }));
+    this._photoSettings = { s, at: Date.now() };
+    return s;
+  }
+
+  /** DELETE photos/geo: the places of every photo this person uploaded → { deleted } */
+  async deletePhotoGeo() {
+    const r = await this.api('DELETE', 'photos/geo', { timeout: 120000 });
+    return { deleted: drive.count(r && r.deleted) || 0 };
+  }
+
+  /**
+   * May a commit carry `geo`? Drive 1.16 'photoPlaces' and the person's keepGeo (photos/settings, asked again after
+   * 10 min). When the settings cannot be read the position goes (the plugin drops it itself with keepGeo off).
+   */
+  async geoAllowed() {
+    if (!(await this.has('photoPlaces').catch(() => false))) return false;
+    const c = this._photoSettings;
+    if (c && Date.now() - c.at < 10 * 60 * 1000) return c.s.keepGeo;
+    try { return (await this.photoSettings()).keepGeo; } catch { return true; }
+  }
+
+  _personId(id) {
+    const p = drive.personIdOf(id);
+    if (!p) throw new DriveError('invalid person', { code: 'invalid' });
+    return encodeURIComponent(String(p));
+  }
+
+  _faceIds(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.faceIdOf).filter(Boolean))];
+    if (!list.length || list.length > 500) throw new DriveError('invalid faces', { code: 'invalid' });
+    return list;
+  }
+
+  /** GET people → { people, progress } */
+  async people() {
+    return drive.normalizePeople(await this.api('GET', 'people'));
+  }
+
+  /** GET people/<id> → { person, together, places, uncertain, years } */
+  async person(id) {
+    const r = drive.normalizePersonDetail(await this.api('GET', `people/${this._personId(id)}`));
+    if (!r) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /**
+   * PATCH people/<id> { name?, hidden?, contact? } → { person, mergedInto } — a name another person has already
+   * merges both; an empty name removes it; contact null unlinks.
+   */
+  async updatePerson(id, { name, hidden, contact } = {}) {
+    const body = {};
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.length > 200) throw new DriveError('invalid name', { code: 'invalid' });
+      body.name = name.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
+    }
+    if (hidden !== undefined) {
+      if (typeof hidden !== 'boolean') throw new DriveError('invalid hidden', { code: 'invalid' });
+      body.hidden = hidden;
+    }
+    if (contact !== undefined) {
+      const c = drive.contactBody(contact);
+      if (c === undefined) throw new DriveError('invalid contact', { code: 'invalid' });
+      body.contact = c;
+    }
+    if (!Object.keys(body).length) throw new DriveError('nothing to change', { code: 'invalid' });
+    const r = drive.normalizePersonUpdate(await this.api('PATCH', `people/${this._personId(id)}`, { body }));
+    if (!r) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST people/<id>/merge { into } → { person } (the person both are now) */
+  async mergePerson(id, into) {
+    const target = drive.personIdOf(into);
+    if (!target) throw new DriveError('invalid person', { code: 'invalid' });
+    const p = drive.normalizePerson((await this.api('POST', `people/${this._personId(id)}/merge`, { body: { into: target } })).person);
+    if (!p) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return { person: p };
+  }
+
+  /** GET people/<id>/similar → { people: [{ id, name, count, score }] } ("Sieht aus wie …", ≤ 3) */
+  async similarPeople(id) {
+    return drive.normalizeSimilar(await this.api('GET', `people/${this._personId(id)}/similar`));
+  }
+
+  /** GET people/<id>/uncertain?limit= → { faces: [{ faceId, box, item, score }] } ("Ist das auch …?") */
+  async uncertainFaces(id, limit = 50) {
+    const l = Math.min(200, Math.max(1, drive.posId(limit) || 50));
+    return drive.normalizeUncertain(await this.api('GET', `people/${this._personId(id)}/uncertain`, { params: { limit: l } }));
+  }
+
+  /** POST people/<id>/confirm { faceIds, yes } — yes: they are this person; no: never suggested again */
+  async confirmFaces(id, faceIds, yes) {
+    if (typeof yes !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('POST', `people/${this._personId(id)}/confirm`, { body: { faceIds: this._faceIds(faceIds), yes } });
+    const person = r && drive.normalizePerson(r.person);
+    return { person: person || null };
+  }
+
+  /** POST faces/<id>/move { person: <id> | null } — "Nicht diese Person" (null) / "Zu … verschieben" */
+  async moveFace(faceId, person = null) {
+    const f = drive.faceIdOf(faceId);
+    const p = person === null ? null : drive.personIdOf(person);
+    if (!f || (person !== null && !p)) throw new DriveError('invalid face', { code: 'invalid' });
+    await this.api('POST', `faces/${encodeURIComponent(String(f))}/move`, { body: { person: p } });
+    return {};
   }
 
   /** GET photos/memories?date=YYYY-MM-DD → { groups: [{ yearsAgo, date, items }] } */

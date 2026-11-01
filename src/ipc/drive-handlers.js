@@ -98,6 +98,26 @@
  *   drive:scan:save       ({ scanId, target: 'pdf'|'docx'|'xlsx'|'image', folderId?, name?, keepOriginal }) → { ok, node, target, local }
  *   drive:scan:discard    ({ scanId }) → { ok }
  *
+ * Drive 1.16 'photoPlaces' / 'photoPeople' (only with the features `me` reports):
+ *   drive:photos          ({ …, place?, bbox?: [w,s,e,n], person?: id | [id], districts?, withPeople? })
+ *                         → { ok, items, next, marks?, districts? }
+ *   drive:photos:months   ({ area?, q?, place?, person? }) → { ok, months }
+ *   drive:photos:places   ({ area?, q?, person? }) → { ok, places }
+ *   drive:photos:map      ({ bbox, zoom, area?, q?, person? }) → { ok, clusters }
+ *   drive:photos:suggest  ({ q }) → { ok, people, places, labels }
+ *   drive:photos:settings () → { ok, keepGeo, stripGeoOnShare, people, peopleKids }
+ *   drive:photos:settings:set ({ keepGeo?, stripGeoOnShare?, people?, peopleKids? }) → { ok, …, deleted }
+ *   drive:photos:geo:delete () → { ok, deleted }
+ *   drive:people          () → { ok, people, progress }
+ *   drive:person          ({ id }) → { ok, person, together, places, uncertain, years }
+ *   drive:person:update   ({ id, name?, hidden?, contact?: { kind, id, name } | null }) → { ok, person, mergedInto }
+ *   drive:person:merge    ({ id, into }) → { ok, person }
+ *   drive:person:similar  ({ id }) → { ok, people }
+ *   drive:person:uncertain ({ id, limit? }) → { ok, faces }
+ *   drive:person:confirm  ({ id, faceIds, yes }) → { ok, person }
+ *   drive:face:move       ({ id, person: id | null }) → { ok }
+ *   drive:map:tile        ({ z, x, y }) → { ok, mime, data }   an OpenStreetMap tile (services/map-service.js, as for the chats)
+ *
  *
  * "Ordner sichern" (deps.sync: DriveSync, services/drive-sync.js):
  *   drive:sync:status     () → { ok, settings, device, network, state, folders, known, … }
@@ -155,6 +175,14 @@ const isVaultId = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v);
 const isDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const optDay = (v) => v === undefined || v === null || v === '' || isDay(v);
 const optLimit = (v) => v === undefined || v === null || (Number.isSafeInteger(v) && v > 0 && v <= 200);
+const isPersonId = (v) => isId(v) || (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v));
+const optPerson = (v) => v === undefined || v === null || v === '' || isPersonId(v) || (Array.isArray(v) && v.length > 0 && v.length <= 10 && v.every(isPersonId));
+const optPlace = (v) => v === undefined || v === null || v === '' || (typeof v === 'string' && /^[A-Za-z0-9:_.-]{1,100}$/.test(v));
+const isBbox = (v) => Array.isArray(v) && v.length === 4 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
+const optBbox = (v) => v === undefined || v === null || isBbox(v);
+const optBool = (v) => v === undefined || typeof v === 'boolean';
+const isContact = (v) => v === null || (!!v && typeof v === 'object' && (v.kind === 'family' || v.kind === 'contact')
+  && (isId(v.id) || (typeof v.id === 'string' && /^[A-Za-z0-9:_.@-]{1,120}$/.test(v.id))) && isStr(v.name, 200));
 const SYNC_SETTINGS = {
   skipDev: (v) => typeof v === 'boolean',
   homeOnly: (v) => typeof v === 'boolean',
@@ -170,10 +198,11 @@ const SYNC_SETTINGS = {
  * @param {object} deps
  * @param {object} deps.drive - DriveService
  * @param {object} [deps.sync] - DriveSync ("Ordner sichern")
+ * @param {object} [deps.maps] - MapService (drive:map:tile, the same one as the chats'); without it 'unsupported'
  * @param {Function} deps.getMainWindow
  * @param {object} deps.log
  */
-function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, log }) {
+function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, getMainWindow, log }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
       return await fn(obj(arg));
@@ -249,8 +278,22 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
     return { ...r, linked };
   }));
   handle('drive:timetravel', byId(async (a) => (isAt(a.at) ? s.timeTravel(a.id, a.at) : invalid())));
-  handle('drive:photos', wrap(async (a) => (optArea(a.area) && optCursor(a.before) && optLimit(a.limit) && optStr(a.q, 100) ? s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100, ...(a.q ? { q: a.q } : {}) }) : invalid())));
-  handle('drive:photos:months', wrap(async (a) => (optArea(a.area) ? s.photoMonths(a.area || null) : invalid())));
+  handle('drive:photos', wrap(async (a) => {
+    if (!(optArea(a.area) && optCursor(a.before) && optLimit(a.limit) && optStr(a.q, 100) && optPlace(a.place) && optBbox(a.bbox) && optPerson(a.person) && optBool(a.districts) && optBool(a.withPeople))) return invalid();
+    const more = {};
+    if (a.q) more.q = a.q;
+    if (a.place) more.place = a.place;
+    if (a.bbox) more.bbox = a.bbox;
+    if (a.person) more.person = a.person;
+    if (a.districts === true) more.districts = true;
+    if (a.withPeople === true) more.withPeople = true;
+    return s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100, ...more });
+  }));
+  handle('drive:photos:months', wrap(async (a) => {
+    if (!(optArea(a.area) && optStr(a.q, 100) && optPlace(a.place) && optPerson(a.person))) return invalid();
+    if (!a.q && !a.place && !a.person) return s.photoMonths(a.area || null);
+    return s.photoMonths(a.area || null, { q: a.q || null, place: a.place || null, person: a.person || null });
+  }));
   handle('drive:photos:memories', wrap(async (a) => {
     if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();
     return s.memories(a.date || null);
@@ -277,6 +320,48 @@ function registerDriveHandlers(handle, { drive: s, sync = null, getMainWindow, l
   }));
   handle('drive:storage', wrap(async (a) => s.storage({ all: a.all === true })));
   handle('drive:storage:prune', wrap(async (a) => (optArea(a.areaId) && a.areaId && Number.isSafeInteger(a.keep) && a.keep >= 0 && a.keep <= 1000 ? s.pruneVersions({ areaId: a.areaId, keep: a.keep }) : invalid())));
+
+  // ── Drive 1.16: places and people ──────────────────────
+  const filterOk = (a) => optArea(a.area) && optStr(a.q, 100) && optPerson(a.person);
+  const filterOf = (a) => ({ area: a.area || null, q: a.q || null, person: a.person || null });
+  handle('drive:photos:places', wrap(async (a) => (filterOk(a) ? s.photoPlaces(filterOf(a)) : invalid())));
+  handle('drive:photos:map', wrap(async (a) => (filterOk(a) && isBbox(a.bbox) && Number.isSafeInteger(a.zoom) && a.zoom >= 0 && a.zoom <= 19 ? s.photoMap({ bbox: a.bbox, zoom: a.zoom, ...filterOf(a) }) : invalid())));
+  handle('drive:photos:suggest', wrap(async (a) => (isStr(a.q, 100) ? s.photoSuggest(a.q) : invalid())));
+  handle('drive:photos:settings', wrap(async () => s.photoSettings()));
+  handle('drive:photos:settings:set', wrap(async (a) => {
+    const patch = {};
+    for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) {
+      if (a[k] === undefined) continue;
+      if (typeof a[k] !== 'boolean') return invalid();
+      patch[k] = a[k];
+    }
+    return Object.keys(patch).length ? s.setPhotoSettings(patch) : invalid();
+  }));
+  handle('drive:photos:geo:delete', wrap(async () => s.deletePhotoGeo()));
+  handle('drive:people', wrap(async () => s.people()));
+  const byPerson = (fn) => wrap(async (a) => (isPersonId(a.id) ? fn(a) : invalid()));
+  handle('drive:person', byPerson(async (a) => s.person(a.id)));
+  handle('drive:person:update', byPerson(async (a) => {
+    const patch = {};
+    if (a.name !== undefined) { if (typeof a.name !== 'string' || a.name.length > 200) return invalid(); patch.name = a.name; }
+    if (a.hidden !== undefined) { if (typeof a.hidden !== 'boolean') return invalid(); patch.hidden = a.hidden; }
+    if (a.contact !== undefined) { if (!isContact(a.contact)) return invalid(); patch.contact = a.contact; }
+    return Object.keys(patch).length ? s.updatePerson(a.id, patch) : invalid();
+  }));
+  handle('drive:person:merge', byPerson(async (a) => (isPersonId(a.into) && String(a.into) !== String(a.id) ? s.mergePerson(a.id, a.into) : invalid())));
+  handle('drive:person:similar', byPerson(async (a) => s.similarPeople(a.id)));
+  handle('drive:person:uncertain', byPerson(async (a) => (optLimit(a.limit) ? s.uncertainFaces(a.id, a.limit || 50) : invalid())));
+  handle('drive:person:confirm', byPerson(async (a) => {
+    if (!Array.isArray(a.faceIds) || !a.faceIds.length || a.faceIds.length > 500 || !a.faceIds.every(isPersonId) || typeof a.yes !== 'boolean') return invalid();
+    return s.confirmFaces(a.id, a.faceIds, a.yes);
+  }));
+  handle('drive:face:move', byPerson(async (a) => (a.person === null || isPersonId(a.person) ? s.moveFace(a.id, a.person) : invalid())));
+  handle('drive:map:tile', wrap(async (a) => {
+    if (!maps) return { ok: false, code: 'unsupported', error: 'no map service', status: null };
+    if (![a.z, a.x, a.y].every((v) => Number.isSafeInteger(v) && v >= 0)) return invalid();
+    const r = await maps.tile(a.z, a.x, a.y);
+    return { ok: true, mime: r.mime, data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength) };
+  }));
 
   // ── Drive 1.8 / 1.9 ────────────────────────────────────
   handle('drive:insight', byId(async (a) => s.insight(a.id)));
