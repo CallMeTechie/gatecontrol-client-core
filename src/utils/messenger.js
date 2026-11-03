@@ -46,6 +46,8 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.6: GateControl's notifications in chats (notice channels and
   // cards, `listPinned`) and "Wo Mitteilungen erscheinen" (core push routes)
   'notices', 'notice_routes',
+  // Messenger 1.11: the host's virus scan (`media.scan`, 422 infected / 423 scan_blocked on send, message.update { scan })
+  'scan',
 ]);
 // Messenger 1.4.0 `GET me` features (README "Since 1.4.0").
 const FEATURES_14 = Object.freeze({

@@ -40,7 +40,8 @@
  *   removed with a new server, a refused token and when Mail goes away.
  * - Live: the plugin's realtime event `mail { kind: 'changed', accountId,
  *   folderId }` → 'changed' (since Mail 1.1.2 also with messageId, threadId,
- *   attachmentId: a body / an attachment the provider sent later); a click on a Mail push (topic `mail`, data
+ *   attachmentId: a body / an attachment the provider sent later; Mail 1.8 'scan': the virus scan of that
+ *   attachment, or with draftId of a draft's attachment, changed — load it again); a click on a Mail push (topic `mail`, data
  *   { mail: { messageId, accountId } }; `mail_failed` { mail: { outboxId } })
  *   opens the mail / the outbox on the page (NotificationCenter.addClickRoute).
  *
@@ -85,6 +86,7 @@ const MailApi = require('./mail-api');
 const MailCache = require('./mail-cache');
 const MessengerApi = require('./messenger-api');
 const mail = require('../utils/mail');
+const SC = require('../utils/scan');
 const { startCodeListener } = require('./mail-loopback');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
@@ -669,6 +671,20 @@ class MailService extends EventEmitter {
       const file = path.join(this.tempDir(), `${mid}-${aid}`, fname);
       let have = false;
       try { have = (await fs.promises.stat(file)).size > 0; } catch { have = false; }
+      if (have) {
+        // Mail 1.8 'scan': a copy loaded before is not opened again once the host's virus scan blocks or removed the
+        // attachment (423 quarantined | scan_pending | scan_blocked, 410 attachment_removed); offline it opens
+        try {
+          await this.api.attachment(mid, aid);
+        } catch (err) {
+          if (!SC.isScanCode(err && err.code)) {
+            this.log.debug(`Mail attachment check: ${(err && err.code) || err}`);
+          } else {
+            await fs.promises.rm(path.dirname(file), { recursive: true, force: true }).catch(() => {});
+            throw err;
+          }
+        }
+      }
       if (!have) {
         const media = await this._attachmentFile(mid, aid, file);
         if (unsafeToOpen(fname, media.mime)) {

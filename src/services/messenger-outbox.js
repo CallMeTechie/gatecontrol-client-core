@@ -33,6 +33,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { isClientId, posInt, baseMime, byteLength, toBuffer } = require('../utils/messenger');
 const { MessengerError } = require('./messenger-api');
+const SC = require('../utils/scan');
 
 const STORE_KEY = 'messengerOutbox';
 const MAX_ENTRIES = 200;
@@ -227,6 +228,11 @@ class MessengerOutbox extends EventEmitter {
       if (!this._items.includes(e)) return;
       const transient = err && typeof err.transient === 'boolean' ? err.transient : true;
       e.error = (err && err.code) || 'failed';
+      // Messenger 1.11: the host's virus scan refused the file (422 infected { finding }, 423 scan_blocked) — never
+      // sent again by itself; the finding for „Nicht gesendet – Schadsoftware gefunden (<finding>)“
+      const finding = SC.refusalFields(err).finding;
+      if (finding) e.finding = finding;
+      else delete e.finding;
       if (transient) {
         e.state = 'queued';
         const ms = this.backoffMs[Math.min(e.attempts - 1, this.backoffMs.length - 1)];

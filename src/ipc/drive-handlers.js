@@ -144,6 +144,8 @@
  * (the row of a job that ended: Drive 1.12), drive:sync.
  */
 
+const SC = require('../utils/scan');
+
 const DRIVE_EVENTS = {
   state: 'drive:state',
   transfers: 'drive:transfers',
@@ -161,7 +163,9 @@ function fail(err) {
   const b = err && err.body;
   if (b && typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason)) out.reason = b.reason;
   if (b && typeof b.field === 'string' && /^[A-Za-z_.]{1,40}$/.test(b.field)) out.field = b.field;
-  return out;
+  // Drive 1.19: the virus scan's refusal (423 scan_pending | quarantined | scan_blocked, 422 infected, 503
+  // scan_unavailable) → its scan, finding, retryAfter
+  return { ...out, ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});

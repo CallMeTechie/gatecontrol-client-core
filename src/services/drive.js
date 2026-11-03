@@ -139,6 +139,7 @@ const DriveOps = require('./drive-ops');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
+const SC = require('../utils/scan');
 const OV = require('../utils/drive-overview');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
@@ -1088,7 +1089,9 @@ class DriveService extends EventEmitter {
   async createLink(opts) {
     return this._run(async () => {
       if (opts && Array.isArray(opts.ids)) await this._feature('multiLink');
-      return { ok: true, link: await this.api.createLink(opts) };
+      // Drive 1.19: files the virus scan blocks are left out of a link of several (`skipped`, reason 'blocked')
+      const { link, skipped } = await this.api.createLink(opts, { withSkipped: true });
+      return { ok: true, link, skipped, blocked: skipped.filter((x) => x.reason === 'blocked').length };
     });
   }
 
@@ -1136,8 +1139,10 @@ class DriveService extends EventEmitter {
       const row = this._downloadRow(path.basename(res.filePath), 0);
       const part = `${res.filePath}.${crypto.randomBytes(4).toString('hex')}.part`;
       let bytes = 0;
+      let skipped = [];
       try {
         const z = await this.api.zip(list, { name: typeof name === 'string' && name ? base.replace(/\.zip$/i, '') : null });
+        skipped = z.skipped || [];
         const out = fs.createWriteStream(part);
         try {
           const r = await this.api.downloadZip(z.url, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
@@ -1151,7 +1156,8 @@ class DriveService extends EventEmitter {
         throw err;
       }
       this._set(row.id, { state: 'done', sent: bytes, total: bytes, path: res.filePath });
-      return { ok: true, path: res.filePath };
+      // Drive 1.19: files the virus scan blocks are not in the ZIP („x gesperrte Dateien fehlen“)
+      return { ok: true, path: res.filePath, skipped, blocked: skipped.filter((x) => x.reason === 'blocked').length };
     });
   }
 
@@ -1203,7 +1209,7 @@ class DriveService extends EventEmitter {
       if (place || bbox) await this._feature('photoPlaces');
       if (person || withPeople) await this._feature('photoPeople');
       const r = await this.api.photos({ area, before, limit, q, place, bbox, person, districts, withPeople });
-      for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
+      this._learnMedia(r.items);
       return { ok: true, ...r };
     });
   }
@@ -1396,7 +1402,7 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       await this._feature('albums');
       const r = await this.api.album(id, { before, limit });
-      for (const p of r.items) if (p.mediaId) this._mediaOf.set(p.id, p.mediaId);
+      this._learnMedia(r.items);
       return { ok: true, ...r };
     });
   }
@@ -1817,11 +1823,26 @@ class DriveService extends EventEmitter {
     if (!mediaId) {
       const node = await this._run(() => this.api.node(id));
       if (!node.mediaId || node.isDir) throw new DriveError('no picture', { code: 'not_found' });
+      refuseBlocked(node);
       mediaId = node.mediaId;
       this._mediaOf.set(id, mediaId);
       while (this._mediaOf.size > 5000) this._mediaOf.delete(this._mediaOf.keys().next().value);
     }
     return this.preview(mediaId, { large });
+  }
+
+  /**
+   * Remembers the mediaId of photos (previewOf); a photo the virus scan blocks now (Drive 1.19) loses it and its
+   * pictures loaded before.
+   */
+  _learnMedia(items) {
+    for (const p of items || []) {
+      if (p.mediaId) { this._mediaOf.set(p.id, p.mediaId); continue; }
+      if (!SC.isBlocked(p.scan)) continue;
+      const old = this._mediaOf.get(p.id);
+      this._mediaOf.delete(p.id);
+      if (old) { this._previews.delete(`${old}|s`); this._previews.delete(`${old}|l`); }
+    }
   }
 
   // ── Previews ─────────────────────────────────────────────
@@ -2248,10 +2269,15 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
+      const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
+      if (SC.isBlocked(node.scan)) {
+        // blocked by the virus scan (maybe later, by the nightly check): a copy loaded before is not opened again
+        await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+        refuseBlocked(node);
+      }
       if (node.encrypted && node.vaultId) return this._openVaultFile(node, versionId);
       const name = drive.safeName(node.name) || 'Datei';
       if (unsafeToOpen(name, node.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
-      const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
       // Windows device names (CON, NUL, COM1 …) cannot be files: open a renamed local copy.
       const file = path.join(dir, safeFileName(name, 'Datei'));
       let have = false;
@@ -2315,6 +2341,7 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
+      refuseBlocked(node);
       const vault = node.encrypted && node.vaultId ? node.vaultId : null;
       if (vault) {
         await this.vault.tryOpen(vault);
@@ -2345,6 +2372,15 @@ class DriveService extends EventEmitter {
     this.shell.showItemInFolder(p);
     return { ok: true };
   }
+}
+
+/**
+ * A node the host's virus scan blocks (Drive 1.19 'scan') is not opened, saved or previewed: the same refusal as the
+ * plugin's (423 scan_pending | quarantined | scan_blocked { scan }), without asking the server for the bytes.
+ */
+function refuseBlocked(node) {
+  if (!node || !SC.isBlocked(node.scan)) return;
+  throw new DriveError('blocked by the virus scan', { status: 423, code: SC.refusalOf(node.scan), body: { scan: node.scan } });
 }
 
 /** The live event / push data `vault` → { vault, event, device, keyVersion } */
