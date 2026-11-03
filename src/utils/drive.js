@@ -15,6 +15,7 @@
  */
 
 const { createHash } = require('crypto');
+const SC = require('./scan');
 
 const PLUGIN_ID = 'gatecontrol-drive';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
@@ -37,7 +38,8 @@ const LINK_MODES = Object.freeze(['view', 'download', 'upload']);
 const LINK_EXPIRES = Object.freeze(['1d', '7d', '30d', 'never']);
 const LINK_KINDS = Object.freeze(['files', 'folder', 'upload']);
 // Drive 1.5: `mark` / `unmark` – a file is marked for a delayed delete (deleteAt) or no longer
-const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark']);
+// 'scan' (Drive 1.19): the host's virus scan changed `scan` of the node — no new content, `rev` stays
+const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark', 'scan']);
 const CHANGES_MAX = 1000;
 
 const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
@@ -166,6 +168,7 @@ function normalizeNode(v) {
   const isDir = bool(o.isDir);
   const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
   const match = o.match === 'text' || o.match === 'name' ? o.match : null;
+  const scan = isDir ? null : SC.normalizeScan(o.scan);
   return {
     id,
     areaId,
@@ -182,8 +185,8 @@ function normalizeNode(v) {
     createdAt: msOf(o.createdAt),
     deleted: bool(o.deleted),
     sha256: sha256Of(o.sha256),
-    // A preview picture exists (or is being made); the app loads it by mediaId.
-    preview: !isDir && !!mediaId && !!obj(o.preview),
+    // A preview picture exists (or is being made); the app loads it by mediaId — never of a file the virus scan blocks.
+    preview: !isDir && !!mediaId && !!obj(o.preview) && !SC.isBlocked(scan),
     // search: the folder path and where it matched (Drive 1.3: in the recognised text, with a snippet)
     path: line(o.path, 2000),
     match,
@@ -199,6 +202,8 @@ function normalizeNode(v) {
     takenAt: msOf(o.takenAt),
     // Drive 1.8 ('docAi'): the short form of the recognition { status, kind } on files while the feature is on
     insight: insightShort(o.insight),
+    // Drive 1.19 ('scan'): the host's virus scan { state, blocked, finding } (utils/scan.js); absent: nothing known
+    ...(scan ? { scan } : {}),
     // Drive 1.9 ('vault'): a node of a vault folder — `name` is opaque, the device decrypts nameCipher
     ...(o.encrypted === true ? {
       encrypted: true,
@@ -568,6 +573,8 @@ function normalizePhoto(v) {
   const mime = line(o.mime, 100);
   const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
   const geo = photoGeoOf(o.geo);
+  const scan = SC.normalizeScan(o.scan);
+  const blocked = SC.isBlocked(scan);
   return {
     id,
     name,
@@ -578,8 +585,10 @@ function normalizePhoto(v) {
     areaId: areaIdOf(o.areaId),
     parentId: posId(o.parentId),
     // Drive 1.7: a boolean (1.1.0 nodes: an object) – the picture is loaded by mediaId, or by the node
-    preview: o.preview === true || !!obj(o.preview),
-    mediaId,
+    preview: !blocked && (o.preview === true || !!obj(o.preview)),
+    mediaId: blocked ? null : mediaId,
+    // Drive 1.19 ('scan'): blocked by the virus scan — no picture, not opened or shared
+    ...(scan ? { scan } : {}),
     // Drive 1.16 'photoPlaces': where it was taken ({ lat, lon, place }) or null
     geo,
     located: o.located === undefined ? !!geo : bool(o.located),
@@ -1735,5 +1744,6 @@ module.exports = {
   normalizeOps,
   opBody,
   normalizeZip,
+  blockedList,
   multiLinkBody,
 };

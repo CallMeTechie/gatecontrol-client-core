@@ -29,6 +29,8 @@
  * gatedrop:received, gatedrop:changed, gatedrop:navigate.
  */
 
+const SC = require('../utils/scan');
+
 const GATEDROP_EVENTS = {
   state: 'gatedrop:state',
   compose: 'gatedrop:compose',
@@ -39,7 +41,8 @@ const GATEDROP_EVENTS = {
 };
 
 function fail(err) {
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  // GateDrop 1.4: the virus scan's refusal (422 infected / 423 … { name }) → scan, finding, name, retryAfter
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});

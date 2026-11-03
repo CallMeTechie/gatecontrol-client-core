@@ -23,6 +23,7 @@
 const {
   PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isNotifyMediaPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
 } = require('../utils/messenger');
+const scan = require('../utils/scan');
 
 const JSON_TIMEOUT_MS = 15000;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
@@ -32,11 +33,13 @@ const AVATAR_MAX = 2 * 1024 * 1024;
 const NOTICE_IMAGE_MAX = 1024 * 1024;
 
 class MessengerError extends Error {
-  constructor(message, { status = null, code = 'failed', body = null } = {}) {
+  constructor(message, { status = null, code = 'failed', body = null, retryAfter = null } = {}) {
     super(message);
     this.name = 'MessengerError';
     this.status = status;
     this.code = code;
+    // Seconds of a `Retry-After` (423 scan_pending: the host's virus scan is still running); not enumerable.
+    if (Number.isSafeInteger(retryAfter) && retryAfter > 0) Object.defineProperty(this, 'retryAfter', { value: retryAfter, enumerable: false, writable: true });
     // The refusal's JSON body (extra fields such as Vault's `current` / `account` / `left`); not enumerable, so
     // errors still compare and log as before.
     if (body && typeof body === 'object') Object.defineProperty(this, 'body', { value: body, enumerable: false });
@@ -61,13 +64,40 @@ function toMessengerError(err) {
     const code = data && typeof data === 'object' && typeof data.code === 'string' ? data.code
       : (data && typeof data === 'object' && typeof data.error === 'string' && /^[a-z_]{2,40}$/.test(data.error) ? data.error : `http_${res.status}`);
     const message = data && typeof data === 'object' && typeof data.error === 'string' ? data.error : `HTTP ${res.status}`;
-    return new MessengerError(message, { status: res.status, code, body: data && typeof data === 'object' ? data : null });
+    const retryAfter = res.status === 423 || res.status === 429 || res.status === 503 ? scan.retryAfterOf(res.headers && res.headers['retry-after']) : null;
+    return new MessengerError(message, { status: res.status, code, body: data && typeof data === 'object' ? data : null, retryAfter });
   }
   const c = err && err.code;
   if (c === 'ECONNABORTED' || c === 'ETIMEDOUT' || (err && /timeout/i.test(String(err.message)))) {
     return new MessengerError('timeout', { code: 'timeout' });
   }
   return new MessengerError((err && err.message) || 'network error', { code: 'network' });
+}
+
+/**
+ * A refusal of a streamed download (`responseType: 'stream'`) carries its JSON body as a stream: read it (≤ 16 KiB,
+ * ≤ 3 s) into a Buffer first, so toMessengerError sees the code (423 quarantined, scan_pending, …).
+ */
+async function bufferErrorBody(err) {
+  const res = err && err.response;
+  const d = res && res.data;
+  if (!d || typeof d.on !== 'function' || typeof d.read !== 'function') return err;
+  const chunks = [];
+  let size = 0;
+  await new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { try { d.destroy(); } catch { /* ignore */ } done(); }, 3000);
+    d.on('data', (c) => {
+      size += c.length;
+      if (size > 16384) { try { d.destroy(); } catch { /* ignore */ } done(); return; }
+      chunks.push(Buffer.from(c));
+    });
+    d.on('end', done);
+    d.on('error', done);
+    d.on('close', done);
+  });
+  res.data = Buffer.concat(chunks);
+  return err;
 }
 
 class MessengerApi {
@@ -393,5 +423,6 @@ class MessengerApi {
 
 MessengerApi.MessengerError = MessengerError;
 MessengerApi.toMessengerError = toMessengerError;
+MessengerApi.bufferErrorBody = bufferErrorBody;
 
 module.exports = MessengerApi;

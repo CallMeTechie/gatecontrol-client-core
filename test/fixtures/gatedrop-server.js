@@ -19,9 +19,11 @@
 //   const srv = await gatedropServer({ targets, direct: (body, sendId) => [...] });
 //   (direct entries the test returns are registered as transfers of that send)
 //   srv.url, srv.state (requests, presence, sends, media, results, addItems, uploads),
-//   srv.addSend(send) → stored send (GET sends/<id>, items downloadable),
+//   srv.addSend(send) → stored send (GET sends/<id>, items downloadable; an item's `scan` (GateDrop 1.4) goes along,
+//     a blocked one without mediaId and not available — srv.state.sends.get(id).items[i].scan changes it later),
 //   srv.cutUploadAfter = n  → the next resumable part breaks off after n bytes (whole 64 KiB kept),
-//   srv.state.failCreate = { status, code } → POST sends answers with that error,
+//   srv.state.failCreate = { status, code, name?, retryAfter?, times? } → POST sends answers with that error (`times`:
+//     that often, then it is taken; GateDrop 1.4: 423 scan_pending + Retry-After, 422 infected { name }),
 //   srv.addSend(send, { pending: true }) → a `waiting` delivery to this device (GET pending lists it until POST opened),
 //   srv.state.pendingMode = 'ok' | 404 (older plugin) | 'no_device' (409),
 //   srv.state.mediaFail = Set of mediaIds whose download answers 500,
@@ -93,6 +95,18 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
   });
 
   const hex24 = () => crypto.randomBytes(12).toString('hex');
+  // GateDrop 1.4: an item the host's virus scan blocks → 423 scan_pending (Retry-After 5) | quarantined | scan_blocked
+  const blockedItem = (mediaId) => {
+    for (const st of state.sends.values()) {
+      const it = st.items.find((i) => i.mediaId === mediaId && i.scan && i.scan.blocked);
+      if (it) return it;
+    }
+    return null;
+  };
+  const refuseScan = (res, scan) => {
+    const code = scan.state === 'pending' ? 'scan_pending' : scan.state === 'infected' ? 'quarantined' : 'scan_blocked';
+    return json(res, 423, { ok: false, code, error: code, scan }, code === 'scan_pending' ? { 'Retry-After': '5', 'Cache-Control': 'no-store' } : { 'Cache-Control': 'no-store' });
+  };
   const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 
   /** A send as the plugin answers it (GET sends/<id>, inbox entries). */
@@ -103,7 +117,11 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       ...(st.from && typeof st.from.own === 'boolean' ? { own: st.from.own } : {}),
     },
     text: st.text || null, link: st.link || null, note: st.note || null,
-    items: st.items.map((i) => ({ index: i.idx, mediaId: i.mediaId || null, name: i.name, mime: i.mime || null, bytes: i.bytes, local: !!i.local && !i.mediaId, available: !!i.mediaId })),
+    items: st.items.map((i) => {
+      // GateDrop 1.4: `scan` of an item (a blocked one: no mediaId, not available)
+      const blocked = !!(i.scan && i.scan.blocked);
+      return { index: i.idx, mediaId: (!blocked && i.mediaId) || null, name: i.name, mime: i.mime || null, bytes: i.bytes, local: !!i.local && !i.mediaId, available: !blocked && !!i.mediaId, ...(i.scan ? { scan: i.scan } : {}) };
+    }),
     deliveries: st.deliveries || [],
   });
   srv.view = view;
@@ -121,7 +139,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     st.items = (send.items || []).map((it, idx) => {
       const mediaId = it.local ? null : (it.mediaId || crypto.randomBytes(16).toString('hex'));
       if (it.data && mediaId) state.media.set(mediaId, { data: it.data, mime: it.mime || 'application/octet-stream' });
-      return { idx, mediaId, name: it.name, mime: it.mime || 'application/octet-stream', bytes: it.data ? it.data.length : it.bytes, local: !!it.local };
+      return { idx, mediaId, name: it.name, mime: it.mime || 'application/octet-stream', bytes: it.data ? it.data.length : it.bytes, local: !!it.local, ...(it.scan ? { scan: it.scan } : {}) };
     });
     state.sends.set(st.id, st);
     return view(st);
@@ -185,6 +203,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     if (req.method === 'GET' && p.startsWith(`${MEDIA}/`)) {
       const md = state.media.get(p.slice(MEDIA.length + 1));
       if (state.mediaFail.has(p.slice(MEDIA.length + 1))) return json(res, 500, { ok: false, code: 'internal', error: 'broken' });
+      const scanned = blockedItem(p.slice(MEDIA.length + 1));
+      if (scanned) return refuseScan(res, scanned.scan);
       if (!md) return json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
       res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length });
       return res.end(md.data);
@@ -212,7 +232,12 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       return json(res, 200, { ok: true, presence: { lan: body.lan, port: body.port, listening: body.listening, everyS: 300, freshS: 900 } });
     }
     if (req.method === 'POST' && route === 'sends') {
-      if (state.failCreate) return json(res, state.failCreate.status, { error: state.failCreate.code, code: state.failCreate.code });
+      if (state.failCreate) {
+        // GateDrop 1.4 (virus scan): { status, code, name?, retryAfter?, times? } — `times`: refused that often, then taken
+        const f = state.failCreate;
+        if (Number.isInteger(f.times) && --f.times <= 0) state.failCreate = null;
+        return json(res, f.status, { ok: false, error: f.code, code: f.code, ...(f.name ? { name: f.name } : {}) }, f.retryAfter ? { 'Retry-After': String(f.retryAfter) } : {});
+      }
       if ((body.to.devices || []).some((d) => state.closed.has(String(d)))) return json(res, 409, { ok: false, code: 'unavailable', error: 'Das Gerät nimmt nichts mehr an.' });
       const id = hex24();
       const st = { id, createdAt: Date.now(), from: { userId: 2, name: 'Marc', deviceId: '42', deviceName: 'Laptop' }, text: body.text, link: body.link, note: body.note, to: body.to, deliveries: [] };
@@ -306,6 +331,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     }
     if (req.method === 'DELETE' && (m = /^links\/([^/]+)$/.exec(route))) { state.endedLinks.push(m[1]); return json(res, 200, { ok: true, revoked: true }); }
     if (req.method === 'GET' && (m = /^items\/([^/]+)$/.exec(route))) {
+      const scanned = blockedItem(m[1]);
+      if (scanned) return refuseScan(res, scanned.scan);
       for (const st of state.sends.values()) {
         const item = st.items.find((i) => i.mediaId === m[1]);
         if (item) {

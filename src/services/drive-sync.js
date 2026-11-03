@@ -53,6 +53,9 @@
  *   "Rückgängig machen" the files of each folder come back from Drive – a PC
  *   file that differs stays next to it as a conflict copy that is not
  *   uploaded (with files new on the PC since then: "zurückgehalten").
+ * - Virus scan (Drive 1.19 'scan'): a file the host blocks (`scan.blocked`, also later: change op 'scan') does not
+ *   come down — it counts in `blocked` (with `blockedName`), not as a failure; a copy already on the PC stays
+ *   (never deleted by itself), the change of its `scan` is no new content.
  * - PDFs with a text layer: their text goes with the commit (search);
  *   pictures and videos carry when they were taken (Drive 1.7 'takenAt') and where (Drive 1.16 'photoPlaces', EXIF GPS,
  *   not with the person's keepGeo off).
@@ -108,6 +111,7 @@ const { pdfText, isPdf } = require('../utils/pdf-text');
 const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
+const SC = require('../utils/scan');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -243,7 +247,7 @@ class DriveSync extends EventEmitter {
       const f = this._folder(id);
       const fresh = !!f && !f.lastSyncAt;
       this._rt.set(id, {
-        state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null,
+        state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null, blocked: 0, blockedName: null,
         confirm: null, allowDeletes: false, restore: false, files: null, bytes: null, skipped: 0, pendingDeletes: 0, pendingUntil: null,
         conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0, timeTravel: 0,
       });
@@ -367,6 +371,9 @@ class DriveSync extends EventEmitter {
       current: rt.current,
       failed: rt.failed,
       failure: rt.failure,
+      // Drive 1.19: files the virus scan blocks — not loaded onto this PC
+      blocked: rt.blocked || 0,
+      blockedName: rt.blockedName || null,
       confirm: rt.confirm ? { ...rt.confirm } : null,
       // "ungewöhnliche Änderungen": { count, sample, why: 'entropy' | 'extension' }
       suspect: rt.suspect ? { ...rt.suspect, sample: rt.suspect.sample.slice() } : null,
@@ -880,6 +887,8 @@ class DriveSync extends EventEmitter {
     rt.current = null;
     rt.failed = 0;
     rt.failure = null;
+    rt.blocked = 0;
+    rt.blockedName = null;
     this._emit();
     try {
       await this._ensureLocal(ctx);
@@ -1279,6 +1288,14 @@ class DriveSync extends EventEmitter {
         await this._do(ctx, a);
       } catch (err) {
         if (err instanceof SyncStop || isNetwork(err) || isLocked(err)) throw err;
+        if (SC.isRefusal(err.code)) {
+          // blocked by the virus scan: not a failure of the run (the next one does not try it again while it is)
+          rt.blocked++;
+          rt.blockedName = S.baseName(a.path || a.key);
+          this.log.info(`Drive sync: a file is blocked by the virus scan (${err.code})`);
+          if (a.op === 'download' || a.op === 'merge') { rt.done++; rt.current = null; this._emit(); }
+          continue;
+        }
         rt.failed++;
         rt.failure = { name: S.baseName(a.path || a.key), code: drive.errorCode(err) };
         this.log.info(`Drive sync: ${a.op} of a file failed (${rt.failure.code})`);
@@ -1702,6 +1719,8 @@ class DriveSync extends EventEmitter {
       // changed on the PC since the scan: the next run compares both
       if (!b || b.size !== have.size || b.mtime !== Math.floor(have.mtimeMs)) { ctx.deferred++; ctx.rt.dirty = true; this._later(ctx.f.id); return; }
     }
+    const remote = ctx.st.tree && ctx.st.tree[a.nodeId];
+    if (remote && remote.blocked) throw new DriveError('blocked by the virus scan', { status: 423, code: remote.blocked });
     await fs.promises.mkdir(path.dirname(abs), { recursive: true });
     const name = S.baseName(a.path);
     const c = await this.api.content(a.nodeId);

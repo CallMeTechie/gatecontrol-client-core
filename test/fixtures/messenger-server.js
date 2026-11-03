@@ -12,7 +12,7 @@
 //   messengerServer({ features: { ...FEATURES_14, story_duration: true } })  // 1.4.1: story durationH
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
-//   srv.notify(payload) → `event: notification`, srv.fail(path, status, code),
+//   srv.notify(payload) → `event: notification`, srv.fail(path, status, code, times?, extra?) (extra: more fields of the refusal, e.g. { finding }),
 //   srv.close()
 
 const http = require('node:http');
@@ -106,7 +106,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       id: m.id, conversationId: m.conversationId, senderId: m.senderId, clientId: m.clientId, kind: m.kind, via: null, mine: m.senderId === viewer,
       createdAt: iso(m.createdAt), editedAt: m.editedAt ? iso(m.editedAt) : null, deletedAt: null, expiresAt: null, deleted: m.deleted, undecryptable: false,
       text: m.deleted ? null : m.text, replyTo: null,
-      media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: m.thumbMediaId || null, thumbUrl: null } : null,
+      media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: m.thumbMediaId || null, thumbUrl: null, ...(m.scan ? { scan: m.scan } : {}) } : null,
       ...(m.video && !m.deleted ? { video: m.video } : {}),
       meta: m.deleted ? null : m.meta, location: null, system: null, reactions: m.deleted ? [] : m.reactions,
       ...(m.poll ? { poll: m.poll } : {}), ...(m.event ? { event: m.event } : {}), ...(m.action ? { action: m.action } : {}),
@@ -164,7 +164,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
-  const err = (res, status, code) => json(res, status, { ok: false, code, error: code });
+  const err = (res, status, code, extra = null) => json(res, status, { ok: false, code, error: code, ...(extra || {}) });
 
   async function readBody(req) {
     const chunks = [];
@@ -342,7 +342,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (`${req.method} ${p}`.startsWith(prefix) || p.startsWith(prefix)) {
         if (f.times != null) { f.times -= 1; if (f.times <= 0) state.failures.delete(prefix); }
         if (f.status === 0) { req.socket.destroy(); return; }
-        return err(res, f.status, f.code);
+        return err(res, f.status, f.code, f.extra);
       }
     }
 
@@ -531,7 +531,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       for (const s of streams) s.write(`id: ${payload.seq}\nevent: notification\ndata: ${JSON.stringify(payload)}\n\n`);
     },
     /** Answer `prefix` (path or "METHOD path") with an error; status 0 = drop the connection. */
-    fail(prefix, status, code = 'failed', times = null) { state.failures.set(prefix, { status, code, times }); },
+    fail(prefix, status, code = 'failed', times = null, extra = null) { state.failures.set(prefix, { status, code, times, extra }); },
     heal() { state.failures.clear(); },
     dropStreams() { for (const s of streams) s.destroy(); },
     close() {

@@ -341,13 +341,18 @@ class DriveApi {
 
   // ── Links ────────────────────────────────────────────────
 
-  /** A link of one node ({ nodeId, … }) or — Drive 1.12 'multiLink' — one link for several ({ ids, … }). */
-  async createLink(opts) {
+  /**
+   * A link of one node ({ nodeId, … }) or — Drive 1.12 'multiLink' — one link for several ({ ids, … }).
+   * `withSkipped` → { link, skipped: [{ id, reason }] } (Drive 1.19: files the virus scan blocks are left out,
+   * reason 'blocked'; a single blocked file: 423 scan_pending | quarantined | scan_blocked).
+   */
+  async createLink(opts, { withSkipped = false } = {}) {
     const body = opts && Array.isArray(opts.ids) ? drive.multiLinkBody(opts) : drive.linkBody(opts);
     if (!body) throw new DriveError('invalid link', { code: 'invalid' });
-    const link = drive.normalizeLink((await this.api('POST', 'links', { body })).link);
+    const r = await this.api('POST', 'links', { body });
+    const link = drive.normalizeLink(r.link);
     if (!link) throw new DriveError('bad link answer', { code: 'bad_response' });
-    return link;
+    return withSkipped ? { link, skipped: drive.blockedList(r.skipped) } : link;
   }
 
   async links(nodeId = null) {

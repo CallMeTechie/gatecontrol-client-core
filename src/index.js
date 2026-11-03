@@ -69,6 +69,7 @@ const vaultUtil = require('./utils/vault');
 const driveUtil = require('./utils/drive');
 const driveSyncUtil = require('./utils/drive-sync');
 const mailUtil = require('./utils/mail');
+const scanUtil = require('./utils/scan');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -171,6 +172,7 @@ module.exports = {
   driveUtil,
   driveSyncUtil,
   mailUtil,
+  scanUtil,
 
   // Support bundle
   collectSupportBundle,

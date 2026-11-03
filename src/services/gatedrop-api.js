@@ -38,6 +38,7 @@ const crypto = require('crypto');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const MessengerApi = require('./messenger-api');
+const SC = require('../utils/scan');
 const gd = require('../utils/gatedrop');
 
 const { MessengerError: GateDropError, toMessengerError } = MessengerApi;
@@ -290,7 +291,9 @@ class GateDropApi {
   _media(res, mime, size) {
     const d = (res && res.data) || {};
     if (!gd.isMediaId(d.mediaId)) throw new GateDropError('bad upload answer', { status: res && res.status, code: 'bad_response' });
-    return { mediaId: d.mediaId, mime: typeof d.mime === 'string' ? d.mime : mime, bytes: Number(d.bytes) || size };
+    // the host's virus scan of the file (resumable: the answer of the last part) — when the host scans
+    const scan = SC.normalizeScan(d.scan);
+    return { mediaId: d.mediaId, mime: typeof d.mime === 'string' ? d.mime : mime, bytes: Number(d.bytes) || size, ...(scan ? { scan } : {}) };
   }
 
   /** One PUT of bytes [start, end) → axios response (200, or 409 for resumable parts). */
@@ -355,11 +358,13 @@ class GateDropApi {
     try {
       const r = await this.api('GET', `items/${mediaId}`);
       item = r && r.item && typeof r.item === 'object' ? gd.normalizeItems([r.item])[0] || null : null;
+      // GateDrop 1.4: blocked by the host's virus scan (later, too) — its refusal, not "gone"
+      if (item && SC.isBlocked(item.scan)) throw new GateDropError('blocked by the virus scan', { status: 423, code: SC.refusalOf(item.scan), body: { scan: item.scan } });
       if (item && !item.available) throw new GateDropError('file not on the server', { status: 410, code: 'gone' });
       const u = r && typeof r.url === 'string' ? r.url : '';
       if (u.startsWith(`${gd.MEDIA_PATH}/`) && /^[A-Za-z0-9/_.-]+(?:\?[A-Za-z0-9=&_.%-]*)?$/.test(u) && !u.includes('..')) url = u;
     } catch (err) {
-      if (err.code === 'gone' || err.status === 403 || err.status === 410) throw err;
+      if (err.code === 'gone' || err.status === 403 || err.status === 410 || SC.isRefusal(err.code)) throw err;
       this.log.debug(`GateDrop items/${mediaId}: ${err.code || err.message} – media route`);
     }
     const r = await this._stream(url, dest, { onProgress, maxBytes });
@@ -387,8 +392,7 @@ class GateDropApi {
         maxContentLength: maxBytes, headers: { Accept: '*/*' },
       });
     } catch (err) {
-      const e = toMessengerError(err);
-      throw e;
+      throw toMessengerError(await MessengerApi.bufferErrorBody(err));
     }
     const total = gd.nonNegInt(res.headers && res.headers['content-length']);
     if (total !== null && total > maxBytes) {

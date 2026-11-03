@@ -255,6 +255,23 @@ routes, see notification-center.md § 10):
   „<Quelle>“; locked kinds with a lock ("immer GateControl"), without a sink
   the hint that the Messenger plugin is needed.
 
+## Messenger 1.11: the host's virus scan
+
+With `GET me` features `scan` (known, no update hint; GateControl 1.223.0):
+`message.media.scan { state, blocked, finding }` comes as the plugin sends it
+(blocked: no `url` / thumbnail, the media route answers 423); utils/scan.js
+`view(scan)` says what to show (`checking`, `malware`, `unscannable`,
+`warning`, `notCheckable`), the texts are the core's i18n `scan.*` (DE / EN).
+
+- Sending: 422 `infected` { finding } / 423 `scan_blocked` → the outbox entry
+  is `failed` with `error` and `finding` (never sent again by itself;
+  „Nicht gesendet – Schadsoftware gefunden“). A file still being checked is sent.
+- `message.update { scan }` → `changedSince` = editedAt − 1 s (the message's own
+  `editedAt` stays: not "edited"); a blocked file's bytes in the memory cache
+  are dropped.
+- `chat:media` / `chat:media:save` of a blocked file → `{ ok: false, code:
+  'scan_pending' | 'quarantined' | 'scan_blocked', scan?, finding?, retryAfter? }`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,

@@ -23,6 +23,7 @@
 
 const crypto = require('crypto');
 const drive = require('./drive');
+const SC = require('./scan');
 
 const MODES = Object.freeze(['backup', 'sync']);
 const GB = 1024 * 1024 * 1024;
@@ -308,7 +309,7 @@ function atHome(current, homeNets) {
 
 /** A node of the plugin → the fields the sync keeps. */
 function slimNode(n) {
-  return {
+  const out = {
     id: n.id,
     parentId: n.parentId,
     name: n.name,
@@ -318,6 +319,9 @@ function slimNode(n) {
     rev: n.rev || 0,
     mtime: Number.isFinite(n.mtime) ? n.mtime : null,
   };
+  // Drive 1.19: blocked by the virus scan → the refusal's code (scan_pending | quarantined | scan_blocked); not loaded
+  if (SC.isBlocked(n.scan)) out.blocked = SC.refusalOf(n.scan);
+  return out;
 }
 
 /** Removes `id` and everything below it from `tree` (in place) → ids removed. */

@@ -113,6 +113,8 @@
  * mail:calendar ({ kind, … }) and mail:contacts ({ kind, … }) of the live events.
  */
 
+const SC = require('../utils/scan');
+
 const MAIL_EVENTS = {
   state: 'mail:state',
   changed: 'mail:changed',
@@ -126,7 +128,9 @@ function fail(err) {
   const out = { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
   const d = err && err.detail;
   if (d && typeof d === 'object') out.detail = d;
-  return out;
+  // Mail 1.8 'scan': 423 quarantined | scan_pending | scan_blocked, 410 attachment_removed, 409 attachment_blocked
+  // { attachmentId, name, scan }, 422 infected → scan, finding, name, attachmentId, retryAfter
+  return { ...out, ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});

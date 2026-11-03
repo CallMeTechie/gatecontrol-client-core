@@ -19,6 +19,7 @@
 
 const crypto = require('crypto');
 const mailDark = require('./mail-dark');
+const SC = require('./scan');
 
 const PLUGIN_ID = 'gatecontrol-mail';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
@@ -55,9 +56,10 @@ const MODES = Object.freeze(['reply', 'replyAll', 'forward']);
 const TODO_KINDS = Object.freeze(['question', 'deadline', 'event', 'amount', 'task']);
 const REASONS = Object.freeze(['rule', 'learned', 'ai', 'kind']);
 const OUTBOX_STATES = Object.freeze(['waiting', 'sending', 'failed']);
-const WARNINGS = Object.freeze(['password', 'too_large', 'no_subject']);
+// 'attachment_blocked' (Mail 1.8 'scan'): an attachment of the draft is blocked by the host's virus scan
+const WARNINGS = Object.freeze(['password', 'too_large', 'no_subject', 'attachment_blocked']);
 const CONTACT_SOURCES = Object.freeze(['contact', 'group', 'person', 'recent']);
-const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay']);
+const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay', 'scan']);
 const INVITES = Object.freeze(['request', 'cancel', 'reply', 'counter']);
 const PIM_STATES = Object.freeze(['ok', 'syncing', 'auth_failed', 'unreachable', 'consent_required', 'none', 'off']);
 const SCOPE_RE = /^[A-Za-z0-9_.:/-]{1,100}$/;
@@ -237,6 +239,8 @@ function normalizeChanged(v) {
     messageId: posId(o.messageId),
     threadId: posId(o.threadId),
     attachmentId: posId(o.attachmentId),
+    // Mail 1.8 'scan': the virus scan of a draft's attachment changed → that draft
+    ...(posId(o.draftId) ? { draftId: posId(o.draftId) } : {}),
   };
 }
 
@@ -403,10 +407,22 @@ function savedTo(v) {
   return nodeId ? { nodeId, where: line(o.where, 500) } : null;
 }
 
+/**
+ * Mail 1.8 'scan': the host's virus scan of an attachment's copy (utils/scan.js) — `removed: true` (also as
+ * `mediaError: 'ERR_MEDIA_INFECTED'`): the host deleted it at once, „Anhang entfernt (Schadsoftware)“. Null: nothing known.
+ */
+function attachmentScan(o) {
+  const scan = SC.normalizeScan(o.scan);
+  const removed = o.removed === true || (scan && scan.removed === true) || o.mediaError === 'ERR_MEDIA_INFECTED';
+  if (!removed) return scan;
+  return { state: 'infected', finding: null, ...(scan || {}), blocked: true, removed: true };
+}
+
 function normalizeAttachment(v) {
   const o = obj(v);
   const id = o && posId(o.id);
   if (!id) return null;
+  const scan = attachmentScan(o);
   return {
     id,
     name: line(o.name, NAME_MAX) || 'Anhang',
@@ -415,7 +431,9 @@ function normalizeAttachment(v) {
     inline: bool(o.inline),
     cid: line(o.cid, 300),
     savedTo: savedTo(o.savedTo),
-    suggestion: normalizeSuggestion(o.suggestion),
+    // a blocked attachment is not filed into Drive
+    suggestion: SC.isBlocked(scan) ? null : normalizeSuggestion(o.suggestion),
+    ...(scan ? { scan } : {}),
   };
 }
 
@@ -454,7 +472,8 @@ function draftAttachment(v) {
   const o = obj(v);
   const id = o && posId(o.id);
   if (!id) return null;
-  return { id, name: line(o.name, NAME_MAX) || 'Anhang', size: count(o.size) || 0, mime: line(o.mime, 120), as: o.as === 'link' ? 'link' : 'copy', url: httpsUrl(o.url) };
+  const scan = attachmentScan(o);
+  return { id, name: line(o.name, NAME_MAX) || 'Anhang', size: count(o.size) || 0, mime: line(o.mime, 120), as: o.as === 'link' ? 'link' : 'copy', url: httpsUrl(o.url), ...(scan ? { scan } : {}) };
 }
 
 /** A `draft` ({ draft } or the draft itself), or null. */
@@ -474,7 +493,10 @@ function normalizeDraft(v) {
     warnings: arr(o.warnings).map((w) => {
       const x = obj(w);
       const kind = x && oneOf(WARNINGS, x.kind);
-      return kind ? { kind, text: line(x.text, 500) } : null;
+      if (!kind) return null;
+      // Mail 1.8: which attachment is blocked (when the plugin says)
+      const aid = kind === 'attachment_blocked' ? posId(x.attachmentId) : null;
+      return { kind, text: line(x.text, 500), ...(aid ? { attachmentId: aid } : {}) };
     }).filter(Boolean).slice(0, 10),
   };
 }
@@ -567,7 +589,8 @@ function normalizeFiling(v) {
     items: arr(obj(v) && v.items).map((x) => {
       const o = obj(x);
       const id = o && posId(o.id);
-      if (!id) return null;
+      // Mail 1.8: an attachment the virus scan blocks is never „Zum Ablegen“
+      if (!id || SC.isBlocked(attachmentScan(o))) return null;
       return {
         id,
         messageId: posId(o.messageId),
@@ -586,7 +609,9 @@ function normalizeFiling(v) {
 function normalizeMedia(v) {
   const o = obj(v);
   if (!o || !isMediaId(o.mediaId)) return null;
-  return { mediaId: o.mediaId, name: line(o.name, NAME_MAX) || 'Anhang', mime: line(o.mime, 120), size: count(o.size) || 0 };
+  const scan = attachmentScan(o);
+  // Mail 1.8: the answer carries `scan` (marked, not blocked: the app warns)
+  return { mediaId: o.mediaId, name: line(o.name, NAME_MAX) || 'Anhang', mime: line(o.mime, 120), size: count(o.size) || 0, ...(scan ? { scan } : {}) };
 }
 
 // ── Request bodies ─────────────────────────────────────────

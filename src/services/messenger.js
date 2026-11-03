@@ -71,6 +71,7 @@ const {
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
+const SC = require('../utils/scan');
 
 const { MessengerError } = MessengerApi;
 const CACHE_KEY = 'messengerCache';
@@ -108,6 +109,12 @@ class ByteLru {
     this.map.delete(k);
     this.map.set(k, v);
     return v;
+  }
+  delete(k) {
+    const v = this.map.get(k);
+    if (!v) return;
+    this.bytes -= byteLength(v.data);
+    this.map.delete(k);
   }
   set(k, v) {
     const size = byteLength(v.data);
@@ -184,7 +191,7 @@ class MessengerService extends EventEmitter {
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
-      this.emit('send-failed', { conversationId: entry.conversationId, clientId: entry.clientId, error, source: entry.body && entry.body.source });
+      this.emit('send-failed', { conversationId: entry.conversationId, clientId: entry.clientId, error, source: entry.body && entry.body.source, ...(entry.finding ? { finding: entry.finding } : {}) });
       this.emit('messages', { conversationId: entry.conversationId, reason: 'outbox' });
     });
     this.outbox.on('change', ({ conversationId }) => {
@@ -754,6 +761,7 @@ class MessengerService extends EventEmitter {
       failed: e.state === 'failed',
       sending: e.state === 'sending',
       error: e.error || null,
+      ...(e.finding ? { finding: e.finding } : {}),
       kind: e.body.kind || 'text',
       text: e.body.text || null,
       replyTo,
@@ -1610,7 +1618,11 @@ class MessengerService extends EventEmitter {
       }
       case 'message.update': {
         if (!cid) return;
-        this._fetchChanged(cid, posInt(d.messageId), d.editedAt);
+        // Messenger 1.11: the virus scan of the message's file changed (`scan`; its own editedAt stays — no "edited");
+        // a blocked file's bytes loaded before are dropped, the change is loaded from editedAt − 1 s
+        const scan = SC.normalizeScan(d.scan);
+        if (scan && SC.isBlocked(scan)) this._dropMediaOf(cid, posInt(d.messageId));
+        this._fetchChanged(cid, posInt(d.messageId), d.editedAt, scan ? 1000 : 1);
         this._refreshConvSoon(cid);
         break;
       }
@@ -1713,11 +1725,11 @@ class MessengerService extends EventEmitter {
    * A cached message changed (edit, reactions, 1.4.0 polls / events / actions /
    * arrivals): GET messages?changedSince=<at − 1 ms> and merge what is cached.
    */
-  _fetchChanged(cid, mid, at) {
+  _fetchChanged(cid, mid, at, backMs = 1) {
     const st = this._msgs.get(cid);
     if (!st || !st.loaded || !mid || !this._lists(st).some((l) => l.some((m) => m.id === mid))) return;
     const t = Date.parse(at);
-    const since = Number.isFinite(t) ? new Date(t - 1).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
+    const since = Number.isFinite(t) ? new Date(t - backMs).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
     this.api.messages(cid, { changedSince: since, limit: 100 }).then((r) => {
       this._mergeKnown(st, r.messages);
       const c = this._convs.get(cid);
@@ -1726,6 +1738,20 @@ class MessengerService extends EventEmitter {
       this.emit('messages', { conversationId: cid, reason: 'update' });
       this._persist();
     }).catch(() => {});
+  }
+
+  /** The files of a cached message (main, thumbnail) out of the in-memory cache (Messenger 1.11: blocked by the scan). */
+  _dropMediaOf(cid, mid) {
+    const st = this._msgs.get(cid);
+    if (!st || !mid) return;
+    for (const l of this._lists(st)) {
+      const m = l.find((x) => x && x.id === mid);
+      if (!m) continue;
+      const media = m.media && typeof m.media === 'object' ? m.media : {};
+      for (const id of [m.mediaId, m.thumbMediaId, media.id, media.mediaId, media.thumbId, media.thumbMediaId]) {
+        if (isMediaId(id)) this._media.delete(id);
+      }
+    }
   }
 
   _isLast(cid, mid) {

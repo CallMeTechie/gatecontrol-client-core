@@ -12,6 +12,7 @@
  */
 
 const path = require('path');
+const SC = require('./scan');
 
 const PLUGIN_ID = 'gatecontrol-gatedrop';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
@@ -439,7 +440,10 @@ function normalizeItems(list) {
     const o = obj(it);
     if (!o) return;
     const idx = nonNegInt(o.index);
-    const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
+    // GateDrop 1.4: the host's virus scan (utils/scan.js); a blocked file is not on offer (no download, no forwarding)
+    const scan = SC.normalizeScan(o.scan);
+    const blocked = SC.isBlocked(scan);
+    const mediaId = !blocked && isMediaId(o.mediaId) ? o.mediaId : null;
     out.push({
       index: idx !== null && idx < MAX_ITEMS ? idx : i,
       mediaId,
@@ -449,6 +453,7 @@ function normalizeItems(list) {
       local: bool(o.local),
       // `available` (plugin): the file is on the server; older answers: a mediaId says so.
       available: typeof o.available === 'boolean' ? o.available && !!mediaId : !!mediaId,
+      ...(scan ? { scan } : {}),
     });
   });
   return out;
