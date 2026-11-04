@@ -107,6 +107,7 @@ const { startCodeListener } = require('./mail-loopback');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const { MessengerError: MailError } = MessengerApi;
 
@@ -140,6 +141,8 @@ class MailService extends EventEmitter {
    * @param {object} [opts.dialog] - Electron dialog (pick files, save as)
    * @param {Function} [opts.getMainWindow]
    * @param {() => string} [opts.tempDir] - folder for opened attachments (%TEMP%\gatecontrol-mail)
+   * @param {(key: string, name?: string) => string|undefined} [opts.dialogPath] - where the dialogs start
+   *   (utils/user-folders dialogPath: the folders of the person signed in, also when the app runs as another Windows user)
    * @param {() => string|null} [opts.cacheDir] - folder of the offline cache (%APPDATA%\…\mail-cache)
    * @param {object} [opts.protect] - DPAPI (DriveService.safeStorageProtect(safeStorage)); without it no cache on disk
    * @param {() => string} [opts.getLang] - 'de' | 'en'
@@ -157,6 +160,7 @@ class MailService extends EventEmitter {
     apiClient, log, api = null, shell = null, dialog = null, getMainWindow = null, tempDir = null, cacheDir = null,
     protect = null, getLang = null, pushClient = null, notificationCenter = null, timing = {}, now = Date.now,
     openExternal = null, startListener = null, random = null, nativeImage = null, timeZone = null,
+    dialogPath = defaultDialogPath,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -166,6 +170,7 @@ class MailService extends EventEmitter {
     this.dialog = dialog;
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
     this.tempDir = typeof tempDir === 'function' ? tempDir : () => path.join(os.tmpdir(), 'gatecontrol-mail');
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : (_k, n) => n || undefined;
     this.getLang = typeof getLang === 'function' ? getLang : () => 'de';
     this.pushClient = pushClient;
     this.notificationCenter = notificationCenter;
@@ -730,7 +735,7 @@ class MailService extends EventEmitter {
       const aid = mail.posId(attachmentId);
       if (!mid || !aid) throw new MailError('invalid id', { code: 'invalid' });
       const win = this.getMainWindow();
-      const opts = { defaultPath: safeFileName(name || 'Anhang', 'Anhang') };
+      const opts = { defaultPath: this.dialogPath('downloads', safeFileName(name || 'Anhang', 'Anhang')) };
       const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
       if (!res || res.canceled || !res.filePath) return { ok: false, code: 'cancelled', cancelled: true };
       await this._attachmentFile(mid, aid, res.filePath);
@@ -742,7 +747,8 @@ class MailService extends EventEmitter {
   async pickFiles() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new MailError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openFile', 'multiSelections'] };
+    const start = this.dialogPath('documents');
+    const opts = { properties: ['openFile', 'multiSelections'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
@@ -1241,7 +1247,8 @@ class MailService extends EventEmitter {
     if (!cid) throw new MailError('invalid id', { code: 'invalid' });
     return this._run(async () => {
       const win = this.getMainWindow();
-      const opts = { properties: ['openFile'], filters: [{ name: 'Bilder', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] };
+      const start = this.dialogPath('pictures');
+      const opts = { properties: ['openFile'], filters: [{ name: 'Bilder', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }], ...(start ? { defaultPath: start } : {}) };
       const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
       if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', cancelled: true };
       const photo = await this._photoFile(r.filePaths[0]);
@@ -1427,7 +1434,8 @@ class MailService extends EventEmitter {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new MailError('no dialog', { code: 'unsupported' });
     return this._run(async () => {
       const win = this.getMainWindow();
-      const opts = { properties: ['openFile'], filters: [{ name: 'vCard', extensions: ['vcf', 'vcard'] }] };
+      const start = this.dialogPath('downloads');
+      const opts = { properties: ['openFile'], filters: [{ name: 'vCard', extensions: ['vcf', 'vcard'] }], ...(start ? { defaultPath: start } : {}) };
       const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
       if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', cancelled: true };
       const st = await fs.promises.stat(r.filePaths[0]);
@@ -1448,7 +1456,7 @@ class MailService extends EventEmitter {
     return this._run(async () => {
       const out = await this.api.exportVcf({ book, group });
       const win = this.getMainWindow();
-      const opts = { defaultPath: safeFileName(out.name, 'kontakte.vcf'), filters: [{ name: 'vCard', extensions: ['vcf'] }] };
+      const opts = { defaultPath: this.dialogPath('downloads', safeFileName(out.name, 'kontakte.vcf')), filters: [{ name: 'vCard', extensions: ['vcf'] }] };
       const r = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
       if (!r || r.canceled || !r.filePath) return { ok: false, code: 'cancelled', cancelled: true };
       await fs.promises.writeFile(r.filePath, Buffer.from(out.data, 'base64'));

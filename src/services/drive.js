@@ -148,6 +148,7 @@ const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 const { buildSearchablePdf, pagesText } = require('../utils/searchable-pdf');
 
 const { MessengerError: DriveError } = MessengerApi;
@@ -198,6 +199,8 @@ class DriveService extends EventEmitter {
    * @param {object} [opts.dialog] - Electron dialog (pick files, save as)
    * @param {Function} [opts.getMainWindow]
    * @param {() => string} [opts.tempDir] - folder for opened files (%TEMP%\gatecontrol-drive)
+   * @param {(key: string, name?: string) => string|undefined} [opts.dialogPath] - where the dialogs start
+   *   (utils/user-folders dialogPath: the folders of the person signed in, also when the app runs as another Windows user)
    * @param {() => string} [opts.getLang] - 'de' | 'en'
    * @param {object} [opts.pushClient] - PushClient: a reconnect ('hello') asks for the plugin again
    * @param {object} [opts.timing]
@@ -219,6 +222,7 @@ class DriveService extends EventEmitter {
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
     tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
     protect = null, notificationCenter = null, deviceName = null, consent, powerMonitor = null, ocr = null,
+    dialogPath = defaultDialogPath,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -233,6 +237,7 @@ class DriveService extends EventEmitter {
     this.dialog = dialog;
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
     this.tempDir = typeof tempDir === 'function' ? tempDir : () => path.join(os.tmpdir(), 'gatecontrol-drive');
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : (_k, n) => n || undefined;
     this.pushClient = pushClient;
     this.notificationCenter = notificationCenter;
     this.timing = { ...DEFAULT_TIMING, ...timing };
@@ -1133,7 +1138,7 @@ class DriveService extends EventEmitter {
       const base = drive.safeName(typeof name === 'string' ? name : '') || 'Drive';
       const fileName = /\.zip$/i.test(base) ? base : `${base}.zip`;
       const win = this.getMainWindow();
-      const opts = { defaultPath: fileName, filters: [{ name: 'ZIP', extensions: ['zip'] }] };
+      const opts = { defaultPath: this.dialogPath('downloads', fileName), filters: [{ name: 'ZIP', extensions: ['zip'] }] };
       const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
       if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
       const row = this._downloadRow(path.basename(res.filePath), 0);
@@ -1936,7 +1941,8 @@ class DriveService extends EventEmitter {
   async pickFiles() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openFile', 'multiSelections'] };
+    const start = this.dialogPath('documents');
+    const opts = { properties: ['openFile', 'multiSelections'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
@@ -1946,7 +1952,8 @@ class DriveService extends EventEmitter {
   async pickFolders() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openDirectory', 'multiSelections', 'dontAddToRecent'] };
+    const start = this.dialogPath('documents');
+    const opts = { properties: ['openDirectory', 'multiSelections', 'dontAddToRecent'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
@@ -2349,7 +2356,8 @@ class DriveService extends EventEmitter {
       }
       const name = drive.safeName(vault ? this.vault.nameOf(node) || '' : node.name) || 'Datei';
       const win = this.getMainWindow();
-      const res = win ? await this.dialog.showSaveDialog(win, { defaultPath: name }) : await this.dialog.showSaveDialog({ defaultPath: name });
+      const opts = { defaultPath: this.dialogPath('downloads', name) };
+      const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
       if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
       const row = this._downloadRow(path.basename(res.filePath), node.size);
       try {

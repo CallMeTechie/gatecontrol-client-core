@@ -112,6 +112,7 @@ const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
 const SC = require('../utils/scan');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -150,6 +151,8 @@ class DriveSync extends EventEmitter {
    * @param {object} [opts.log]
    * @param {(p: string) => Promise<void>} [opts.trashItem] - into the recycle bin (Electron shell.trashItem)
    * @param {object} [opts.dialog] - Electron dialog (pick a folder)
+   * @param {(key: string) => string|undefined} [opts.dialogPath] - where the folder dialog starts
+   *   (utils/user-folders dialogPath: the profile of the person signed in, also when the app runs as another Windows user)
    * @param {object} [opts.shell] - Electron shell (open a folder)
    * @param {Function} [opts.getMainWindow]
    * @param {() => string} [opts.hostname]
@@ -170,6 +173,7 @@ class DriveSync extends EventEmitter {
     drive: driveSvc, api = null, store, dir, log, trashItem = null, dialog = null, shell = null, getMainWindow = null,
     hostname = () => os.hostname(), getInterfaces = () => os.networkInterfaces(), getGateways = null, isVpnUp = null, getDeviceKey = null,
     knownFolders = null, blockedPaths = null, appVersion = '', pushClient = null, timing = {}, now = Date.now, readPdfText = null,
+    dialogPath = defaultDialogPath,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -189,6 +193,7 @@ class DriveSync extends EventEmitter {
     this.isVpnUp = typeof isVpnUp === 'function' ? isVpnUp : () => true;
     this.getDeviceKey = typeof getDeviceKey === 'function' ? getDeviceKey : () => null;
     this.knownFolders = typeof knownFolders === 'function' ? knownFolders : () => [];
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : () => undefined;
     this.blockedPaths = typeof blockedPaths === 'function' ? blockedPaths : () => [];
     this.appVersion = typeof appVersion === 'string' ? appVersion.slice(0, 40) : '';
     this._devReg = null;           // Drive 1.5: { device, at } of the last PUT devices/<id>
@@ -470,7 +475,8 @@ class DriveSync extends EventEmitter {
   async pickFolder() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openDirectory', 'dontAddToRecent'] };
+    const start = this.dialogPath('home');
+    const opts = { properties: ['openDirectory', 'dontAddToRecent'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths[0]) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, path: r.filePaths[0] };

@@ -19,6 +19,7 @@ const os = require('os');
 const WTS_CURRENT_SERVER_HANDLE = null;
 const WTS_CURRENT_SESSION = 0xffffffff;
 const WTS_USER_NAME = 5;
+const WTS_DOMAIN_NAME = 7;
 
 let wts;
 
@@ -39,14 +40,14 @@ function loadWts(koffi) {
   return wts;
 }
 
-/** The user name of this process's Windows session (the person signed in), or null. */
-function sessionUserName({ koffi = null } = {}) {
+/** One string of this process's Windows session (WTS_INFO_CLASS `cls`), or null. */
+function sessionString(cls, { koffi = null } = {}) {
   const w = loadWts(koffi);
   if (!w) return null;
   const buf = [null];
   const len = [0];
   try {
-    if (!w.query(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_USER_NAME, buf, len) || !buf[0]) return null;
+    if (!w.query(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, cls, buf, len) || !buf[0]) return null;
     const n = Math.min(len[0], 1024);
     const bytes = n > 0 ? Buffer.from(w.k.decode(buf[0], 'uint8_t', n)) : Buffer.alloc(0);
     const name = bytes.toString('utf16le').replace(/\0[\s\S]*$/, '').trim();
@@ -56,6 +57,21 @@ function sessionUserName({ koffi = null } = {}) {
   } finally {
     if (buf[0]) { try { w.free(buf[0]); } catch { /* freed */ } }
   }
+}
+
+/** The user name of this process's Windows session (the person signed in), or null. */
+function sessionUserName(o = {}) {
+  return sessionString(WTS_USER_NAME, o);
+}
+
+/**
+ * The account of the person signed in → { user, domain } (domain: the
+ * computer's name for a local account), or null when it is not known.
+ */
+function sessionAccount(o = {}) {
+  const user = sessionString(WTS_USER_NAME, o);
+  if (!user) return null;
+  return { user, domain: sessionString(WTS_DOMAIN_NAME, o) || null };
 }
 
 /**
@@ -79,4 +95,4 @@ function runAs({ platform = process.platform, getSessionUser = null, userInfo = 
   return { processUser, sessionUser: sessionUser || null, differs, profile };
 }
 
-module.exports = { runAs, sessionUserName };
+module.exports = { runAs, sessionUserName, sessionAccount };

@@ -16,7 +16,9 @@
  *   gatedrop:send:get      ({ id }) → { ok, send }
  *   gatedrop:send:save     ({ id }) → download a received send again
  *   gatedrop:link:end      ({ token }) → { ok }
- *   gatedrop:folder        () → opens Downloads\GateControl
+ *   gatedrop:folder        () → opens the folder of received files (Downloads\GateControl or the one chosen)
+ *   gatedrop:folder:pick   () → folder dialog → { ok, folder, custom, defaultFolder } | { ok: false, code: 'cancelled' }
+ *   gatedrop:folder:reset  () → back to Downloads\GateControl → { ok, folder, custom, defaultFolder }
  *   gatedrop:show          ({ path }) → shows a saved file in the Explorer (saved files only)
  *   gatedrop:open          ({ path }) → opens a saved file (saved files only)
  *   gatedrop:copy          ({ text }) → clipboard
@@ -30,6 +32,8 @@
  */
 
 const SC = require('../utils/scan');
+const { t } = require('../i18n');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const GATEDROP_EVENTS = {
   state: 'gatedrop:state',
@@ -57,8 +61,9 @@ const optStr = (v, max) => v === undefined || v === null || (typeof v === 'strin
  * @param {object} deps.log
  * @param {object} [deps.dialog] - Electron dialog (gatedrop:pick)
  * @param {object} [deps.explorer] - { get(): boolean, set(enabled): Promise<boolean>|boolean } ("Senden an")
+ * @param {Function} [deps.dialogPath] - utils/user-folders dialogPath (where the dialogs start)
  */
-function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dialog = null, explorer = null }) {
+function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dialog = null, explorer = null, dialogPath = defaultDialogPath }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
       return await fn(obj(arg));
@@ -73,7 +78,8 @@ function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dia
   handle('gatedrop:pick', wrap(async () => {
     if (!dialog || typeof dialog.showOpenDialog !== 'function') return { ok: false, code: 'unsupported', error: 'no dialog', status: null };
     const win = getMainWindow && getMainWindow();
-    const opts = { properties: ['openFile', 'multiSelections'] };
+    const start = dialogPath('documents');
+    const opts = { properties: ['openFile', 'multiSelections'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled', status: null };
     return s.prepareFiles(r.filePaths);
@@ -101,6 +107,16 @@ function registerGateDropHandlers(handle, { gatedrop: s, getMainWindow, log, dia
     return s.endLink(a.token);
   }));
   handle('gatedrop:folder', wrap(async () => s.openFolder()));
+  // "Speicherort für empfangene Dateien": the dialog starts in the folder used now
+  handle('gatedrop:folder:pick', wrap(async () => {
+    if (!dialog || typeof dialog.showOpenDialog !== 'function') return { ok: false, code: 'unsupported', error: 'no dialog', status: null };
+    const win = getMainWindow && getMainWindow();
+    const opts = { title: t('gatedrop.folderPick'), properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'], defaultPath: s.folder() };
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths[0]) return { ok: false, code: 'cancelled', error: 'cancelled', status: null };
+    return s.setFolder(r.filePaths[0]);
+  }));
+  handle('gatedrop:folder:reset', wrap(async () => s.resetFolder()));
   handle('gatedrop:show', wrap(async (a) => (typeof a.path === 'string' ? s.showItem(a.path) : invalid())));
   handle('gatedrop:open', wrap(async (a) => (typeof a.path === 'string' ? s.openItem(a.path) : invalid())));
   handle('gatedrop:copy', wrap(async (a) => (typeof a.text === 'string' ? s.copyText(a.text) : invalid())));

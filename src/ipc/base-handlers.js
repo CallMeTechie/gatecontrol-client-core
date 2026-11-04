@@ -29,7 +29,7 @@ const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
 const { registerMailHandlers } = require('./mail-handlers');
 const MapService = require('../services/map-service');
-const { runAs } = require('../utils/session-user');
+const { createUserFolders } = require('../utils/user-folders');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -199,6 +199,9 @@ const NOTIFY_EVENTS = {
  *   main window and resets it (and its offline cache) after a successful server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
+ * @param {object} [ctx.userFolders] - utils/user-folders createUserFolders() (tests);
+ *   default: one on app.getPath — the folders of the person signed in, also when
+ *   the app runs as another Windows user (logs:save, dialogs, system:run-as)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -224,6 +227,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const driveSync = (driveSvc && ctx.driveSync) || null;
   const mailSvc = ctx.mail || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
+  const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
   // Registers a core handler unless the client skips or overrides the channel.
   // Policy guards wrap whichever implementation is used.
@@ -526,7 +530,9 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Config Import ───────────────────────────────────────
   handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
+    const start = folders.dialogPath('downloads');
     const result = await dialog.showOpenDialog(mainWindow, {
+      ...(start ? { defaultPath: start } : {}),
       title: t('dialog.importTitle'),
       filters: [
         { name: t('dialog.filterConfig'), extensions: ['conf'] },
@@ -713,9 +719,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     try { logPath = log.transports.file.getFile().path; } catch { logPath = null; }
     if (!logPath) return { ok: false, code: 'no_log' };
     if (!dialog || typeof dialog.showSaveDialog !== 'function') return { ok: false, code: 'unsupported' };
+    // the Downloads of the person signed in (utils/user-folders.js), also when the app runs as another Windows user
     let dir = null;
     for (const k of ['downloads', 'documents', 'desktop']) {
-      try { dir = app.getPath(k); } catch { dir = null; }
+      try { dir = folders.userPath(k); } catch { dir = null; }
       if (dir) break;
     }
     const name = logExportName(app, new Date());
@@ -749,11 +756,14 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // Who runs the app, who is signed in to Windows (utils/session-user.js):
   // another Windows user (a UAC prompt answered with another account's
-  // password) has its own Downloads / %APPDATA% / %TEMP% — the app says so.
+  // password) has its own Downloads / %APPDATA% / %TEMP%; files still go to
+  // the folders of the person signed in (utils/user-folders.js) — the app says so.
+  // → { processUser, sessionUser, differs, profile, sessionProfile, downloads, downloadsSource, unreachable }
   handle('system:run-as', () => {
-    let downloads = null;
-    try { downloads = app.getPath('downloads'); } catch { downloads = null; }
-    return { ...runAs(), downloads };
+    try { return folders.info(); } catch (err) {
+      log.warn('system:run-as failed:', err && err.message);
+      return { processUser: null, sessionUser: null, differs: false, profile: null, sessionProfile: null, downloads: null, downloadsSource: 'app', unreachable: null };
+    }
   });
 
   // Shows the log file in Explorer. Takes no path from the renderer, so it
@@ -793,6 +803,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       getTempDir: () => {
         try { return require('path').join(app.getPath('temp'), 'gatecontrol-chat'); } catch { return require('path').join(require('os').tmpdir(), 'gatecontrol-chat'); }
       },
+      dialogPath: folders.dialogPath,
     });
   }
 
@@ -801,7 +812,7 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── GateDrop (plugin gatecontrol-gatedrop, opt-in) ──────
   if (gatedropSvc) {
-    registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null });
+    registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null, dialogPath: folders.dialogPath });
   }
 
   // ── Vault (plugin gatecontrol-vault, opt-in) ────────────

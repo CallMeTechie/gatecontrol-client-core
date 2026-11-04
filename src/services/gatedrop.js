@@ -65,6 +65,7 @@ const gd = require('../utils/gatedrop');
 const { buildToastXml } = require('../utils/toast-xml');
 const { isSafeExternalUrl } = require('../utils/external-url');
 const SC = require('../utils/scan');
+const { userPath } = require('../utils/user-folders');
 
 const { GateDropError } = GateDropApi;
 
@@ -97,8 +98,9 @@ const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
+/** Downloads\GateControl of the person signed in (also when the app runs as another Windows user). */
 function defaultDownloadsDir() {
-  return path.join(os.homedir(), 'Downloads', 'GateControl');
+  return path.join(userPath('downloads'), 'GateControl');
 }
 
 class GateDropService extends EventEmitter {
@@ -113,7 +115,8 @@ class GateDropService extends EventEmitter {
    * @param {object|false} [opts.listener] - GateDropListener; false: no listener
    * @param {object|null} [opts.firewall] - GateDropFirewall (Windows): checks / repairs the
    *   inbound rule for the listener once it runs; null: not checked (tests, other platforms)
-   * @param {() => string} [opts.downloadsDir] - default %USERPROFILE%\Downloads\GateControl
+   * @param {() => string} [opts.downloadsDir] - default Downloads\GateControl of the person signed in
+   *   (utils/user-folders.js); the folder chosen on the page (store `folderKey`) comes first
    * @param {object} [opts.shell] - Electron shell (openPath, showItemInFolder, openExternal)
    * @param {object} [opts.clipboard] - Electron clipboard (writeText)
    * @param {Function} [opts.Notification] - Electron Notification
@@ -128,6 +131,7 @@ class GateDropService extends EventEmitter {
    * @param {() => number} [opts.now]
    * @param {string} [opts.storeKey] - saved files (default `gatedropSaved`)
    * @param {string} [opts.handledKey] - handled send ids (default `gatedropHandled`)
+   * @param {string} [opts.folderKey] - the folder for received files chosen on the page (default `gatedropFolder`)
    * @param {object|null} [opts.powerMonitor] - Electron powerMonitor ('resume'); default: electron's, when there
    */
   constructor({
@@ -135,7 +139,7 @@ class GateDropService extends EventEmitter {
     downloadsDir = defaultDownloadsDir, shell = null, clipboard = null, Notification = null, platform = process.platform,
     protocol = null, toastImagePath = null, showWindow = null, direct = null, resolveCandidate = gd.parseCandidate,
     getInterfaces = () => os.networkInterfaces(), timing = {}, now = Date.now, storeKey = 'gatedropSaved',
-    handledKey = 'gatedropHandled', powerMonitor, firewall = null,
+    handledKey = 'gatedropHandled', folderKey = 'gatedropFolder', powerMonitor, firewall = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -143,6 +147,7 @@ class GateDropService extends EventEmitter {
     this.store = store;
     this.storeKey = storeKey;
     this.handledKey = handledKey;
+    this.folderKey = folderKey;
     this._powerMonitor = powerMonitor;
     this.notificationCenter = notificationCenter;
     this.pushClient = pushClient;
@@ -298,7 +303,10 @@ class GateDropService extends EventEmitter {
       addresses: l.addresses.map((a) => ({ ip: a.ip, prefix: a.prefix })),
       // Why direct receiving is off / at risk ({ state: on|warn|off, reason, detail }).
       direct: gd.directState({ available: this.available(), listener: l, firewall: this._firewall }),
-      folder: this.downloadsDir(),
+      // where received files go (the chosen folder or Downloads\GateControl) and whether it was chosen
+      folder: this.folder(),
+      folderCustom: !!this._customFolder(),
+      folderDefault: this.downloadsDir(),
     };
   }
 
@@ -1261,7 +1269,7 @@ class GateDropService extends EventEmitter {
    * as <name>.gdpart first and renamed when complete.
    */
   async _sink({ name }) {
-    const dir = this.downloadsDir();
+    const dir = await this._receiveDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const base = gd.safeFileName(name, 'datei');
     let finalPath = null;
@@ -1339,8 +1347,78 @@ class GateDropService extends EventEmitter {
     return this._savedList().some((r) => r.files.some((f) => f.path === p));
   }
 
+  // ── Folder for received files ────────────────────────────
+
+  /** The folder chosen on the page (store `gatedropFolder`), or null. */
+  _customFolder() {
+    let v = null;
+    try { v = this.store ? this.store.get(this.folderKey) : null; } catch { v = null; }
+    return typeof v === 'string' && v && path.isAbsolute(v) ? v : null;
+  }
+
+  /** Where received files go: the folder chosen on the page, else Downloads\GateControl. */
+  folder() {
+    return this._customFolder() || this.downloadsDir();
+  }
+
+  /**
+   * The folder to write into now: the chosen one while it is there (a USB
+   * drive, a share …); when it is gone, Downloads\GateControl (said in the log).
+   */
+  async _receiveDir() {
+    const custom = this._customFolder();
+    if (!custom) return this.downloadsDir();
+    const ok = await fs.promises.stat(custom).then((st) => st.isDirectory(), () => false);
+    if (ok) return custom;
+    const fallback = this.downloadsDir();
+    this.log.warn(`GateDrop: chosen folder "${custom}" is not there – "${fallback}" instead`);
+    return fallback;
+  }
+
+  /** → { ok, folder, custom, defaultFolder } */
+  folderInfo() {
+    return { ok: true, folder: this.folder(), custom: !!this._customFolder(), defaultFolder: this.downloadsDir() };
+  }
+
+  /**
+   * "Speicherort für empfangene Dateien": an existing folder this process can
+   * write into (checked with a file it makes and deletes) → folderInfo().
+   */
+  async setFolder(dir) {
+    if (typeof dir !== 'string' || !dir || dir.length > 4096 || !path.isAbsolute(dir) || dir.includes('\0')) throw new GateDropError('invalid folder', { code: 'invalid' });
+    const target = path.resolve(dir);
+    const st = await fs.promises.stat(target).catch(() => null);
+    if (!st || !st.isDirectory()) throw new GateDropError('folder not found', { code: 'folder_missing' });
+    const probe = path.join(target, `.gatecontrol-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    try {
+      const fh = await fs.promises.open(probe, 'wx');
+      await fh.close();
+      await fs.promises.unlink(probe);
+    } catch (err) {
+      await fs.promises.unlink(probe).catch(() => {});
+      throw new GateDropError(`folder not writable (${err.code || err.message})`, { code: 'folder_readonly' });
+    }
+    if (!this.store) throw new GateDropError('no store', { code: 'unsupported' });
+    this.store.set(this.folderKey, target);
+    this.log.info(`GateDrop: received files go to "${target}"`);
+    this.emit('state', this.status());
+    return this.folderInfo();
+  }
+
+  /** "Zurücksetzen": back to Downloads\GateControl → folderInfo(). */
+  resetFolder() {
+    if (this.store) {
+      try {
+        if (typeof this.store.delete === 'function') this.store.delete(this.folderKey);
+        else this.store.set(this.folderKey, null);
+      } catch (err) { this.log.warn(`GateDrop folder could not be reset: ${err.message}`); }
+    }
+    this.emit('state', this.status());
+    return this.folderInfo();
+  }
+
   async openFolder() {
-    const dir = this.downloadsDir();
+    const dir = await this._receiveDir();
     await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
     if (this.shell && typeof this.shell.openPath === 'function') {
       const err = await this.shell.openPath(dir);
@@ -1429,8 +1507,8 @@ class GateDropService extends EventEmitter {
     return (own && from.deviceName) || from.name || from.deviceName || t('gatedrop.someone');
   }
 
-  _folderLabel() {
-    const dir = this.downloadsDir();
+  _folderLabel(file = null) {
+    const dir = file ? path.dirname(file) : this.folder();
     return `${path.basename(path.dirname(dir))}\\${path.basename(dir)}`;
   }
 
@@ -1443,7 +1521,7 @@ class GateDropService extends EventEmitter {
       title = rec.files.length === 1
         ? t('gatedrop.toast.receivedFile', { from, name: rec.files[0].name })
         : t('gatedrop.toast.receivedFiles', { from, count: rec.files.length });
-      body = t('gatedrop.toast.savedIn', { folder: this._folderLabel() });
+      body = t('gatedrop.toast.savedIn', { folder: this._folderLabel(rec.files[0].path) });
       buttons.push({ label: t('gatedrop.toast.openFolder'), action: { type: 'folder', sendId: rec.sendId } });
       buttons.push({ label: t('gatedrop.toast.show'), action: { type: 'show', path: rec.files[0].path, sendId: rec.sendId } });
     } else if (rec.link) {

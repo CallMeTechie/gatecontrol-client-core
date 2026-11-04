@@ -53,6 +53,7 @@ const appSigninUtil = require('./utils/app-signin');
 const { isSafeExternalUrl, openExternalSafely } = require('./utils/external-url');
 const { revealItem, explorerShell } = require('./utils/reveal');
 const { runAs } = require('./utils/session-user');
+const userFolders = require('./utils/user-folders');
 const windowGuard = require('./utils/window-guard');
 const autostartTask = require('./utils/autostart-task');
 const { reconnectDelay, shouldOpenPortal, connectSteps, waitForHandshake } = require('./utils/tunnel-logic');
@@ -149,6 +150,10 @@ module.exports = {
   revealItem,
   explorerShell,
   runAs,
+  // the folders of the person signed in (also when the app runs as another Windows user): userPath('downloads') …
+  userFolders,
+  userPath: userFolders.userPath,
+  dialogPath: userFolders.dialogPath,
   windowGuard,
   installWindowGuard: windowGuard.installWindowGuard,
   autostartTask,

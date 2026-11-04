@@ -212,12 +212,33 @@ describe('logs:save ("Export")', () => {
   });
 });
 
+describe('logs:save as another Windows user', () => {
+  it('the dialog starts in the Downloads of the person signed in (utils/user-folders.js)', async () => {
+    const asked = [];
+    const userFolders = { userPath: (k) => `C:\\Users\\Jürgen\\${k}`, dialogPath: () => undefined, info: () => ({}) };
+    const { handlers } = makeCtx({
+      userFolders,
+      app: { getName: () => 'GateControl Pro Client', getVersion: () => '1.0.0', getPath: (k) => `C:\\Users\\Admin\\${k}`, setLoginItemSettings() {} },
+      dialog: { showSaveDialog: async (_win, o) => { asked.push(o); return { canceled: true }; } },
+    });
+    assert.deepEqual(await handlers['logs:save']({}), { ok: false, cancelled: true });
+    assert.match(asked[0].defaultPath, /^C:\\Users\\Jürgen\\downloads[\\/]GateControl-Pro-Client-Protokoll-/);
+  });
+});
+
 describe('system:run-as', () => {
   it('answers who runs the app (another Windows user is only known on Windows)', async () => {
     const { handlers } = makeCtx({ app: { getPath: (k) => (k === 'downloads' ? '/home/x/Downloads' : null) } });
     const r = await handlers['system:run-as']({});
     assert.equal(typeof r.differs, 'boolean');
     assert.equal(r.downloads, '/home/x/Downloads');
+    assert.equal(r.downloadsSource, 'app');
+  });
+
+  it('another Windows user: whose folders are used', async () => {
+    const info = { processUser: 'Admin', sessionUser: 'Jürgen', differs: true, profile: 'C:\\Users\\Admin', sessionProfile: 'C:\\Users\\Jürgen', downloads: 'C:\\Users\\Jürgen\\Downloads', downloadsSource: 'registry', unreachable: null };
+    const { handlers } = makeCtx({ userFolders: { userPath: () => null, dialogPath: () => undefined, info: () => info } });
+    assert.deepEqual(await handlers['system:run-as']({}), info);
   });
 });
 
