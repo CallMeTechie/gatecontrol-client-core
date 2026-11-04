@@ -218,6 +218,51 @@ describe('GateDropService', () => {
     assert.equal(fs.readdirSync(downloads).length, 3);
   });
 
+  it('"Speicherort für empfangene Dateien": a chosen folder, checked, used, reset; gone → Downloads\\GateControl', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const { svc, downloads, store } = await setup(srv);
+    const chosen = tmpDir('gd-chosen-');
+    const states = [];
+    svc.on('state', (st) => states.push(st));
+    assert.deepEqual(svc.folderInfo(), { ok: true, folder: downloads, custom: false, defaultFolder: downloads });
+
+    await assert.rejects(svc.setFolder('relative\\dir'), (e) => e.code === 'invalid');
+    await assert.rejects(svc.setFolder(path.join(chosen, 'missing')), (e) => e.code === 'folder_missing');
+    assert.deepEqual(await svc.setFolder(chosen), { ok: true, folder: chosen, custom: true, defaultFolder: downloads });
+    assert.deepEqual(fs.readdirSync(chosen), [], 'the write check leaves nothing behind');
+    assert.equal(store.get('gatedropFolder'), chosen);
+    assert.equal(svc.status().folder, chosen);
+    assert.equal(svc.status().folderCustom, true);
+    assert.equal(states.at(-1).folder, chosen);
+
+    // received files go to the chosen folder
+    const send = srv.addSend({ from: { name: 'Büro-PC' }, items: [{ name: 'plan.pdf', data: Buffer.from('%PDF') }] });
+    const r = await svc.saveSend(send.id);
+    assert.equal(r.ok, true);
+    assert.equal(fs.readFileSync(path.join(chosen, 'plan.pdf'), 'utf8'), '%PDF');
+
+    // the chosen folder is gone (USB drive …): Downloads\GateControl, nothing is lost
+    fs.rmSync(chosen, { recursive: true, force: true });
+    const send2 = srv.addSend({ from: { name: 'Büro-PC' }, items: [{ name: 'b.txt', data: Buffer.from('b') }] });
+    assert.equal((await svc.saveSend(send2.id)).ok, true);
+    assert.equal(fs.readFileSync(path.join(downloads, 'b.txt'), 'utf8'), 'b');
+
+    assert.deepEqual(svc.resetFolder(), { ok: true, folder: downloads, custom: false, defaultFolder: downloads });
+    assert.equal(svc.status().folderCustom, false);
+  });
+
+  it('a folder this process may not write into is refused', { skip: process.platform === 'win32' || process.getuid?.() === 0 ? 'root / Windows: no read-only folder' : false }, async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const { svc } = await setup(srv);
+    const ro = tmpDir('gd-ro-');
+    fs.chmodSync(ro, 0o555);
+    cleanup.push(() => fs.chmodSync(ro, 0o755));
+    await assert.rejects(svc.setFolder(ro), (e) => e.code === 'folder_readonly');
+    assert.equal(svc.folderInfo().custom, false);
+  });
+
   it('a text send: toast with "Kopieren"; data pushes are not stored, quiet hours stay silent', async () => {
     const srv = await gatedropServer();
     cleanup.push(() => srv.close());
@@ -695,10 +740,16 @@ describe('GateDrop IPC', () => {
       inbox: async (o) => ({ ok: true, ...o, items: [] }),
       deviceAccess: async () => ({ ok: true, supported: true, receiveFrom: 'self' }),
       setDeviceAccess: async (m) => { calls.push(['access', m]); return { ok: true, supported: true, receiveFrom: m }; },
+      folder: () => 'C:\\Users\\max\\Downloads\\GateControl',
+      setFolder: async (dir) => ({ ok: true, folder: dir, custom: true }),
+      resetFolder: () => ({ ok: true, folder: 'C:\\Users\\max\\Downloads\\GateControl', custom: false }),
     });
+    const asked = [];
+    let pickAnswer = { canceled: true, filePaths: [] };
     registerGateDropHandlers((ch, fn) => { handlers[ch] = fn; }, {
       gatedrop: svc, log, getMainWindow: () => ({ webContents: { send: (ch, p) => sent.push([ch, p]) } }),
-      dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+      dialog: { showOpenDialog: async (_w, o) => { asked.push(o); return pickAnswer; } },
+      dialogPath: (key) => `C:\\Users\\max\\${key}`,
     });
     assert.equal((await handlers['gatedrop:prepare']({}, { paths: 'C:\\x' })).code, 'invalid');
     assert.equal((await handlers['gatedrop:send']({}, { files: [], text: 'x'.repeat(20001), to: {} })).code, 'invalid');
@@ -706,6 +757,13 @@ describe('GateDrop IPC', () => {
     assert.equal(calls.find((c) => c[0] === 'send')[1].job, 'j1');
     assert.equal((await handlers['gatedrop:show']({}, { path: 'C:\\x' })).code, 'invalid');
     assert.equal((await handlers['gatedrop:pick']({})).code, 'cancelled');
+    assert.equal(asked[0].defaultPath, 'C:\\Users\\max\\documents', 'files to send: the Documents of the person signed in');
+    assert.equal((await handlers['gatedrop:folder:pick']({})).code, 'cancelled');
+    assert.equal(asked.at(-1).defaultPath, 'C:\\Users\\max\\Downloads\\GateControl', 'the dialog starts in the folder used now');
+    assert.deepEqual(asked.at(-1).properties, ['openDirectory', 'createDirectory', 'dontAddToRecent']);
+    pickAnswer = { canceled: false, filePaths: ['D:\\Empfang'] };
+    assert.deepEqual(await handlers['gatedrop:folder:pick']({}), { ok: true, folder: 'D:\\Empfang', custom: true });
+    assert.deepEqual(await handlers['gatedrop:folder:reset']({}), { ok: true, folder: 'C:\\Users\\max\\Downloads\\GateControl', custom: false });
     assert.deepEqual(await handlers['gatedrop:explorer']({}, { enabled: true }), { ok: true, enabled: false, supported: false });
     assert.deepEqual(await handlers['gatedrop:access']({}), { ok: true, supported: true, receiveFrom: 'self' });
     assert.equal((await handlers['gatedrop:access:set']({}, { receiveFrom: 'all' })).code, 'invalid');

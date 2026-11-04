@@ -76,7 +76,7 @@ describe('createBridgeApi', () => {
       'drive:vault:lock-status', 'drive:vault:open', 'drive:vault:recover',
       'drive:vault:request', 'drive:vault:rotate', 'drive:vault:status', 'drive:vault:touch', 'drive:vault:unlock', 'drive:vaults', 'drive:version:restore',
       'drive:versions', 'drive:zip',
-      'gatedrop:access', 'gatedrop:access:set', 'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:inbox',
+      'gatedrop:access', 'gatedrop:access:set', 'gatedrop:check', 'gatedrop:compose:take', 'gatedrop:copy', 'gatedrop:explorer', 'gatedrop:folder', 'gatedrop:folder:pick', 'gatedrop:folder:reset', 'gatedrop:inbox',
       'gatedrop:link:end', 'gatedrop:open', 'gatedrop:open-link', 'gatedrop:pick', 'gatedrop:prepare', 'gatedrop:send',
       'gatedrop:send:get', 'gatedrop:send:save', 'gatedrop:show', 'gatedrop:status', 'gatedrop:targets',
       'killswitch:toggle', 'locale:get',

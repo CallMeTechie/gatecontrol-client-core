@@ -1241,6 +1241,12 @@
     "folder": "Gespeichert in {{folder}}",
     "folderLabel": "Empfangene Dateien",
     "openFolder": "Ordner öffnen",
+    "folderPick": "Speicherort für empfangene Dateien",
+    "folderChange": "Ändern …",
+    "folderChangeTitle": "Speicherort für empfangene Dateien ändern",
+    "folderReset": "Zurücksetzen",
+    "folderResetTitle": "Wieder im Standardordner speichern: {{folder}}",
+    "folderCustom": "Selbst gewählt",
     "explorer": "Im Explorer unter „Senden an“ anzeigen",
     "explorerHint": "Rechtsklick auf Dateien › Senden an › GateDrop",
     "access": {
@@ -1431,9 +1437,13 @@
       "changed": "Eine Datei wurde inzwischen geändert – bitte neu auswählen.",
       "forbidden": "Das darfst du nicht.",
       "invalid": "Die Anfrage war ungültig.",
+      "folder_missing": "Diesen Ordner gibt es nicht (mehr).",
+      "folder_readonly": "In diesen Ordner darf GateControl nicht schreiben – bitte einen anderen wählen.",
       "failed": "Das hat nicht geklappt ({{code}})."
     },
-    "runAs": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“: Empfangenes landet in den Downloads von „{{user}}“ (Pfad oben), und Windows zeigt keine Benachrichtigungen. GateControl mit dem eigenen Konto starten (es braucht Administratorrechte).",
+    "runAs": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Empfangene Dateien speichert GateControl trotzdem im Ordner von „{{session}}“: {{path}}. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
+    "runAsUnknown": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Die Ordner von „{{session}}“ ließen sich nicht ermitteln: Empfangenes landet in den Downloads von „{{user}}“ (Pfad oben) – oder mit „Ändern …“ einen Ordner wählen. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
+    "runAsUnreachable": "Der umgeleitete Download-Ordner „{{folder}}“ ist für „{{user}}“ nicht erreichbar, daher der Ordner im Benutzerprofil.",
     "receiveError": {
       "text": "Nicht auf diesem PC gespeichert: {{why}} „Speichern“ lädt es erneut.",
       "checking": "Wird noch auf Viren geprüft – wird automatisch geladen, sobald die Prüfung fertig ist.",

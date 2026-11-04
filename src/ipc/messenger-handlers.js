@@ -86,6 +86,7 @@ const {
   posInt, isClientId, isMediaId, isAvatarPath, isNotifyMediaPath, safeFileName, unsafeToOpen, extForMime, extOf, prefsBody,
 } = require('../utils/messenger');
 const SC = require('../utils/scan');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const CHAT_EVENTS = {
   state: 'chat:state',
@@ -138,12 +139,14 @@ async function markOfTheWeb(file, platform, fsp) {
  * @param {object} [deps.dialog] - Electron dialog (save as)
  * @param {object} [deps.shell] - Electron shell (open)
  * @param {Function} [deps.getTempDir] - () => folder for opened files
+ * @param {Function} [deps.dialogPath] - utils/user-folders dialogPath (save dialogs: the Downloads of the person signed in)
  * @param {string} [deps.platform]
  * @param {object} [deps.fsp]
  */
 function registerMessengerHandlers(handle, {
   messenger: m, chatNotifier = null, maps = null, getMainWindow, log, dialog = null, shell = null,
   getTempDir = () => path.join(os.tmpdir(), 'gatecontrol-chat'), platform = process.platform, fsp = fs.promises,
+  dialogPath = defaultDialogPath,
 }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
@@ -271,7 +274,7 @@ function registerMessengerHandlers(handle, {
     const r = await m.media(a.mediaId);
     const name = nameFor(a, r.mime);
     const win = getMainWindow && getMainWindow();
-    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: name });
+    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: dialogPath('downloads', name) });
     if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
     await fsp.writeFile(res.filePath, r.data);
     await markOfTheWeb(res.filePath, platform, fsp);
@@ -343,7 +346,7 @@ function registerMessengerHandlers(handle, {
     const r = await m.exportChat(posInt(a.id));
     const name = safeFileName(r.fileName, 'Chat.txt');
     const win = getMainWindow && getMainWindow();
-    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: extOf(name) === 'txt' ? name : `${name}.txt`, filters: [{ name: 'Text', extensions: ['txt'] }] });
+    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: dialogPath('downloads', extOf(name) === 'txt' ? name : `${name}.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
     if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
     // UTF-8 with BOM: umlauts read right in every Windows editor.
     await fsp.writeFile(res.filePath, `\ufeff${r.text.replace(/\r?\n/g, '\r\n')}`, 'utf8');

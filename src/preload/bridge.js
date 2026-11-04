@@ -94,7 +94,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
     },
 
     // ── System ───────────────────────────────────────────
-    // → { processUser, sessionUser, differs, profile, downloads }: does the app run as another Windows user?
+    // → { processUser, sessionUser, differs, profile, sessionProfile, downloads, downloadsSource, unreachable }:
+    // does the app run as another Windows user, and whose folders are used (utils/user-folders.js)?
     system: {
       runAs: () => ipcRenderer.invoke('system:run-as'),
     },
@@ -310,6 +311,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       saveSend:    (id) => ipcRenderer.invoke('gatedrop:send:save', { id }),
       endLink:     (token) => ipcRenderer.invoke('gatedrop:link:end', { token }),
       openFolder:  () => ipcRenderer.invoke('gatedrop:folder'),
+      // "Speicherort für empfangene Dateien": folder dialog / back to Downloads\GateControl → { ok, folder, custom, defaultFolder }
+      pickFolder:  () => ipcRenderer.invoke('gatedrop:folder:pick'),
+      resetFolder: () => ipcRenderer.invoke('gatedrop:folder:reset'),
       showItem:    (path) => ipcRenderer.invoke('gatedrop:show', { path }),
       openItem:    (path) => ipcRenderer.invoke('gatedrop:open', { path }),
       copy:        (text) => ipcRenderer.invoke('gatedrop:copy', { text }),

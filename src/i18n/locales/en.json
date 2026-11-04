@@ -1241,6 +1241,12 @@
     "folder": "Saved in {{folder}}",
     "folderLabel": "Received files",
     "openFolder": "Open folder",
+    "folderPick": "Location for received files",
+    "folderChange": "Change …",
+    "folderChangeTitle": "Change the location for received files",
+    "folderReset": "Reset",
+    "folderResetTitle": "Save to the default folder again: {{folder}}",
+    "folderCustom": "Chosen by you",
     "explorer": "Show under “Send to” in the Explorer",
     "explorerHint": "Right-click files › Send to › GateDrop",
     "access": {
@@ -1431,9 +1437,13 @@
       "changed": "A file was changed meanwhile – please choose it again.",
       "forbidden": "You are not allowed to do that.",
       "invalid": "The request was invalid.",
+      "folder_missing": "This folder does not exist (any more).",
+      "folder_readonly": "GateControl may not write to this folder – please choose another one.",
       "failed": "That did not work ({{code}})."
     },
-    "runAs": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”: received files go to the Downloads of “{{user}}” (path above), and Windows shows no notifications. Start GateControl with your own account (it needs administrator rights).",
+    "runAs": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. Received files still go to the folder of “{{session}}”: {{path}}. Windows notifications do not work this way – GateControl shows them itself.",
+    "runAsUnknown": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. The folders of “{{session}}” could not be found: received files go to the Downloads of “{{user}}” (path above) – or choose a folder with “Change …”. Windows notifications do not work this way – GateControl shows them itself.",
+    "runAsUnreachable": "The redirected Downloads folder “{{folder}}” cannot be reached by “{{user}}”, so the folder in the user profile is used.",
     "receiveError": {
       "text": "Not saved on this PC: {{why}} “Save” loads it again.",
       "checking": "Still being checked for viruses – loads on its own once the check is done.",
