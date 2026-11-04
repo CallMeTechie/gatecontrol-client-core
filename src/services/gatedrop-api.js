@@ -164,7 +164,8 @@ class GateDropApi {
     // fallback: null (delivered / nothing to do) | 'server' (the server delivers) | 'upload' (+ missing item indexes)
     const fallback = r && (r.fallback === 'upload' || r.fallback === 'server') ? r.fallback : null;
     const missing = r && Array.isArray(r.missing) ? r.missing.filter((i) => Number.isSafeInteger(i) && i >= 0 && i < gd.MAX_ITEMS) : null;
-    return { fallback, missing };
+    // delivery: where it stands now (GateDrop 1.5 with `pickedAt`) — { status, via, error, pickedAt? } or null
+    return { fallback, missing, delivery: gd.resultDeliveryOf(r && r.delivery) };
   }
 
   /**

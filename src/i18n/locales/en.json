@@ -1238,6 +1238,13 @@
     "refresh": "Refresh",
     "someone": "Someone",
     "retention": "Received items stay on the server for 7 days.",
+    "retentionDays": "Received items stay on the server for {{days}}.",
+    "retentionSplit": "Received items stay on the server for {{after}} after they are picked up, otherwise for {{unpicked}}.",
+    "retentionNow": "Received items are deleted from the server once picked up; items not picked up stay for {{unpicked}}.",
+    "days": {
+      "one": "1 day",
+      "other": "{{n}} days"
+    },
     "folder": "Saved in {{folder}}",
     "folderLabel": "Received files",
     "openFolder": "Open folder",
@@ -1389,7 +1396,8 @@
       "linkOnce": "download once",
       "copyLink": "Copy link",
       "today": "today {{time}}",
-      "yesterday": "yesterday {{time}}"
+      "yesterday": "yesterday {{time}}",
+      "removed": "Removed by the admin"
     },
     "status": {
       "pending": "waiting",
@@ -1398,7 +1406,12 @@
       "delivered": "delivered",
       "opened": "opened",
       "failed": "failed",
-      "expired": "expired"
+      "expired": "expired",
+      "provided": "provided",
+      "received": "received",
+      "picked": "picked up",
+      "removed": "removed by the admin",
+      "incomplete": "not all files arrived"
     },
     "via": {
       "direct": "directly over Wi-Fi",
@@ -1439,7 +1452,8 @@
       "invalid": "The request was invalid.",
       "folder_missing": "This folder does not exist (any more).",
       "folder_readonly": "GateControl may not write to this folder – please choose another one.",
-      "failed": "That did not work ({{code}})."
+      "failed": "That did not work ({{code}}).",
+      "gone": "The send has expired or was removed by the admin."
     },
     "runAs": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. Received files still go to the folder of “{{session}}”: {{path}}. Windows notifications do not work this way – GateControl shows them itself.",
     "runAsUnknown": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. The folders of “{{session}}” could not be found: received files go to the Downloads of “{{user}}” (path above) – or choose a folder with “Change …”. Windows notifications do not work this way – GateControl shows them itself.",
@@ -1451,7 +1465,7 @@
       "timeout": "The server did not answer in time.",
       "network": "The server could not be reached.",
       "not_found": "The send is no longer on the server.",
-      "gone": "The send has expired.",
+      "gone": "The send has expired or was removed by the admin.",
       "other": "Error ({{code}})."
     }
   },
