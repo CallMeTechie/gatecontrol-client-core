@@ -47,6 +47,17 @@ describe('ApiClient internal DNS', () => {
     assert.equal(old.internalDns, undefined);
   });
 
+  it('fetchConfig takes a shorter timeout for the connect (a local config can be used instead)', async () => {
+    const c = new ApiClient('https://gate.example.com', 'gc_x', log, 7, {});
+    const asked = [];
+    c.client.get = async (url, opts) => { asked.push(opts); return { data: { ok: true, config: '[Interface]' } }; };
+    await c.fetchConfig({ timeout: 6000 });
+    await c.fetchConfig();
+    assert.equal(asked[0].timeout, 6000);
+    assert.equal('timeout' in asked[1], false, 'the client\'s own timeout otherwise');
+    assert.deepEqual(asked[0].params, { peerId: 7 });
+  });
+
   it('a changed config from config/check updates it too', async () => {
     const c = answering({ ok: true, updated: true, config: '[Interface]', hash: 'h2', internalDns: { domain: 'lan.x', server: '10.9.0.1' } });
     await c.checkConfigUpdate();

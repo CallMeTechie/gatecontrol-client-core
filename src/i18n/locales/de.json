@@ -80,7 +80,10 @@
     "loading": "Lade Logs...",
     "empty": "Keine Logs vorhanden",
     "export": "Export",
-    "filterAll": "Alle"
+    "filterAll": "Alle",
+    "saveTitle": "Protokoll exportieren",
+    "saveFilter": "Protokolldatei",
+    "saveName": "Protokoll"
   },
   "update": {
     "title": "Update",
@@ -1429,6 +1432,17 @@
       "forbidden": "Das darfst du nicht.",
       "invalid": "Die Anfrage war ungültig.",
       "failed": "Das hat nicht geklappt ({{code}})."
+    },
+    "runAs": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“: Empfangenes landet in den Downloads von „{{user}}“ (Pfad oben), und Windows zeigt keine Benachrichtigungen. GateControl mit dem eigenen Konto starten (es braucht Administratorrechte).",
+    "receiveError": {
+      "text": "Nicht auf diesem PC gespeichert: {{why}} „Speichern“ lädt es erneut.",
+      "checking": "Wird noch auf Viren geprüft – wird automatisch geladen, sobald die Prüfung fertig ist.",
+      "download_failed": "Das Herunterladen ist fehlgeschlagen.",
+      "timeout": "Der Server hat nicht rechtzeitig geantwortet.",
+      "network": "Der Server war nicht erreichbar.",
+      "not_found": "Der Versand ist auf dem Server nicht mehr da.",
+      "gone": "Der Versand ist abgelaufen.",
+      "other": "Fehler ({{code}})."
     }
   },
   "vault": {

@@ -156,6 +156,9 @@ describe('shell:open-external', () => {
       assert.equal(await handlers['shell:open-external']({}, bad), false, bad);
     }
     assert.deepEqual(calls.opened, ['ms-settings:privacy-location']);
+    // the notifications page (Windows refuses the app's toasts: switch them on there)
+    assert.equal(await handlers['shell:open-external']({}, 'ms-settings:notifications'), true);
+    assert.equal(await handlers['shell:open-external']({}, 'ms-settings:notifications?x'), false);
   });
 
   it('isSafeExternalUrl (server links) stays http(s) only', () => {
@@ -174,6 +177,47 @@ describe('logs:show', () => {
     const { handlers, calls } = makeCtx();
     assert.equal(await handlers['logs:show']({}, 'C:\\Windows\\evil.exe'), true);
     assert.deepEqual(calls.shown, ['C:\\logs\\main.log']);
+  });
+});
+
+describe('logs:save ("Export")', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  it('saves the older and the current log into the file picked (Downloads by default) and shows it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-logsave-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'main.old.log'), 'old\r\n');
+      fs.writeFileSync(path.join(dir, 'main.log'), 'new\r\n');
+      const out = path.join(dir, 'export.log');
+      const asked = [];
+      const { handlers, calls } = makeCtx({
+        app: { getName: () => 'GateControl Pro Client', getVersion: () => '1.0.0', getPath: (k) => (k === 'downloads' ? 'D:\\Downloads' : null), setLoginItemSettings() {} },
+        dialog: { showSaveDialog: async (_win, o) => { asked.push(o); return { canceled: false, filePath: out }; } },
+        log: { info() {}, warn() {}, error() {}, debug() {}, transports: { file: { getFile: () => ({ path: path.join(dir, 'main.log') }) } } },
+      });
+      const r = await handlers['logs:save']({}, 'C:\\Windows\\evil.exe');
+      assert.deepEqual(r, { ok: true, path: out });
+      assert.equal(fs.readFileSync(out, 'utf8'), 'old\r\nnew\r\n');
+      assert.match(asked[0].defaultPath, /^D:\\Downloads[\\/]GateControl-Pro-Client-Protokoll-\d{4}-\d{2}-\d{2}-\d{4}\.log$/);
+      assert.deepEqual(calls.shown, [out]);
+      // cancelled: nothing written, nothing shown
+      const c = makeCtx({ dialog: { showSaveDialog: async () => ({ canceled: true }) }, app: { getPath: () => dir, getName: () => 'x' } });
+      assert.deepEqual(await c.handlers['logs:save']({}), { ok: false, cancelled: true });
+      assert.deepEqual(c.calls.shown, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('system:run-as', () => {
+  it('answers who runs the app (another Windows user is only known on Windows)', async () => {
+    const { handlers } = makeCtx({ app: { getPath: (k) => (k === 'downloads' ? '/home/x/Downloads' : null) } });
+    const r = await handlers['system:run-as']({});
+    assert.equal(typeof r.differs, 'boolean');
+    assert.equal(r.downloads, '/home/x/Downloads');
   });
 });
 

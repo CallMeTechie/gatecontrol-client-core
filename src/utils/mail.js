@@ -639,7 +639,9 @@ function idList(v) {
 
 /**
  * Query of GET messages ({ box, folder, tab, unread, flagged, attachments, before, limit }) → params, or null when
- * an argument is invalid. `box`: 'all' or an account id; `folder` only with an account.
+ * an argument is invalid. `box`: 'all' or an account id; `folder` only with an account. The filters are on with
+ * `true`, and with `1` / `'1'` too: MailService.list() and MailApi.messages() both pass the query through here, the
+ * second time with the params of the first (the filters used to get lost there and the list ignored them).
  */
 function listQuery(q = {}) {
   const o = obj(q) || {};
@@ -654,7 +656,7 @@ function listQuery(q = {}) {
     if (!['relevant', 'other', 'all'].includes(o.tab)) return null;
     p.tab = o.tab;
   }
-  for (const k of ['unread', 'flagged', 'attachments']) if (o[k] === true) p[k] = 1;
+  for (const k of ['unread', 'flagged', 'attachments']) if (o[k] === true || o[k] === 1 || o[k] === '1') p[k] = 1;
   if (o.before !== undefined && o.before !== null) {
     if (!cursorOf(o.before)) return null;
     p.before = o.before;
@@ -691,7 +693,7 @@ function searchQuery(q = {}) {
     if (!ms) return null;
     p[k] = ms;
   }
-  for (const k of ['attachments', 'unread']) if (o[k] === true) p[k] = 1;
+  for (const k of ['attachments', 'unread']) if (o[k] === true || o[k] === 1 || o[k] === '1') p[k] = 1;
   if (o.cursor !== undefined && o.cursor !== null) {
     if (!cursorOf(o.cursor)) return null;
     p.cursor = o.cursor;

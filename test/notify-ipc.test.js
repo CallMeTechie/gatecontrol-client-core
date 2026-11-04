@@ -167,7 +167,7 @@ describe('notify IPC', () => {
     assert.ok(channels.includes('notify:new'));
     assert.ok(channels.includes('notify:navigate'));
     assert.equal(sent.find((s) => s[0] === 'notify:new')[1].seq, 1);
-    assert.deepEqual(Object.values(NOTIFY_EVENTS).sort(), ['notify:navigate', 'notify:new', 'notify:status', 'notify:update']);
+    assert.deepEqual(Object.values(NOTIFY_EVENTS).sort(), ['notify:fallback', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update']);
     const before = sent.length;
     setWindow({ isDestroyed: () => true, webContents: { send: () => { throw new Error('destroyed'); } } });
     center.handleNotification(n(2));

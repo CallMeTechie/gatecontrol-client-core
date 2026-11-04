@@ -133,6 +133,11 @@ describe('utils/mail', () => {
     assert.deepEqual(mail.searchQuery({ from: 'news@ionos.de', box: 2, cursor: '123.4' }), { box: '2', from: 'news@ionos.de', cursor: '123.4' });
     assert.equal(mail.searchQuery({ from: '' }), null);
     assert.equal(mail.searchQuery({ from: 'x', q: 'y'.repeat(201) }), null);
+    // the params of a first pass go through again unchanged (MailService.list → MailApi.messages): the filters stay
+    const once = mail.listQuery({ box: 'all', tab: 'relevant', unread: true, flagged: true, attachments: true });
+    assert.deepEqual(mail.listQuery(once), once);
+    assert.deepEqual(mail.listQuery({ unread: '1', flagged: 1, attachments: false }), { box: 'all', unread: 1, flagged: 1, limit: 50 });
+    assert.deepEqual(mail.listQuery({ unread: 'true', flagged: 2 }), { box: 'all', limit: 50 }, 'only true / 1 / "1" turn a filter on');
     assert.equal(mail.listKey(mail.listQuery({ box: 1, tab: 'relevant' })), '1||relevant|||');
     assert.equal(mail.isInboxKey(mail.listQuery({ box: 1, folder: 12 })), false);
   });
@@ -293,6 +298,24 @@ describe('MailService', () => {
     // Phase 2: the person's contact comes first (its id for the sender's page)
     const c = await svc.contacts('tim@firma.de');
     assert.deepEqual(c.items, [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'contact', contactId: 402, photo: false, groupId: null, members: null }]);
+  });
+
+  it('the filters Ungelesen / Markiert / Mit Anhang reach the server and change the list', async () => {
+    const { svc, srv } = await setup();
+    srv.state.messages.get(102).flagged = true;
+    const all = await svc.list({ box: 'all', tab: 'relevant' });
+    assert.ok(all.items.length > 2);
+    const unread = await svc.list({ box: 'all', tab: 'relevant', unread: true });
+    assert.ok(unread.items.length > 0 && unread.items.every((m) => m.unread), 'only unread mail');
+    assert.ok(unread.items.length < all.items.length);
+    const flagged = await svc.list({ box: 'all', tab: 'relevant', flagged: true });
+    assert.deepEqual(flagged.items.map((m) => m.id), [102]);
+    const att = await svc.list({ box: 'all', tab: 'relevant', attachments: true });
+    assert.ok(att.items.length > 0 && att.items.every((m) => m.hasAttachments));
+    const asked = srv.state.requests.filter((x) => x.path.endsWith('/api/messages')).map((x) => x.query);
+    assert.equal(asked[1].unread, '1');
+    assert.equal(asked[2].flagged, '1');
+    assert.equal(asked[3].attachments, '1');
   });
 
   it('offline: the last lists and opened mails come from the encrypted cache (30 days of the inbox filled)', async () => {

@@ -154,12 +154,14 @@ class ApiClient {
   /**
    * WireGuard-Config vom Server abrufen
    */
-  async fetchConfig() {
+  async fetchConfig({ timeout } = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');
     if (!this.peerId) throw new Error('Nicht registriert (keine Peer-ID)');
 
+    // `timeout` (ms): shorter than the client's own while a local config can be used instead (the connect waits for it)
     const { data } = await this.client.get('/api/v1/client/config', {
       params: { peerId: this.peerId },
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
     });
 
     if (data.config) {

@@ -37,6 +37,9 @@
  *   'portal'   ({ path })                  portal path requested (when no openPortal is given)
  *   'action'   ({ id, seq, action, type }) an action was performed
  *   'data'     ({ topic, data })           a data push (`kind: "data"`) no handler took; never shown
+ *   'fallback' ({ title, body, route?, id? }) Windows refused the toast (notifications of the app
+ *                                          switched off, another Windows user, …): the app shows it
+ *                                          itself; status().toastsBlocked says so (see toastBlocked())
  *
  * Electron-free when `Notification` is injected (tests); otherwise Electron's
  * Notification is required lazily.
@@ -58,6 +61,16 @@ const TOPIC_RE = /^(?:security|devices|services|system|admin_notice|plugin:[a-z0
 const MAX_ITEMS = 100;
 const ACTION_TYPES = ['open_app_route', 'open_portal', 'mute_1h', 'ack', 'done', 'callback'];
 const ACTED_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
+// Windows refused a toast with E_ACCESSDENIED (0x80070005, HRESULT -2147024891): the app's notifications are off in
+// the Windows settings, or the app runs as another Windows user than the one signed in. For this long toasts are not
+// tried again (the app shows them itself), then once more.
+const TOAST_BLOCK_MS = 15 * 60 * 1000;
+const DENIED_RE = /-2147024891|0x80070005|E_ACCESSDENIED|access is denied|zugriff verweigert/i;
+
+/** Is this 'failed' error of a toast Windows' refusal (E_ACCESSDENIED)? */
+function isToastDenied(error) {
+  return DENIED_RE.test(String((error && error.message) || error || ''));
+}
 const MUTE_MS = 60 * 60 * 1000;
 const MAX_TOASTS = 50; // toast references kept for close() (Action Center)
 const QUIET_PORTAL_TARGET = '/portal#benachrichtigungen'; // portal tab "Meine Benachrichtigungen"
@@ -191,6 +204,7 @@ class NotificationCenter extends EventEmitter {
     this._pushHandlers = [];       // services that take over some pushes (addPushHandler, e.g. GateDrop)
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
+    this._toastBlock = null;      // { at, error } while Windows refuses the toasts (isToastDenied)
     this._byCollapse = new Map(); // collapse_key → notification id
     this._nonces = new Map();     // nonce → { id, actionId }
     this._recentToasts = [];
@@ -737,7 +751,47 @@ class NotificationCenter extends EventEmitter {
     return {
       ...push, unread: this.unreadCount(), dnd: this.dndState(), toasts: s.toasts, enabled: s.enabled,
       quiet: this._quiet.value ? { ...this._quiet.value } : null, quietKnown: this._quiet.known,
+      toastsBlocked: !!this._toastBlock,
     };
+  }
+
+  // ── Windows refuses the toasts ───────────────────────────
+
+  /** Does Windows refuse the toasts right now (E_ACCESSDENIED, less than TOAST_BLOCK_MS ago)? */
+  toastBlocked() {
+    return !!this._toastBlock && this.now() - this._toastBlock.at < TOAST_BLOCK_MS;
+  }
+
+  /**
+   * A toast failed (Electron 'failed'): Windows' refusal marks the toasts as blocked (status, log once) → true;
+   * any other error → false. Also for the toasts other services show themselves (GateDrop).
+   */
+  reportToastFailure(error) {
+    if (!isToastDenied(error)) return false;
+    const first = !this._toastBlock;
+    this._toastBlock = { at: this.now(), error: String((error && error.message) || error || '').slice(0, 200) };
+    if (first) {
+      this.log.warn('Windows refuses the notifications of this app (E_ACCESSDENIED): notifications are switched off for it in the Windows settings, or it runs as another Windows user – shown in the app instead');
+      this.emit('status', this.status());
+    }
+    return true;
+  }
+
+  /** A toast was shown: Windows takes them again. */
+  reportToastShown() {
+    if (!this._toastBlock) return;
+    this._toastBlock = null;
+    this.log.info('Windows shows the notifications of this app again');
+    this.emit('status', this.status());
+  }
+
+  /** The app shows what Windows refused ('fallback'). */
+  fallback({ title, body = '', route = null, id = null, context = null } = {}) {
+    if (!title) return;
+    this.emit('fallback', {
+      title: str(title, 120), body: str(body, 300),
+      ...(route ? { route } : {}), ...(Number.isSafeInteger(id) && id > 0 ? { id } : {}), ...(context ? { context } : {}),
+    });
   }
 
   // ── Chat messages ────────────────────────────────────────
@@ -832,6 +886,11 @@ class NotificationCenter extends EventEmitter {
   _showToast(entry, decision, onClick = null, localActions = []) {
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
+    // Windows refuses them for now: the app shows it (the inbox has the entry anyway)
+    if (this.toastBlocked()) {
+      this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
+      return null;
+    }
 
     // Same collapse key (or same message, e.g. bundled update): replace.
     const key = entry.collapse_key;
@@ -899,7 +958,9 @@ class NotificationCenter extends EventEmitter {
     n.on('failed', (_e, error) => {
       this.log.warn(`Toast failed: ${error}`);
       this._forgetToast(id, n);
+      if (this.reportToastFailure(error)) this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
     });
+    n.on('show', () => this.reportToastShown());
     try { n.show(); } catch (err) { this.log.warn(`Notification could not be shown: ${err.message}`); }
     this._recentToasts.push(this.now());
     return n;
@@ -1091,5 +1152,8 @@ class NotificationCenter extends EventEmitter {
 NotificationCenter.toastDecision = toastDecision;
 NotificationCenter.normalizeEntry = normalizeEntry;
 NotificationCenter.entryActions = entryActions;
+
+NotificationCenter.isToastDenied = isToastDenied;
+NotificationCenter.TOAST_BLOCK_MS = TOAST_BLOCK_MS;
 
 module.exports = NotificationCenter;

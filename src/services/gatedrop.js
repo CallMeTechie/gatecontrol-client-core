@@ -85,6 +85,8 @@ const DEFAULT_TIMING = {
   resumeDelayMs: 5000,         // after resume from sleep: give the network a moment
   scanWaitMs: 10 * 60 * 1000,  // GateDrop 1.4: a send refused with 423 scan_pending is sent again (Retry-After, ~5 s) this long
   scanRecheckMs: [10000, 20000, 40000, 60000, 120000, 120000, 120000, 120000], // a received file still being checked: look again
+  scanRecheckLateMs: 5 * 60 * 1000, // … then every 5 minutes
+  scanRecheckMax: 8 + 48,           // … for about 4 hours in all (afterwards: GET pending at the next connect)
 };
 const MAX_SAVED = 100;
 const MAX_HANDLED = 500;
@@ -183,6 +185,7 @@ class GateDropService extends EventEmitter {
     this._handled = null;        // Set of handled send ids (store `gatedropHandled`), loaded on first use
     this._inflight = new Map();  // send id → Promise of its running download (push and poll share it)
     this._failToasted = new Set(); // sends whose failure was already shown (a poll retries quietly)
+    this._receiveErrors = new Map(); // send id → why its automatic download failed (the page shows it, inbox())
     this._acked = new Set();     // sends acknowledged (POST opened) in this session
     this._polling = null;        // running GET pending
     this._pollAgain = false;     // a trigger came in while it ran
@@ -492,6 +495,9 @@ class GateDropService extends EventEmitter {
       for (const s of out) {
         const rec = saved.find((r) => r.sendId === s.id);
         s.local = rec ? rec.files.filter((f) => this._exists(f.path)).map((f) => ({ name: f.name, path: f.path, bytes: f.bytes })) : [];
+        // the automatic download failed (not saved here): why — the page says so and offers "Speichern"
+        const why = this._receiveErrors.get(s.id);
+        if (why && !s.local.length) s.receiveError = why;
       }
       // Direct transfers the server lists later (or never): show what we saved.
       const known = new Set(out.map((s) => s.id));
@@ -1057,9 +1063,10 @@ class GateDropService extends EventEmitter {
         this.log.warn(`GateDrop item ${it.name} could not be loaded: ${err.code || err.message}`);
       }
     }
+    // GateDrop 1.4: a file the host still checks (pending) is loaded once it is clean
+    const checking = blocked.some((b) => b.scan && b.scan.state === 'pending');
     if (!files.length && !have.length && !send.text && !send.link && blocked.length && !failed) {
       // only blocked files: nothing to save (the inbox shows them as blocked); done with it unless one is still checked
-      const checking = blocked.some((b) => b.scan && b.scan.state === 'pending');
       return checking ? { ok: false, error: 'scan_pending', blocked } : { ok: true, failed: 0, skipped: 'blocked', blocked };
     }
     if (!files.length && !have.length && !send.text && !send.link && (failed || send.items.length)) {
@@ -1067,7 +1074,7 @@ class GateDropService extends EventEmitter {
       return { ok: false, error: 'download_failed' };
     }
     // Saved before (all of it, or the text / link): nothing new to show.
-    if (prior && !files.length) return failed ? { ok: false, error: 'download_failed', failed } : { ok: true, record: prior, failed: 0, skipped: 'saved' };
+    if (prior && !files.length) return failed ? { ok: false, error: 'download_failed', failed } : { ok: true, record: prior, failed: 0, skipped: 'saved', ...(checking ? { checking: true } : {}) };
     const all = [...have, ...files].sort((a, b) => a.index - b.index);
     const rec = this._record({ key: send.id, sendId: send.id, from, files: all, text: send.text, link: send.link, note: send.note, via: 'server', blocked });
     this._inbox.delete('received');
@@ -1075,7 +1082,8 @@ class GateDropService extends EventEmitter {
     // A second attempt names only what it added.
     const fresh = new Set(files.map((f) => f.path));
     this._toastReceived(have.length ? { ...rec, files: rec.files.filter((f) => fresh.has(f.path)), text: null, link: null, note: null } : rec, { quiet: p.quiet === true });
-    return { ok: true, record: rec, failed };
+    // a file still being checked comes later: the send is not done yet (not handled, not acknowledged)
+    return { ok: true, record: rec, failed, ...(checking ? { checking: true } : {}) };
   }
 
   // ── Handled sends / GET pending ──────────────────────────
@@ -1113,16 +1121,17 @@ class GateDropService extends EventEmitter {
    * handled → { ok, skipped: 'handled' }; running → that same promise.
    * Handled once every item is saved; a failure toast only the first time.
    */
-  _receiveOnce(p) {
+  _receiveOnce(p, { failToast: toast = true } = {}) {
     const id = p.sendId;
     if (this._isHandled(id)) return Promise.resolve({ ok: true, skipped: 'handled' });
     const running = this._inflight.get(id);
     if (running) return running;
-    const failToast = !this._failToasted.has(id);
+    const failToast = toast && !this._failToasted.has(id);
     const run = this.receiveSend(p, { failToast, resume: true })
       .catch((err) => ({ ok: false, error: (err && err.code) || 'failed' }))
       .then((r) => {
-        if (r.ok && !r.failed) {
+        this._noteReceive(id, r);
+        if (r.ok && !r.failed && !r.checking) {
           this._markHandled(id);
           this._failToasted.delete(id);
         } else {
@@ -1134,6 +1143,16 @@ class GateDropService extends EventEmitter {
       .finally(() => this._inflight.delete(id));
     this._inflight.set(id, run);
     return run;
+  }
+
+  /** Remembers why the download of send `id` failed (inbox() → receiveError), forgets it once it worked. */
+  _noteReceive(id, r) {
+    if (typeof id !== 'string' || !id) return;
+    if (r && r.ok && !r.failed) { this._receiveErrors.delete(id); return; }
+    const why = r && r.failed ? 'download_failed' : (r && typeof r.error === 'string' && r.error) || 'failed';
+    this._receiveErrors.set(id, why.slice(0, 40));
+    while (this._receiveErrors.size > MAX_HANDLED) this._receiveErrors.delete(this._receiveErrors.keys().next().value);
+    if (this._receiveErrors.get(id) !== 'scan_pending') this.emit('changed', { kind: 'received' });
   }
 
   /** Poll GET pending soon (triggers close together → one poll). */
@@ -1202,7 +1221,8 @@ class GateDropService extends EventEmitter {
       const r = await this._receiveOnce({ kind: 'send', sendId: send.id, send, from: send.from });
       if (r.ok && !r.failed) {
         if (!r.skipped) received++;
-        await this._ack(send.id);
+        // a file still being checked: stays in the pending list until it came too
+        if (!r.checking) await this._ack(send.id);
       } else {
         failed++;
       }
@@ -1231,7 +1251,8 @@ class GateDropService extends EventEmitter {
     const send = await this.api.send(sendId);
     if (!send) throw new GateDropError('send not found', { code: 'not_found' });
     const r = await this.receiveSend({ kind: 'send', sendId: send.id, send, from: send.from });
-    if (r.ok && !r.failed) this._markHandled(send.id);
+    this._noteReceive(send.id, r);
+    if (r.ok && !r.failed && !r.checking) this._markHandled(send.id);
     return r;
   }
 
@@ -1453,13 +1474,15 @@ class GateDropService extends EventEmitter {
     delete this._timers[key];
     const steps = Array.isArray(this.timing.scanRecheckMs) ? this.timing.scanRecheckMs : [];
     const n = this._scanTries.get(send.id) || 0;
-    if (!pending || !this._started || n >= steps.length) { this._scanTries.delete(send.id); return; }
+    const max = Math.max(steps.length, Number(this.timing.scanRecheckMax) || 0);
+    if (!pending || !this._started || n >= max) { this._scanTries.delete(send.id); return; }
+    const wait = n < steps.length ? steps[n] : Number(this.timing.scanRecheckLateMs) || steps[steps.length - 1] || 60000;
     this._scanTries.set(send.id, n + 1);
     while (this._scanTries.size > 50) this._scanTries.delete(this._scanTries.keys().next().value);
     this._timers[key] = setTimeout(() => {
       delete this._timers[key];
-      this.receiveSend({ sendId: send.id, from: p.from, quiet: true }, { failToast: false, resume: true }).catch(() => {});
-    }, steps[n]);
+      this._receiveOnce({ kind: 'send', sendId: send.id, from: p.from, quiet: true }, { failToast: false }).catch(() => {});
+    }, wait);
     if (this._timers[key].unref) this._timers[key].unref();
   }
 
@@ -1478,6 +1501,10 @@ class GateDropService extends EventEmitter {
     if (!decision.show) return null;
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
+    // Windows refuses the app's toasts (NotificationCenter.toastBlocked): the app shows it itself
+    const nc = this.notificationCenter && typeof this.notificationCenter.fallback === 'function' ? this.notificationCenter : null;
+    const fallback = () => nc.fallback({ title, body, route: gd.APP_ROUTE, context });
+    if (nc && typeof nc.toastBlocked === 'function' && nc.toastBlocked()) { fallback(); return null; }
     let options;
     if (this.platform === 'win32') {
       const btns = this.protocol ? buttons.map((b) => ({ label: b.label, nonce: this._nonce(b.action) })) : [];
@@ -1500,7 +1527,12 @@ class GateDropService extends EventEmitter {
       this.emit('navigate', context);
     });
     n.on('close', forget);
-    n.on('failed', forget);
+    n.on('failed', (_e, error) => {
+      forget();
+      this.log.warn(`GateDrop toast failed: ${error}`);
+      if (nc && typeof nc.reportToastFailure === 'function' && nc.reportToastFailure(error)) fallback();
+    });
+    n.on('show', () => { if (nc && typeof nc.reportToastShown === 'function') nc.reportToastShown(); });
     try { n.show(); } catch (err) { this.log.warn(`GateDrop toast: ${err.message}`); }
     while (this._toasts.size > 20) this._toasts.delete(this._toasts.values().next().value);
     return n;

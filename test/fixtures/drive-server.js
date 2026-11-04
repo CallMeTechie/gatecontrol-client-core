@@ -472,6 +472,13 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     for (let c = n; c; c = c.parentId ? state.nodes.get(c.parentId) : null) out.unshift({ id: c.id, name: c.name });
     return out;
   };
+  // GET nodes/<id> as the plugin answers it: the top folder of an area without a name, `crumbs` the folders above
+  // the node (not the node itself), the top folder first with the name ''
+  const nodeAnswer = (n) => ({
+    ...view(n),
+    ...(n.parentId ? {} : { name: '' }),
+    crumbs: crumbs(n).slice(0, -1).map((c, i) => (i === 0 ? { ...c, name: '' } : c)),
+  });
   const children = (id) => [...state.nodes.values()].filter((n) => n.parentId === id && !n.deleted)
     .sort((a, b) => (Number(b.isDir) - Number(a.isDir)) || a.name.localeCompare(b.name));
   const taken = (parentId, name) => children(parentId).find((n) => n.name.toLowerCase() === name.toLowerCase());
@@ -1333,7 +1340,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         cur = taken(cur.id, s);
         if (!cur) return refuse(res, 404, 'not_found');
       }
-      return json(res, 200, { ok: true, node: { ...view(cur), crumbs: crumbs(cur).slice(0, -1), role: area.role } });
+      return json(res, 200, { ok: true, node: { ...nodeAnswer(cur), role: area.role } });
     }
     if (seg[0] === 'nodes') {
       if (seg.length === 1 && req.method === 'POST') {
@@ -1355,7 +1362,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       const n = get(seg[1]);
       if (!n) return refuse(res, 404, 'not_found');
-      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, node: { ...view(n), crumbs: crumbs(n), role: areaOf(n).role, path: '' } });
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, node: { ...nodeAnswer(n), role: areaOf(n).role, path: '' } });
       if (seg.length === 2 && req.method === 'PATCH') {
         if (!writable(n)) return refuse(res, 403, 'forbidden');
         if (features && features.includes('deleteAfter') && Object.prototype.hasOwnProperty.call(body, 'deleteAt') && body.deleteAt === null) {

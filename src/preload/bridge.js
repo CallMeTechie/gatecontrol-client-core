@@ -89,6 +89,14 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       get: (opts) => ipcRenderer.invoke('logs:get', opts),
       export: () => ipcRenderer.invoke('logs:export'),
       show: () => ipcRenderer.invoke('logs:show'),
+      // "Export": save a copy where the person picks, shown in the Explorer → { ok, path } | { ok: false, cancelled | code }
+      save: () => ipcRenderer.invoke('logs:save'),
+    },
+
+    // ── System ───────────────────────────────────────────
+    // → { processUser, sessionUser, differs, profile, downloads }: does the app run as another Windows user?
+    system: {
+      runAs: () => ipcRenderer.invoke('system:run-as'),
     },
 
     // ── Support bundle ───────────────────────────────────
@@ -171,6 +179,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onUpdate:   (cb) => subscribe('notify:update', cb),
       onStatus:   (cb) => subscribe('notify:status', cb),
       onNavigate: (cb) => subscribe('notify:navigate', cb),
+      // Windows refused a toast (E_ACCESSDENIED): { title, body, route?, id? } for the app to show itself
+      onFallback: (cb) => subscribe('notify:fallback', cb),
     },
 
     // ── Chats (messenger) ────────────────────────────────

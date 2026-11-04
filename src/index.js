@@ -51,9 +51,11 @@ const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const appSigninUtil = require('./utils/app-signin');
 const { isSafeExternalUrl, openExternalSafely } = require('./utils/external-url');
+const { revealItem, explorerShell } = require('./utils/reveal');
+const { runAs } = require('./utils/session-user');
 const windowGuard = require('./utils/window-guard');
 const autostartTask = require('./utils/autostart-task');
-const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
+const { reconnectDelay, shouldOpenPortal, connectSteps, waitForHandshake } = require('./utils/tunnel-logic');
 const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
@@ -144,11 +146,16 @@ module.exports = {
   appSigninUtil,
   isSafeExternalUrl,
   openExternalSafely,
+  revealItem,
+  explorerShell,
+  runAs,
   windowGuard,
   installWindowGuard: windowGuard.installWindowGuard,
   autostartTask,
   reconnectDelay,
   shouldOpenPortal,
+  connectSteps,
+  waitForHandshake,
   createPortalOpener,
   resolvePortalUrl,
   portalNext,
