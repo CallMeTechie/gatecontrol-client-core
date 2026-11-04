@@ -9,8 +9,9 @@
 // Drive suggest / save / save-all, filing, and the core media routes (PUT, GET). Phase 2 (calendar, invitations,
 // contacts, groups — client API "C3") in test/fixtures/mail-pim-server.js: srv.state.pim.
 //
-//   const srv = await mailServer({ plugin, allowed, features, invite, contactsMaster });   invite: mail 106 with an invitation;
-//   contactsMaster: contacts as Mail 1.4.0 has them (mail-pim-server.js)
+//   const srv = await mailServer({ plugin, allowed, features, invite, contactsMaster, plan });   invite: mail 106 with an invitation;
+//   contactsMaster: contacts as Mail 1.4.0 has them (mail-pim-server.js); plan: Mail 1.9.0 — free/busy, shared
+//   calendars, resources and bookings (mail-plan-server.js, srv.state.plan)
 //   srv.url, srv.state (requests, accounts, messages, drafts, outbox, media, uploads, …),
 //   srv.state.fail = { '<METHOD> <route>': { status, code, extra } } — refuse a route with { error: { code, …extra } }
 //   (e.g. 'GET cid/:id/:id': { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } }),
@@ -19,6 +20,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { pimState, pimRoute, contactSuggestions, invitationView } = require('./mail-pim-server');
+const { planState, planRoute, PLAN_FEATURES } = require('./mail-plan-server');
 
 const PLUGIN = 'gatecontrol-mail';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
@@ -26,12 +28,13 @@ const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 const DAY = 24 * 60 * 60 * 1000;
 
-async function mailServer({ plugin = true, allowed = true, features = ['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay'], clientId = 'abcd-1234-efgh-5678', token = 'gc_token', now = Date.now(), invite = false, contactsMaster = false } = {}) {
+async function mailServer({ plugin = true, allowed = true, features = ['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay'], clientId = 'abcd-1234-efgh-5678', token = 'gc_token', now = Date.now(), invite = false, contactsMaster = false, plan = false } = {}) {
   let nextId = 1000;
   const state = {
     plugin,
     allowed,
-    features,
+    // Mail 1.9.0 (`plan: true`): free/busy, sharing, resources and the requests to decide on (mail-plan-server.js)
+    features: plan ? [...new Set([...features, ...PLAN_FEATURES])] : features,
     requests: [],
     fail: {},
     media: new Map(),       // mediaId → { bytes, mime }
@@ -63,7 +66,13 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     msCodes: new Map(),     // code → challenge
     todos: [],
     pim: pimState(now, { master: contactsMaster }),     // Phase 2: calendar and contacts (mail-pim-server.js); 1.4.0 with contactsMaster
+    plan: planState(now),                                // Mail 1.9.0 (mail-plan-server.js); answered only with its features
   };
+  if (plan) {
+    // the settings of 1.9.0 and a calendar of the Microsoft 365 account that belongs to another mailbox
+    Object.assign(state.pim.calPrefs, { freeBusy: true, workHours: { days: [1, 2, 3, 4, 5], from: '08:00', to: '18:00' } });
+    state.pim.calendars.push(state.plan.accountCalendar);
+  }
   // the Microsoft account's picture (Account.avatar, Mail 1.1.2)
   state.media.set('avatar2abcdef', { bytes: PNG, mime: 'image/png' });
   const addMsg = (m) => state.messages.set(m.id, {
@@ -485,6 +494,9 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
       if (seg[2] === 'confirm') return json(res, 200, { savedTo: { nodeId: 7001, where: body.folderId ? 'Meine Dateien › Gewählt' : f.suggestion.where } });
       return json(res, 200, { ok: true });
     }
+
+    // ── Mail 1.9.0: free/busy, shared calendars, resources (before Phase 2: it adds to GET calendars / events) ──
+    if (planRoute({ req, seg, url, body, state, json: (st, b) => json(res, st, b), err: (st, code, extra) => err(res, st, code, extra), sum, pimRoute })) return undefined;
 
     // ── Phase 2: calendar and contacts ──
     if (pimRoute({ req, route, seg, url, body, state, json: (st, b) => json(res, st, b), err: (st, code, extra) => err(res, st, code, extra), sum })) return undefined;

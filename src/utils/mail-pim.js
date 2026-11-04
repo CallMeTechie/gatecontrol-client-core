@@ -15,6 +15,8 @@
  */
 
 const m = require('./mail');
+// Phase 3 (Mail 1.9.0): free/busy, shared calendars, resources
+const plan = require('./mail-plan');
 
 const { line, text, obj, arr, bool, oneOf, posId, count, msOf, emailOf, colorOf, codeOf, cursorOf, webUrl, i18nText } = m;
 
@@ -105,6 +107,8 @@ function normalizeCalendar(v) {
     error: syncError(o.error),
     syncedAt: msOf(o.syncedAt),
     version: count(o.version) || 0,
+    // Mail 1.9.0: a calendar of an account that belongs to another mailbox (Microsoft 365) — stays in its account's group
+    sharedBy: obj(o.sharedBy) && emailOf(o.sharedBy.email) ? { email: emailOf(o.sharedBy.email) } : null,
   };
 }
 
@@ -135,10 +139,13 @@ function normalizeCalPrefs(v) {
     defaultReminder: o.defaultReminder === undefined ? 15 : rem,
     // minutes before midnight of the all-day event's day (like a VALARM TRIGGER on its DTSTART): 360 = 18:00 the day before
     allDayReminder: intIn(o.allDayReminder, 0, 10080) ?? 360,
+    // Mail 1.9.0: „Frei/Gebucht für alle in GateControl“ (default on) and the working hours of the suggestions
+    freeBusy: o.freeBusy !== false,
+    workHours: plan.workHoursOf(o.workHours) || { ...plan.DEFAULT_WORK_HOURS, days: plan.DEFAULT_WORK_HOURS.days.slice() },
   };
 }
 
-/** GET calendars → { calendars, overlays, prefs, consent: [{ accountId, missing }] }. */
+/** GET calendars → { calendars, overlays, prefs, consent: [{ accountId, missing }], shared: [SharedCalendar] (Mail 1.9.0) }. */
 function normalizeCalendars(v) {
   const o = obj(v) || {};
   return {
@@ -150,6 +157,7 @@ function normalizeCalendars(v) {
       const accountId = c && posId(c.accountId);
       return accountId ? { accountId, missing: arr(c.missing).map((s) => line(s, 100)).filter(Boolean).slice(0, 5) } : null;
     }).filter(Boolean).slice(0, 50),
+    shared: arr(o.shared).map(plan.normalizeSharedCalendar).filter(Boolean).slice(0, 200),
   };
 }
 
@@ -168,17 +176,23 @@ function allDayDates(o, allDay) {
   return startDate ? { startDate, endDate: endDate && endDate >= startDate ? endDate : startDate } : {};
 }
 
-/** An `Occurrence` of GET events, or null. */
+/**
+ * An `Occurrence` of GET events, or null. Mail 1.9.0: items of a calendar shared with the person carry `shared`
+ * ('freebusy' | 'read' | 'write'); free/busy ones and private ones of every level have no eventId (only „Gebucht“ /
+ * „Vorläufig“ and the time, the server's key, never opened).
+ */
 function normalizeOccurrence(v) {
   const o = obj(v);
   const eventId = o && posId(o.eventId);
   const start = o && msOf(o.start);
-  if (!eventId || !start) return null;
+  const shared = o ? oneOf(plan.LEVELS, o.shared) : null;
+  const busyOnly = !eventId && !!shared && typeof o.key === 'string' && KEY_RE.test(o.key);
+  if ((!eventId && !busyOnly) || !start) return null;
   const end = msOf(o.end);
-  const occurrence = occOf(o.occurrence);
+  const occurrence = busyOnly ? null : occOf(o.occurrence);
   const allDay = bool(o.allDay);
   return {
-    key: occurrence ? `${eventId}:${occurrence}` : String(eventId),
+    key: busyOnly ? `s:${o.key.replace(/^s:/, '')}` : (occurrence ? `${eventId}:${occurrence}` : String(eventId)),
     eventId,
     calendarId: posId(o.calendarId),
     occurrence,
@@ -195,8 +209,9 @@ function normalizeOccurrence(v) {
     myResponse: oneOf(MY_RESPONSES, o.myResponse),
     recurring: bool(o.recurring),
     attendees: count(o.attendees) || 0,
-    private: bool(o.private),
+    private: busyOnly || bool(o.private),
     reminder: o.reminder === null || o.reminder === undefined ? null : intIn(o.reminder, 0, 40320),
+    shared,
   };
 }
 
@@ -311,11 +326,15 @@ function normalizeEvent(v) {
   };
 }
 
-/** POST/PATCH events → { event, sent: { mail, internal } }. */
+/** POST/PATCH events (and POST resources/<id>/book) → { event, sent: { mail, internal }, bookings (Mail 1.9.0: resources as attendees) }. */
 function normalizeSaved(v) {
   const o = obj(v) || {};
   const s = obj(o.sent) || {};
-  return { event: normalizeEvent(o.event), sent: { mail: count(s.mail) || 0, internal: count(s.internal) || 0 } };
+  return {
+    event: normalizeEvent(o.event),
+    sent: { mail: count(s.mail) || 0, internal: count(s.internal) || 0 },
+    bookings: arr(o.bookings).map(plan.normalizeBooking).filter(Boolean).slice(0, 20),
+  };
 }
 
 // ── Invitations ────────────────────────────────────────────
@@ -603,6 +622,9 @@ function calSettingsPatch(v) {
   if (o.timeZone !== undefined) { if (!tzOf(o.timeZone)) return null; b.timeZone = o.timeZone; }
   if (o.defaultReminder !== undefined) { if (o.defaultReminder !== null && intIn(o.defaultReminder, 0, 40320) === null) return null; b.defaultReminder = o.defaultReminder; }
   if (o.allDayReminder !== undefined) { if (intIn(o.allDayReminder, 0, 10080) === null) return null; b.allDayReminder = o.allDayReminder; }
+  // Mail 1.9.0: free/busy for everybody in GateControl, the working hours (1 = Monday, from < to)
+  if (o.freeBusy !== undefined) { if (typeof o.freeBusy !== 'boolean') return null; b.freeBusy = o.freeBusy; }
+  if (o.workHours !== undefined) { const wh = plan.workHoursBody(o.workHours); if (!wh) return null; b.workHours = wh; }
   return Object.keys(b).length ? b : null;
 }
 
@@ -1288,10 +1310,16 @@ function membersBody(v) {
 
 // ── Live events ────────────────────────────────────────────
 
-/** The live event `calendar` → { kind: 'changed', calendarId, accountId, from, to } | { kind: 'calendars' } | { kind: 'invitation', invitationId, messageId } | { kind: 'conflict', eventId } | null. */
+/**
+ * The live event `calendar` → { kind: 'changed', calendarId, accountId, from, to, shared? } (shared: true — a calendar
+ * shared with the person changed) | { kind: 'calendars' } |
+ * { kind: 'invitation', invitationId, messageId } | { kind: 'conflict', eventId } | Mail 1.9.0: { kind: 'shares',
+ * calendarId } (a share changed: recipients and owner load GET calendars / GET shared again) | null.
+ */
 function normalizeCalendarLive(v) {
   const o = obj(v) || {};
-  if (o.kind === 'changed') return { kind: 'changed', calendarId: posId(o.calendarId), accountId: posId(o.accountId), from: msOf(o.from), to: msOf(o.to) };
+  if (o.kind === 'changed') return { kind: 'changed', calendarId: posId(o.calendarId), accountId: posId(o.accountId), from: msOf(o.from), to: msOf(o.to), ...(o.shared === true ? { shared: true } : {}) };
+  if (o.kind === 'shares') return { kind: 'shares', calendarId: posId(o.calendarId) };
   if (o.kind === 'calendars') return { kind: 'calendars' };
   if (o.kind === 'invitation') return { kind: 'invitation', invitationId: posId(o.invitationId), messageId: posId(o.messageId) };
   if (o.kind === 'conflict') return { kind: 'conflict', eventId: posId(o.eventId) };

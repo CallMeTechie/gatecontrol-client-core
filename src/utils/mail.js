@@ -6,8 +6,9 @@
  * the plugin's client API, "C2"): constants, argument checks, cleaned answers
  * of the app API, request bodies, the HTML document of a mail for the
  * sandboxed reading frame and the Microsoft sign-in (PKCE). Phase 2
- * (calendar and contacts, client API "C3") lives in utils/mail-pim.js and is
- * exported from here as well.
+ * (calendar and contacts, client API "C3") lives in utils/mail-pim.js, Phase 3
+ * (Mail 1.9.0: free/busy, shared calendars, resources) in utils/mail-plan.js;
+ * both are exported from here as well.
  *
  * Everything that reaches the renderer goes through the normalizers below:
  * known fields only, strings capped and stripped of control characters,
@@ -31,6 +32,10 @@ const MAIL_TOPIC = `${TOPIC_PREFIX}mail`;
 const FAILED_TOPIC = `${TOPIC_PREFIX}mail_failed`;
 const REMINDER_TOPIC = `${TOPIC_PREFIX}calendar_reminder`;
 const INVITE_TOPIC = `${TOPIC_PREFIX}calendar_invite`;
+// Mail 1.9.0: a booking request (to the approvers), the answer to a booking (to the booker), a calendar shared with the person
+const RESOURCE_REQUEST_TOPIC = `${TOPIC_PREFIX}resource_request`;
+const RESOURCE_BOOKING_TOPIC = `${TOPIC_PREFIX}resource_booking`;
+const SHARE_TOPIC = `${TOPIC_PREFIX}calendar_share`;
 /** The scheme the reading frame loads pictures with (img/<token>, cid/<message>/<attachment>), see MailService.handleProtocol. */
 const SCHEME = 'gcmail';
 
@@ -59,7 +64,9 @@ const OUTBOX_STATES = Object.freeze(['waiting', 'sending', 'failed']);
 // 'attachment_blocked' (Mail 1.8 'scan'): an attachment of the draft is blocked by the host's virus scan
 const WARNINGS = Object.freeze(['password', 'too_large', 'no_subject', 'attachment_blocked']);
 const CONTACT_SOURCES = Object.freeze(['contact', 'group', 'person', 'recent']);
-const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay', 'scan']);
+// Mail 1.9.0: 'freeBusy', 'calendarSharing', 'resources' (the administrator) and 'bookingRequests' (the person decides on requests)
+const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay', 'scan',
+  'freeBusy', 'calendarSharing', 'resources', 'bookingRequests']);
 const INVITES = Object.freeze(['request', 'cancel', 'reply', 'counter']);
 const PIM_STATES = Object.freeze(['ok', 'syncing', 'auth_failed', 'unreachable', 'consent_required', 'none', 'off']);
 const SCOPE_RE = /^[A-Za-z0-9_.:/-]{1,100}$/;
@@ -1083,11 +1090,21 @@ function isInboxKey(p) {
 /**
  * The click on a Mail push → { kind: 'message', messageId, accountId } | { kind: 'outbox', outboxId } |
  * { kind: 'event', eventId, occurrence } (a reminder) | { kind: 'invitation', invitationId } | { kind: 'calendar' }
- * (several reminders at once) | null.
+ * (several reminders at once) | Mail 1.9.0: { kind: 'requests', bookingId, resourceId } (a booking request: the open
+ * requests, at its card) | { kind: 'event', eventId, occurrence: null, bookingId } (the answer to a booking: its event;
+ * without one { kind: 'bookings', bookingId }) | { kind: 'shared', calendarId } („Mit mir geteilt“) | null.
  */
 function pushTarget(topic, data) {
   const d = obj(data);
   const c = d && obj(d.calendar);
+  const r = d && obj(d.resources);
+  if (topic === RESOURCE_REQUEST_TOPIC) return { kind: 'requests', bookingId: posId(r && r.bookingId), resourceId: posId(r && r.resourceId) };
+  if (topic === RESOURCE_BOOKING_TOPIC) {
+    const bookingId = posId(r && r.bookingId);
+    const eventId = posId(c && c.eventId);
+    return eventId ? { kind: 'event', eventId, occurrence: null, bookingId } : { kind: 'bookings', bookingId };
+  }
+  if (topic === SHARE_TOPIC) return { kind: 'shared', calendarId: posId(c && c.sharedCalendarId) };
   if (c && topic === REMINDER_TOPIC) {
     const eventId = posId(c.eventId);
     const occ = typeof c.occurrence === 'string' && /^(\d{10,16}|\d{4}-\d{2}-\d{2})$/.test(c.occurrence) ? c.occurrence : null;
@@ -1116,6 +1133,9 @@ module.exports = {
   FAILED_TOPIC,
   REMINDER_TOPIC,
   INVITE_TOPIC,
+  RESOURCE_REQUEST_TOPIC,
+  RESOURCE_BOOKING_TOPIC,
+  SHARE_TOPIC,
   SCHEME,
   FRAME_CSP,
   FIT_ID,
@@ -1208,3 +1228,5 @@ module.exports = {
 
 // Phase 2 (calendar and contacts): normalizers and request bodies of the client API "C3"
 Object.assign(module.exports, require('./mail-pim'));
+// Phase 3 (Mail 1.9.0): free/busy, shared calendars, resources and bookings
+Object.assign(module.exports, require('./mail-plan'));
