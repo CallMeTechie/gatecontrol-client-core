@@ -268,6 +268,7 @@ describe('MailService – free/busy, sharing, resources', () => {
     await assert.rejects(svc.book(12, { start: at(3, 8), end: at(3, 17) }), (e) => e.code === 'rule_violation' && e.detail.violations[0].rule === 'max_duration' && e.detail.violations[0].limit === 480);
     const open = await svc.bookings('open');
     assert.deepEqual([open.items.map((b) => b.id), open.counts.open], [[801, 802], 2]);
+    assert.deepEqual([open.items[0].resource.name, open.items[0].resource.kind, open.items[0].booker.name], ['Firmenwagen Kombi', 'vehicle', 'Markus B.']);
     const decline = await svc.decide(801, { decision: 'decline', comment: 'Belegt' });
     assert.deepEqual([decline.booking.state, decline.booking.decidedBy.name], ['declined', 'Max']);
     assert.deepEqual(res.at(-1), { kind: 'request', bookingId: 801, resourceId: 11, state: 'declined' });

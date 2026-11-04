@@ -66,15 +66,15 @@ function planState(now) {
     lastSuggest: null,
   };
   const res = (id) => { const r = state.resources.find((x) => x.id === id); return { id: r.id, name: r.name, kind: r.kind, color: r.color, location: r.location }; };
-  const b = (x) => state.bookings.push({
-    resourceId: x.resource, resource: res(x.resource), allDay: false, note: '', violations: [], conflicts: [], decidedBy: null, decidedAt: null, override: false, comment: '',
+  const b = ({ res: rid, ...x }) => state.bookings.push({
+    resourceId: rid, resource: res(rid), allDay: false, note: '', violations: [], conflicts: [], decidedBy: null, decidedAt: null, override: false, comment: '',
     createdAt: now - HOUR, updatedAt: now - HOUR, canDecide: false, day: [], eventId: null, ...x,
   });
-  b({ id: 801, resource: 11, title: 'Kunde Müller', start: at(1, 12), end: at(1, 15), state: 'pending', booker: markus, canDecide: true, day: [{ start: at(1, 8), end: at(1, 10), status: 'busy' }] });
-  b({ id: 802, resource: 11, title: 'Messe Köln', start: at(2, 0), end: at(4, 0), allDay: true, startDate: ymd(at(2, 0)), endDate: ymd(at(3, 0)), state: 'pending', booker: lisa, canDecide: true,
+  b({ id: 801, res: 11, title: 'Kunde Müller', start: at(1, 12), end: at(1, 15), state: 'pending', booker: markus, canDecide: true, day: [{ start: at(1, 8), end: at(1, 10), status: 'busy' }] });
+  b({ id: 802, res: 11, title: 'Messe Köln', start: at(2, 0), end: at(4, 0), allDay: true, startDate: ymd(at(2, 0)), endDate: ymd(at(3, 0)), state: 'pending', booker: lisa, canDecide: true,
     violations: [{ rule: 'max_duration', limit: 1440 }], conflicts: [{ start: at(2, 8), end: at(2, 10) }] });
-  b({ id: 803, resource: 12, title: 'Kundentermin', start: at(-1, 10), end: at(-1, 11), state: 'confirmed', booker: lisa, decidedBy: max, decidedAt: now - 2 * DAY, override: true, comment: 'Ausnahmsweise' });
-  b({ id: 804, resource: 12, title: 'Sprint-Review', start: at(1, 14), end: at(1, 15), state: 'confirmed', booker: max, eventId: 302 });
+  b({ id: 803, res: 12, title: 'Kundentermin', start: at(-1, 10), end: at(-1, 11), state: 'confirmed', booker: lisa, decidedBy: max, decidedAt: now - 2 * DAY, override: true, comment: 'Ausnahmsweise' });
+  b({ id: 804, res: 12, title: 'Sprint-Review', start: at(1, 14), end: at(1, 15), state: 'confirmed', booker: max, eventId: 302 });
   return state;
 }
 
