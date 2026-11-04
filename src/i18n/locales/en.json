@@ -80,7 +80,10 @@
     "loading": "Loading logs...",
     "empty": "No logs available",
     "export": "Export",
-    "filterAll": "All"
+    "filterAll": "All",
+    "saveTitle": "Export log",
+    "saveFilter": "Log file",
+    "saveName": "Log"
   },
   "update": {
     "title": "Update",

@@ -29,6 +29,7 @@ const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
 const { registerMailHandlers } = require('./mail-handlers');
 const MapService = require('../services/map-service');
+const { runAs } = require('../utils/session-user');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -39,6 +40,15 @@ const ENROLL_ERRORS = {
   limit_reached: 'server.enrollLimit',
   fingerprint_required: 'server.enrollFingerprint',
 };
+
+/** "GateControl-Pro-Protokoll-2026-11-04-1137.log" (the app's name without spaces, the local time). */
+function logExportName(app, d) {
+  let n = 'GateControl';
+  try { n = (app && typeof app.getName === 'function' && app.getName()) || n; } catch { /* default */ }
+  const base = String(n).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'GateControl';
+  const p = (v) => String(v).padStart(2, '0');
+  return `${base}-${t('logs.saveName')}-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.log`;
+}
 
 function enrollErrorMessage(err) {
   const status = err && err.response && err.response.status;
@@ -100,6 +110,8 @@ const NOTIFY_EVENTS = {
   update: 'notify:update',
   status: 'notify:status',
   navigate: 'notify:navigate',
+  // Windows refused the toast: the app shows it itself
+  fallback: 'notify:fallback',
 };
 
 /**
@@ -688,6 +700,60 @@ function registerBaseHandlers(ipcMain, ctx) {
     } catch {
       return null;
     }
+  });
+
+  // "Export": the log (the older file electron-log keeps first, then the
+  // current one) into a file the person picks — by default in Downloads —
+  // and that file shown in the Explorer → { ok, path } | { ok: false,
+  // cancelled } | { ok: false, code }. Nothing is taken from the renderer.
+  handle('logs:save', async () => {
+    const fs = require('fs').promises;
+    const path = require('path');
+    let logPath;
+    try { logPath = log.transports.file.getFile().path; } catch { logPath = null; }
+    if (!logPath) return { ok: false, code: 'no_log' };
+    if (!dialog || typeof dialog.showSaveDialog !== 'function') return { ok: false, code: 'unsupported' };
+    let dir = null;
+    for (const k of ['downloads', 'documents', 'desktop']) {
+      try { dir = app.getPath(k); } catch { dir = null; }
+      if (dir) break;
+    }
+    const name = logExportName(app, new Date());
+    const opts = {
+      title: t('logs.saveTitle'),
+      defaultPath: dir ? path.join(dir, name) : name,
+      filters: [{ name: t('logs.saveFilter'), extensions: ['log', 'txt'] }],
+    };
+    const win = getMainWindow && getMainWindow();
+    let res;
+    try {
+      res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    } catch (err) {
+      log.warn('logs:save dialog failed:', err && err.message);
+      return { ok: false, code: 'failed' };
+    }
+    if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    try {
+      const old = path.join(path.dirname(logPath), `${path.basename(logPath, path.extname(logPath))}.old${path.extname(logPath)}`);
+      const parts = [];
+      try { parts.push(await fs.readFile(old)); } catch { /* none yet */ }
+      parts.push(await fs.readFile(logPath));
+      await fs.writeFile(res.filePath, Buffer.concat(parts));
+    } catch (err) {
+      log.warn('logs:save failed:', err && (err.code || err.message));
+      return { ok: false, code: (err && err.code) || 'failed', path: res.filePath };
+    }
+    try { getShell().showItemInFolder(res.filePath); } catch (err) { log.debug(`logs:save reveal: ${err.message}`); }
+    return { ok: true, path: res.filePath };
+  });
+
+  // Who runs the app, who is signed in to Windows (utils/session-user.js):
+  // another Windows user (a UAC prompt answered with another account's
+  // password) has its own Downloads / %APPDATA% / %TEMP% — the app says so.
+  handle('system:run-as', () => {
+    let downloads = null;
+    try { downloads = app.getPath('downloads'); } catch { downloads = null; }
+    return { ...runAs(), downloads };
   });
 
   // Shows the log file in Explorer. Takes no path from the renderer, so it
