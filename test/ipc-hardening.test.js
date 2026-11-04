@@ -156,6 +156,9 @@ describe('shell:open-external', () => {
       assert.equal(await handlers['shell:open-external']({}, bad), false, bad);
     }
     assert.deepEqual(calls.opened, ['ms-settings:privacy-location']);
+    // the notifications page (Windows refuses the app's toasts: switch them on there)
+    assert.equal(await handlers['shell:open-external']({}, 'ms-settings:notifications'), true);
+    assert.equal(await handlers['shell:open-external']({}, 'ms-settings:notifications?x'), false);
   });
 
   it('isSafeExternalUrl (server links) stays http(s) only', () => {
