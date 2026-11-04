@@ -55,7 +55,7 @@ const { revealItem, explorerShell } = require('./utils/reveal');
 const { runAs } = require('./utils/session-user');
 const windowGuard = require('./utils/window-guard');
 const autostartTask = require('./utils/autostart-task');
-const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
+const { reconnectDelay, shouldOpenPortal, connectSteps, waitForHandshake } = require('./utils/tunnel-logic');
 const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
@@ -154,6 +154,8 @@ module.exports = {
   autostartTask,
   reconnectDelay,
   shouldOpenPortal,
+  connectSteps,
+  waitForHandshake,
   createPortalOpener,
   resolvePortalUrl,
   portalNext,
