@@ -46,6 +46,11 @@
  * { code: 'infected' | 'scan_blocked', name, finding } (utils/scan.js refusalFields). A received
  * record lists the files the virus scan blocks in `blocked` [{ index, name, scan }].
  *
+ * GateDrop 1.5 (the pick-up): a send saved from a push is acknowledged at once (POST sends/<id>/opened); a direct
+ * transfer to this PC reports ok only with every file and always with `bytes` (else 'incomplete'); after its own
+ * ok as the sender this PC asks GET sends/<id> until the receiver decided and uploads the files (POST
+ * sends/<id>/items) when the delivery waits for them (pending + direct_failed).
+ *
  * Waiting for the other end of a direct transfer (a device pulls from us, or
  * pushes to us) GET transfers/<id> is asked every few seconds: when that end
  * reported a failure (or the plugin let the ticket expire) the wait ends at
@@ -88,6 +93,9 @@ const DEFAULT_TIMING = {
   scanRecheckMs: [10000, 20000, 40000, 60000, 120000, 120000, 120000, 120000], // a received file still being checked: look again
   scanRecheckLateMs: 5 * 60 * 1000, // … then every 5 minutes
   scanRecheckMax: 8 + 48,           // … for about 4 hours in all (afterwards: GET pending at the next connect)
+  // GateDrop 1.5: after this PC's own ok of a direct transfer, GET sends/<id> at these waits (ms) until the receiving
+  // end decided — it confirmed (pickedAt), or not everything arrived and the files must go up (pending + direct_failed)
+  directVerifyMs: [0, 1000, 2000, 3000, 5000, 8000, 11000],
 };
 const MAX_SAVED = 100;
 const MAX_HANDLED = 500;
@@ -881,18 +889,56 @@ class GateDropService extends EventEmitter {
       this.log.info(`GateDrop direct to ${d.deviceId || 'device'} failed (${GateDropService._why(error, peer)}) – server path`);
     }
     const answer = await this._report(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
-    if (ok) return { ok: true, via: 'direct' };
-    // fallback 'server': the files are on the server, the plugin delivers.
-    // fallback 'upload': upload the `missing` local items, then POST sends/<id>/items.
     let indexes = null;
-    if (answer && answer.fallback === 'upload') indexes = answer.missing && answer.missing.length ? answer.missing : list.map((_, i) => i);
-    else if (!answer && local) indexes = list.map((_, i) => i); // no answer: the files must get there anyway
+    if (ok) {
+      // GateDrop 1.5: the receiving end decides — it may report that not everything arrived (also after our ok)
+      const after = await this._afterDirectOk(d, answer, sendId);
+      if (!after.upload) return { ok: true, via: after.via };
+      indexes = Array.isArray(after.missing) ? after.missing : list.map((_, i) => i);
+      this.log.info(`GateDrop direct to ${d.deviceId || 'device'}: the receiver did not get everything – server path`);
+    } else if (answer && answer.fallback === 'upload') {
+      // fallback 'server': the files are on the server, the plugin delivers.
+      // fallback 'upload': upload the `missing` local items, then POST sends/<id>/items.
+      indexes = answer.missing && answer.missing.length ? answer.missing : list.map((_, i) => i);
+    } else if (!answer && local) indexes = list.map((_, i) => i); // no answer: the files must get there anyway
     if (indexes && indexes.length && sendId) {
       this.emit('progress', { id: jobId, dir: 'out', phase: 'failed', sent: 0, total });
       const items = await upload.run(indexes);
       await this._scanWait(() => this.api.addItems(sendId, items.map((it) => ({ index: it.index, mediaId: it.mediaId }))), jobId, total);
     }
     return { ok: true, via: 'server' };
+  }
+
+  /**
+   * After this PC's own ok of a direct transfer (GateDrop 1.5): the delivery is 'delivered' but only picked up once
+   * the receiving device confirms it got every byte. Its failure ('incomplete', …) takes the server way, which waits
+   * for the files (pending + direct_failed — what `fallback: 'upload'` means). Our own answer says so when the
+   * receiver was first; else GET sends/<id> is asked at `timing.directVerifyMs` until the receiver decided.
+   * → { via: 'direct' | 'server', upload?: true, missing?: [indexes] }
+   */
+  async _afterDirectOk(d, answer, sendId) {
+    const missingOf = (send) => (send ? send.items.filter((it) => !it.mediaId && !SC.isBlocked(it.scan)).map((it) => it.index) : null);
+    const own = answer && answer.delivery;
+    if (own && own.status === 'pending' && own.error === 'direct_failed') {
+      let send = null;
+      try { send = await this.api.send(sendId); } catch { send = null; }
+      return { via: 'server', upload: true, missing: missingOf(send) };
+    }
+    if (own && own.pickedAt) return { via: 'direct' };
+    if (!sendId || !d.deviceId) return { via: 'direct' };
+    const waits = Array.isArray(this.timing.directVerifyMs) ? this.timing.directVerifyMs : [];
+    for (const ms of waits) {
+      if (ms > 0) await this._sleep(ms);
+      let send = null;
+      try { send = await this.api.send(sendId); } catch (err) { this.log.debug(`GateDrop send ${sendId}: ${err.code || err.message}`); continue; }
+      const dl = send && !send.removed ? send.deliveries.find((x) => x.kind === 'device' && x.target === d.deviceId) : null;
+      if (!dl) return { via: 'direct' };
+      if (dl.status === 'pending' && dl.error === 'direct_failed') return { via: 'server', upload: true, missing: missingOf(send) };
+      if (dl.status === 'delivered' && dl.via === 'server') return { via: 'server' }; // the files were on the server: it delivered
+      // confirmed, or nothing more to do (failed / expired / removed), or an older plugin (no pickedAt: it does not wait for the receiver)
+      if (dl.pickedAt || dl.status !== 'delivered' || !('pickedAt' in dl)) return { via: 'direct' };
+    }
+    return { via: 'direct' };
   }
 
   _sleep(ms) {
@@ -976,7 +1022,7 @@ class GateDropService extends EventEmitter {
         const onItem = (e) => { if (e.transferId === p.transferId) progress(e.bytes); };
         this.listener.on('incoming-item', onItem);
         const waiting = this.listener.expectIncoming({
-          transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, expiresAt: p.expiresAt,
+          transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, count: p.itemCount || null, expiresAt: p.expiresAt,
           sink: (meta) => this._sink(meta),
         });
         // The sender reports a failed push to the plugin right away: stop waiting then (not 10 minutes).
@@ -998,12 +1044,16 @@ class GateDropService extends EventEmitter {
         });
         saved = r.items;
       }
+      // GateDrop 1.5: ok only with every file — a part (an unknown count, a missing item) is no success
+      const missing = await this._missingOf(p, saved);
+      if (missing) throw Object.assign(new Error(`incomplete (${missing})`), { code: 'incomplete', saved });
     } catch (err) {
       error = err.code || err.message || 'failed';
       // Files that did arrive before it broke off: the server path brings all again.
       for (const f of err.saved || err.received || []) { try { await fs.promises.unlink(f.path); } catch { /* gone */ } }
       saved = [];
     }
+    // ok always with `bytes`: the plaintext size of every file (the plugin compares it with the send's files)
     const bytes = saved.reduce((s, f) => s + f.bytes, 0);
     try {
       await this.api.transferResult(p.transferId, error ? { ok: false, error } : { ok: true, bytes });
@@ -1020,6 +1070,31 @@ class GateDropService extends EventEmitter {
     this.emit('progress', { id: jobId, dir: 'in', phase: 'done', sent: total, total });
     this._toastReceived(rec, { quiet: p.quiet === true });
     return { ok: true, record: rec };
+  }
+
+  /**
+   * Did a direct transfer to this PC bring every file? → null (all there) or why not: 'unknown' (the count is not
+   * known — the push left the items out and GET transfers/<id> did not say), 'missing' (an item is not there) or
+   * 'size' (an item has fewer bytes than announced).
+   */
+  async _missingOf(p, saved) {
+    let items = p.items;
+    if (!items.length) {
+      try {
+        const full = await this.api.transfer(p.transferId);
+        if (full && full.items.length) items = full.items;
+      } catch (err) {
+        this.log.debug(`GateDrop transfer ${p.transferId}: ${err.code || err.message}`);
+      }
+    }
+    if (!items.length) return p.itemCount && saved.length >= p.itemCount ? null : 'unknown';
+    const got = new Map(saved.map((f) => [f.index, f]));
+    for (const it of items) {
+      const f = got.get(it.index);
+      if (!f) return 'missing';
+      if (Number.isSafeInteger(it.bytes) && f.bytes !== it.bytes) return 'size';
+    }
+    return null;
   }
 
   /**
@@ -1128,6 +1203,9 @@ class GateDropService extends EventEmitter {
    * One download per send, whichever path asks first (push or GET pending):
    * handled → { ok, skipped: 'handled' }; running → that same promise.
    * Handled once every item is saved; a failure toast only the first time.
+   * Handled → acknowledged right away with POST sends/<id>/opened (GateDrop 1.5: the pick-up — the sender sees
+   * "empfangen" at once, not only after the next GET pending in up to 5 minutes); a failed receipt is tried
+   * again by the next poll.
    */
   _receiveOnce(p, { failToast: toast = true } = {}) {
     const id = p.sendId;
@@ -1137,11 +1215,12 @@ class GateDropService extends EventEmitter {
     const failToast = toast && !this._failToasted.has(id);
     const run = this.receiveSend(p, { failToast, resume: true })
       .catch((err) => ({ ok: false, error: (err && err.code) || 'failed' }))
-      .then((r) => {
+      .then(async (r) => {
         this._noteReceive(id, r);
         if (r.ok && !r.failed && !r.checking) {
           this._markHandled(id);
           this._failToasted.delete(id);
+          await this._ack(id);
         } else {
           this._failToasted.add(id);
           while (this._failToasted.size > MAX_HANDLED) this._failToasted.delete(this._failToasted.values().next().value);
@@ -1479,7 +1558,7 @@ class GateDropService extends EventEmitter {
       else if (a.type === 'show') this.showItem(a.path);
       else if (a.type === 'copy') this.copyText(a.text);
       else if (a.type === 'open') await this.openLink(a.url);
-      if (a.sendId && a.type !== 'copy') await this.api.opened(a.sendId).catch(() => {});
+      if (a.sendId && a.type !== 'copy') await this._ack(a.sendId);
     };
     run().catch((err) => this.log.warn(`GateDrop toast action failed: ${err.message}`));
     return true;

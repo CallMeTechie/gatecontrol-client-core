@@ -1238,6 +1238,13 @@
     "refresh": "Aktualisieren",
     "someone": "Jemand",
     "retention": "Empfangenes bleibt 7 Tage auf dem Server.",
+    "retentionDays": "Empfangenes bleibt {{days}} auf dem Server.",
+    "retentionSplit": "Empfangenes bleibt nach der Abholung {{after}}, sonst {{unpicked}} auf dem Server.",
+    "retentionNow": "Empfangenes wird nach der Abholung vom Server gelöscht, nicht Abgeholtes bleibt {{unpicked}}.",
+    "days": {
+      "one": "1 Tag",
+      "other": "{{n}} Tage"
+    },
     "folder": "Gespeichert in {{folder}}",
     "folderLabel": "Empfangene Dateien",
     "openFolder": "Ordner öffnen",
@@ -1389,7 +1396,8 @@
       "linkOnce": "einmal herunterladen",
       "copyLink": "Link kopieren",
       "today": "heute {{time}}",
-      "yesterday": "gestern {{time}}"
+      "yesterday": "gestern {{time}}",
+      "removed": "Vom Admin entfernt"
     },
     "status": {
       "pending": "wartet",
@@ -1398,7 +1406,12 @@
       "delivered": "zugestellt",
       "opened": "geöffnet",
       "failed": "fehlgeschlagen",
-      "expired": "abgelaufen"
+      "expired": "abgelaufen",
+      "provided": "bereitgestellt",
+      "received": "empfangen",
+      "picked": "abgeholt",
+      "removed": "vom Admin entfernt",
+      "incomplete": "nicht alle Dateien angekommen"
     },
     "via": {
       "direct": "direkt im WLAN",
@@ -1439,7 +1452,8 @@
       "invalid": "Die Anfrage war ungültig.",
       "folder_missing": "Diesen Ordner gibt es nicht (mehr).",
       "folder_readonly": "In diesen Ordner darf GateControl nicht schreiben – bitte einen anderen wählen.",
-      "failed": "Das hat nicht geklappt ({{code}})."
+      "failed": "Das hat nicht geklappt ({{code}}).",
+      "gone": "Der Versand ist abgelaufen oder wurde vom Admin entfernt."
     },
     "runAs": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Empfangene Dateien speichert GateControl trotzdem im Ordner von „{{session}}“: {{path}}. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
     "runAsUnknown": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Die Ordner von „{{session}}“ ließen sich nicht ermitteln: Empfangenes landet in den Downloads von „{{user}}“ (Pfad oben) – oder mit „Ändern …“ einen Ordner wählen. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
@@ -1451,7 +1465,7 @@
       "timeout": "Der Server hat nicht rechtzeitig geantwortet.",
       "network": "Der Server war nicht erreichbar.",
       "not_found": "Der Versand ist auf dem Server nicht mehr da.",
-      "gone": "Der Versand ist abgelaufen.",
+      "gone": "Der Versand ist abgelaufen oder wurde vom Admin entfernt.",
       "other": "Fehler ({{code}})."
     }
   },

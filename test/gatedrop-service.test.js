@@ -186,6 +186,8 @@ describe('GateDropService', () => {
     await svc.idle();
 
     assert.ok(entry, 'kept in the inbox');
+    // GateDrop 1.5: saved → acknowledged at once (POST sends/<id>/opened is the pick-up), not only by the next GET pending
+    assert.deepEqual(srv.state.opened, [send.id]);
     assert.deepEqual(rec.files.map((f) => path.basename(f.path)), ['angebot (2).pdf', 'boese.exe']);
     assert.equal(fs.readFileSync(path.join(downloads, 'angebot (2).pdf'), 'utf8'), '%PDF-neu');
     assert.equal(fs.readFileSync(path.join(downloads, 'angebot.pdf'), 'utf8'), 'old');
@@ -203,7 +205,7 @@ describe('GateDropService', () => {
     assert.equal(center.handleProtocolUrl(`gatecontrol-pro://notify/action?t=${nonces[1]}`), true);
     await new Promise((r) => setTimeout(r, 30));
     assert.deepEqual(shellCalls[0], ['show', path.join(downloads, 'angebot (2).pdf')]);
-    assert.deepEqual(srv.state.opened, [send.id]);
+    assert.deepEqual(srv.state.opened, [send.id], 'acknowledged once');
 
     // The page: the received entry knows its saved files; only those may be shown.
     srv.state.inbox.received = [{ id: send.id, from: { name: 'Büro-PC' }, items: send.items }];

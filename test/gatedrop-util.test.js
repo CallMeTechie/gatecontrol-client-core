@@ -256,6 +256,56 @@ describe('GateDrop answers', () => {
   });
 });
 
+describe('GateDrop 1.5 answers (pick-up, removed, retention)', () => {
+  it('deliveries: pickedAt only when the plugin names it — absent stays absent (older plugin: "zugestellt")', () => {
+    const old = gd.normalizeDelivery({ kind: 'device', target: '43', status: 'delivered', via: 'server' });
+    assert.equal('pickedAt' in old, false);
+    const provided = gd.normalizeDelivery({ kind: 'device', target: '43', status: 'delivered', via: 'server', pickedAt: null });
+    assert.equal('pickedAt' in provided, true);
+    assert.equal(provided.pickedAt, null);
+    const picked = gd.normalizeDelivery({ kind: 'person', target: '8', status: 'opened', pickedAt: '2026-11-04T10:00:00.000Z' });
+    assert.equal(picked.pickedAt, Date.parse('2026-11-04T10:00:00.000Z'));
+    const removed = gd.normalizeDelivery({ kind: 'device', target: '43', status: 'expired', error: 'removed', pickedAt: null });
+    assert.deepEqual([removed.status, removed.error], ['expired', 'removed']);
+  });
+
+  it('sends: removed / removedAt / pickedAt (an older plugin: removed false, no pickedAt key)', () => {
+    const s = gd.normalizeSend({ id: 'a'.repeat(24), createdAt: '2026-11-01T08:00:00Z', expired: true, removed: true, removedAt: '2026-11-03T09:00:00Z', pickedAt: null, items: [], deliveries: [{ kind: 'device', target: '43', status: 'expired', error: 'removed', pickedAt: null }] });
+    assert.equal(s.removed, true);
+    assert.equal(s.expired, true);
+    assert.equal(s.removedAt, Date.parse('2026-11-03T09:00:00Z'));
+    assert.equal('pickedAt' in s, true);
+    assert.equal(s.pickedAt, null);
+    const old = gd.normalizeSend({ id: 'b'.repeat(24), items: [], deliveries: [] });
+    assert.equal(old.removed, false);
+    assert.equal(old.removedAt, null);
+    assert.equal('pickedAt' in old, false);
+  });
+
+  it('targets: limits.retention { afterPickupDays, unpickedDays }, retentionDays = unpickedDays; older plugins 7', () => {
+    const t15 = gd.normalizeTargets({ limits: { retentionDays: 14, retention: { afterPickupDays: 0, unpickedDays: 14 } } });
+    assert.deepEqual(t15.limits.retention, { afterPickupDays: 0, unpickedDays: 14 });
+    assert.equal(t15.limits.retentionDays, 14);
+    const noDays = gd.normalizeTargets({ limits: { retention: { afterPickupDays: 1, unpickedDays: 30 } } });
+    assert.equal(noDays.limits.retentionDays, 30);
+    const old = gd.normalizeTargets({ limits: { retentionDays: 7 } });
+    assert.equal(old.limits.retention, null);
+    assert.equal(old.limits.retentionDays, 7);
+    assert.equal(gd.normalizeTargets({}).limits.retentionDays, 7);
+    for (const bad of [{ afterPickupDays: -1, unpickedDays: 7 }, { afterPickupDays: 1, unpickedDays: 0 }, { afterPickupDays: 'x', unpickedDays: 7 }, 'x']) {
+      assert.equal(gd.normalizeTargets({ limits: { retention: bad } }).limits.retention, null, JSON.stringify(bad));
+    }
+  });
+
+  it('the delivery of POST transfers/<id>/result: the stored row with picked_at, or pickedAt', () => {
+    assert.deepEqual(gd.resultDeliveryOf({ id: 3, send_id: 'x', status: 'delivered', via: 'direct', error: null, at: 1, picked_at: 1762250000000 }), { status: 'delivered', via: 'direct', error: null, pickedAt: 1762250000000 });
+    assert.deepEqual(gd.resultDeliveryOf({ status: 'pending', via: null, error: 'direct_failed', picked_at: null }), { status: 'pending', via: null, error: 'direct_failed', pickedAt: null });
+    assert.deepEqual(gd.resultDeliveryOf({ status: 'delivered', via: 'direct', error: null }), { status: 'delivered', via: 'direct', error: null });
+    assert.equal(gd.resultDeliveryOf({ status: 'weird' }), null);
+    assert.equal(gd.resultDeliveryOf(null), null);
+  });
+});
+
 describe('GateDrop "Senden an"', () => {
   it('parses the files after --gatedrop-send', () => {
     assert.equal(shellUtil.parseSendArgs(['C:\\GC\\GateControl.exe']), null);
@@ -303,5 +353,11 @@ describe('i18n gatedrop.* (de / en)', () => {
     assert.equal(d['toast.show'], 'Anzeigen');
     assert.equal(d['dialog.offlineLater'], 'offline · kommt an, sobald es online ist');
     assert.equal(d['status.waiting'], 'Wartet, bis „{{device}}“ online ist');
+    // GateDrop 1.5
+    assert.equal(d['status.provided'], 'bereitgestellt');
+    assert.equal(d['status.removed'], 'vom Admin entfernt');
+    assert.equal(d['status.incomplete'], 'nicht alle Dateien angekommen');
+    assert.equal(d['retentionDays'], 'Empfangenes bleibt {{days}} auf dem Server.');
+    assert.match(d['receiveError.gone'], /vom Admin entfernt/);
   });
 });

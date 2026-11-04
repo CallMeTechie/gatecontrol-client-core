@@ -48,6 +48,7 @@ const LINK_TOKEN_RE = /^[A-Za-z0-9_-]{16,128}$/;
 const CANDIDATE_RE = /^\d{1,3}(?:\.\d{1,3}){3}:\d{1,5}$/;
 const AVATAR_PATH_RE = /^\/avatars\/[A-Za-z0-9_-]{16,128}\.(?:png|jpe?g|webp)$/;
 
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const str = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').slice(0, max) : '');
 const bool = (v) => v === true;
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
@@ -347,6 +348,20 @@ function normalizeDeviceAccess(raw) {
 }
 
 /**
+ * GateDrop 1.5: `limits.retention { afterPickupDays, unpickedDays }` — how long received files stay on the server
+ * after the pick-up (0 = at once) and when nobody picked them up → { afterPickupDays, unpickedDays } or null
+ * (an older plugin: then `retentionDays`, 7 by default).
+ */
+function retentionOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const after = nonNegInt(o.afterPickupDays);
+  const unpicked = nonNegInt(o.unpickedDays);
+  if (after === null || unpicked === null || unpicked < 1) return null;
+  return { afterPickupDays: Math.min(after, 365), unpickedDays: Math.min(unpicked, 365) };
+}
+
+/**
  * GET targets → { me, people, devices, peopleDevices, nas, links, messenger, drive, limits, storage }
  * (unknown entries dropped; peopleDevices: [{ …device, owner: { id, name } }], [] before GateDrop 1.2.0).
  */
@@ -390,6 +405,7 @@ function normalizeTargets(raw) {
   const expires = arr(l.linkExpires).filter((x) => LINK_EXPIRES.includes(x));
   const posOr = (v, def, max) => { const n = nonNegInt(v); return n !== null && n > 0 ? Math.min(n, max) : def; };
   const storage = obj(r.storage);
+  const retention = retentionOf(l.retention);
   return {
     me: {
       id: idOf(me.id), name: str(me.name, 80) || null, canLink: bool(me.canLink), canNas: bool(me.canNas), deviceId: idOf(me.deviceId),
@@ -409,7 +425,9 @@ function normalizeTargets(raw) {
       types: arr(l.types).filter((x) => typeof x === 'string' && x.length <= 80).slice(0, 40),
       textMax: posOr(l.textMax, MAX_TEXT, MAX_TEXT),
       noteMax: posOr(l.noteMax, MAX_NOTE, MAX_NOTE),
-      retentionDays: posOr(l.retentionDays, 7, 365),
+      // the longest a send waits on the server (GateDrop 1.5: = retention.unpickedDays; older plugins: 7)
+      retentionDays: posOr(l.retentionDays, retention ? retention.unpickedDays : 7, 365),
+      retention,
       linkExpires: expires.length ? expires : LINK_EXPIRES.slice(),
       directPort: posOr(l.directPort, PORT, 65535),
       presenceEveryS: posOr(l.presenceEveryS, 300, 86400),
@@ -459,6 +477,17 @@ function normalizeItems(list) {
   return out;
 }
 
+/**
+ * GateDrop 1.5: when the recipient confirmed it has the send (`pickedAt`, ISO or null). Only when the plugin names the
+ * field: an older plugin leaves it out → no `pickedAt` key at all ("zugestellt" as before), 1.5 sends null while it is
+ * only provided ("bereitgestellt"). The answer of POST transfers/<id>/result may carry the stored `picked_at`.
+ */
+function pickedOf(o) {
+  if (has(o, 'pickedAt')) return { pickedAt: timeOf(o.pickedAt) };
+  if (has(o, 'picked_at')) return { pickedAt: timeOf(o.picked_at) };
+  return {};
+}
+
 function normalizeDelivery(d) {
   const o = obj(d);
   if (!o) return null;
@@ -474,7 +503,23 @@ function normalizeDelivery(d) {
     via: o.via === 'direct' || o.via === 'server' ? o.via : null,
     at: timeOf(o.at),
     openedAt: timeOf(o.openedAt),
+    ...pickedOf(o),
     error: str(o.error, 200) || null,
+  };
+}
+
+/**
+ * `delivery` of POST transfers/<id>/result (GateDrop 1.5 carries the pick-up; the plugin answers its stored row, so
+ * `kind` may be missing) → { status, via, error, pickedAt? } or null.
+ */
+function resultDeliveryOf(d) {
+  const o = obj(d);
+  if (!o || !DELIVERY_STATUS.includes(o.status)) return null;
+  return {
+    status: o.status,
+    via: o.via === 'direct' || o.via === 'server' ? o.via : null,
+    error: str(o.error, 200) || null,
+    ...pickedOf(o),
   };
 }
 
@@ -540,6 +585,11 @@ function normalizeSend(raw) {
     deliveries: arr(o.deliveries).map(normalizeDelivery).filter(Boolean),
     opened: bool(o.opened),
     expired: bool(o.expired),
+    // GateDrop 1.5: an administrator removed the files from the server ("Vom Admin entfernt"; `expired` too)
+    removed: bool(o.removed),
+    removedAt: timeOf(o.removedAt),
+    // GateDrop 1.5: every recipient picked it up (null: not yet; no key: an older plugin)
+    ...pickedOf(o),
     expiresAt: timeOf(o.expiresAt || o.expires_at),
   };
 }
@@ -739,7 +789,7 @@ module.exports = {
   PORT, BLOCK_SIZE, TAG_SIZE, MAX_FILE_BYTES, MAX_ITEMS, MAX_TEXT, MAX_NOTE, MAX_LINK,
   RESUMABLE_FROM, TICKET_TTL_MS, CONNECT_TIMEOUT_MS, LINK_EXPIRES, INBOX_KINDS, DELIVERY_STATUS, RECEIVE_FROM,
   idOf, nonNegInt, timeOf, isTransferId, isTicket, isMediaId, isLinkToken, decodeKey,
-  encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize, normalizeDelivery,
+  encodeName, decodeName, isTraversalName, safeFileName, numberedName, guessMime, encryptedSize, normalizeDelivery, resultDeliveryOf, retentionOf,
   isPrivateIPv4, plainIPv4, sameSubnet, lanAddresses, lanScan, parseCandidate, ipv4ToInt, DIRECT_REASONS, directState,
   normalizeTargets, normalizeDeviceAccess, normalizeDirect, normalizeItems, normalizeSendResult, normalizeSend, normalizeLink,
   normalizeInbox, normalizePending, parsePushData, transferOf, transferStatusOf, linkOf, sendTargets, linkArg, isGateDropPush,

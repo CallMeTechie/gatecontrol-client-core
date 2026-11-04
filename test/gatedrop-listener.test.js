@@ -36,6 +36,9 @@ function post(port, transferId, { ticket = TICKET, item = 0, name = 'bild.jpg', 
   });
 }
 
+/** A small item (one block) of index `item` sealed like the sender does. */
+const sealItem = (transferId, plain, item) => c.sealBlock(KEY, c.transferSalt(transferId), BigInt(item) << 32n, plain);
+
 function sinkTo(dir) {
   return async ({ name }) => {
     const final = path.join(dir, name);
@@ -81,6 +84,34 @@ describe('GateDrop listener', () => {
     // The ticket ended with the transfer.
     const again = await post(port, 'tr_ok', { size: plain.length, body: c.encryptBuffer(KEY, 'tr_ok', plain) });
     assert.equal(again.status, 403);
+  });
+
+  it('a count from the push (itemCount, no item list) ends the transfer once that many arrived', async () => {
+    const a = Buffer.from('erste');
+    const b = Buffer.from('zweite');
+    const done = l.expectIncoming({ transferId: 'tr_cnt', ticket: TICKET, key: KEY, items: [], count: 2, sink: sinkTo(dir) });
+    assert.equal((await post(port, 'tr_cnt', { item: 0, name: 'a.txt', size: a.length, body: c.encryptBuffer(KEY, 'tr_cnt', a) })).status, 200);
+    assert.equal(l.hasIncoming('tr_cnt'), true);
+    const r = await post(port, 'tr_cnt', { item: 1, name: 'b.txt', size: b.length, body: sealItem('tr_cnt', b, 1) });
+    assert.equal(r.status, 200);
+    const items = await done;
+    assert.deepEqual(items.map((x) => x.index), [0, 1]);
+    // an index beyond the count is refused
+    l.expectIncoming({ transferId: 'tr_cnt2', ticket: TICKET, key: KEY, items: [], count: 1, sink: sinkTo(dir) });
+    assert.equal((await post(port, 'tr_cnt2', { item: 1, name: 'x.txt', size: 1, body: sealItem('tr_cnt2', Buffer.from('x'), 1) })).status, 400);
+  });
+
+  it('finishIncoming with a known count and items missing: incomplete, never a part as if it were all', async () => {
+    const a = Buffer.from('nur eine');
+    const done = l.expectIncoming({ transferId: 'tr_part', ticket: TICKET, key: KEY, items: [], count: 3, sink: sinkTo(dir) });
+    assert.equal((await post(port, 'tr_part', { item: 0, name: 'a.txt', size: a.length, body: c.encryptBuffer(KEY, 'tr_part', a) })).status, 200);
+    assert.equal(l.finishIncoming('tr_part'), null);
+    await assert.rejects(done, (e) => e.code === 'incomplete' && e.received.length === 1);
+    // without a count the service decides (it checks the items against GET transfers/<id>)
+    const open = l.expectIncoming({ transferId: 'tr_open', ticket: TICKET, key: KEY, items: [], sink: sinkTo(dir) });
+    assert.equal((await post(port, 'tr_open', { item: 0, name: 'o.txt', size: a.length, body: c.encryptBuffer(KEY, 'tr_open', a) })).status, 200);
+    assert.equal(l.finishIncoming('tr_open').length, 1);
+    assert.equal((await open).length, 1);
   });
 
   it('refuses unknown transfers and wrong tickets alike', async () => {
