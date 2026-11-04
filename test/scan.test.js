@@ -390,6 +390,50 @@ describe('GateDrop 1.4 (scan)', () => {
     assert.deepEqual([r.ok, r.skipped, r.blocked.length], [true, 'blocked', 1]);
   });
 
+  it('a check that takes long: the send stays pending (not acknowledged) and its file still comes', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const { svc, downloads } = await setup(srv, { scanRecheckMs: [10, 10], scanRecheckLateMs: 20, scanRecheckMax: 6 });
+    const send = srv.addSend({
+      from: { name: 'Pixel' },
+      items: [
+        { name: 'IMG_1.jpg', data: Buffer.from('jpg1') },
+        { name: 'IMG_2.jpg', data: Buffer.from('jpg2'), scan: { state: 'pending', blocked: true, finding: null } },
+      ],
+    }, { pending: true });
+    const r = await svc.pollPending();
+    assert.deepEqual([r.ok, r.failed], [true, 0]);
+    assert.deepEqual(fs.readdirSync(downloads), ['IMG_1.jpg']);
+    assert.equal(srv.state.opened.includes(send.id), false, 'not acknowledged while a file is still checked');
+    // longer than the first steps (10 + 10 ms), then every 20 ms
+    await new Promise((res) => setTimeout(res, 80));
+    srv.state.sends.get(send.id).items[1].scan = { state: 'clean', blocked: false, finding: null };
+    await waitFor(() => fs.readdirSync(downloads).includes('IMG_2.jpg'), 3000, 'the file checked late');
+    await waitFor(() => svc._isHandled(send.id), 3000, 'done with the send');
+  });
+
+  it('a send whose download failed: the page learns why (receiveError) until it worked', async () => {
+    const srv = await gatedropServer();
+    cleanup.push(() => srv.close());
+    const { svc, downloads } = await setup(srv);
+    const send = srv.addSend({ from: { name: 'Pixel' }, items: [{ name: 'IMG_3.jpg', data: Buffer.from('jpg3') }] }, { pending: true });
+    const mediaId = srv.state.sends.get(send.id).items[0].mediaId;
+    srv.state.mediaFail.add(mediaId);
+    await svc.pollPending();
+    srv.state.mediaFail.delete(mediaId);
+    srv.state.inbox.received = [srv.view(srv.state.sends.get(send.id))];
+    let list = await svc.inbox({ kind: 'received', refresh: true });
+    const row = list.items.find((x) => x.id === send.id);
+    assert.ok(row, 'the send is listed');
+    assert.equal(typeof row.receiveError, 'string');
+    assert.deepEqual(row.local, []);
+    const saved = await svc.saveSend(send.id);
+    assert.equal(saved.ok, true);
+    assert.deepEqual(fs.readdirSync(downloads), ['IMG_3.jpg']);
+    list = await svc.inbox({ kind: 'received', refresh: true });
+    assert.equal('receiveError' in list.items.find((x) => x.id === send.id), false);
+  });
+
   it('a download of a file blocked later: the refusal, not "gone"', async () => {
     const srv = await gatedropServer();
     cleanup.push(() => srv.close());
