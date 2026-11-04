@@ -103,6 +103,39 @@ describe('NotificationCenter toasts', () => {
     assert.equal(center.list().items[0].actions.length, 2);
   });
 
+  it('Windows refuses the toasts (E_ACCESSDENIED): shown in the app instead, the status says so, tried again later', () => {
+    const { center, N, events, setNow } = setup();
+    const fallback = [];
+    center.on('fallback', (x) => fallback.push(x));
+    center.handleNotification(note(1, { title: 'Gateway offline' }));
+    assert.equal(center.status().toastsBlocked, false);
+    // as Electron reports it on Windows when the app's notifications are off (or another Windows user runs it)
+    N.created[0].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2147024891)');
+    assert.deepEqual(fallback, [{ title: 'Gateway offline', body: 'Seit 2 Minuten kein Lebenszeichen', id: 1001 }]);
+    assert.equal(center.status().toastsBlocked, true);
+    assert.equal(events.status.at(-1).toastsBlocked, true);
+    assert.equal(center.toastBlocked(), true);
+    // the next ones are not handed to Windows meanwhile, the app shows them
+    center.handleNotification(note(2, { title: 'Gateway 2' }));
+    assert.equal(N.created.length, 1);
+    assert.equal(fallback.at(-1).title, 'Gateway 2');
+    assert.ok(center.notify({ title: 'VPN getrennt', force: true }) === null);
+    assert.equal(fallback.at(-1).title, 'VPN getrennt');
+    // later Windows is asked again; a toast shown ends the block
+    setNow(T0 + NotificationCenter.TOAST_BLOCK_MS + 1000);
+    assert.equal(center.toastBlocked(), false);
+    center.handleNotification(note(3, { title: 'Gateway 3' }));
+    assert.equal(N.created.length, 2);
+    N.created[1].emit('show');
+    assert.equal(center.status().toastsBlocked, false);
+    // other failures are only logged
+    center.handleNotification(note(4));
+    N.created[2].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2143420155)');
+    assert.equal(center.status().toastsBlocked, false);
+    assert.equal(NotificationCenter.isToastDenied('0x80070005'), true);
+    assert.equal(NotificationCenter.isToastDenied('timeout'), false);
+  });
+
   it('maps priority to sound: info is silent, normal has the default sound', () => {
     const { center, N } = setup();
     center.handleNotification(note(1, { priority: 'info' }));
