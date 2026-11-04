@@ -674,7 +674,32 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       applyInvitation:   (id) => ipcRenderer.invoke('mail:invitation:apply', { id }),
       dismissInvitation: (id, decline) => ipcRenderer.invoke('mail:invitation:dismiss', { id, decline: decline === true }),
       // live: { kind: 'changed', calendarId, … } | { kind: 'calendars' } | { kind: 'invitation', … } | { kind: 'conflict', eventId }
+      //       | 1.9.0: { kind: 'shares', calendarId }
       onCalendar:     (cb) => subscribe('mail:calendar', cb),
+
+      // ── Free/busy, shared calendars, resources (Mail 1.9.0; only with the features of me) ──
+      // { from, to, attendees: [email], resources?: [id] } → rows (the asker first, never titles)
+      freeBusy:       (query) => ipcRenderer.invoke('mail:freebusy', { ...(query || {}) }),
+      // { duration (min), from?, to?, attendees, resources?, limit? }
+      suggestTimes:   (query) => ipcRenderer.invoke('mail:freebusy:suggest', { ...(query || {}) }),
+      shares:         (calendarId) => ipcRenderer.invoke('mail:shares', { calendarId }),
+      addShare:       (calendarId, input) => ipcRenderer.invoke('mail:share:add', { ...(input || {}), calendarId }),
+      updateShare:    (calendarId, shareId, level) => ipcRenderer.invoke('mail:share:update', { calendarId, shareId, level }),
+      removeShare:    (calendarId, shareId) => ipcRenderer.invoke('mail:share:delete', { calendarId, shareId }),
+      shared:         () => ipcRenderer.invoke('mail:shared'),
+      updateShared:   (id, patch) => ipcRenderer.invoke('mail:shared:update', { ...(patch || {}), id }),
+      principals:     (q) => ipcRenderer.invoke('mail:principals', { q: typeof q === 'string' ? q : '' }),
+      // { from?, to?, kind? } — with from / to each resource's busy times
+      resources:      (query) => ipcRenderer.invoke('mail:resources', { ...(query || {}) }),
+      book:           (id, input) => ipcRenderer.invoke('mail:resource:book', { ...(input || {}), id }),
+      // 'open' | 'done' | 'mine'
+      bookings:       (state) => ipcRenderer.invoke('mail:bookings', { state: state || 'mine' }),
+      booking:        (id) => ipcRenderer.invoke('mail:booking:get', { id }),
+      // { decision: 'approve' | 'decline', comment?, override? }
+      decide:         (id, input) => ipcRenderer.invoke('mail:booking:decide', { ...(input || {}), id }),
+      cancelBooking:  (id) => ipcRenderer.invoke('mail:booking:cancel', { id }),
+      // live: { kind: 'request' | 'booking', bookingId, resourceId, state } | { kind: 'resources' }
+      onResources:    (cb) => subscribe('mail:resources', cb),
 
       // ── Contacts (Phase 2) ──
       addressbooks:   () => ipcRenderer.invoke('mail:books'),

@@ -41,6 +41,12 @@
  *   POST   …/api/cards/merge/preview · cards/merge/auto · cards/merges/<id>/undo · cards/<id>/unmerge
  *   POST   …/api/cards/<id>/conflicts/<cid>/accept | dismiss · PUT cards/favorites · DELETE cards/<id>?linked
  *   POST   …/api/groups · GET|PATCH|DELETE groups/<id> · POST groups/<id>/members
+ * Mail 1.9.0 (free/busy, shared calendars, resources; only with the features of `GET me`):
+ *   POST   …/api/freebusy · freebusy/suggest
+ *   GET|POST …/api/calendars/<id>/shares · PATCH|DELETE calendars/<id>/shares/<shareId>
+ *   GET    …/api/shared · PATCH shared/<calendarId> · GET principals?q
+ *   GET    …/api/resources?from&to&kind · POST resources/<id>/book
+ *   GET    …/api/bookings?state · GET bookings/<id> · POST bookings/<id>/decide · DELETE bookings/<id>
  *   GET    …/gatecontrol-mail/media/<mediaId>                        an attachment (streamed), an account's picture (avatar)
  *
  * Failures are thrown as MessengerApi's error class { status, code, message }; the plugin's refusal
@@ -77,6 +83,8 @@ function pluginError(err) {
         if (h.de || h.en) detail.hint = h;
       }
     }
+    // Mail 1.9.0: violations / conflicts / decidedBy of rule_violation, resource_busy and already_decided
+    Object.assign(detail, mail.refusalDetail(inner));
     if (Object.keys(detail).length) Object.defineProperty(e, 'detail', { value: detail, enumerable: false, configurable: true });
   } else if (b && typeof b.code !== 'string' && typeof b.error === 'string' && mail.codeOf(b.error)) {
     e.code = b.error;
@@ -737,6 +745,112 @@ class MailApi {
     const params = mail.upcomingQuery(query);
     if (!params) throw this._bad('query');
     return mail.normalizeUpcoming(await this.api('GET', 'events/upcoming', { params }));
+  }
+
+  // ── Free/busy, shared calendars, resources (Mail 1.9.0) ─
+
+  /** POST freebusy { from, to, attendees, resources? } → { from, to, items: [Row] } (the asker first, never titles). */
+  async freeBusy(input) {
+    const body = mail.freeBusyBody(input);
+    if (!body) throw this._bad('freebusy');
+    return mail.normalizeFreeBusy(await this.api('POST', 'freebusy', { body, timeout: 60000 }));
+  }
+
+  /** POST freebusy/suggest { duration, from?, to?, attendees, resources?, limit? } → { items, unknown, workHours, timeZone }. */
+  async suggestTimes(input) {
+    const body = mail.suggestBody(input);
+    if (!body) throw this._bad('suggest');
+    return mail.normalizeSuggest(await this.api('POST', 'freebusy/suggest', { body, timeout: 60000 }));
+  }
+
+  /** GET calendars/<id>/shares → { items: [Share], freeBusy }. */
+  async shares(calendarId) { return mail.normalizeShares(await this.api('GET', `calendars/${this._id(calendarId)}/shares`)); }
+
+  _share(r) {
+    const s = mail.normalizeShare(r && r.share);
+    if (!s) throw new MailError('bad share answer', { code: 'bad_response' });
+    return s;
+  }
+
+  /** POST calendars/<id>/shares { type, id, level } → Share (the same person / group again: the new level). */
+  async addShare(calendarId, input) {
+    const body = mail.shareBody(input);
+    if (!body) throw this._bad('share');
+    return this._share(await this.api('POST', `calendars/${this._id(calendarId)}/shares`, { body }));
+  }
+
+  /** PATCH calendars/<id>/shares/<shareId> { level } → Share. */
+  async updateShare(calendarId, shareId, level) {
+    if (!mail.LEVELS.includes(level)) throw this._bad('level');
+    return this._share(await this.api('PATCH', `calendars/${this._id(calendarId)}/shares/${this._id(shareId)}`, { body: { level } }));
+  }
+
+  /** DELETE calendars/<id>/shares/<shareId> → { ok } („Nicht mehr teilen“). */
+  async removeShare(calendarId, shareId) {
+    await this.api('DELETE', `calendars/${this._id(calendarId)}/shares/${this._id(shareId)}`);
+    return { ok: true };
+  }
+
+  /** GET shared → { items: [SharedCalendar], accounts } („Mit mir geteilt“). */
+  async shared() { return mail.normalizeShared(await this.api('GET', 'shared')); }
+
+  /** PATCH shared/<calendarId> { visible?, color? } → SharedCalendar („Anzeigen“; the first time: accepted). */
+  async updateShared(calendarId, patch) {
+    const body = mail.sharedPatch(patch);
+    if (!body) throw this._bad('shared');
+    const r = await this.api('PATCH', `shared/${this._id(calendarId)}`, { body });
+    const item = mail.normalizeSharedCalendar(r && r.item);
+    if (!item) throw new MailError('bad shared answer', { code: 'bad_response' });
+    return item;
+  }
+
+  /** GET principals?q= → { items } — people who may use Mail and groups, to share with (never addresses). */
+  async principals(q) {
+    const params = mail.principalsQuery(q);
+    if (!params) return { items: [] };
+    return mail.normalizePrincipals(await this.api('GET', 'principals', { params }));
+  }
+
+  /** GET resources?from&to&kind → { items: [Resource (+ busy)], kinds } — only what the person may book. */
+  async resources(query = {}) {
+    const params = mail.resourcesQuery(query);
+    if (!params) throw this._bad('range');
+    return mail.normalizeResources(await this.api('GET', 'resources', { params }));
+  }
+
+  /** POST resources/<id>/book → { event, sent, bookings } — an own event with the resource as attendee. */
+  async book(resourceId, input) {
+    const body = mail.bookBody(input);
+    if (!body) throw this._bad('booking');
+    return this._saved(await this.api('POST', `resources/${this._id(resourceId)}/book`, { body, timeout: 90000 }));
+  }
+
+  /** GET bookings?state=open|done|mine → { items: [Booking], counts: { open } }. */
+  async bookings(state = 'mine') {
+    if (!mail.BOOKING_LISTS.includes(state)) throw this._bad('state');
+    return mail.normalizeBookings(await this.api('GET', 'bookings', { params: { state } }));
+  }
+
+  _booking(r) {
+    const b = mail.normalizeBooking(r && r.booking ? r.booking : r);
+    if (!b) throw new MailError('bad booking answer', { code: 'bad_response' });
+    return b;
+  }
+
+  /** GET bookings/<id> → Booking (the booker or an approver). */
+  async booking(id) { return this._booking(await this.api('GET', `bookings/${this._id(id)}`)); }
+
+  /** POST bookings/<id>/decide { decision, comment?, override? } → Booking (409 already_decided: someone was first). */
+  async decide(id, input) {
+    const body = mail.decideBody(input);
+    if (!body) throw this._bad('decision');
+    return this._booking(await this.api('POST', `bookings/${this._id(id)}/decide`, { body, timeout: 60000 }));
+  }
+
+  /** DELETE bookings/<id> → { ok } (the booker calls it off; the resource leaves the event). */
+  async cancelBooking(id) {
+    await this.api('DELETE', `bookings/${this._id(id)}`, { timeout: 60000 });
+    return { ok: true };
   }
 
   async ignoreDuplicates(list) {

@@ -70,11 +70,27 @@
  *   'contacts'; a reminder push opens the event, an internal invitation the
  *   invitation (pushTarget).
  *
+ * Phase 3 — Mail 1.9.0 (only with the features of `GET me`: freeBusy,
+ * calendarSharing, resources, bookingRequests):
+ * - Free/busy of attendees and resources and the suggestions (never kept
+ *   offline: always fresh).
+ * - Sharing an own GateControl calendar (people and groups, three levels),
+ *   „Mit mir geteilt“ (shown or not, its colour) and the people / groups to
+ *   share with. Items of shown shared calendars come with GET events and are
+ *   kept in the offline window like the own ones (with `shared`).
+ * - Resources (with their day), booking one, the person's bookings and the
+ *   requests they decide on (never kept offline).
+ * - Live: `resources` → 'resources' ({ kind, bookingId, resourceId, state });
+ *   `calendar` { kind: 'shares' } → 'calendar'. Push clicks: a request opens
+ *   the requests, the answer to a booking its event, a share „Mit mir
+ *   geteilt“ (pushTarget).
+ *
  * Events: 'state' (status()), 'changed' ({ accountId, folderId, messageId,
  * threadId, attachmentId }) lists to reload, 'outbox' ({}) the outbox
  * changed, 'loading' ({ messageId, attachmentId, retryAfter }) an embedded
  * picture the frame should ask for again, 'calendar' ({ kind, … } see
- * utils/mail-pim.js normalizeCalendarLive), 'contacts' ({ kind, … }).
+ * utils/mail-pim.js normalizeCalendarLive), 'contacts' ({ kind, … }),
+ * 'resources' ({ kind, … } see utils/mail-plan.js normalizeResourcesLive).
  */
 
 const EventEmitter = require('events');
@@ -211,6 +227,11 @@ class MailService extends EventEmitter {
           const c = mail.normalizeCalendarLive(d);
           if (c && c.kind === 'changed') this._calFillAt = 0;
           if (c) this.emit('calendar', c);
+        } else if (ev.data.type === 'resources') {
+          // Mail 1.9.0: a request to decide on / the answer to an own booking / the list of resources changed
+          const r = mail.normalizeResourcesLive(d);
+          if (r && r.kind === 'booking') this._calFillAt = 0;
+          if (r) this.emit('resources', r);
         } else if (ev.data.type === 'contacts') {
           const c = mail.normalizeContactsLive(d);
           if (!c) return;
@@ -859,7 +880,8 @@ class MailService extends EventEmitter {
     day.setHours(0, 0, 0, 0);
     const start = day.getTime() - 30 * DAY_MS;
     const parts = [[start, start + 60 * DAY_MS], [start + 60 * DAY_MS, start + 120 * DAY_MS]];
-    const calendars = [...c.calendars.filter((x) => x.visible).map((x) => x.id), ...c.overlays.filter((x) => x.visible).map((x) => x.id)];
+    // Mail 1.9.0: the shown shared calendars too (with `calendars` the server only adds those asked for)
+    const calendars = [...c.calendars.filter((x) => x.visible).map((x) => x.id), ...(c.shared || []).filter((x) => x.visible).map((x) => x.id), ...c.overlays.filter((x) => x.visible).map((x) => x.id)];
     if (!calendars.length) return;
     (async () => {
       for (const [from, to] of parts) {
@@ -985,6 +1007,76 @@ class MailService extends EventEmitter {
   async applyInvitation(id) { return this._inviteChanged(async () => ({ ok: true, ...(await this.api.applyInvitation(id)) })); }
 
   async dismissInvitation(id, opts) { return this._inviteChanged(async () => this.api.dismissInvitation(id, opts || {})); }
+
+  // ── Free/busy, shared calendars, resources (Mail 1.9.0) ──
+
+  /** POST freebusy → { ok, from, to, items } (not kept offline). */
+  async freeBusy(input) { return this._run(async () => ({ ok: true, ...(await this.api.freeBusy(input || {})) })); }
+
+  /** POST freebusy/suggest → { ok, items, unknown, workHours, timeZone }. */
+  async suggestTimes(input) { return this._run(async () => ({ ok: true, ...(await this.api.suggestTimes(input || {})) })); }
+
+  /** GET calendars/<id>/shares → { ok, items, freeBusy }. */
+  async shares(calendarId) { return this._run(async () => ({ ok: true, ...(await this.api.shares(calendarId)) })); }
+
+  async _sharesChanged(calendarId, fn) {
+    const r = await this._run(fn);
+    this.emit('calendar', { kind: 'shares', calendarId: mail.posId(calendarId) });
+    return r;
+  }
+
+  /** POST calendars/<id>/shares → { ok, share }. */
+  async addShare(calendarId, input) { return this._sharesChanged(calendarId, async () => ({ ok: true, share: await this.api.addShare(calendarId, input || {}) })); }
+
+  /** PATCH calendars/<id>/shares/<shareId> → { ok, share }. */
+  async updateShare(calendarId, shareId, level) { return this._sharesChanged(calendarId, async () => ({ ok: true, share: await this.api.updateShare(calendarId, shareId, level) })); }
+
+  /** DELETE calendars/<id>/shares/<shareId> → { ok }. */
+  async removeShare(calendarId, shareId) { return this._sharesChanged(calendarId, async () => this.api.removeShare(calendarId, shareId)); }
+
+  /** GET shared → { ok, items, accounts } („Mit mir geteilt“). */
+  async shared() { return this._run(async () => ({ ok: true, ...(await this.api.shared()) })); }
+
+  /** PATCH shared/<calendarId> → { ok, item }; the calendar list and the offline window follow. */
+  async updateShared(calendarId, patch) {
+    const r = await this._run(async () => ({ ok: true, item: await this.api.updateShared(calendarId, patch || {}) }));
+    this._calFillAt = 0;
+    this.emit('calendar', { kind: 'shares', calendarId: r.item.id });
+    return r;
+  }
+
+  /** GET principals?q= → { ok, items }. */
+  async principals(q) { return this._run(async () => ({ ok: true, ...(await this.api.principals(q)) })); }
+
+  /** GET resources?from&to&kind → { ok, items, kinds } (not kept offline). */
+  async resources(query) { return this._run(async () => ({ ok: true, ...(await this.api.resources(query || {})) })); }
+
+  /** POST resources/<id>/book → { ok, event, sent, bookings }. */
+  async book(resourceId, input) {
+    return this._eventChanged(async () => ({ ok: true, ...(await this.api.book(resourceId, input || {})) }), input && input.calendarId);
+  }
+
+  /** GET bookings?state= → { ok, items, counts }. */
+  async bookings(state = 'mine') { return this._run(async () => ({ ok: true, ...(await this.api.bookings(state)) })); }
+
+  /** GET bookings/<id> → { ok, booking }. */
+  async booking(id) { return this._run(async () => ({ ok: true, booking: await this.api.booking(id) })); }
+
+  /** POST bookings/<id>/decide → { ok, booking }; 409 already_decided comes with detail.decidedBy. */
+  async decide(id, input) {
+    const r = await this._run(async () => ({ ok: true, booking: await this.api.decide(id, input || {}) }));
+    this.emit('resources', { kind: 'request', bookingId: r.booking.id, resourceId: r.booking.resourceId, state: r.booking.state });
+    return r;
+  }
+
+  /** DELETE bookings/<id> → { ok } (the resource leaves the person's event). */
+  async cancelBooking(id) {
+    const r = await this._run(async () => this.api.cancelBooking(id));
+    this._calFillAt = 0;
+    this.emit('resources', { kind: 'booking', bookingId: mail.posId(id), resourceId: null, state: 'cancelled' });
+    this.emit('calendar', { kind: 'changed', calendarId: null, accountId: null, from: null, to: null });
+    return r;
+  }
 
   // ── Contacts (Phase 2) ───────────────────────────────────
 

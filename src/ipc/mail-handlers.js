@@ -54,7 +54,8 @@
  *   mail:cal:update        ({ id, name?, color?, visible?, notify? }) → { ok, calendar }
  *   mail:cal:delete        ({ id }) → { ok }
  *   mail:cal:subscribe     ({ url, name?, color?, accountId? }) → { ok, calendar }   iCal subscription
- *   mail:cal:settings      ({ defaultCalendarId?, view?, weekStart?, workWeek?, timeZone?, reminders?, defaultReminder?, allDayReminder? }) → { ok, prefs }
+ *   mail:cal:settings      ({ defaultCalendarId?, view?, weekStart?, workWeek?, timeZone?, reminders?, defaultReminder?, allDayReminder?,
+ *                            freeBusy?, workHours? }) → { ok, prefs }   (freeBusy / workHours: Mail 1.9.0)
  *   mail:overlay:update    ({ id: 'familie' | 'alltag:<n>' | 'birthdays', visible?, color? }) → { ok, overlay }
  *   mail:events            ({ from, to, calendars? }) → { ok, items, overlays, pending, offline? }   ≤ 62 days
  *   mail:event:get         ({ id, occurrence? }) → { ok, event, doc, docDark, offline? }
@@ -108,9 +109,28 @@
  *   mail:group:members     ({ id, add?, remove? }) → { ok, group, members }
  *   mail:call              ({ number }) → { ok }   tel: to the system
  *
+ * Mail 1.9.0 — free/busy, shared calendars, resources (the renderer asks only with the features of mail:me):
+ *   mail:freebusy          ({ from, to, attendees, resources? }) → { ok, from, to, items: [Row] }   ≤ 31 days
+ *   mail:freebusy:suggest  ({ duration, from?, to?, attendees, resources?, limit? }) → { ok, items, unknown, workHours, timeZone }
+ *   mail:shares            ({ calendarId }) → { ok, items: [Share], freeBusy }
+ *   mail:share:add         ({ calendarId, type: 'user' | 'group', id, level }) → { ok, share }
+ *   mail:share:update      ({ calendarId, shareId, level }) → { ok, share }
+ *   mail:share:delete      ({ calendarId, shareId }) → { ok }
+ *   mail:shared            () → { ok, items: [SharedCalendar], accounts }
+ *   mail:shared:update     ({ id, visible?, color? }) → { ok, item }
+ *   mail:principals        ({ q }) → { ok, items }   people and groups to share with
+ *   mail:resources         ({ from?, to?, kind? }) → { ok, items: [Resource], kinds }
+ *   mail:resource:book     ({ id, title?, allDay?, start?, end?, startDate?, endDate?, timeZone?, calendarId?, note? }) → { ok, event, sent, bookings }
+ *   mail:bookings          ({ state: 'open' | 'done' | 'mine' }) → { ok, items: [Booking], counts: { open } }
+ *   mail:booking:get       ({ id }) → { ok, booking }
+ *   mail:booking:decide    ({ id, decision: 'approve' | 'decline', comment?, override? }) → { ok, booking }
+ *                          (409 already_decided { state, decidedBy, decidedAt }, rule_violation { violations }, resource_busy { conflicts } in detail)
+ *   mail:booking:cancel    ({ id }) → { ok }
+ *
  * Events to the main window: mail:state, mail:changed ({ accountId, folderId, messageId, threadId, attachmentId }),
  * mail:outbox, mail:loading ({ messageId, attachmentId, retryAfter }) an embedded picture still on its way,
- * mail:calendar ({ kind, … }) and mail:contacts ({ kind, … }) of the live events.
+ * mail:calendar ({ kind, … }), mail:contacts ({ kind, … }) and mail:resources ({ kind, bookingId, resourceId, state }
+ * | { kind: 'resources' }, Mail 1.9.0) of the live events.
  */
 
 const SC = require('../utils/scan');
@@ -122,6 +142,7 @@ const MAIL_EVENTS = {
   loading: 'mail:loading',
   calendar: 'mail:calendar',
   contacts: 'mail:contacts',
+  resources: 'mail:resources',
 };
 
 function fail(err) {
@@ -257,7 +278,7 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:cal:update', byId(async (a) => s.updateCalendar(a.id, pick(a, ['name', 'color', 'visible', 'notify']))));
   handle('mail:cal:delete', byId(async (a) => s.deleteCalendar(a.id)));
   handle('mail:cal:subscribe', wrap(async (a) => (isStr(a.url, 2048) && optStr(a.name, 80) ? s.subscribe(pick(a, ['url', 'name', 'color', 'accountId'])) : invalid())));
-  handle('mail:cal:settings', wrap(async (a) => s.calSettings(pick(a, ['defaultCalendarId', 'view', 'weekStart', 'workWeek', 'timeZone', 'reminders', 'defaultReminder', 'allDayReminder']))));
+  handle('mail:cal:settings', wrap(async (a) => s.calSettings(pick(a, ['defaultCalendarId', 'view', 'weekStart', 'workWeek', 'timeZone', 'reminders', 'defaultReminder', 'allDayReminder', 'freeBusy', 'workHours']))));
   handle('mail:overlay:update', wrap(async (a) => (isStr(a.id, 40) ? s.updateOverlay(a.id, pick(a, ['visible', 'color'])) : invalid())));
   handle('mail:events', wrap(async (a) => (Number.isSafeInteger(a.from) && Number.isSafeInteger(a.to) ? s.events(pick(a, ['from', 'to', 'calendars'])) : invalid())));
   handle('mail:event:get', byId(async (a) => (isOcc(a.occurrence) ? s.event(a.id, a.occurrence || null) : invalid())));
@@ -317,6 +338,30 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:group:get', byId(async (a) => s.group(a.id)));
   handle('mail:group:members', byId(async (a) => s.groupMembers(a.id, pick(a, ['add', 'remove']))));
   handle('mail:call', wrap(async (a) => (isStr(a.number, 40) ? s.call(a.number) : invalid())));
+
+  // ── Free/busy, shared calendars, resources (Mail 1.9.0) ──
+  const isMs = (v) => Number.isSafeInteger(v) && v > 0;
+  const isLevel = (v) => v === 'freebusy' || v === 'read' || v === 'write';
+  const isList = (v, max) => v === undefined || (Array.isArray(v) && v.length <= max);
+  handle('mail:freebusy', wrap(async (a) => (isMs(a.from) && isMs(a.to) && isList(a.attendees, 50) && isList(a.resources, 20)
+    ? s.freeBusy(pick(a, ['from', 'to', 'attendees', 'resources'])) : invalid())));
+  handle('mail:freebusy:suggest', wrap(async (a) => (Number.isSafeInteger(a.duration) && isList(a.attendees, 50) && isList(a.resources, 20)
+    ? s.suggestTimes(pick(a, ['duration', 'from', 'to', 'attendees', 'resources', 'limit'])) : invalid())));
+  handle('mail:shares', wrap(async (a) => (isId(a.calendarId) ? s.shares(a.calendarId) : invalid())));
+  handle('mail:share:add', wrap(async (a) => (isId(a.calendarId) && (a.type === 'user' || a.type === 'group') && isId(a.id) && isLevel(a.level)
+    ? s.addShare(a.calendarId, { type: a.type, id: a.id, level: a.level }) : invalid())));
+  handle('mail:share:update', wrap(async (a) => (isId(a.calendarId) && isId(a.shareId) && isLevel(a.level) ? s.updateShare(a.calendarId, a.shareId, a.level) : invalid())));
+  handle('mail:share:delete', wrap(async (a) => (isId(a.calendarId) && isId(a.shareId) ? s.removeShare(a.calendarId, a.shareId) : invalid())));
+  handle('mail:shared', wrap(async () => s.shared()));
+  handle('mail:shared:update', byId(async (a) => s.updateShared(a.id, pick(a, ['visible', 'color']))));
+  handle('mail:principals', wrap(async (a) => (isStr(a.q, 60) ? s.principals(a.q) : invalid())));
+  handle('mail:resources', wrap(async (a) => s.resources(pick(a, ['from', 'to', 'kind']))));
+  handle('mail:resource:book', byId(async (a) => s.book(a.id, pick(a, ['title', 'allDay', 'start', 'end', 'startDate', 'endDate', 'timeZone', 'calendarId', 'note']))));
+  handle('mail:bookings', wrap(async (a) => (a.state === 'open' || a.state === 'done' || a.state === 'mine' ? s.bookings(a.state) : invalid())));
+  handle('mail:booking:get', byId(async (a) => s.booking(a.id)));
+  handle('mail:booking:decide', byId(async (a) => ((a.decision === 'approve' || a.decision === 'decline') && optStr(a.comment, 2000) && (a.override === undefined || typeof a.override === 'boolean')
+    ? s.decide(a.id, pick(a, ['decision', 'comment', 'override'])) : invalid())));
+  handle('mail:booking:cancel', byId(async (a) => s.cancelBooking(a.id)));
 
   const send = (channel, payload) => {
     const win = getMainWindow && getMainWindow();
