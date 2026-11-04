@@ -163,9 +163,11 @@ function normalizeNode(v) {
   if (!o) return null;
   const id = posId(o.id);
   const areaId = areaIdOf(o.areaId);
-  const name = line(o.name, NAME_MAX);
-  if (!id || !areaId || !name) return null;
   const isDir = bool(o.isDir);
+  // The top folder of an area has no name in Drive (`name: ''`, no parent): the apps show the area's label for it.
+  const root = isDir && (o.parentId === null || o.parentId === undefined) && o.name === '';
+  const name = root ? '' : line(o.name, NAME_MAX);
+  if (!id || !areaId || (!name && !root)) return null;
   const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
   const match = o.match === 'text' || o.match === 'name' ? o.match : null;
   const scan = isDir ? null : SC.normalizeScan(o.scan);
@@ -219,18 +221,21 @@ function normalizeItems(raw, max = 1000) {
   return arr(r.items).slice(0, max).map(normalizeNode).filter(Boolean);
 }
 
+/** The folders above a node, the area's top folder first (its name '' as Drive sends it). */
 function crumbsOf(v) {
-  return arr(v).slice(0, 100).map((c) => {
+  return arr(v).slice(0, 100).map((c, i) => {
     const o = obj(c);
     const id = o && posId(o.id);
-    const name = o && line(o.name, NAME_MAX);
-    return id && name ? { id, name } : null;
+    const name = o && (i === 0 && o.name === '' ? '' : line(o.name, NAME_MAX));
+    return id && (name || name === '') ? { id, name } : null;
   }).filter(Boolean);
 }
 
 /**
  * `GET nodes/<id>` + `GET nodes/<id>/children` → { node, crumbs, role,
- * writable, items, total, next } or null.
+ * writable, items, total, next } or null. `crumbs`: the area's top folder
+ * first, the folder itself last — Drive's `crumbs` are the folders above it
+ * (the top folder with the name ''), the folder is added here when missing.
  */
 function normalizeFolder(nodeAnswer, childrenAnswer) {
   const na = obj(nodeAnswer) || {};
@@ -242,9 +247,11 @@ function normalizeFolder(nodeAnswer, childrenAnswer) {
   const items = normalizeItems(ca);
   const roleRaw = ca.role || n.role || na.role;
   const role = ROLES.includes(roleRaw) ? roleRaw : 'read';
+  const crumbs = crumbsOf(n.crumbs || na.crumbs);
+  if (!crumbs.length || crumbs[crumbs.length - 1].id !== node.id) crumbs.push({ id: node.id, name: node.name });
   return {
     node,
-    crumbs: crumbsOf(n.crumbs || na.crumbs),
+    crumbs,
     role,
     writable: role === 'write' || role === 'manage',
     items,

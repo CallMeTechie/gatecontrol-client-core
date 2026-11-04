@@ -237,7 +237,7 @@ describe('DriveService: vault folders', () => {
     const inside = await svc.folder(made.node.id);
     assert.equal(inside.vault.state, 'open');
     assert.equal(inside.node.name, 'Steuer 2025');
-    assert.deepEqual(inside.crumbs.map((c) => c.name), ['Meine Dateien', 'Steuer 2025']);
+    assert.deepEqual(inside.crumbs.map((c) => c.name), ['', 'Steuer 2025'], "the area's top folder has no name in Drive");
     assert.deepEqual(inside.items.map((n) => n.name), ['Kontoauszug.txt']);
 
     // open: decrypted into %TEMP%\gatecontrol-drive\vault\<random>\<name>
