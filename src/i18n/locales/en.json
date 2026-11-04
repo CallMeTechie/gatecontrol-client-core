@@ -1432,6 +1432,17 @@
       "forbidden": "You are not allowed to do that.",
       "invalid": "The request was invalid.",
       "failed": "That did not work ({{code}})."
+    },
+    "runAs": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”: received files go to the Downloads of “{{user}}” (path above), and Windows shows no notifications. Start GateControl with your own account (it needs administrator rights).",
+    "receiveError": {
+      "text": "Not saved on this PC: {{why}} “Save” loads it again.",
+      "checking": "Still being checked for viruses – loads on its own once the check is done.",
+      "download_failed": "The download failed.",
+      "timeout": "The server did not answer in time.",
+      "network": "The server could not be reached.",
+      "not_found": "The send is no longer on the server.",
+      "gone": "The send has expired.",
+      "other": "Error ({{code}})."
     }
   },
   "vault": {
