@@ -920,10 +920,8 @@ class DriveService extends EventEmitter {
     const enc = path.join(tmpDir, `${crypto.randomBytes(8).toString('hex')}.enc`);
     const part = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
     try {
-      const out = fs.createWriteStream(enc);
-      try {
-        await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: Math.round(got / 2), ...(total ? { total } : {}) }, { progress: true }) });
-      } catch (err) { out.destroy(); throw err; }
+      // Drive 1.20: from the home gateway when it holds the ciphertext (lan), else from the server
+      await this.api.downloadTo(c, enc, { onProgress: (got, total) => this._set(row.id, { sent: Math.round(got / 2), ...(total ? { total } : {}) }, { progress: true }) });
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
       let total = null;
       try {
@@ -1175,6 +1173,29 @@ class DriveService extends EventEmitter {
   /** Throws 'unsupported' when this Drive does not report `name` in me.features. */
   async _feature(name) {
     if (!(await this.api.has(name).catch(() => false))) throw new DriveError(`Drive cannot do ${name}`, { code: 'unsupported' });
+  }
+
+  // ── Drive 1.20: "offline verfügbar" ─────────────────────
+
+  /**
+   * GET offline → { ok, items, ids }: what the person marked "offline verfügbar" (files and folders, newest first;
+   * ids for the menu's tick). A mark of the person on every device: the phones keep these files, the home gateways
+   * hold them first (home cache, priority 90) — this PC keeps nothing extra for it (that is "Dateien bei Bedarf").
+   */
+  async offlineList() {
+    return this._run(async () => {
+      await this._feature('offline');
+      const items = await this.api.offline();
+      return { ok: true, items, ids: items.map((n) => n.id) };
+    });
+  }
+
+  /** PUT / DELETE nodes/<id>/offline → { ok, id, offline, node } (at most 500 a person: 400 invalid). */
+  async setOffline(id, on) {
+    return this._run(async () => {
+      await this._feature('offline');
+      return { ok: true, ...(await this.api.setOffline(id, on === true)) };
+    });
   }
 
   /** What a time travel of the folder `id` back to `at` would do → { ok, at, historySince, restore, revert, trash, move, total, sample, limited } */
@@ -1639,10 +1660,7 @@ class DriveService extends EventEmitter {
           pages = [];
           for (let i = 0; i < contents.length; i++) {
             const file = path.join(dir, `page-${i + 1}`);
-            const out = fs.createWriteStream(file);
-            try {
-              await this.api.download(contents[i].mediaId, out, { maxBytes: SCAN_IMAGE_MAX });
-            } catch (err) { out.destroy(); throw err; }
+            await this.api.downloadTo(contents[i], file, { maxBytes: SCAN_IMAGE_MAX });
             pages.push({ file, width: null, height: null, lines: null });
           }
         } catch (err) {
@@ -2245,15 +2263,14 @@ class DriveService extends EventEmitter {
     const c = await this.api.content(nodeId, versionId);
     const part = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    const out = fs.createWriteStream(part);
     try {
       // Drive 1.5: an empty file has no media
-      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
-      else await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+      if (c.empty) await fs.promises.writeFile(part, '');
+      // Drive 1.20: from the home gateway when it holds the file (lan), else from the server
+      else await this.api.downloadTo(c, part, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
       await fs.promises.rm(file, { force: true });
       await fs.promises.rename(part, file);
     } catch (err) {
-      out.destroy();
       await fs.promises.rm(part, { force: true }).catch(() => {});
       throw err;
     }

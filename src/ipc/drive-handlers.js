@@ -387,6 +387,9 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, get
   handle('drive:area:docai', wrap(async (a) => (optArea(a.areaId) && a.areaId && typeof a.on === 'boolean' ? s.setDocAi(a.areaId, a.on) : invalid())));
   handle('drive:import', wrap(async () => s.openImport()));
   handle('drive:office', byId(async (a) => s.office(a.id)));
+  // Drive 1.20 'offline': "offline verfügbar" (a mark of the person; home cache)
+  handle('drive:offline', wrap(async () => s.offlineList()));
+  handle('drive:offline:set', byId(async (a) => (typeof a.on === 'boolean' ? s.setOffline(a.id, a.on) : invalid())));
   handle('drive:vault:status', wrap(async () => s.vaultStatus()));
   handle('drive:vaults', wrap(async () => s.vaults()));
   handle('drive:vault:create', wrap(async (a) => {

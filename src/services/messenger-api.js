@@ -123,10 +123,10 @@ class MessengerApi {
     return a.serverUrl && a.apiKey ? `${String(a.serverUrl).replace(/\/+$/, '')}\n${a.apiKey}` : '';
   }
 
-  async _call(method, path, { body, params, timeout = JSON_TIMEOUT_MS } = {}) {
+  async _call(method, path, { body, params, timeout = JSON_TIMEOUT_MS, headers = null } = {}) {
     const client = this._client();
     try {
-      const res = await client.request({ method, url: path, data: body, params, timeout });
+      const res = await client.request({ method, url: path, data: body, params, timeout, ...(headers ? { headers } : {}) });
       const data = res.data;
       if (data && typeof data === 'object' && data.ok === false) {
         throw new MessengerError(typeof data.error === 'string' ? data.error : 'refused', { status: res.status, code: data.code || 'failed', body: data });

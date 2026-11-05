@@ -24,6 +24,7 @@
 const crypto = require('crypto');
 const drive = require('./drive');
 const SC = require('./scan');
+const { VPN_IF_RE } = require('./home-cache');
 
 const MODES = Object.freeze(['backup', 'sync']);
 const GB = 1024 * 1024 * 1024;
@@ -250,7 +251,7 @@ function massDelete(count, total) {
 
 // ── Home network ───────────────────────────────────────────
 
-const VPN_IF_RE = /wireguard|gatecontrol|\bwg|tun|tap|vpn|virtual|vethernet|hyper-v|vmware|virtualbox|loopback|docker/i;
+// VPN- und virtuelle Adapter (WireGuard, GateControl, Hyper-V, VMware …): utils/home-cache.js
 
 function ipv4ToInt(ip) {
   const p = String(ip).split('.').map(Number);

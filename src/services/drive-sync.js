@@ -1734,15 +1734,14 @@ class DriveSync extends EventEmitter {
     ctx.rt.reason = 'transfer';
     ctx.rt.current = { name, sent: 0, total: a.size || null };
     this._emit();
-    const out = fs.createWriteStream(tmp);
     try {
       // Drive 1.5: an empty file has no media
-      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
-      else await this.api.download(c.mediaId, out, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
+      if (c.empty) await fs.promises.writeFile(tmp, '');
+      // Drive 1.20: from the home gateway when it holds the file (lan), else from the server
+      else await this.api.downloadTo(c, tmp, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
       if (Number.isFinite(a.mtime) && a.mtime > 0) await fs.promises.utimes(tmp, new Date(), new Date(a.mtime));
       await fs.promises.rename(tmp, abs);
     } catch (err) {
-      out.destroy();
       await fs.promises.rm(tmp, { force: true }).catch(() => {});
       throw err;
     }

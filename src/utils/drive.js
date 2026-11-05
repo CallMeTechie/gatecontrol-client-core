@@ -206,6 +206,8 @@ function normalizeNode(v) {
     insight: insightShort(o.insight),
     // Drive 1.19 ('scan'): the host's virus scan { state, blocked, finding } (utils/scan.js); absent: nothing known
     ...(scan ? { scan } : {}),
+    // Drive 1.20 ('offline'): marked "offline verfügbar" by the person (GET offline, PUT nodes/<id>/offline)
+    ...(o.offline === true ? { offline: true, offlineAt: msOf(o.offlineAt) } : {}),
     // Drive 1.9 ('vault'): a node of a vault folder — `name` is opaque, the device decrypts nameCipher
     ...(o.encrypted === true ? {
       encrypted: true,

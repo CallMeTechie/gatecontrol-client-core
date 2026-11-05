@@ -62,6 +62,9 @@
 // (people: false deletes all faces → deleted).
 // Drive 1.18: 'overview' (GET overview → srv.overview, the calls in srv.overviewCalls), 'photoClasses' (GET photos/classes
 // → srv.classes, for the overview of an older Drive).
+// Drive 1.20: 'offline' (GET offline, PUT / DELETE nodes/<id>/offline; state.offline: nodeId → at; srv.offlineMax),
+// the home cache: GET nodes/<id>/content answers `lan` = srv.lan(node, xGcLocal) when that gives one; the
+// X-GC-Local of every request in state.local [{ method, route, value }].
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -90,6 +93,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     devices: new Map(),  // Drive 1.5: id → { id, name, platform, version, folderId, folders }
     guard: { locked: false, incident: null, since: 0 },
     incidents: [],
+    offline: new Map(),  // Drive 1.20: nodeId → at ("offline verfügbar")
+    local: [],           // X-GC-Local of the requests: { method, route, value }
   };
   const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   // Drive 1.7 'timeTravel': how every node was after each change
@@ -494,6 +499,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     state.requests.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams) });
+    if (req.headers['x-gc-local'] !== undefined) state.local.push({ method: req.method, route: p.startsWith(API) ? p.slice(API.length) : p, value: req.headers['x-gc-local'] });
     // Drive 1.12: the ZIP of a selection as GateControl's bearer link (no login)
     const zipHit = /^\/s\/([A-Za-z0-9]+)\/zip$/.exec(p);
     if (req.method === 'GET' && zipHit && state.media.has(zipHit[1])) {
@@ -650,6 +656,28 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, device: devView(d) });
     }
     const has = (f) => !!(features && features.includes(f));
+    // ── Drive 1.20 'offline' ──
+    if (has('offline') && route === 'offline' && req.method === 'GET') {
+      const items = [...state.offline.entries()].sort((a, b) => b[1] - a[1]).map(([id, at]) => state.nodes.get(id))
+        .filter((n) => n && !n.deleted).map((n) => ({ ...view(n), offline: true, offlineAt: iso(state.offline.get(n.id)) }));
+      return json(res, 200, { ok: true, items });
+    }
+    if (has('offline') && seg[0] === 'nodes' && seg[2] === 'offline' && seg.length === 3) {
+      const id = Number(seg[1]);
+      if (req.method === 'DELETE') {
+        const removed = state.offline.delete(id);
+        return json(res, 200, { ok: true, id, offline: false, removed });
+      }
+      if (req.method === 'PUT') {
+        const n = get(id);
+        if (!n) return refuse(res, 404, 'not_found');
+        if (!state.offline.has(id)) {
+          if (state.offline.size >= (srv.offlineMax ?? 500)) return json(res, 400, { ok: false, code: 'invalid', field: 'offline', max: srv.offlineMax ?? 500 });
+          state.offline.set(id, Date.now());
+        }
+        return json(res, 200, { ok: true, node: { ...view(n), offline: true, offlineAt: iso(state.offline.get(id)) } });
+      }
+    }
     const areasNow = () => (has('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id), ...(has('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) })) : areas);
     if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas: areasNow() });
     // ── Drive 1.8 'docAi' ──
@@ -1428,7 +1456,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       if (seg[2] === 'content' && req.method === 'GET') {
         if (!n.isDir && !n.mediaId && n.size === 0) return json(res, 200, { ok: true, url: 'data:,', name: n.name, mime: n.mime, size: 0, mediaId: null, empty: true });
-        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId, ...(n.encrypted ? { encrypted: true, vaultId: n.vaultId, nameCipher: n.nameCipher } : {}) });
+        const lan = typeof srv.lan === 'function' ? srv.lan(n, req.headers['x-gc-local'] || null) : null;
+        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId, ...(n.encrypted ? { encrypted: true, vaultId: n.vaultId, nameCipher: n.nameCipher } : {}), ...(lan ? { lan } : {}) });
       }
       if (seg[2] === 'versions') {
         const list = state.versions.get(n.id) || [];

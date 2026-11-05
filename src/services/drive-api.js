@@ -66,6 +66,13 @@
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
+ *   GET    …/api/offline · PUT|DELETE …/api/nodes/<id>/offline    Drive 1.20 'offline': „offline verfügbar“ (a mark of the
+ *          person: the phones keep the files, the home gateways hold them first)
+ *
+ * Home cache (Drive 1.20, GateControl 1.231): GET nodes/<id>/content goes out with `X-GC-Local` (this PC's private
+ * IPv4 addresses, utils/home-cache.js); in the home network of a gateway that holds the file the answer carries
+ * `lan { url, sha256, tlsSha256, exp }` and downloadTo() loads it from there (certificate pinned, SHA-256 checked),
+ * else — and on any error there — from the server as before.
  *
  * The media upload / download is GateDropApi's code (same core media routes,
  * same resumable protocol) on Drive's media path. Failures are thrown as
@@ -73,11 +80,15 @@
  * `http_<status>`, 'network', 'timeout').
  */
 
+const fs = require('fs');
+const os = require('os');
 const axios = require('axios');
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
 const drive = require('../utils/drive');
 const OV = require('../utils/drive-overview');
+const HC = require('../utils/home-cache');
+const { fetchLan } = require('./home-cache');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -97,9 +108,18 @@ class DriveApi {
    * @param {(ms: number) => Promise<void>} [opts.sleep]
    * @param {number} [opts.resumableFrom] - larger uploads are resumable (8 MiB)
    * @param {number} [opts.partSize] - resumable part size (8 MiB)
+   * @param {() => object} [opts.getInterfaces] - os.networkInterfaces (the PC's LAN addresses for X-GC-Local)
+   * @param {Function} [opts.fetchLan] - services/home-cache.js fetchLan (tests)
+   * @param {(host: string) => boolean} [opts.lanHostOk] - which hosts a `lan` hint may name (private IPv4; tests)
    */
-  constructor({ apiClient, log, http = null, getLang = null, sleep = null, resumableFrom = drive.RESUMABLE_FROM, partSize } = {}) {
+  constructor({
+    apiClient, log, http = null, getLang = null, sleep = null, resumableFrom = drive.RESUMABLE_FROM, partSize,
+    getInterfaces = () => os.networkInterfaces(), fetchLan: lanFetch = fetchLan, lanHostOk = HC.isPrivateV4,
+  } = {}) {
     this.log = log || noopLog();
+    this.getInterfaces = getInterfaces;
+    this.fetchLan = lanFetch;
+    this.lanHostOk = lanHostOk;
     this.http = http || new MessengerApi({ apiClient, log: this.log });
     this.getLang = typeof getLang === 'function' ? getLang : () => null;
     this.media = new GateDropApi({
@@ -119,8 +139,8 @@ class DriveApi {
   }
 
   /** JSON call below …/gatecontrol-drive/api/. */
-  api(method, p, { body, params, timeout = JSON_TIMEOUT_MS } = {}) {
-    return this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout });
+  api(method, p, { body, params, timeout = JSON_TIMEOUT_MS, headers = null } = {}) {
+    return this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout, ...(headers ? { headers } : {}) });
   }
 
   _id(v) {
@@ -523,15 +543,70 @@ class DriveApi {
     return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body: { nameCipher } }));
   }
 
+
   /**
-   * GET nodes/<id>/content (or a version's) → { mediaId, name, mime, size }.
+   * GET nodes/<id>/content (or a version's) → { mediaId, name, mime, size, lan }.
    * Comes first for every download: it names the media and tells a child that a parent looked.
+   * Drive 1.20: the current content (not a version's) of a file a home gateway holds comes with
+   * `lan { url, sha256, tlsSha256, exp }` while this PC is in that home network, else lan: null.
    */
   async content(id, versionId = null) {
     const p = versionId ? `nodes/${this._id(id)}/versions/${this._id(versionId)}/content` : `nodes/${this._id(id)}/content`;
-    const c = drive.normalizeContent(await this.api('GET', p));
+    const raw = await this.api('GET', p, versionId ? {} : { headers: HC.localHeaders(this.getInterfaces) });
+    const c = drive.normalizeContent(raw);
     if (!c) throw new DriveError('bad content answer', { code: 'bad_response' });
+    c.lan = !c.empty && !versionId ? HC.normalizeLan(raw.lan, { hostOk: this.lanHostOk }) : null;
     return c;
+  }
+
+  /**
+   * The content `c` (content()) into the file `file` → { bytes, mime, via: 'lan' | 'server' }. With `c.lan` first from
+   * the home gateway (pinned certificate, SHA-256 of the bytes, size); on any error there quietly from the server.
+   * The file is (re)written from the start; on a failure of the server download the caller removes it.
+   * opts: onProgress, maxBytes, throttle (as download()).
+   */
+  async downloadTo(c, file, opts = {}) {
+    if (!c || !drive.isMediaId(c.mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    if (c.lan) {
+      try {
+        const max = Number.isSafeInteger(opts.maxBytes) ? opts.maxBytes : drive.MAX_FILE_BYTES;
+        const r = await this.fetchLan(c.lan, file, {
+          size: Number.isSafeInteger(c.size) && c.size > 0 ? c.size : null, maxBytes: max, onProgress: opts.onProgress, throttle: opts.throttle,
+        });
+        this.log.info(`Drive: aus dem Heimnetz geladen (${HC.lanWhere(c.lan)}, ${r.bytes} Bytes)`);
+        return { bytes: r.bytes, mime: c.mime || null, via: 'lan' };
+      } catch (err) {
+        this.log.info(`Drive: Heimnetz-Zwischenspeicher nicht nutzbar (${(err && err.code) || 'error'}) – lade vom Server`);
+      }
+    }
+    const out = fs.createWriteStream(file);
+    try {
+      const r = await this.download(c.mediaId, out, opts);
+      return { ...r, via: 'server' };
+    } catch (err) {
+      out.destroy();
+      throw err;
+    }
+  }
+
+  // ── "Offline verfügbar" (Drive 1.20, 'offline') ──────────
+
+  /** GET offline → [node + offline, offlineAt] — what the person keeps offline (newest first). */
+  async offline() {
+    return drive.normalizeItems(await this.api('GET', 'offline'), 500);
+  }
+
+  /** PUT nodes/<id>/offline (on) → { id, offline: true, node } · DELETE (off) → { id, offline: false } */
+  async setOffline(id, on) {
+    const nid = this._id(id);
+    if (on) {
+      const r = await this.api('PUT', `nodes/${nid}/offline`);
+      const node = drive.normalizeNode(r && r.node);
+      if (!node) throw new DriveError('bad node answer', { code: 'bad_response' });
+      return { id: node.id, offline: true, node };
+    }
+    await this.api('DELETE', `nodes/${nid}/offline`);
+    return { id: nid, offline: false, node: null };
   }
 
   // ── Devices (Drive 1.5, 'devices') ───────────────────────
