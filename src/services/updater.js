@@ -18,6 +18,15 @@
  *   - hasht den Installer direkt vor dem Start erneut.
  * Einen Rückfall auf unsignierte Updates gibt es nicht.
  *
+ * Zwischenspeicher im Heimnetz (Gateways Phase 3b): Der Check schickt die
+ * privaten IPv4-Adressen der echten Adapter mit (X-GC-Local). Ist der PC im
+ * Heimnetz eines Gateways, das genau diesen Installer vorhält, antwortet der
+ * Server zusätzlich `lan { url, sha256, tlsSha256, exp }`. Der Installer kommt
+ * dann zuerst vom Gateway – nur mit Zertifikats-Pinning auf tlsSha256, nur
+ * wenn lan.sha256 der Hash des signierten Manifests ist, mit Prüfung von
+ * Größe und SHA-256 wie beim normalen Download (services/home-cache.js). Bei
+ * jedem Fehler lädt der Updater still von downloadUrl.
+ *
  * Installation in zwei Schritten, damit die App den VPN-Tunnel erst trennt,
  * wenn der Installer wirklich startklar ist:
  *   prepareInstall()  – Update bereit? Installer erneut hashen. Ändert nichts.
@@ -48,6 +57,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const HC = require('../utils/home-cache');
+const { fetchLan } = require('./home-cache');
 
 const CHECK_DELAY = 10000;       // 10s nach App-Start
 const CHECK_INTERVAL = 21600000; // 6 Stunden
@@ -191,8 +202,17 @@ class Updater {
    * @param {Function} [opts.spawn] - child_process.spawn (Tests)
    * @param {Function} [opts.openPath] - shell.openPath (Tests)
    * @param {number} [opts.launchGraceMs] - Beobachtung des gestarteten Installers
+   * @param {() => object} [opts.getInterfaces] - os.networkInterfaces (X-GC-Local)
+   * @param {Function} [opts.fetchLan] - services/home-cache.js fetchLan (Tests)
+   * @param {(host: string) => boolean} [opts.lanHostOk] - erlaubte Hosts eines `lan`-Hinweises (private IPv4; Tests)
    */
-  constructor({ serverUrl, apiKey, log, clientType, product, publicKey, downloadDir, spawn, openPath, launchGraceMs }) {
+  constructor({
+    serverUrl, apiKey, log, clientType, product, publicKey, downloadDir, spawn, openPath, launchGraceMs,
+    getInterfaces = () => os.networkInterfaces(), fetchLan: lanFetch = fetchLan, lanHostOk = HC.isPrivateV4,
+  }) {
+    this.getInterfaces = getInterfaces;
+    this._fetchLan = lanFetch;
+    this.lanHostOk = lanHostOk;
     this.log = log;
     this.serverUrl = serverUrl;
     this.apiKey = apiKey;
@@ -335,6 +355,7 @@ class Updater {
           'X-Client-Platform': 'windows',
           'X-Client-Type': this.clientType,
           'X-Client-Name': this.appName,
+          ...HC.localHeaders(this.getInterfaces),
         },
         timeout: 15000,
       });
@@ -381,6 +402,9 @@ class Updater {
       if (!this.latestRelease || this.latestRelease.sha256 !== m.sha256) {
         this.downloadPath = null;
       }
+      // Heimnetz: nur ein Hinweis auf genau den Installer des signierten Manifests
+      const lan = HC.normalizeLan(data.lan, { expectSha256: m.sha256, hostOk: this.lanHostOk });
+      if (data.lan && !lan) this.log.warn('Update: Hinweis auf den Zwischenspeicher im Heimnetz ungültig – ignoriert');
       this.latestRelease = {
         version: m.version,
         downloadUrl: dl.toString(),
@@ -388,12 +412,32 @@ class Updater {
         fileSize: m.size,
         sha256: m.sha256,
         releaseNotes: typeof data.releaseNotes === 'string' ? data.releaseNotes : '',
+        lan,
       };
 
       await this._download();
       this._emitPolicy();
     } catch (err) {
       this.log.warn(`Update-Check fehlgeschlagen: ${err.message}`);
+    }
+  }
+
+
+  /**
+   * Installer vom Heim-Gateway nach `partPath` (Pinning, Größe, SHA-256 des
+   * Manifests). true bei Erfolg; sonst ist `partPath` weg und es geht normal weiter.
+   */
+  async _downloadLan(rel, partPath) {
+    if (!rel.lan || rel.lan.sha256 !== rel.sha256) return false;
+    this.log.info(`Lade Update aus dem Zwischenspeicher im Heimnetz (${HC.lanWhere(rel.lan)})`);
+    try {
+      const r = await this._fetchLan(rel.lan, partPath, { size: rel.fileSize, maxBytes: rel.fileSize });
+      if (r.bytes !== rel.fileSize || r.sha256 !== rel.sha256) throw new Error('Größe/Hash passen nicht');
+      return true;
+    } catch (err) {
+      this.log.info(`Zwischenspeicher im Heimnetz nicht nutzbar (${err.code || err.message}) – lade vom Server`);
+      try { fs.unlinkSync(partPath); } catch { /* schon weg */ }
+      return false;
     }
   }
 
@@ -524,6 +568,21 @@ class Updater {
         return;
       }
       try { fs.unlinkSync(filePath); } catch { /* best effort */ }
+    }
+
+    // Heimnetz zuerst (gepinnt, gegen das signierte Manifest geprüft), sonst wie bisher.
+    if (await this._downloadLan(rel, partPath)) {
+      if (!this._isCurrent(rel)) {
+        this.log.info(`Update v${rel.version} wurde inzwischen durch ein anderes Angebot ersetzt – verworfen`);
+        try { fs.unlinkSync(partPath); } catch { /* best effort */ }
+        return;
+      }
+      fs.renameSync(partPath, filePath);
+      this.log.info(`Integrity-Check bestanden (${rel.fileSize} Bytes, SHA-256 ${rel.sha256}, aus dem Heimnetz)`);
+      this.downloadPath = filePath;
+      this.log.info(`Update heruntergeladen: ${filePath}`);
+      this._notifyReady();
+      return;
     }
 
     // Token nur an den eigenen Server (z. B. Proxy für private Repos), nie an

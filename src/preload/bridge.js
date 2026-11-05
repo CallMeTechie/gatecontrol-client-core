@@ -540,6 +540,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       openImport:   () => ipcRenderer.invoke('drive:import'),
       // Drive 1.9 'office': "Im Browser bearbeiten / ansehen"
       office:       (id) => ipcRenderer.invoke('drive:office', { id }),
+      // Drive 1.20 'offline': "offline verfügbar" → { ok, items, ids } · on: true | false → { ok, id, offline, node }
+      offline:      () => ipcRenderer.invoke('drive:offline'),
+      setOffline:   (id, on) => ipcRenderer.invoke('drive:offline:set', { id, on: on === true }),
       // Drive 1.11: the menu's folder tree, the cache on this PC
       tree:         (id) => ipcRenderer.invoke('drive:tree', { id }),
       cache:        () => ipcRenderer.invoke('drive:cache'),
