@@ -205,12 +205,35 @@ describe('PushClient control events and hello.state', () => {
     assert.deepEqual(normalizeControl({ type: 'support_bundle_requested' }), { type: 'support_bundle_requested', requestedAt: null });
   });
 
+  it('e-mail channel of plugin topics: read with the prefs (GateControl 1.225.0), one topic set by PUT email_topics', async () => {
+    const { normalizeEmail } = PushClient;
+    assert.equal(normalizeEmail({ ok: true, quiet: null }), null, 'older server');
+    assert.deepEqual(normalizeEmail({
+      email_topics: [{ id: 'plugin:gatecontrol-mail:resource_request', label: 'Mail · Buchungsanfrage', enabled: true }, { id: 'security', enabled: true },
+        { id: 'plugin:gatecontrol-mail:mail', enabled: 'yes' }, null, { id: 'plugin:gatecontrol-mail:resource_request', enabled: false }],
+      email_to: ' anna@example.com ', email_ready: true,
+    }), { topics: [{ id: 'plugin:gatecontrol-mail:resource_request', label: 'Mail · Buchungsanfrage', enabled: true }], to: 'anna@example.com', ready: true });
+    assert.deepEqual(normalizeEmail({ email_topics: [], email_to: null }), { topics: [], to: null, ready: false });
+
+    const store = createMemoryStore({ notifications: {} });
+    const puts = [];
+    const client = new PushClient({ apiClient: { getPushPrefs: async () => ({ ok: true, email_topics: [], email_ready: false }), pushPrefs: async (b) => { puts.push(b); return { ok: true }; } }, store, log });
+    assert.deepEqual((await client.fetchPrefs()).email, { topics: [], to: null, ready: false });
+    assert.deepEqual(await client.setEmailTopics([{ id: 'plugin:gatecontrol-mail:resource_request', enabled: false }]), { ok: true, error: undefined });
+    assert.deepEqual(puts, [{ email_topics: [{ id: 'plugin:gatecontrol-mail:resource_request', enabled: false }] }], 'only the e-mail channel, the device prefs stay');
+    assert.equal((await client.setEmailTopics([{ id: 'devices', enabled: true }])).error, 'invalid', 'core topics have no e-mail channel');
+    assert.equal((await client.setEmailTopics([])).error, 'invalid');
+    const e400 = Object.assign(new Error('bad'), { response: { status: 400, data: { ok: false, error: 'invalid_email_topics' } } });
+    const refusing = new PushClient({ apiClient: { pushPrefs: async () => { throw e400; } }, store, log });
+    assert.deepEqual(await refusing.setEmailTopics([{ id: 'plugin:gatecontrol-mail:mail', enabled: true }]), { ok: false, error: 'invalid_email_topics' });
+  });
+
   it('fetchPrefs reads the quiet hours (GET prefs) and maps errors', async () => {
     const store = createMemoryStore({ notifications: {} });
     const mk = (getPushPrefs) => new PushClient({ apiClient: { getPushPrefs }, store, log });
     assert.deepEqual(await mk(async () => ({ ok: true, enabled: true, quiet: QUIET })).fetchPrefs(),
-      { ok: true, quiet: { from: '22:00', to: '07:00', tz: 'Europe/Berlin', criticalBypass: true }, hasQuiet: true });
-    assert.deepEqual(await mk(async () => ({ ok: true, enabled: true })).fetchPrefs(), { ok: true, quiet: null, hasQuiet: false });
+      { ok: true, quiet: { from: '22:00', to: '07:00', tz: 'Europe/Berlin', criticalBypass: true }, hasQuiet: true, email: null });
+    assert.deepEqual(await mk(async () => ({ ok: true, enabled: true })).fetchPrefs(), { ok: true, quiet: null, hasQuiet: false, email: null });
     const e404 = Object.assign(new Error('nf'), { response: { status: 404, data: {} } });
     assert.deepEqual(await mk(async () => { throw e404; }).fetchPrefs(), { ok: false, error: 'http_404' });
     assert.deepEqual(await new PushClient({ apiClient: {}, store, log }).fetchPrefs(), { ok: false, error: 'unsupported' });

@@ -499,7 +499,9 @@ class ApiClient {
 
   /**
    * Device push preferences: PUT /api/v1/client/push/prefs → { ok }.
-   * @param {{ enabled?: boolean, mode?: 'always'|'vpn_only', muted_topics?: string[] }} prefs
+   * Since GateControl 1.225.0 also `email_topics: [{ id, enabled }]` (the
+   * person's e-mail channel of plugin topics).
+   * @param {{ enabled?: boolean, mode?: 'always'|'vpn_only', muted_topics?: string[], email_topics?: {id: string, enabled: boolean}[] }} prefs
    */
   async pushPrefs(prefs = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');

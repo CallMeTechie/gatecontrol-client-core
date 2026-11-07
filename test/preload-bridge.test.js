@@ -100,7 +100,7 @@ describe('createBridgeApi', () => {
       'mail:me', 'mail:message', 'mail:outbox', 'mail:overlay:update', 'mail:pick', 'mail:principals', 'mail:providers', 'mail:resource:book', 'mail:resources', 'mail:search', 'mail:send',
       'mail:send:cancel', 'mail:settings', 'mail:share:add', 'mail:share:delete', 'mail:share:update', 'mail:shared', 'mail:shared:update', 'mail:shares',
       'mail:signin:cancel', 'mail:status', 'mail:thread', 'mail:upcoming', 'mail:upload',
-      'notify:action', 'notify:dnd', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open',
+      'notify:action', 'notify:dnd', 'notify:email', 'notify:email:set', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open',
       'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test',
       'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
       'school:absences', 'school:attachment:drive', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',

@@ -168,6 +168,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       quiet:     (opts) => ipcRenderer.invoke('notify:quiet', opts),
       // "Im Portal ändern" → portal tab "Meine Benachrichtigungen" (auto-login)
       openQuietHours: () => ipcRenderer.invoke('notify:quiet:open'),
+      // „Auch per E-Mail“ of plugin topics (per person, GateControl 1.225.0):
+      // { refresh } → { ok, known, topics: [{ id, label, enabled }], to, ready }
+      email:    (opts) => ipcRenderer.invoke('notify:email', opts),
+      setEmail: (id, enabled) => ipcRenderer.invoke('notify:email:set', { id, enabled }),
       // Where each kind of notification appears (core 1.191): GateControl,
       // the family chat or an own chat → { ok, routes } | { ok: false, error };
       // setRoute also gives `chat` (the own chat on 'own', else null)

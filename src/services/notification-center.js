@@ -217,6 +217,8 @@ class NotificationCenter extends EventEmitter {
     this._topics = [];
     this._quiet = { known: false, value: null, source: null, at: null };
     this._quietFetch = null;
+    this._email = null; // GET …/push/prefs e-mail channel (GateControl 1.225.0), null = unknown
+    this._emailSaving = null;
     this._items = this._loadInbox();
     this._lastUnread = this.unreadCount();
     this._dndTimer = null;
@@ -310,6 +312,7 @@ class NotificationCenter extends EventEmitter {
   clear() {
     for (const id of [...this._toasts.keys()]) this._closeToast(id);
     this._quiet = { known: false, value: null, source: null, at: null };
+    this._email = null;
     this._items = [];
     this._pendingRead.clear();
     this._nonces.clear();
@@ -418,7 +421,49 @@ class NotificationCenter extends EventEmitter {
     }
     const r = await this._quietFetch;
     if (r.ok && r.hasQuiet !== false) this._setQuiet(r.quiet, 'prefs');
+    if (r.ok) this._email = r.email || null;
     return r.ok ? { ok: true, ...this.quietState() } : { ok: false, error: r.error, ...this.quietState() };
+  }
+
+  // ── „Auch per E-Mail“ of plugin topics (GateControl 1.225.0) ──
+
+  /**
+   * The person's e-mail channel for the settings page: { known, topics:
+   * [{ id, label, enabled }], to, ready } — known=false on servers before
+   * 1.225.0 (or not asked yet): the page shows no boxes. Per person, the same
+   * switches as „Auch per E-Mail an …“ in the portal.
+   */
+  emailState() {
+    const e = this._email;
+    if (!e) return { known: false, topics: [], to: null, ready: false };
+    return { known: true, topics: e.topics.map((t) => ({ ...t })), to: e.to, ready: e.ready };
+  }
+
+  /** Ask the server (GET …/push/prefs, the same answer as the quiet hours) → { ok, ...emailState() } | { ok: false, error, ... }. */
+  async refreshEmail() {
+    const r = await this.refreshQuiet();
+    return r.ok ? { ok: true, ...this.emailState() } : { ok: false, error: r.error, ...this.emailState() };
+  }
+
+  /**
+   * Switch the e-mail channel of one plugin topic for the person. One change
+   * at a time ('busy' otherwise); only topics the server listed with a
+   * channel ('unknown_topic'); on success the state holds the new choice.
+   */
+  async setEmailTopic(id, enabled) {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') return { ok: false, error: 'invalid', ...this.emailState() };
+    if (!this._email || !this._email.topics.some((t) => t.id === id)) return { ok: false, error: 'unknown_topic', ...this.emailState() };
+    if (!this.pushClient || typeof this.pushClient.setEmailTopics !== 'function') return { ok: false, error: 'not_attached', ...this.emailState() };
+    if (this._emailSaving) return { ok: false, error: 'busy', ...this.emailState() };
+    this._emailSaving = id;
+    try {
+      const r = await this.pushClient.setEmailTopics([{ id, enabled }]);
+      if (!r.ok) return { ok: false, error: r.error || 'failed', ...this.emailState() };
+      if (this._email) this._email = { ...this._email, topics: this._email.topics.map((t) => (t.id === id ? { ...t, enabled } : t)) };
+      return { ok: true, ...this.emailState() };
+    } finally {
+      this._emailSaving = null;
+    }
   }
 
   // ── Where notifications appear (core 1.191 push routes) ──
