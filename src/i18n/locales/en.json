@@ -1511,5 +1511,113 @@
     "skippedMany": "{{count}} blocked files are missing.",
     "syncBlockedOne": "1 file not loaded because of the virus scan",
     "syncBlockedMany": "{{count}} files not loaded because of the virus scan"
+  },
+  "cameras": {
+    "title": "Cameras",
+    "sub": "Door & Camera · home cameras, no vendor cloud",
+    "online": "{{count}} online",
+    "refresh": "Refresh",
+    "portal": "Locks and Ring in the portal",
+    "portalOff": "The portal cannot be reached right now (VPN connected?).",
+    "chooser": "Choose a camera",
+    "player": "Live view {{name}}",
+    "live": "LIVE",
+    "hd": "HD",
+    "sd": "SD",
+    "viaVpn": "via VPN",
+    "viaLan": "in the home network",
+    "stillEvery": "Still · every {{s}} s",
+    "stamp": "{{name}} · {{time}}",
+    "connecting": "Loading the live view …",
+    "reconnect": "Reload the live view",
+    "offline": "Camera offline",
+    "hint": "Away without VPN the app shows a new still every {{s}} seconds; live video needs the VPN switched on.",
+    "hintLive": "Live video through the tunnel – no vendor cloud, a few seconds behind.",
+    "codec": "This video cannot be played here ({{codec}}). Choose the sub stream (H.264) of the camera.",
+    "saveStill": "Save still",
+    "saved": "Still saved",
+    "saveFailed": "The still could not be saved.",
+    "fullscreen": "Full screen",
+    "fullscreenExit": "Exit full screen",
+    "sound": "Sound",
+    "soundOn": "Turn sound on",
+    "soundOff": "Turn sound off",
+    "noSound": "This camera sends no sound.",
+    "soundLive": "Sound comes with the live video only.",
+    "all": "All cameras",
+    "allSub": "Only the cameras you may see.",
+    "inboxOpen": "View camera",
+    "stale": "No connection – you are seeing the last loaded state.",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "empty": "You do not see any camera yet.",
+    "emptySub": "Which cameras you see is set by the administrator under Door & Camera › Permissions.",
+    "ago": {
+      "now": "just now",
+      "s": "{{n}} s ago",
+      "min": "{{n}} min ago",
+      "h": "{{n}} h ago"
+    },
+    "card": {
+      "home": "Home network",
+      "live": "live",
+      "offline": "offline",
+      "motion": "Motion: {{kinds}}",
+      "away": "Motion: only when nobody is at home",
+      "never": "no clips, live view only",
+      "retention": "Clips {{days}} days",
+      "noPicture": "No picture yet"
+    },
+    "state": {
+      "unreachable": "unreachable",
+      "auth_failed": "sign-in refused",
+      "not_allowed": "address not allowed",
+      "no_stream": "no video stream",
+      "error": "faulty"
+    },
+    "kind": {
+      "person": "Person",
+      "vehicle": "Car",
+      "animal": "Animal",
+      "motion": "Motion"
+    },
+    "kinds": {
+      "person": "people",
+      "vehicle": "cars",
+      "animal": "animals",
+      "motion": "any motion"
+    },
+    "clips": {
+      "title": "Clips today",
+      "empty": "No clips today yet.",
+      "row": "{{kind}} · {{duration}}",
+      "noClip": "preview only",
+      "nobodyHome": "Nobody at home",
+      "play": "Play the clip of {{time}}",
+      "playing": "Clip · {{kind}} · {{time}}",
+      "back": "Back to the live view",
+      "gone": "This clip is gone."
+    },
+    "error": {
+      "not_found": "You do not (or no longer) see this camera.",
+      "cam_offline": "The gateway cannot be reached right now.",
+      "cam_unreachable": "The camera does not answer.",
+      "cam_not_ready": "The live view is still starting – try again in a moment.",
+      "cam_needs_gc": "This needs a newer GateControl version on the server.",
+      "cam_auth": "The camera refuses the sign-in.",
+      "cam_unsupported": "The gateway cannot do this yet (gateway 1.28.0 or newer).",
+      "cam_service": "The service “kameras” is missing on the gateway.",
+      "cam_not_allowed": "The camera's address is not allowed.",
+      "no_image": "There is no still right now.",
+      "rate_limited": "Too many requests – please wait a moment.",
+      "too_soon": "Too many requests – please wait a moment.",
+      "network": "No connection to the server.",
+      "timeout": "The server does not answer.",
+      "failed": "That did not work."
+    },
+    "unavailable": {
+      "needs_gatecontrol": "Home cameras need GateControl {{version}} or newer.",
+      "unsupported": "Home cameras need Door & Camera 1.6.0 or newer."
+    }
   }
 }

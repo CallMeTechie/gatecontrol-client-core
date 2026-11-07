@@ -284,6 +284,22 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onPush:    (cb) => subscribe('school:push', cb),
     },
 
+    // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
+    // Served when the app passes a CamerasService to registerBaseHandlers
+    // (ipc/camera-handlers.js lists arguments and answers). Pictures and
+    // video are gccam:// addresses of the answers (no IPC).
+    cameras: {
+      status:    () => ipcRenderer.invoke('cameras:status'),
+      check:     () => ipcRenderer.invoke('cameras:check'),
+      list:      (opts) => ipcRenderer.invoke('cameras:list', { refresh: !!(opts && opts.refresh) }),
+      live:      (id) => ipcRenderer.invoke('cameras:live', { id }),
+      // day: 'YYYY-MM-DD' (default: today of the plugin)
+      clips:     (id, day, opts) => ipcRenderer.invoke('cameras:clips', { id, ...(day ? { day } : {}), refresh: !!(opts && opts.refresh) }),
+      saveStill: (id) => ipcRenderer.invoke('cameras:still:save', { id }),
+      onState:   (cb) => subscribe('cameras:state', cb),
+      onPush:    (cb) => subscribe('cameras:push', cb),
+    },
+
     // ── GateDrop (plugin gatecontrol-gatedrop) ───────────
     // Served when the app passes a GateDropService to registerBaseHandlers
     // (ipc/gatedrop-handlers.js lists arguments and answers).

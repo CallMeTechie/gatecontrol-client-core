@@ -1511,5 +1511,113 @@
     "skippedMany": "{{count}} gesperrte Dateien fehlen.",
     "syncBlockedOne": "1 Datei wegen des Virenscans nicht geladen",
     "syncBlockedMany": "{{count}} Dateien wegen des Virenscans nicht geladen"
+  },
+  "cameras": {
+    "title": "Kameras",
+    "sub": "Tür & Kamera · Kameras im Heimnetz, ohne Hersteller-Cloud",
+    "online": "{{count}} online",
+    "refresh": "Aktualisieren",
+    "portal": "Schlösser und Ring im Portal",
+    "portalOff": "Das Portal ist gerade nicht erreichbar (VPN verbunden?).",
+    "chooser": "Kamera wählen",
+    "player": "Live-Bild {{name}}",
+    "live": "LIVE",
+    "hd": "HD",
+    "sd": "SD",
+    "viaVpn": "über VPN",
+    "viaLan": "im Heimnetz",
+    "stillEvery": "Standbild · alle {{s}} s",
+    "stamp": "{{name}} · {{time}}",
+    "connecting": "Live-Bild wird geladen …",
+    "reconnect": "Live-Bild neu laden",
+    "offline": "Kamera offline",
+    "hint": "Unterwegs ohne VPN zeigt die App alle {{s}} Sekunden ein neues Standbild; das Live-Video gibt es mit eingeschaltetem VPN.",
+    "hintLive": "Live-Video über den Tunnel – ohne Hersteller-Cloud, ein paar Sekunden verzögert.",
+    "codec": "Dieses Video lässt sich hier nicht abspielen ({{codec}}). In der Kamera den Unterstrom (H.264) wählen.",
+    "saveStill": "Standbild speichern",
+    "saved": "Standbild gespeichert",
+    "saveFailed": "Das Standbild konnte nicht gespeichert werden.",
+    "fullscreen": "Vollbild",
+    "fullscreenExit": "Vollbild beenden",
+    "sound": "Ton",
+    "soundOn": "Ton einschalten",
+    "soundOff": "Ton ausschalten",
+    "noSound": "Diese Kamera sendet keinen Ton.",
+    "soundLive": "Ton gibt es nur im Live-Video.",
+    "all": "Alle Kameras",
+    "allSub": "Nur die Kameras, die du sehen darfst.",
+    "inboxOpen": "Kamera ansehen",
+    "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "empty": "Du siehst noch keine Kamera.",
+    "emptySub": "Welche Kameras du siehst, legt der Administrator unter Tür & Kamera › Berechtigungen fest.",
+    "ago": {
+      "now": "gerade eben",
+      "s": "vor {{n}} s",
+      "min": "vor {{n}} min",
+      "h": "vor {{n}} h"
+    },
+    "card": {
+      "home": "Heimnetz",
+      "live": "live",
+      "offline": "offline",
+      "motion": "Bewegung: {{kinds}}",
+      "away": "Bewegung: nur wenn niemand zu Hause",
+      "never": "keine Clips, nur Live-Bild",
+      "retention": "Clips {{days}} Tage",
+      "noPicture": "Noch kein Bild"
+    },
+    "state": {
+      "unreachable": "nicht erreichbar",
+      "auth_failed": "Anmeldung abgelehnt",
+      "not_allowed": "Adresse nicht erlaubt",
+      "no_stream": "kein Videostrom",
+      "error": "gestört"
+    },
+    "kind": {
+      "person": "Person",
+      "vehicle": "Auto",
+      "animal": "Tier",
+      "motion": "Bewegung"
+    },
+    "kinds": {
+      "person": "Personen",
+      "vehicle": "Autos",
+      "animal": "Tiere",
+      "motion": "jede Bewegung"
+    },
+    "clips": {
+      "title": "Clips heute",
+      "empty": "Heute noch keine Clips.",
+      "row": "{{kind}} · {{duration}}",
+      "noClip": "nur Vorschaubild",
+      "nobodyHome": "Niemand zu Hause",
+      "play": "Clip von {{time}} abspielen",
+      "playing": "Clip · {{kind}} · {{time}}",
+      "back": "Zurück zum Live-Bild",
+      "gone": "Dieser Clip ist nicht mehr da."
+    },
+    "error": {
+      "not_found": "Diese Kamera siehst du nicht (mehr).",
+      "cam_offline": "Das Gateway ist gerade nicht erreichbar.",
+      "cam_unreachable": "Die Kamera antwortet nicht.",
+      "cam_not_ready": "Das Live-Bild startet noch – gleich noch einmal.",
+      "cam_needs_gc": "Dafür braucht der Server eine neuere GateControl-Version.",
+      "cam_auth": "Die Kamera lehnt die Anmeldung ab.",
+      "cam_unsupported": "Das Gateway kann das noch nicht (Gateway 1.28.0 oder neuer).",
+      "cam_service": "Auf dem Gateway fehlt der Dienst „kameras“.",
+      "cam_not_allowed": "Die Adresse der Kamera ist nicht erlaubt.",
+      "no_image": "Gerade gibt es kein Standbild.",
+      "rate_limited": "Zu viele Abrufe – bitte kurz warten.",
+      "too_soon": "Zu viele Abrufe – bitte kurz warten.",
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "failed": "Das hat nicht geklappt."
+    },
+    "unavailable": {
+      "needs_gatecontrol": "Kameras im Heimnetz brauchen GateControl {{version}} oder neuer.",
+      "unsupported": "Kameras im Heimnetz brauchen Tür & Kamera 1.6.0 oder neuer."
+    }
   }
 }

@@ -333,6 +333,7 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `handleArgv(argv)` / `handleProtocolUrl(url)` | toast button activation |
 | `openInbox(id?)` | show the window on the inbox (event `navigate`) |
 | `addClickRoute(route, resolve)` / `clickTarget(entry)` | an app page claims its entries: a toast click opens `route` (event `navigate` `{ route, id, context }`, context = `resolve(entry)`) instead of the inbox while `resolve` answers; used by `SchoolService` (`plg-gatecontrol-schule`) |
+| `addToastImage(resolve)` | a service adds a picture to the toasts of its pushes: `resolve(entry)` → `null` (not its push: the toast shows at once) or a Promise of an absolute image file (shown below the text, `<image src>` in the toast XML); the toast waits at most `toastImageWaitMs` (5 s), not at all when the entry was read / withdrawn meanwhile; used by `CamerasService` (camera pushes of Tür & Kamera, the push's `imageUrl` or a fresh still). Entries keep `image_url` (`/notify-media/…`) when the push has a picture |
 | `resetForNewServer()` / `clear()` | drop cache (+ reconnect without seq) |
 
 Events: `new` (entry + `toast`, `updated`), `update` `{ reason, ids, unread }`

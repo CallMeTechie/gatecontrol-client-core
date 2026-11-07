@@ -49,6 +49,7 @@ describe('createBridgeApi', () => {
     const invoked = [...new Set(ipc.calls.invoke.map((c) => c[0]))].sort();
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set',
+      'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:status', 'cameras:still:save',
       'chat:action', 'chat:actions', 'chat:archive', 'chat:arrival:stop', 'chat:avatar', 'chat:block', 'chat:blocks',
       'chat:cache:clear', 'chat:card:image', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create',
       'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:lists', 'chat:lists:save',
@@ -120,6 +121,7 @@ describe('createBridgeApi', () => {
     assert.deepEqual(ipc.calls.send.map((c) => c[0]).sort(), ['window:close', 'window:minimize']);
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
     assert.deepEqual(events, [
+      'cameras:push', 'cameras:state',
       'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:typing', 'chat:unread',
       'drive:changed', 'drive:guard', 'drive:op', 'drive:remote', 'drive:state', 'drive:sync', 'drive:transfers', 'drive:vault', 'drive:vault-lock',
@@ -205,6 +207,7 @@ describe('createBridgeApi', () => {
       notificationCenter: { on() {} },
       messenger: { on() {} },
       school: { on() {} },
+      cameras: { on() {} },
       gatedrop: { on() {} },
       vault: { on() {} },
       drive: { on() {} },
