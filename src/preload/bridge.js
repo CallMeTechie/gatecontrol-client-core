@@ -296,6 +296,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // day: 'YYYY-MM-DD' (default: today of the plugin)
       clips:     (id, day, opts) => ipcRenderer.invoke('cameras:clips', { id, ...(day ? { day } : {}), refresh: !!(opts && opts.refresh) }),
       saveStill: (id) => ipcRenderer.invoke('cameras:still:save', { id }),
+      setPush:   (id, push) => ipcRenderer.invoke('cameras:push:set', { id, push: push === true }),
       onState:   (cb) => subscribe('cameras:state', cb),
       onPush:    (cb) => subscribe('cameras:push', cb),
     },
@@ -470,6 +471,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       clearTransfers: () => ipcRenderer.invoke('drive:transfers:clear'),
       open:         (id, versionId) => ipcRenderer.invoke('drive:open', { id, versionId: versionId || null }),
       saveAs:       (id, versionId) => ipcRenderer.invoke('drive:save-as', { id, versionId: versionId || null }),
+      // the viewer (Drive 1.21): a gcdrive: address for <img> / <video> (streamed, Range), and its end
+      stream:       (id) => ipcRenderer.invoke('drive:stream', { id }),
+      endStream:    (url) => ipcRenderer.invoke('drive:stream:end', { url }),
       showItem:     (path) => ipcRenderer.invoke('drive:show', { path }),
       // the folder last picked in "In Drive speichern"
       lastFolder:   () => ipcRenderer.invoke('drive:last-folder'),

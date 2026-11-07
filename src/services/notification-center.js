@@ -627,10 +627,16 @@ class NotificationCenter extends EventEmitter {
     const action = entryActions(entry).find((a) => a.id === actionId);
     if (!action) return { ok: false, error: 'unknown_action' };
     switch (action.type) {
-      case 'open_app_route':
+      case 'open_app_route': {
         this._show();
-        this.emit('navigate', { route: action.target, id: entry.id });
+        // A page of the app that claimed this entry (addClickRoute, e.g. Kameras on "Personen an der Kamera"):
+        // its button ("Ansehen") opens the same as a click on the toast — with the claimed context.
+        const target = this.clickTarget(entry);
+        this.emit('navigate', target && target.route === action.target
+          ? { route: target.route, id: entry.id, context: target.context }
+          : { route: action.target, id: entry.id });
         break;
+      }
       case 'open_portal':
         // target goes to the portal as `next` (one-time login link, utils/portal.js).
         await this._openPortal(action.target);

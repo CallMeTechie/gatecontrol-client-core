@@ -88,6 +88,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     nodes: new Map(),
     versions: new Map(), // nodeId → [{ id, rev, size, at, by, mediaId }]
     pending: new Set(),  // mediaIds whose preview is still being made
+    mediaGets: [],       // GET of a media file: { mediaId, range } (Drive 1.21's viewer)
     log: [],             // { seq, op, areaId, nodeId, device }
     seq: 9,
     devices: new Map(),  // Drive 1.5: id → { id, name, platform, version, folderId, folders }
@@ -567,7 +568,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': PREVIEW_JPEG.length });
         return res.end(PREVIEW_JPEG);
       }
-      res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length });
+      // Range (one range) like GateControl's media route: 206 / 416, Accept-Ranges (the viewer's gcdrive:, Drive 1.21)
+      const total = md.data.length;
+      const rg = /^bytes=(\d{0,15})-(\d{0,15})$/.exec(String(req.headers.range || '').trim());
+      state.mediaGets.push({ mediaId: rest[0], range: req.headers.range || null });
+      if (srv.mediaStatus) { res.writeHead(srv.mediaStatus, { 'Content-Type': 'application/json' }); return res.end('{"ok":false}'); }
+      if (rg && (rg[1] !== '' || rg[2] !== '')) {
+        let start = rg[1] === '' ? Math.max(0, total - Number(rg[2])) : Number(rg[1]);
+        const end = rg[1] === '' || rg[2] === '' ? total - 1 : Math.min(Number(rg[2]), total - 1);
+        if (rg[1] === '' && Number(rg[2]) === 0) start = total;
+        if (start >= total || end < start) {
+          res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+          return res.end();
+        }
+        res.writeHead(206, { 'Content-Type': md.mime, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${total}`, 'Accept-Ranges': 'bytes' });
+        return res.end(md.data.subarray(start, end + 1));
+      }
+      res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length, 'Accept-Ranges': 'bytes' });
       return res.end(md.data);
     }
 

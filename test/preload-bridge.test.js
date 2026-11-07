@@ -49,7 +49,7 @@ describe('createBridgeApi', () => {
     const invoked = [...new Set(ipc.calls.invoke.map((c) => c[0]))].sort();
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set',
-      'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:status', 'cameras:still:save',
+      'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:push:set', 'cameras:status', 'cameras:still:save',
       'chat:action', 'chat:actions', 'chat:archive', 'chat:arrival:stop', 'chat:avatar', 'chat:block', 'chat:blocks',
       'chat:cache:clear', 'chat:card:image', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create',
       'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:lists', 'chat:lists:save',
@@ -68,7 +68,7 @@ describe('createBridgeApi', () => {
       'drive:people', 'drive:person', 'drive:person:confirm', 'drive:person:merge', 'drive:person:similar', 'drive:person:uncertain', 'drive:person:update',
       'drive:photos', 'drive:photos:geo:delete', 'drive:photos:map', 'drive:photos:memories', 'drive:photos:months', 'drive:photos:places', 'drive:photos:settings', 'drive:photos:settings:set', 'drive:photos:suggest',
       'drive:pick', 'drive:pick-folders', 'drive:portal', 'drive:preview', 'drive:preview:node', 'drive:purge',
-      'drive:remove', 'drive:rename', 'drive:restore', 'drive:save-as', 'drive:scan:discard', 'drive:scan:prepare', 'drive:scan:save', 'drive:scan:status', 'drive:search', 'drive:show', 'drive:status', 'drive:storage', 'drive:storage:prune',
+      'drive:remove', 'drive:rename', 'drive:restore', 'drive:save-as', 'drive:scan:discard', 'drive:scan:prepare', 'drive:scan:save', 'drive:scan:status', 'drive:search', 'drive:show', 'drive:status', 'drive:storage', 'drive:storage:prune', 'drive:stream', 'drive:stream:end',
       'drive:sync:add', 'drive:sync:deletes', 'drive:sync:home', 'drive:sync:open', 'drive:sync:pause', 'drive:sync:pick',
       'drive:sync:remove', 'drive:sync:run', 'drive:sync:settings', 'drive:sync:status', 'drive:sync:suspect',
       'drive:timetravel', 'drive:timetravel:preview',

@@ -11,6 +11,7 @@
  *   cameras:live        ({ id }) → { ok, live: { mode: 'live', mp4, hls, snapshot, audio, … } | { mode: 'snapshot', snapshot, every, reason } }
  *   cameras:clips       ({ id, day?, refresh? }) → { ok, day, clips, fetchedAt, stale }
  *   cameras:still:save  ({ id }) → "Standbild speichern": a fresh still into a file the person picks
+ *   cameras:push:set    ({ id, push }) → { ok, push } — the own push "Personen an der Kamera" (plugin 1.7.0)
  *                       (Pictures of the person signed in) → { ok, path } | { ok: false, cancelled }
  *
  * Media go through the scheme gccam: (CamerasService.handleProtocol), not over IPC.
@@ -62,6 +63,7 @@ function registerCameraHandlers(handle, { cameras: c, getMainWindow, log, dialog
     if (!cam.isCameraId(a.id) || cam.dayArg(a.day) === null) return invalid();
     return c.clips(a.id, { day: cam.dayArg(a.day), refresh: a.refresh === true });
   }));
+  handle('cameras:push:set', wrap(async (a) => (cam.isCameraId(a.id) && typeof a.push === 'boolean' ? c.setPush(a.id, a.push) : invalid())));
   handle('cameras:still:save', wrap(async (a) => {
     if (!cam.isCameraId(a.id)) return invalid();
     if (!dialog || typeof dialog.showSaveDialog !== 'function') return { ok: false, code: 'unsupported', error: 'no dialog', status: null };
