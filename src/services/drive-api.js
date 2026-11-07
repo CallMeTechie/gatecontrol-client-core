@@ -63,6 +63,8 @@
  *   POST   …/api/people/<id>/confirm { faceIds, yes } · POST faces/<id>/move { person }   Drive 1.16 'photoPeople'
  *   GET    …/api/overview                                        Drive 1.18 'overview': the page "Übersicht" in one call
  *   GET    …/api/photos/classes                                  Drive 1.13 'photoClasses': { work, private, review }
+ *   GET    …/api/photos?media=image|video · photos/months?media= · search?media=&q=   Drive 1.25 'mediaFilter'
+ *          (only pictures or only videos; search then also without q), items with durationMs
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
@@ -402,8 +404,13 @@ class DriveApi {
     return drive.normalizeGuardAnswer(await this.api('POST', `guard/incidents/${encodeURIComponent(id)}/${decision}`, { body: {}, timeout: 120000 }));
   }
 
-  async search(q, area = null) {
+  /** GET search?q=&area=&media= — Drive 1.25 'mediaFilter': `media` 'image' | 'video' (q may then be empty). */
+  async search(q, area = null, media = null) {
     const params = { q };
+    if (media) {
+      if (!drive.mediaOf(media)) throw new DriveError('invalid media', { code: 'invalid' });
+      params.media = media;
+    }
     if (area) {
       const a = drive.areaIdOf(area);
       if (!a) throw new DriveError('invalid area', { code: 'invalid' });
@@ -780,8 +787,8 @@ class DriveApi {
    * GET photos?area=&before=&limit= → { items, next } (newest first by takenAt); Drive 1.14 'photoSearch': with `q` the
    * photos whose labels match (→ also { terms, total }).
    */
-  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false } = {}) {
-    const params = { ...this._photoFilter({ area, q, place, bbox, person }), ...this._page({ before, limit }) };
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false, media = null } = {}) {
+    const params = { ...this._photoFilter({ area, q, place, bbox, person, media }), ...this._page({ before, limit }) };
     if (districts && params.place) params.districts = 1;
     if (withPeople) params.with = 'people';
     return drive.normalizePhotos(await this.api('GET', 'photos', { params }));
@@ -789,10 +796,15 @@ class DriveApi {
 
   /**
    * The filters of GET photos, photos/months, photos/places and photos/map: area, q (labels; Drive 1.16 also names of
-   * people and places), Drive 1.16 place (a place key), bbox ([w, s, e, n]), person (one id or several: photos with all).
+   * people and places), Drive 1.16 place (a place key), bbox ([w, s, e, n]), person (one id or several: photos with all),
+   * Drive 1.25 media ('image' | 'video': only pictures or only videos).
    */
-  _photoFilter({ area = null, q = null, place = null, bbox = null, person = null } = {}) {
+  _photoFilter({ area = null, q = null, place = null, bbox = null, person = null, media = null } = {}) {
     const params = { ...this._area(area) };
+    if (media !== null && media !== undefined && media !== '') {
+      if (!drive.mediaOf(media)) throw new DriveError('invalid media', { code: 'invalid' });
+      params.media = media;
+    }
     if (q !== null && q !== undefined && q !== '') {
       const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
       if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });

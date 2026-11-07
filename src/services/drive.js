@@ -1035,11 +1035,20 @@ class DriveService extends EventEmitter {
     return { ok: true, removed, kept };
   }
 
-  async search(q, area = null) {
+  /**
+   * GET search → { ok, items }: names, then the recognised text. Drive 1.25 'mediaFilter': `media` 'image' | 'video'
+   * only those (no folders) — then `q` may be empty: the newest of them.
+   */
+  async search(q, area = null, media = null) {
     const text = typeof q === 'string' ? q.trim() : '';
-    if (text.length < 2 || text.length > 100) throw new DriveError('search needs 2 to 100 characters', { code: 'invalid' });
+    const kind = drive.mediaOf(media);
+    if (media && !kind) throw new DriveError('invalid media', { code: 'invalid' });
+    if ((text.length < 2 && !(kind && !text)) || text.length > 100) throw new DriveError('search needs 2 to 100 characters', { code: 'invalid' });
     // Drive 1.11: never a vault's node (the plugin leaves them out already; an older one, too — checked here again)
-    return this._run(async () => ({ ok: true, items: drive.withoutVaults(await this.api.search(text, area)) }));
+    return this._run(async () => {
+      if (kind) await this._feature('mediaFilter');
+      return { ok: true, items: drive.withoutVaults(await this.api.search(text, area, kind)) };
+    });
   }
 
   async trashList(area = null) {
@@ -1243,13 +1252,15 @@ class DriveService extends EventEmitter {
    * `districts` its districts) or a box of the map (`bbox`) need 'photoPlaces', of people (`person`, one id or
    * several) and `withPeople` (the people on each photo) 'photoPeople'.
    */
-  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false } = {}) {
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false, media = null } = {}) {
     return this._run(async () => {
       await this._feature('photos');
       if (q) await this._searchFeature();
       if (place || bbox) await this._feature('photoPlaces');
       if (person || withPeople) await this._feature('photoPeople');
-      const r = await this.api.photos({ area, before, limit, q, place, bbox, person, districts, withPeople });
+      // Drive 1.25: only pictures or only videos
+      if (media) await this._feature('mediaFilter');
+      const r = await this.api.photos({ area, before, limit, q, place, bbox, person, districts, withPeople, media });
       this._learnMedia(r.items);
       return { ok: true, ...r };
     });
@@ -1261,14 +1272,15 @@ class DriveService extends EventEmitter {
     throw new DriveError('Drive cannot do photoSearch', { code: 'unsupported' });
   }
 
-  /** photos/months → { ok, months } — Drive 1.16 with the filters of photos (q, place, person) */
-  async photoMonths(area = null, { q = null, place = null, person = null } = {}) {
+  /** photos/months → { ok, months } — Drive 1.16 with the filters of photos (q, place, person), 1.25 media */
+  async photoMonths(area = null, { q = null, place = null, person = null, media = null } = {}) {
     return this._run(async () => {
       await this._feature('photos');
       if (q) await this._searchFeature();
       if (place) await this._feature('photoPlaces');
       if (person) await this._feature('photoPeople');
-      return { ok: true, ...(await this.api.photoMonths(area, q || place || person ? { q, place, person } : null)) };
+      if (media) await this._feature('mediaFilter');
+      return { ok: true, ...(await this.api.photoMonths(area, q || place || person || media ? { q, place, person, media } : null)) };
     });
   }
 
