@@ -451,6 +451,40 @@ async function decryptFile(keys, vaultId, src, dest, o = {}) {
   }
 }
 
+/**
+ * Random access to a vault file's content (the viewer, Drive plugin 1.22): `head` (its first HEADER bytes) and the
+ * ciphertext's `total` size → { keyVersion, chunkSize, chunks, plainSize, range(i) → { offset, length }, chunkOf(pos),
+ * decrypt(i, ciphertext) → plaintext, close() }. One chunk at a time in memory; close() overwrites the file key.
+ */
+function openContent(keys, vaultId, head, total) {
+  const h = parseHeader(buf(head));
+  const size = plainSize(total, h.chunkSize);
+  if (size === null) throw new DriveVaultError('invalid', 'size');
+  const tk = keyOf(keys, h.keyVersion);
+  if (!tk) throw new DriveVaultError('decrypt', 'no key for this version');
+  const step = h.chunkSize + TAG;
+  const n = Math.ceil((total - HEADER) / step);
+  const lastLen = total - HEADER - (n - 1) * step;
+  let key = fileKey(tk, vaultId, h.salt);
+  const range = (i) => {
+    if (!Number.isSafeInteger(i) || i < 0 || i >= n) throw new DriveVaultError('invalid', 'chunk');
+    return { offset: HEADER + i * step, length: i === n - 1 ? lastLen : step };
+  };
+  return {
+    keyVersion: h.keyVersion, chunkSize: h.chunkSize, chunks: n, plainSize: size, range,
+    chunkOf: (pos) => Math.min(n - 1, Math.max(0, Math.floor(pos / h.chunkSize))),
+    decrypt(i, ct) {
+      if (!key) throw new DriveVaultError('invalid', 'closed');
+      const r = range(i);
+      const c = buf(ct);
+      if (c.length !== r.length) throw new DriveVaultError('decrypt', 'chunk size');
+      return gcmOpen(key, chunkNonce(i), chunkAad(h.head, i, i === n - 1), c);
+    },
+    get closed() { return !key; },
+    close() { if (key) { wipe(key); key = null; } },
+  };
+}
+
 // ── recovery key ────────────────────────────────────────────
 
 /** A new recovery key → { key, text } (text: "R30W-5GY4-…", shown once). */
@@ -498,6 +532,6 @@ module.exports = {
   hpkeSeal, hpkeOpen,
   newVaultKey, newVaultId, wrapKey, unwrapKey,
   encryptName, decryptName, nameVersion, keyOf,
-  header, parseHeader, cipherSize, plainSize, encryptBuffer, decryptBuffer, encryptFile, decryptFile,
+  header, parseHeader, cipherSize, plainSize, encryptBuffer, decryptBuffer, encryptFile, decryptFile, openContent,
   newRecoveryKey, formatRecoveryKey, parseRecoveryKey, recoveryKeyPair, recoveryAuth,
 };

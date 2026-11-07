@@ -81,6 +81,10 @@
  *   drive:vault:lock      () → { ok, unlocked: false }                              "Jetzt sperren"
  *   drive:vault:lock-settings ({ hello?, autoLockMinutes?: 0|1|3|5|15, lockOnLeave? }) → like lock-status
  *   drive:vault:touch     () → { ok }                                               activity while a vault is open
+ *   drive:vault:view      ({ id, versionId? }) → { ok, kind, name, mime, size, token, url } | { ok, kind, name, note }
+ *                                                   Drive plugin 1.22: the viewer — url gcvault://v/<token>, in memory
+ *   drive:vault:view:close ({ token }) → { ok }                                     the viewer closed: token, key, ciphertext go
+ *   drive:vault:protect   ({ on }) → { ok }                                         content protection of the window (viewer shown)
  *   drive:hello-settings  () → { ok }                                               Windows' sign-in options
  *   drive:cache           () → { ok, bytes, files, previews }                       the cache on this PC
  *   drive:cache:clear     () → { ok, removed, kept }
@@ -424,6 +428,16 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
     return Object.keys(patch).length ? s.vaultLockSettings(patch) : invalid();
   }));
   handle('drive:vault:touch', wrap(async () => s.vaultTouch()));
+  // ── Drive plugin 1.22: the viewer of vault files (in memory only; services/drive-vault-view.js) ──
+  handle('drive:vault:view', byId(async (a) => (optId(a.versionId) ? s.vaultView(a.id, { versionId: a.versionId || null }) : invalid())));
+  handle('drive:vault:view:close', wrap(async (a) => (typeof a.token === 'string' && /^[0-9a-f]{32}$/.test(a.token) ? s.vaultViewClose(a.token) : invalid())));
+  // while the viewer shows: no screenshot, no screen recording, no thumbnail of the window (content protection)
+  handle('drive:vault:protect', wrap(async (a) => {
+    if (typeof a.on !== 'boolean') return invalid();
+    const win = getMainWindow && getMainWindow();
+    if (win && !(typeof win.isDestroyed === 'function' && win.isDestroyed()) && typeof win.setContentProtection === 'function') win.setContentProtection(a.on);
+    return { ok: true };
+  }));
   handle('drive:hello-settings', wrap(async () => s.openHelloSettings()));
   handle('drive:cache', wrap(async () => s.cacheInfo()));
   handle('drive:cache:clear', wrap(async () => s.clearCache()));

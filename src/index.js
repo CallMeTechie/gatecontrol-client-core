@@ -32,6 +32,7 @@ const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
 const GateDropFirewall = require('./services/gatedrop-firewall');
 const DriveService = require('./services/drive');
+const DriveVaultViews = require('./services/drive-vault-view');
 const DriveApi = require('./services/drive-api');
 const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
@@ -125,6 +126,8 @@ module.exports = {
   GateDropFirewall,
   DriveService,
   DriveStreamService,
+  // Drive plugin 1.22: the viewer of vault files (SCHEME 'gcvault', SCHEME_PRIVILEGES for registerSchemesAsPrivileged)
+  DriveVaultViews,
   DriveApi,
   DriveSync,
   MailService,
