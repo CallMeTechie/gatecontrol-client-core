@@ -53,6 +53,7 @@ const { t } = require('../i18n');
 const { readNotificationSettings } = require('../utils/notify-schema');
 const { buildToastXml, parseActionUrl } = require('../utils/toast-xml');
 const notifyRoutes = require('../utils/notify-routes');
+const { isNotifyMediaPath } = require('../utils/messenger');
 
 const PRIORITIES = ['info', 'normal', 'high', 'critical'];
 const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+)*)$/;
@@ -108,6 +109,8 @@ function normalizeEntry(n, extra = {}) {
     via: (extra.via || n.via) === 'tunnel' ? 'tunnel' : (extra.via || n.via) === 'direct' ? 'direct' : null,
     // the answer given here (callback / ack button) — local only, the server inbox does not carry it
     acted: ACTED_RE.test(String(extra.acted || n.acted || '')) ? String(extra.acted || n.acted) : null,
+    // the push's picture (/notify-media/… of the own server, GateControl ≥ 1.169) — only when it has one
+    ...(isNotifyMediaPath(n.imageUrl || n.image_url) ? { image_url: n.imageUrl || n.image_url } : {}),
   };
 }
 
@@ -202,6 +205,8 @@ class NotificationCenter extends EventEmitter {
     this._chat = null;
     this._clickRoutes = new Map(); // app route → resolver(entry) (addClickRoute)
     this._pushHandlers = [];       // services that take over some pushes (addPushHandler, e.g. GateDrop)
+    this._toastImages = [];        // services that add a picture to some toasts (addToastImage, e.g. Kameras)
+    this.toastImageWaitMs = 5000;  // … the toast waits at most this long for it
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
     this._toastBlock = null;      // { at, error } while Windows refuses the toasts (isToastDenied)
@@ -362,7 +367,9 @@ class NotificationCenter extends EventEmitter {
     const decision = quiet ? { show: false, silent: true, reason: 'handled' } : toastDecision(entry, settings, now);
     const stale = entry.created_at && now - Date.parse(entry.created_at) > this.staleToastMs;
     if (decision.show && !stale && this._burstAllows(now)) {
-      this._showToast(entry, decision);
+      const picture = this._toastImageOf(entry);
+      if (picture) this._showToastWithImage(entry, decision, picture);
+      else this._showToast(entry, decision);
     } else if (entry.collapse_key && this._byCollapse.has(entry.collapse_key)) {
       // Silent update of a collapsed message: the old banner is outdated.
       this._closeToast(this._byCollapse.get(entry.collapse_key));
@@ -883,7 +890,45 @@ class NotificationCenter extends EventEmitter {
     return this._Notification;
   }
 
-  _showToast(entry, decision, onClick = null, localActions = []) {
+  /**
+   * A service adds a picture to the toasts of its pushes (e.g. Kameras: the still of the push):
+   * `resolve(entry)` → null (not one of its pushes: the toast shows at once, as before) or a
+   * Promise of an absolute image file path (or null). The toast waits for it at most
+   * toastImageWaitMs and then shows without the picture.
+   * @returns {() => void} removes the resolver again
+   */
+  addToastImage(resolve) {
+    if (typeof resolve !== 'function') throw new TypeError('addToastImage: resolver required');
+    this._toastImages.push(resolve);
+    return () => { this._toastImages = this._toastImages.filter((r) => r !== resolve); };
+  }
+
+  _toastImageOf(entry) {
+    for (const resolve of this._toastImages) {
+      let r = null;
+      try { r = resolve(entry); } catch (err) { this.log.warn(`Toast picture failed: ${err.message}`); }
+      if (r) return Promise.resolve(r);
+    }
+    return null;
+  }
+
+  _showToastWithImage(entry, decision, picture) {
+    let timer = null;
+    const wait = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), this.toastImageWaitMs);
+      if (timer.unref) timer.unref();
+    });
+    return Promise.race([picture.catch(() => null), wait]).then((file) => {
+      clearTimeout(timer);
+      // read elsewhere / withdrawn / replaced meanwhile: no banner any more
+      const cur = this._items.find((e) => e.id === entry.id);
+      if (!cur || cur.state !== 'delivered' || cur.seq !== entry.seq) return null;
+      const image = typeof file === 'string' && file && require('path').isAbsolute(file) ? file : null;
+      return this._showToast(entry, decision, null, [], image);
+    });
+  }
+
+  _showToast(entry, decision, onClick = null, localActions = [], inlineImage = null) {
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
     // Windows refuses them for now: the app shows it (the inbox has the entry anyway)
@@ -923,7 +968,7 @@ class NotificationCenter extends EventEmitter {
       options = {
         toastXml: buildToastXml({
           title, body, attribution, priority: entry.priority, silent: decision.silent,
-          buttons, scheme: this.protocol, imagePath: this.toastImagePath,
+          buttons, scheme: this.protocol, imagePath: this.toastImagePath, inlineImagePath: inlineImage,
         }),
       };
     } else {

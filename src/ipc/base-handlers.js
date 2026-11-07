@@ -24,6 +24,7 @@ const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { parseLogText, filterByPeriod } = require('../utils/log-parse');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
+const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
@@ -183,6 +184,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.school] - SchoolService (opt-in, "Schule"): registers
  *   the school:* channels (ipc/school-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.cameras] - CamerasService (opt-in, "Kameras im Heimnetz" of Tür & Kamera):
+ *   registers the cameras:* channels (ipc/camera-handlers.js), forwards its events to
+ *   the main window and resets it after a successful server:setup.
  * @param {object} [ctx.gatedrop] - GateDropService (opt-in, "GateDrop"): registers
  *   the gatedrop:* channels (ipc/gatedrop-handlers.js), forwards its events to
  *   the main window and resets it after a successful server:setup.
@@ -221,6 +225,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const notificationCenter = ctx.notificationCenter || null;
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
+  const camerasSvc = ctx.cameras || null;
   const gatedropSvc = ctx.gatedrop || null;
   const vaultSvc = ctx.vault || null;
   const driveSvc = ctx.drive || null;
@@ -258,6 +263,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Schule: availability and answers belong to the old server.
     if (schoolSvc) {
       Promise.resolve().then(() => schoolSvc.resetForNewServer()).catch((err) => log.warn(`Schule reset failed: ${err.message}`));
+    }
+    // Kameras: availability, the list and the clips belong to the old server.
+    if (camerasSvc) {
+      Promise.resolve().then(() => camerasSvc.resetForNewServer()).catch((err) => log.warn(`Kameras reset failed: ${err.message}`));
     }
     // GateDrop: availability, targets and lists belong to the old server.
     if (gatedropSvc) {
@@ -809,6 +818,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Schule (WebUntis timetable, opt-in) ────────────────
   if (schoolSvc) registerSchoolHandlers(handle, { school: schoolSvc, getMainWindow, log });
+
+  // ── Kameras im Heimnetz (plugin gatecontrol-door, opt-in) ──
+  if (camerasSvc) registerCameraHandlers(handle, { cameras: camerasSvc, getMainWindow, log, dialog, dialogPath: folders.dialogPath });
 
   // ── GateDrop (plugin gatecontrol-gatedrop, opt-in) ──────
   if (gatedropSvc) {
