@@ -33,6 +33,7 @@ const GateDropListener = require('./services/gatedrop-listener');
 const GateDropFirewall = require('./services/gatedrop-firewall');
 const DriveService = require('./services/drive');
 const DriveApi = require('./services/drive-api');
+const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
@@ -123,6 +124,7 @@ module.exports = {
   GateDropListener,
   GateDropFirewall,
   DriveService,
+  DriveStreamService,
   DriveApi,
   DriveSync,
   MailService,
