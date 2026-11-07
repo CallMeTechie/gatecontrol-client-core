@@ -183,9 +183,17 @@ the person confirmed. The master password is never stored.
   `IAsyncInfo.Status` polled with `setTimeout` (Electron's main thread keeps
   pumping messages while the dialog is open; its STA apartment is kept, plain
   Node gets `RoInitialize(MTA)`), `CryptographicBuffer` for `IBuffer`s. No
-  PowerShell, no native addon, nothing unsigned shipped. The Hello dialog can
-  open behind a desktop app's window: its window (`Credential Dialog Xaml
-  Host`) is brought to the front. A CryptographicBuffer round trip checks the
+  PowerShell, no native addon, nothing unsigned shipped. The Hello dialog
+  opens in another process (CredentialUIBroker) and often behind a desktop
+  app's window — also with `RequestVerificationForWindowAsync` (the Drive
+  vault confirmation, owned by the app window). So before every prompt
+  `AllowSetForegroundWindow(ASFW_ANY)`, and while it is open `WinRt.focuser`
+  finds its window (`Credential Dialog Xaml Host`) on every poll and brings it
+  to the front (`SetForegroundWindow`, `BringWindowToTop` when refused): for a
+  few seconds after it appeared, and later whenever the app's own window is
+  in front of it — never pushing another app aside. The log shows each step
+  (dialog open after … ms, behind the app window → to the front, in front, or
+  no dialog after 10 s) and the result; never secrets. A CryptographicBuffer round trip checks the
   vtable layout before Hello is offered. One Hello call at a time.
 
 Rejected alternatives:

@@ -17,7 +17,8 @@
  *   ole32    CoGetApartmentType (COM on this thread? Electron's main thread is an STA already;
  *            plain Node gets RoInitialize(MTA)), CoTaskMemFree
  *   user32   GetSystemMetrics(SM_REMOTESESSION) (Hello does not work in a remote desktop session),
- *            FindWindowW / SetForegroundWindow (the Hello dialog in front of the app)
+ *            FindWindowW / GetForegroundWindow / SetForegroundWindow / BringWindowToTop / AllowSetForegroundWindow
+ *            (the Hello dialog in front of the app, see WinRt.focuser)
  *
  *   KeyCredentialManager  IsSupportedAsync · RequestCreateAsync(name, ReplaceExisting) · OpenAsync(name) · DeleteAsync(name)
  *   KeyCredential         RetrievePublicKey() (X.509 SubjectPublicKeyInfo) · RequestSignAsync(IBuffer)
@@ -51,7 +52,9 @@
  *                                   'disabled_by_policy' | 'device_busy' | 'retries_exhausted' | 'unavailable' | 'failed' }
  * With the app window's HWND (BrowserWindow.getNativeWindowHandle()) the dialog belongs to that window
  * (IUserConsentVerifierInterop.RequestVerificationForWindowAsync, the way for desktop apps); without one, or when the
- * interop is missing, RequestVerificationAsync with the dialog brought to the front.
+ * interop is missing, RequestVerificationAsync. On both ways the dialog is brought to the front and kept there
+ * (WinRt.focuser): Windows opens it in another process and often behind the app's window, also when it belongs to the
+ * window.
  */
 
 // ── Windows constants ──────────────────────────────────────
@@ -61,6 +64,7 @@ const RPC_E_CHANGED_MODE = 0x80010106 | 0;
 const RO_INIT_MULTITHREADED = 1;
 const SM_REMOTESESSION = 0x1000;
 const HELLO_DIALOG_CLASS = 'Credential Dialog Xaml Host';
+const ASFW_ANY = 0xFFFFFFFF;  // AllowSetForegroundWindow: every process (the Hello dialog runs in CredentialUIBroker)
 
 const CLASS = {
   manager: 'Windows.Security.Credentials.KeyCredentialManager',
@@ -134,7 +138,9 @@ const DEFAULT_TIMING = {
   pollMs: 50,                 // IAsyncInfo.Status
   promptMs: 3 * 60 * 1000,    // a dialog the person answers
   quickMs: 20 * 1000,         // IsSupportedAsync, OpenAsync, DeleteAsync
-  focusMs: 4000,              // look for the Hello dialog this long
+  focusMs: 4000,              // after the Hello dialog appeared: bring it to the front this long
+  findMs: 10 * 1000,          // no dialog after this long → logged once (what the Protokoll shows)
+  pushMs: 250,                // the dialog to the front at most this often (never a fight over the foreground)
 };
 
 const MAX_BLOB = 16384;       // sanity bound for buffers read back (an RSA public key / signature is far smaller)
@@ -200,6 +206,9 @@ function loadApi(koffi) {
     GetSystemMetrics: user32.func('int32_t __stdcall GetSystemMetrics(int32_t nIndex)'),
     FindWindowW: user32.func('void *__stdcall FindWindowW(const char16_t *lpClassName, const char16_t *lpWindowName)'),
     SetForegroundWindow: user32.func('int32_t __stdcall SetForegroundWindow(void *hWnd)'),
+    GetForegroundWindow: user32.func('void *__stdcall GetForegroundWindow()'),
+    BringWindowToTop: user32.func('int32_t __stdcall BringWindowToTop(void *hWnd)'),
+    AllowSetForegroundWindow: user32.func('int32_t __stdcall AllowSetForegroundWindow(uint32_t dwProcessId)'),
   };
 }
 
@@ -383,16 +392,83 @@ class WinRt {
     return this.api.GetSystemMetrics(SM_REMOTESESSION) !== 0;
   }
 
-  /** The Hello dialog in front of the app (it can open behind a desktop app's window). */
-  focuser() {
-    const until = Date.now() + this.timing.focusMs;
-    let done = false;
+  /** A window handle (koffi pointer, BigInt or number) → BigInt; 0n for none. */
+  handle(h) {
+    if (h == null) return 0n;
+    if (typeof h === 'bigint') return h;
+    if (typeof h === 'number') return BigInt(h);
+    try { return BigInt(this.koffi.address(h)); } catch { return 0n; }
+  }
+
+  _note(what) { if (this.log) this.log.info(`Windows Hello: ${what}`); }
+
+  /** Before a prompt: the Hello dialog (another process) may take the foreground from this app. */
+  allowForeground() {
+    try {
+      if (!this.api.AllowSetForegroundWindow(ASFW_ANY)) this._note('AllowSetForegroundWindow refused');
+    } catch (err) {
+      this._note(`AllowSetForegroundWindow: ${err.message}`);
+    }
+  }
+
+  /**
+   * A tick (finish() runs it on every poll) that brings the Hello dialog to the front and keeps it there. Windows
+   * opens the dialog in CredentialUIBroker and, for a desktop app, often behind the app's window — also when it
+   * belongs to that window (RequestVerificationForWindowAsync). Each tick finds the dialog; while it is not in front:
+   * for `focusMs` after it appeared, and later whenever the app's own window (`owner`, BigInt) is in front of it (the
+   * person clicked into the app because the dialog was hidden), SetForegroundWindow (BringWindowToTop when refused) —
+   * at most every `pushMs`, never taking the foreground from another app. Logs (no secrets): when the dialog
+   * showed, whether it got in front, how often it had to be brought back, or that no dialog showed.
+   */
+  focuser(owner = null) {
+    const start = Date.now();
+    const own = owner ? this.handle(owner) : 0n;
+    let seenAt = 0;
+    let lastPush = 0;
+    let pushes = 0;
+    let front = false;
+    let notFound = false;
+    let failed = false;
+    let refused = false;
+    const tick = () => {
+      const now = Date.now();
+      const dlg = this.api.FindWindowW(HELLO_DIALOG_CLASS, null);
+      const d = this.handle(dlg);
+      if (!d) {
+        if (!seenAt && !notFound && now - start > this.timing.findMs) {
+          notFound = true;
+          this._note(`no dialog after ${Math.round((now - start) / 1000)} s`);
+        }
+        return;
+      }
+      if (!seenAt) {
+        seenAt = now;
+        this._note(`dialog open after ${now - start} ms`);
+      }
+      const fg = this.handle(this.api.GetForegroundWindow());
+      if (fg === d) {
+        if (!front) this._note(pushes ? `dialog in front (brought to the front ${pushes}×)` : 'dialog in front');
+        front = true;
+        return;
+      }
+      if (front) front = false;
+      const early = now - seenAt <= this.timing.focusMs;
+      const behindApp = own !== 0n && fg === own;
+      if (!(early || behindApp) || now - lastPush < this.timing.pushMs) return;
+      lastPush = now;
+      pushes++;
+      const ok = this.api.SetForegroundWindow(dlg);
+      if (!ok) this.api.BringWindowToTop(dlg);
+      if (pushes === 1 || (!ok && !refused)) this._note(`dialog behind ${behindApp ? 'the app window' : 'another window'} → to the front (SetForegroundWindow ${ok ? 'ok' : 'refused'})`);
+      if (!ok) refused = true;
+    };
     return () => {
-      if (done || Date.now() > until) return;
-      const hwnd = this.api.FindWindowW(HELLO_DIALOG_CLASS, null);
-      if (hwnd == null || hwnd === 0n) return;
-      done = true;
-      this.api.SetForegroundWindow(hwnd);
+      try {
+        tick();
+      } catch (err) {
+        if (!failed) this._note(`dialog to the front: ${err.message}`);
+        failed = true;
+      }
     };
   }
 
@@ -453,6 +529,7 @@ class WinRt {
   }
 
   async create(name, challenge) {
+    this.allowForeground();
     const tick = this.focuser();
     const op = [null];
     this.withString(name, (h) => this.check(this.invoke(this.manager(), SLOT.requestCreateAsync, this.P.strI32Out, h, REPLACE_EXISTING, op), 'RequestCreateAsync'));
@@ -475,6 +552,7 @@ class WinRt {
     const r = this._retrieval(await this.finish(op[0], (o) => this.resultObject(o)));
     if (r.status !== 'ok') return { status: r.status };
     try {
+      this.allowForeground();
       return await this._sign(r.credential, challenge, this.focuser());
     } finally {
       this.release(r.credential);
@@ -526,11 +604,14 @@ class WinRt {
     return this.finish(op[0], (o) => CONSENT_AVAILABILITY[this._i32Result(o)] || 'device_not_present');
   }
 
-  /** The verification dialog → a CONSENT_RESULT status. `hwnd`: the owner window (BigInt) or null. */
+  /**
+   * The verification dialog → a CONSENT_RESULT status. `hwnd`: the owner window (BigInt) or null. On both ways the
+   * dialog is brought to the front (focuser; with the window: also whenever the app window gets in front of it).
+   */
   async requestConsent(message, hwnd = null) {
     const op = [null];
     const interop = hwnd ? this.consentInterop() : null;
-    let tick = null;
+    this.allowForeground();
     if (interop) {
       try {
         this.withString(message, (h) => this.check(this.invoke(interop, SLOT.consentForWindow, this.P.forWindow, hwnd, h, guidBytes(IID.IAsyncVerificationResult), op), 'RequestVerificationForWindowAsync'));
@@ -540,10 +621,12 @@ class WinRt {
         op[0] = null;
       }
     }
-    if (op[0] == null) {
-      tick = this.focuser();
+    const forWindow = op[0] != null;
+    if (!forWindow) {
       this.withString(message, (h) => this.check(this.invoke(this.consentStatics(), SLOT.consentRequest, this.P.strOut, h, op), 'RequestVerificationAsync'));
     }
+    this._note(`confirmation requested (${forWindow ? 'for the app window' : hwnd ? 'without the app window: interop missing or refused' : 'without a window'})`);
+    const tick = this.focuser(hwnd);
     return this.finish(op[0], (o) => CONSENT_RESULT[this._i32Result(o)] || 'failed', { timeoutMs: this.timing.promptMs, tick });
   }
 }
@@ -556,7 +639,7 @@ const validData = (d) => (Buffer.isBuffer(d) || d instanceof Uint8Array) && d.le
  * @param {string} [opts.platform] - process.platform (tests)
  * @param {object} [opts.koffi] - koffi (tests; default require('koffi') on the first call)
  * @param {object} [opts.api] - the Win32 functions (tests; default loadApi(koffi))
- * @param {object} [opts.timing] - { pollMs, promptMs, quickMs, focusMs }
+ * @param {object} [opts.timing] - { pollMs, promptMs, quickMs, focusMs, findMs, pushMs }
  * @param {object} [opts.log]
  */
 function createWindowsHello({ platform = process.platform, koffi = null, api = null, timing = {}, log = null } = {}) {
@@ -738,7 +821,9 @@ function createConsentVerifier({ platform = process.platform, koffi = null, api 
       try {
         const a = await r.consentAvailability();
         if (a !== 'available') return { status: a };
-        return { status: await r.requestConsent(text, hwndOf(window)) };
+        const status = await r.requestConsent(text, hwndOf(window));
+        if (log) log.info(`Windows Hello (confirmation): ${status}`);
+        return { status };
       } catch (err) {
         warn('RequestVerification', err);
         return { status: 'failed' };

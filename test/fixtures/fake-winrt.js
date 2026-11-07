@@ -48,7 +48,12 @@ function fakeWinRt(koffi, opts = {}) {
     asyncError: null,        // HRESULT for the next async operation
     badBuffer: false,        // CopyToByteArray returns other bytes
     dialog: null,            // hwnd FindWindowW finds
-    focused: [],
+    focused: [],             // SetForegroundWindow calls
+    foreground: null,        // what GetForegroundWindow returns (a value or a function)
+    refuseFocus: false,      // SetForegroundWindow refused (foreground lock)
+    raised: [],              // BringWindowToTop calls
+    allowed: [],             // AllowSetForegroundWindow calls
+    asyncStates: [],         // every async operation's state (a test can finish a long prompt: polls = 0)
     prompts: [],             // { kind: 'create' | 'sign', name }
     signFlip: false,         // signatures change every time (not deterministic)
     freed: [],               // wiped? per CoTaskMemFree
@@ -113,6 +118,7 @@ function fakeWinRt(koffi, opts = {}) {
   function asyncOp(cls, result) {
     const state = { polls: rt.polls, error: rt.asyncError, result, closed: false, status: 0, info: null };
     rt.asyncError = null;
+    rt.asyncStates.push(state);
     return make(cls, state);
   }
   const qiAsync = (o, riid) => {
@@ -332,7 +338,15 @@ function fakeWinRt(koffi, opts = {}) {
     },
     GetSystemMetrics: (i) => (i === 0x1000 && rt.remote ? 1 : 0),
     FindWindowW: (cls) => (cls === 'Credential Dialog Xaml Host' ? rt.dialog : null),
-    SetForegroundWindow: (h) => { rt.focused.push(h); return 1; },
+    SetForegroundWindow: (h) => {
+      rt.focused.push(h);
+      if (rt.refuseFocus) return 0;
+      rt.foreground = h;
+      return 1;
+    },
+    GetForegroundWindow: () => (typeof rt.foreground === 'function' ? rt.foreground() : rt.foreground),
+    BringWindowToTop: (h) => { rt.raised.push(h); return 1; },
+    AllowSetForegroundWindow: (pid) => { rt.allowed.push(pid); return 1; },
   };
 
   /** Objects still referenced (factories excluded: kept for the process' lifetime). */
