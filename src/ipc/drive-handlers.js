@@ -31,6 +31,9 @@
  *   drive:transfers       () → { ok, transfers }
  *   drive:transfers:clear () → { ok, transfers }
  *   drive:open            ({ id, versionId? }) → { ok, path } | { ok: false, code: 'unsafe' }
+ *   drive:stream          ({ id }) → { ok, url: 'gcdrive://media/<token>', mime, size, kind }   the viewer (Drive 1.21,
+ *                         DriveStreamService; 423 scan codes, 'invalid' for anything but a picture, video or sound)
+ *   drive:stream:end      ({ url }) → { ok }   the viewer closed: the address stops working
  *   drive:save-as         ({ id, versionId? }) → { ok, path } | { ok: false, cancelled }
  *   drive:show            ({ path }) → shows a loaded file in the Explorer
  *   drive:last-folder     () → { ok, folderId }
@@ -209,10 +212,11 @@ const SYNC_SETTINGS = {
  * @param {object} deps.drive - DriveService
  * @param {object} [deps.sync] - DriveSync ("Ordner sichern")
  * @param {object} [deps.maps] - MapService (drive:map:tile, the same one as the chats'); without it 'unsupported'
+ * @param {object} [deps.stream] - DriveStreamService (drive:stream, the viewer); without it 'unsupported'
  * @param {Function} deps.getMainWindow
  * @param {object} deps.log
  */
-function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, getMainWindow, log }) {
+function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, stream = null, getMainWindow, log }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
       return await fn(obj(arg));
@@ -268,6 +272,9 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, get
   handle('drive:transfers', wrap(async () => ({ ok: true, transfers: s.transfers() })));
   handle('drive:transfers:clear', wrap(async () => s.clearTransfers()));
   handle('drive:open', byId(async (a) => (optId(a.versionId) ? s.open(a.id, { versionId: a.versionId || null }) : invalid())));
+  // the viewer of pictures and videos (Drive 1.21): the gcdrive: address of a file, streamed with Range
+  handle('drive:stream', byId(async (a) => (stream ? stream.open(a.id) : { ok: false, code: 'unsupported', error: 'no viewer' })));
+  handle('drive:stream:end', wrap(async (a) => (stream && isStr(a.url, 200) ? stream.revoke(a.url) : { ok: true })));
   handle('drive:save-as', byId(async (a) => (optId(a.versionId) ? s.saveAs(a.id, { versionId: a.versionId || null }) : invalid())));
   handle('drive:show', wrap(async (a) => (isStr(a.path, 4096) ? s.showItem(a.path) : invalid())));
   handle('drive:last-folder', wrap(async () => s.lastFolder()));

@@ -470,6 +470,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       clearTransfers: () => ipcRenderer.invoke('drive:transfers:clear'),
       open:         (id, versionId) => ipcRenderer.invoke('drive:open', { id, versionId: versionId || null }),
       saveAs:       (id, versionId) => ipcRenderer.invoke('drive:save-as', { id, versionId: versionId || null }),
+      // the viewer (Drive 1.21): a gcdrive: address for <img> / <video> (streamed, Range), and its end
+      stream:       (id) => ipcRenderer.invoke('drive:stream', { id }),
+      endStream:    (url) => ipcRenderer.invoke('drive:stream:end', { url }),
       showItem:     (path) => ipcRenderer.invoke('drive:show', { path }),
       // the folder last picked in "In Drive speichern"
       lastFolder:   () => ipcRenderer.invoke('drive:last-folder'),

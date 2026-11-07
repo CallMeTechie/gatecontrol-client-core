@@ -198,6 +198,8 @@ const NOTIFY_EVENTS = {
  *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.driveSync] - DriveSync (opt-in with ctx.drive, "Ordner sichern"):
  *   registers drive:sync:*, forwards its events, resets it after server:setup.
+ * @param {object} [ctx.driveStream] - DriveStreamService (opt-in with ctx.drive, Drive 1.21's viewer):
+ *   drive:stream / drive:stream:end; its addresses go after server:setup.
  * @param {object} [ctx.mail] - MailService (opt-in, "Mail"): registers the
  *   mail:* channels (ipc/mail-handlers.js), forwards its events to the
  *   main window and resets it (and its offline cache) after a successful server:setup.
@@ -230,6 +232,8 @@ function registerBaseHandlers(ipcMain, ctx) {
   const vaultSvc = ctx.vault || null;
   const driveSvc = ctx.drive || null;
   const driveSync = (driveSvc && ctx.driveSync) || null;
+  // Drive 1.21: the viewer's gcdrive: addresses (DriveStreamService); without it drive:stream answers 'unsupported'
+  const driveStream = (driveSvc && ctx.driveStream) || null;
   const mailSvc = ctx.mail || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
   const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
@@ -280,6 +284,8 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (driveSvc) {
       Promise.resolve().then(() => driveSvc.resetForNewServer()).catch((err) => log.warn(`Drive reset failed: ${err.message}`));
     }
+    // the viewer's addresses belong to the old server too
+    if (driveStream) driveStream.clear();
     // "Ordner sichern": the runs of the old server stop; its folders wait ("anderer Server").
     if (driveSync) {
       Promise.resolve().then(() => driveSync.resetForNewServer()).catch((err) => log.warn(`Drive sync reset failed: ${err.message}`));
@@ -831,7 +837,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
-  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, getMainWindow, log });
+  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, stream: driveStream, getMainWindow, log });
 
   // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
   if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });
