@@ -72,11 +72,16 @@
  *   encrypted on this PC. Listings show their names decrypted (when this device
  *   has the key, else `locked`); uploads into a vault are encrypted chunk by
  *   chunk into a temporary file (ciphertext only) and go up as
- *   application/octet-stream with nameCipher / keyVersion; opening decrypts into
+ *   application/octet-stream with nameCipher / keyVersion; renaming and new
+ *   folders send the encrypted name. No previews, text, takenAt, entropy, links,
+ *   office or AI for them. Since Drive plugin 1.22 a vault file opens in the
+ *   viewer of the page (vaultView(), services/drive-vault-view.js: only the
+ *   ciphertext on the disk, the plaintext decrypted in memory through gcvault:);
+ *   open() of a vault file — the explicit "Mit anderem Programm öffnen", which
+ *   the page asks about first — still decrypts into
  *   %TEMP%\gatecontrol-drive\vault\<random>\<name>, removed again after
- *   VAULT_OPEN_KEEP_MS (later while the file is in use), at stop and at the next
- *   start; renaming and new folders send the encrypted name. No previews, text,
- *   takenAt, entropy, links, office or AI for them.
+ *   VAULT_OPEN_KEEP_MS (later while a program holds it), when the vaults lock,
+ *   at stop and at the next start.
  * - Drive 1.11 (the menu): the folder tree of the menu (tree(): folders only, `hasDirs`; with 'vaultsApart' the
  *   server's `children?dirs=1`, else the plain children filtered here); vault folders are left out of every folder
  *   listing and the search (only the menu's "Tresore" shows them, from vaults()); a new vault always goes into the
@@ -136,6 +141,7 @@ const DriveApi = require('./drive-api');
 const DriveVault = require('./drive-vault');
 const DriveVaultLock = require('./drive-vault-lock');
 const DriveOps = require('./drive-ops');
+const DriveVaultViews = require('./drive-vault-view');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
@@ -168,8 +174,10 @@ const MAX_PATHS = 200;
 const FOLDER_MAX_FILES = 20000;   // a dropped folder: at most this many files …
 const FOLDER_MAX_DIRS = 5000;     // … and folders
 const ME_MAX_AGE = 10 * 60 * 1000;
-const VAULT_OPEN_KEEP_MS = 10 * 60 * 1000;   // a decrypted file opened from a vault is removed after this …
-const VAULT_OPEN_RETRY_MS = 5 * 60 * 1000;   // … or later while a program still holds it
+// "Mit anderem Programm öffnen" of a vault file (an explicit export since Drive plugin 1.22): the decrypted copy goes
+// as soon as the program had time to read it …
+const VAULT_OPEN_KEEP_MS = 60 * 1000;
+const VAULT_OPEN_RETRY_MS = 30 * 1000;       // … or later while a program still holds it
 const DEADLINE_TOPIC = `plugin:${drive.PLUGIN_ID}:deadline`;
 const VAULT_TOPIC = `plugin:${drive.PLUGIN_ID}:vault`;
 const SCAN_KEEP_MS = 30 * 60 * 1000;          // a prepared scan (its pictures on this PC) is dropped after this
@@ -256,6 +264,8 @@ class DriveService extends EventEmitter {
     this._vaultActive = 0;          // vault uploads / downloads running (the lock's time without use waits)
     this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now, isUnlocked: () => this.vaultLock.isUnlocked() });
     this._vaultOpened = new Map();  // a decrypted file's folder → its removal timer
+    // Drive plugin 1.22: the viewer of vault files — ciphertext on the disk, plaintext only in memory (gcvault:)
+    this.vaultViews = new DriveVaultViews({ dir: () => path.join(this.tempDir(), 'vault-view'), log: this.log });
     this._vaultSweep = null;        // the running sweep of the vault's temp folders (_sweepVaultTemp)
     this._vaultRoots = new Map();   // vault id → the node id of its folder
     this.now = now;
@@ -340,6 +350,7 @@ class DriveService extends EventEmitter {
     this.vaultLock.stop();
     this.ops.stop();
     this.vault.clear();
+    this.vaultViews.closeAll().catch(() => {});
     for (const t of this._vaultOpened.values()) clearTimeout(t);
     this._vaultOpened.clear();
     this._sweepVaultTemp().catch(() => {});
@@ -782,6 +793,8 @@ class DriveService extends EventEmitter {
   /** The vaults locked: keys wiped, names forgotten, the decrypted copies removed (later while a program holds one). */
   _onVaultLock({ reason = 'manual' } = {}) {
     this.vault.forget();
+    // the viewer first: its tokens, file keys and ciphertexts go (the page closes it on the event)
+    this.vaultViews.closeAll().catch(() => {});
     for (const t of this._vaultOpened.values()) clearTimeout(t);
     this._vaultOpened.clear();
     const dir = path.join(this.tempDir(), 'vault');
@@ -871,7 +884,7 @@ class DriveService extends EventEmitter {
    */
   _sweepVaultTemp() {
     const run = async () => {
-      for (const d of ['vault', 'vault-dl', 'vault-up']) {
+      for (const d of ['vault', 'vault-dl', 'vault-up', 'vault-view']) {
         await fs.promises.rm(path.join(this.tempDir(), d), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
       }
     };
@@ -2359,6 +2372,57 @@ class DriveService extends EventEmitter {
     return { ok: true, path: file };
   }
 
+  /**
+   * The viewer of a vault file (Drive plugin 1.22) → { ok, kind, name, mime, size, token, url } — the page shows `url`
+   * (gcvault://v/<token>: decrypted in memory, chunk by chunk) — or { ok, kind, name, note } for what it does not show
+   * ('office', 'heic', 'other', 'too_large'; nothing loaded). The ciphertext waits in %TEMP%\…\vault-view until
+   * vaultViewClose(token), the lock or the stop.
+   */
+  async vaultView(nodeId, { versionId = null } = {}) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || !node.encrypted || !node.vaultId) throw new DriveError('not a vault file', { code: 'invalid' });
+      refuseBlocked(node);
+      await this.vault.tryOpen(node.vaultId);
+      const keys = this.vault.keys(node.vaultId);
+      const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+      this._vaultActive++;
+      try {
+        const r = await this.vaultViews.open({
+          node, name, vaultId: node.vaultId, keys,
+          download: async (file) => {
+            const c = await this.api.content(node.id, versionId);
+            if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
+            await this.api.downloadTo(c, file, {});
+          },
+        });
+        // locked while it loaded: nothing is shown
+        if (r.token && !this.vault.keysOf(node.vaultId)) {
+          await this.vaultViews.close(r.token);
+          throw new DriveError('vault is locked', { code: 'vault_locked' });
+        }
+        return { ok: true, ...r };
+      } catch (err) {
+        if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'decrypt' ? 'vault_decrypt' : 'vault_invalid' });
+        throw err;
+      } finally {
+        this._vaultActive--;
+        this.vaultLock.touch();
+      }
+    });
+  }
+
+  /** The viewer closed → { ok }: its token, file key and ciphertext go. */
+  async vaultViewClose(token) {
+    await this.vaultViews.close(token);
+    return { ok: true };
+  }
+
+  /** Electron protocol.handle('gcvault', (req) => drive.handleVaultProtocol(req)) — the viewer's bytes (drive-vault-view.js). */
+  handleVaultProtocol(request) {
+    return this.vaultViews.handleProtocol(request);
+  }
+
   /** "Speichern unter …": the file (or a version) into a path the person picks → { ok, path } | { ok: false, cancelled }. */
   async saveAs(nodeId, { versionId = null } = {}) {
     if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
@@ -2462,5 +2526,6 @@ DriveService.FOLDER_MAX_FILES = FOLDER_MAX_FILES;
 DriveService.safeStorageProtect = safeStorageProtect;
 DriveService.freeFileName = freeFileName;
 DriveService.VAULT_OPEN_KEEP_MS = VAULT_OPEN_KEEP_MS;
+DriveService.VaultViews = DriveVaultViews;
 
 module.exports = DriveService;
