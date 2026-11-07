@@ -202,6 +202,8 @@ function normalizeNode(v) {
     deletedOnDevice: line(o.deletedOnDevice, 128),
     // Drive 1.7 ('takenAt'): when a photo / video was taken (EXIF, else mtime) or null
     takenAt: msOf(o.takenAt),
+    // Drive 1.25 ('mediaFilter'): how long a video runs (ms) or null
+    durationMs: isDir ? null : durationOf(o.durationMs),
     // Drive 1.8 ('docAi'): the short form of the recognition { status, kind } on files while the feature is on
     insight: insightShort(o.insight),
     // Drive 1.19 ('scan'): the host's virus scan { state, blocked, finding } (utils/scan.js); absent: nothing known
@@ -603,7 +605,33 @@ function normalizePhoto(v) {
     located: o.located === undefined ? !!geo : bool(o.located),
     // Drive 1.16 'photoPeople' (with=people): the named people on it, else null
     people: Array.isArray(o.people) ? o.people.slice(0, 50).map(personIdOf).filter(Boolean) : null,
+    // Drive 1.25 'mediaFilter': how long a video runs (ms), when the device that sent it said so; else null
+    durationMs: durationOf(o.durationMs),
   };
+}
+
+/** The longest video length taken from the server (7 days, as Drive keeps them). */
+const DURATION_MAX_MS = 7 * 24 * 3600 * 1000;
+
+/** A video's length (ms) from Drive (1.25 `durationMs`) → a whole number of ms, or null. */
+function durationOf(v) {
+  return Number.isSafeInteger(v) && v > 0 && v <= DURATION_MAX_MS ? v : null;
+}
+
+/** `media` of the photos and the search (Drive 1.25 'mediaFilter'): 'image' | 'video', else null (both). */
+function mediaOf(v) {
+  return v === 'image' || v === 'video' ? v : null;
+}
+
+/** A video's length as on its tile: "0:07", "1:23", "1:02:03"; '' when unknown. */
+function durationText(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const t = Math.round(ms / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  const two = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
 }
 
 function photoList(v, max) {
@@ -1615,6 +1643,10 @@ module.exports = {
   CONTACT_KINDS,
   FACE_MODEL,
   placeKeyOf,
+  durationOf,
+  mediaOf,
+  durationText,
+  DURATION_MAX_MS,
   personIdOf,
   faceIdOf,
   latLonOf,

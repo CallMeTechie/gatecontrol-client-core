@@ -213,11 +213,11 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return n;
     },
     // Drive 1.7: a picture (image/jpeg with a preview) taken at `takenAt`
-    photo(parentId, name, { takenAt = Date.now(), content = name, mime = 'image/jpeg' } = {}) {
+    photo(parentId, name, { takenAt = Date.now(), content = name, mime = 'image/jpeg', durationMs = null } = {}) {
       const data = Buffer.from(content);
       const mediaId = crypto.randomBytes(16).toString('hex');
       state.media.set(mediaId, { data, mime });
-      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mime, mediaId, sha256: sha(data), takenAt: iso(takenAt), mtime: iso(takenAt) });
+      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mime, mediaId, sha256: sha(data), takenAt: iso(takenAt), mtime: iso(takenAt), ...(durationMs ? { durationMs } : {}) });
       logChange('create', n, '77');
       return n;
     },
@@ -938,8 +938,10 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     }
     const isMedia = (n) => !n.isDir && !n.deleted && /^(image|video)\//.test(n.mime || '');
     const when = (n) => Date.parse(n.takenAt || n.mtime || n.createdAt);
-    const photo = (n) => ({ id: n.id, name: n.name, mime: n.mime, size: n.size, takenAt: new Date(when(n)).toISOString(), areaId: n.areaId, parentId: n.parentId, preview: /^image\//.test(n.mime || ''), ...(srv.photoMediaIds ? { mediaId: n.mediaId, previewUrl: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : {}) });
-    const photoList = (area) => [...state.nodes.values()].filter((n) => isMedia(n) && (!area || n.areaId === area)).sort((a, b) => when(b) - when(a) || b.id - a.id);
+    const photo = (n) => ({ id: n.id, name: n.name, mime: n.mime, size: n.size, takenAt: new Date(when(n)).toISOString(), areaId: n.areaId, parentId: n.parentId, preview: /^image\//.test(n.mime || ''), ...(n.durationMs ? { durationMs: n.durationMs } : {}), ...(srv.photoMediaIds ? { mediaId: n.mediaId, previewUrl: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : {}) });
+    // Drive 1.25 'mediaFilter': media=image|video (else 400 invalid), recorded in srv.state.media… calls via requests
+    const kindOk = (n) => { const m = has('mediaFilter') ? url.searchParams.get('media') : null; return !m || (m === 'video' ? /^video\//.test(n.mime || '') : /^image\//.test(n.mime || '')); };
+    const photoList = (area) => [...state.nodes.values()].filter((n) => isMedia(n) && kindOk(n) && (!area || n.areaId === area)).sort((a, b) => when(b) - when(a) || b.id - a.id);
     const pageOf = (list) => {
       const before = url.searchParams.get('before');
       const limit = Math.min(200, Number(url.searchParams.get('limit') || 100));
@@ -1364,7 +1366,10 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     }
     if (req.method === 'GET' && route === 'search') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
-      const items = [...state.nodes.values()].filter((n) => !n.deleted && !n.encrypted && n.parentId && n.name.toLowerCase().includes(q)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
+      // Drive 1.25 'mediaFilter': only pictures or only videos (no folders); q may then be empty
+      const media = has('mediaFilter') ? url.searchParams.get('media') : null;
+      const kind = (n) => !media || (!n.isDir && (media === 'video' ? /^video\//.test(n.mime || '') : /^image\//.test(n.mime || '')));
+      const items = [...state.nodes.values()].filter((n) => !n.deleted && !n.encrypted && n.parentId && n.name.toLowerCase().includes(q) && kind(n)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
       if (q === 'miete') items.push({ ...view(state.nodes.get(12)), path: 'Dokumente', match: 'text', snippet: '… die Miete für Oktober …' });
       return json(res, 200, { ok: true, items });
     }

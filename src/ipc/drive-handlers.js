@@ -124,6 +124,8 @@
  *   drive:photos:settings () → { ok, keepGeo, stripGeoOnShare, people, peopleKids }
  *   drive:photos:settings:set ({ keepGeo?, stripGeoOnShare?, people?, peopleKids? }) → { ok, …, deleted }
  *   drive:photos:geo:delete () → { ok, deleted }
+ *   drive:photos · drive:photos:months ({ …, media?: 'image' | 'video' })              Drive 1.25 'mediaFilter'
+ *   drive:search          ({ q, area?, media? }) — with media q may be '' (the newest of them)
  *   drive:people          () → { ok, people, progress }
  *   drive:person          ({ id }) → { ok, person, together, places, uncertain, years }
  *   drive:person:update   ({ id, name?, hidden?, contact?: { kind, id, name } | null }) → { ok, person, mergedInto }
@@ -201,6 +203,8 @@ const optPlace = (v) => v === undefined || v === null || v === '' || (typeof v =
 const isBbox = (v) => Array.isArray(v) && v.length === 4 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
 const optBbox = (v) => v === undefined || v === null || isBbox(v);
 const optBool = (v) => v === undefined || typeof v === 'boolean';
+// Drive 1.25 'mediaFilter': only pictures or only videos
+const optMedia = (v) => v === undefined || v === null || v === '' || v === 'image' || v === 'video';
 const isContact = (v) => v === null || (!!v && typeof v === 'object' && (v.kind === 'family' || v.kind === 'contact')
   && (isId(v.id) || (typeof v.id === 'string' && /^[A-Za-z0-9:_.@-]{1,120}$/.test(v.id))) && isStr(v.name, 200));
 const SYNC_SETTINGS = {
@@ -239,8 +243,10 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
   handle('drive:areas', wrap(async () => s.areas()));
   handle('drive:folder', byId(async (a) => s.folder(a.id, { sort: a.sort, order: a.order, offset: a.offset, limit: a.limit })));
   handle('drive:search', wrap(async (a) => {
-    if (!isStr(a.q, 100) || !(a.area === undefined || a.area === null || isStr(a.area, 80))) return invalid();
-    return s.search(a.q, a.area || null);
+    // Drive 1.25: media 'image' | 'video' — then an empty q lists the newest of them
+    const q = typeof a.q === 'string' && a.q === '' && optMedia(a.media) && a.media ? '' : a.q;
+    if (!(q === '' || isStr(q, 100)) || !(a.area === undefined || a.area === null || isStr(a.area, 80)) || !optMedia(a.media)) return invalid();
+    return s.search(q, a.area || null, a.media || null);
   }));
   handle('drive:mkdir', wrap(async (a) => (isId(a.parentId) && isStr(a.name, 255) ? s.mkdir(a.parentId, a.name) : invalid())));
   handle('drive:rename', byId(async (a) => (isStr(a.name, 255) ? s.rename(a.id, a.name) : invalid())));
@@ -305,8 +311,9 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
   }));
   handle('drive:timetravel', byId(async (a) => (isAt(a.at) ? s.timeTravel(a.id, a.at) : invalid())));
   handle('drive:photos', wrap(async (a) => {
-    if (!(optArea(a.area) && optCursor(a.before) && optLimit(a.limit) && optStr(a.q, 100) && optPlace(a.place) && optBbox(a.bbox) && optPerson(a.person) && optBool(a.districts) && optBool(a.withPeople))) return invalid();
+    if (!(optArea(a.area) && optCursor(a.before) && optLimit(a.limit) && optStr(a.q, 100) && optPlace(a.place) && optBbox(a.bbox) && optPerson(a.person) && optBool(a.districts) && optBool(a.withPeople) && optMedia(a.media))) return invalid();
     const more = {};
+    if (a.media) more.media = a.media;
     if (a.q) more.q = a.q;
     if (a.place) more.place = a.place;
     if (a.bbox) more.bbox = a.bbox;
@@ -316,9 +323,9 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
     return s.photos({ area: a.area || null, before: a.before || null, limit: a.limit || 100, ...more });
   }));
   handle('drive:photos:months', wrap(async (a) => {
-    if (!(optArea(a.area) && optStr(a.q, 100) && optPlace(a.place) && optPerson(a.person))) return invalid();
-    if (!a.q && !a.place && !a.person) return s.photoMonths(a.area || null);
-    return s.photoMonths(a.area || null, { q: a.q || null, place: a.place || null, person: a.person || null });
+    if (!(optArea(a.area) && optStr(a.q, 100) && optPlace(a.place) && optPerson(a.person) && optMedia(a.media))) return invalid();
+    if (!a.q && !a.place && !a.person && !a.media) return s.photoMonths(a.area || null);
+    return s.photoMonths(a.area || null, { q: a.q || null, place: a.place || null, person: a.person || null, media: a.media || null });
   }));
   handle('drive:photos:memories', wrap(async (a) => {
     if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();

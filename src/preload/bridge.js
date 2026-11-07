@@ -438,7 +438,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       areas:        () => ipcRenderer.invoke('drive:areas'),
       // opts: { sort: 'name' | 'mtime' | 'size' | 'updated', order: 'asc' | 'desc', offset, limit }
       folder:       (id, opts) => ipcRenderer.invoke('drive:folder', { ...(opts || {}), id }),
-      search:       (q, area) => ipcRenderer.invoke('drive:search', { q, area: area || null }),
+      // Drive 1.25 'mediaFilter': media 'image' | 'video' (q may then be '')
+      search:       (q, area, media) => ipcRenderer.invoke('drive:search', { q, area: area || null, ...(media ? { media } : {}) }),
       mkdir:        (parentId, name) => ipcRenderer.invoke('drive:mkdir', { parentId, name }),
       rename:       (id, name) => ipcRenderer.invoke('drive:rename', { id, name }),
       move:         (id, parentId) => ipcRenderer.invoke('drive:move', { id, parentId }),
