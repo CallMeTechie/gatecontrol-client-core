@@ -239,6 +239,66 @@ describe('home cache: Drive content', () => {
   });
 });
 
+describe('home cache: previews (Drive 1.24)', () => {
+  const jpeg = (t) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(t)]);
+  const previewHits = (srv) => srv.state.requests.filter((r) => r.method === 'GET' && /\/gatecontrol-drive\/media\/[^/]+\/preview/.test(r.path));
+
+  it('lists go out with X-GC-Local; a preview the list names on the gateway comes from there, pinned and checked', async () => {
+    const { srv, api } = await driveSetup(['offline', 'homeCache', 'homeCachePreviews']);
+    const p = srv.mutate.photo(1, 'Strand.jpg');
+    const small = jpeg('klein');
+    const large = jpeg('gross');
+    const gw = await gateway({ [sha(small)]: small, [sha(large)]: large });
+    srv.previewLan = (n, local, size) => (local && n.id === p.id ? gw.lan(sha(size === 'small' ? small : large)) : null);
+    await api.me();
+    await api.folder(1);
+    assert.ok(srv.state.local.some((x) => x.route === 'nodes/1/children' && x.value === '192.168.1.23,10.0.0.5'));
+    const r = await api.preview(p.mediaId);
+    assert.equal(r.mime, 'image/jpeg');
+    assert.ok(Buffer.compare(r.data, small) === 0);
+    const l = await api.preview(p.mediaId, { large: true });
+    assert.ok(Buffer.compare(l.data, large) === 0);
+    assert.equal(gw.hits.length, 2);
+    assert.equal(previewHits(srv).length, 0);
+    // a file the list named no hint for: from the server
+    const other = srv.mutate.photo(1, 'Wald.jpg');
+    assert.ok((await api.preview(other.mediaId)).data.length > 0);
+    assert.equal(previewHits(srv).length, 1);
+  });
+
+  it('other bytes or no answer at the gateway: the server\'s preview, and for a minute no gateway', async () => {
+    const { srv, api } = await driveSetup(['offline', 'homeCache', 'homeCachePreviews']);
+    const a = srv.mutate.photo(1, 'A.jpg');
+    const b = srv.mutate.photo(1, 'B.jpg');
+    const gw = await gateway({});
+    gw.answer = (_q, res) => { res.writeHead(200); res.end('falsch'); };
+    srv.previewLan = (n, local) => (local ? gw.lan(sha(jpeg(n.name))) : null);
+    await api.me();
+    await api.folder(1);
+    const ra = await api.preview(a.mediaId);
+    assert.equal(ra.mime, 'image/jpeg');
+    assert.equal(gw.hits.length, 1);
+    assert.equal(previewHits(srv).length, 1);
+    // paused: B goes to the server without asking the gateway
+    await api.preview(b.mediaId);
+    assert.equal(gw.hits.length, 1);
+    assert.equal(previewHits(srv).length, 2);
+  });
+
+  it('without the feature: lists without X-GC-Local, hints not used', async () => {
+    const { srv, api } = await driveSetup(['offline', 'homeCache']);
+    const p = srv.mutate.photo(1, 'C.jpg');
+    const gw = await gateway({});
+    srv.previewLan = () => gw.lan('e'.repeat(64));
+    await api.me();
+    await api.folder(1);
+    assert.equal(srv.state.local.filter((x) => x.route === 'nodes/1/children').length, 0);
+    await api.preview(p.mediaId);
+    assert.equal(gw.hits.length, 0);
+    assert.equal(previewHits(srv).length, 1);
+  });
+});
+
 describe('Drive 1.20: offline verfügbar', () => {
   it('mark, list, unmark — API, service and IPC', async () => {
     const { srv, svc } = await driveSetup(['offline']);
