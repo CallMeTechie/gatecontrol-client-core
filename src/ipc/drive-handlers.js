@@ -34,6 +34,9 @@
  *   drive:stream          ({ id }) → { ok, url: 'gcdrive://media/<token>', mime, size, kind }   the viewer (Drive 1.21,
  *                         DriveStreamService; 423 scan codes, 'invalid' for anything but a picture, video or sound)
  *   drive:stream:end      ({ url }) → { ok }   the viewer closed: the address stops working
+ *   drive:doc-view        ({ id }) → { ok, kind: 'pdf', name, size, data } | { ok, kind: 'text' | 'markdown', name, size,
+ *                         text } | { ok, kind, name, note: 'too_large', limitMb }   the viewer of PDFs and texts (not of a
+ *                         vault; DriveService.docView: the copy open() uses; 423 scan codes, 'invalid' for anything else)
  *   drive:save-as         ({ id, versionId? }) → { ok, path } | { ok: false, cancelled }
  *   drive:show            ({ path }) → shows a loaded file in the Explorer
  *   drive:last-folder     () → { ok, folderId }
@@ -278,6 +281,8 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
   handle('drive:open', byId(async (a) => (optId(a.versionId) ? s.open(a.id, { versionId: a.versionId || null }) : invalid())));
   // the viewer of pictures and videos (Drive 1.21): the gcdrive: address of a file, streamed with Range
   handle('drive:stream', byId(async (a) => (stream ? stream.open(a.id) : { ok: false, code: 'unsupported', error: 'no viewer' })));
+  // the viewer of PDFs, texts and Markdown (not of a vault): the file as open() loads it, its bytes / its text for the page
+  handle('drive:doc-view', byId(async (a) => s.docView(a.id)));
   handle('drive:stream:end', wrap(async (a) => (stream && isStr(a.url, 200) ? stream.revoke(a.url) : { ok: true })));
   handle('drive:save-as', byId(async (a) => (optId(a.versionId) ? s.saveAs(a.id, { versionId: a.versionId || null }) : invalid())));
   handle('drive:show', wrap(async (a) => (isStr(a.path, 4096) ? s.showItem(a.path) : invalid())));
