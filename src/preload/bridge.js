@@ -478,6 +478,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // the viewer (Drive 1.21): a gcdrive: address for <img> / <video> (streamed, Range), and its end
       stream:       (id) => ipcRenderer.invoke('drive:stream', { id }),
       endStream:    (url) => ipcRenderer.invoke('drive:stream:end', { url }),
+      // the viewer of PDFs, texts and Markdown (not of a vault): bytes / text of the copy "Öffnen" loads too
+      docView:      (id) => ipcRenderer.invoke('drive:doc-view', { id }),
       showItem:     (path) => ipcRenderer.invoke('drive:show', { path }),
       // the folder last picked in "In Drive speichern"
       lastFolder:   () => ipcRenderer.invoke('drive:last-folder'),

@@ -81,7 +81,8 @@
  *   the page asks about first — still decrypts into
  *   %TEMP%\gatecontrol-drive\vault\<random>\<name>, removed again after
  *   VAULT_OPEN_KEEP_MS (later while a program holds it), when the vaults lock,
- *   at stop and at the next start.
+ *   at stop and at the next start. A PDF, text or Markdown outside a vault opens in the same viewer's pages
+ *   (docView(), services/drive-doc-view.js): the copy open() loads (temp folder), handed to the page as bytes / text.
  * - Drive 1.11 (the menu): the folder tree of the menu (tree(): folders only, `hasDirs`; with 'vaultsApart' the
  *   server's `children?dirs=1`, else the plain children filtered here); vault folders are left out of every folder
  *   listing and the search (only the menu's "Tresore" shows them, from vaults()); a new vault always goes into the
@@ -142,6 +143,7 @@ const DriveVault = require('./drive-vault');
 const DriveVaultLock = require('./drive-vault-lock');
 const DriveOps = require('./drive-ops');
 const DriveVaultViews = require('./drive-vault-view');
+const DocView = require('./drive-doc-view');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
@@ -2315,31 +2317,70 @@ class DriveService extends EventEmitter {
       if (node.encrypted && node.vaultId) return this._openVaultFile(node, versionId);
       const name = drive.safeName(node.name) || 'Datei';
       if (unsafeToOpen(name, node.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
-      // Windows device names (CON, NUL, COM1 …) cannot be files: open a renamed local copy.
-      const file = path.join(dir, safeFileName(name, 'Datei'));
-      let have = false;
-      if (!versionId) {
-        try { have = (await fs.promises.stat(file)).size === node.size && node.size > 0; } catch { have = false; }
-      }
-      if (have) {
-        // Already loaded this revision: the server still learns that it was opened (a child's folder).
-        await this.api.content(node.id).catch(() => {});
-      } else {
-        const row = this._downloadRow(name, node.size);
-        try {
-          await this._fetchTo(node.id, versionId, file, row);
-          this._set(row.id, { state: 'done', sent: row.total, path: file });
-        } catch (err) {
-          this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
-          throw err;
-        }
-      }
+      const file = await this._localCopy(node, versionId, name);
       const err = await this.shell.openPath(file);
       if (err) {
         this.log.warn(`Opening a Drive file failed: ${err}`);
         return { ok: false, code: 'open_failed', error: String(err) };
       }
       return { ok: true, path: file };
+    });
+  }
+
+  /**
+   * The copy of `node` (a version: `versionId`) in the temp folder → its path: the one of this revision already
+   * there, else downloaded (a row of the transfer list). Windows device names (CON, NUL, COM1 …) cannot be files: a
+   * renamed local copy.
+   */
+  async _localCopy(node, versionId, name) {
+    const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
+    const file = path.join(dir, safeFileName(name, 'Datei'));
+    let have = false;
+    if (!versionId) {
+      try { have = (await fs.promises.stat(file)).size === node.size && node.size > 0; } catch { have = false; }
+    }
+    if (have) {
+      // Already loaded this revision: the server still learns that it was opened (a child's folder).
+      await this.api.content(node.id).catch(() => {});
+      return file;
+    }
+    const row = this._downloadRow(name, node.size);
+    try {
+      await this._fetchTo(node.id, versionId, file, row);
+      this._set(row.id, { state: 'done', sent: row.total, path: file });
+    } catch (err) {
+      this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+      throw err;
+    }
+    return file;
+  }
+
+  /**
+   * The viewer of a PDF, text or Markdown of Drive (not of a vault; services/drive-doc-view.js) →
+   * { ok, kind: 'pdf', name, size, data } (the bytes for pdf.js) | { ok, kind: 'text' | 'markdown', name, size, text }
+   * | { ok, kind, name, note: 'too_large', limitMb } (nothing loaded). The file comes as for open() — the copy of this
+   * revision in the temp folder, else a download —, so "Mit anderem Programm öffnen" afterwards needs no second one.
+   * A folder, a vault file and anything else: 'invalid'; blocked by the virus scan: 423 as open().
+   */
+  async docView(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.encrypted) throw new DriveError('not a document of the viewer', { code: 'invalid' });
+      if (SC.isBlocked(node.scan)) {
+        await fs.promises.rm(path.join(this.tempDir(), `${node.id}-${node.rev}`), { recursive: true, force: true }).catch(() => {});
+        refuseBlocked(node);
+      }
+      const name = drive.safeName(node.name) || 'Datei';
+      const kind = DocView.kindOf(name, node.mime);
+      if (!kind) throw new DriveError('not a document of the viewer', { code: 'invalid' });
+      if (DocView.tooLarge(kind, node.size)) return { ok: true, kind, name, note: 'too_large', limitMb: DocView.limitMb(kind) };
+      const file = await this._localCopy(node, null, name);
+      // the size the listing said may be old: the copy itself decides
+      const size = (await fs.promises.stat(file)).size;
+      if (DocView.tooLarge(kind, size)) return { ok: true, kind, name, note: 'too_large', limitMb: DocView.limitMb(kind) };
+      const buf = await fs.promises.readFile(file);
+      if (kind === 'pdf') return { ok: true, kind, name, size, data: new Uint8Array(buf.buffer, buf.byteOffset, buf.length) };
+      return { ok: true, kind, name, size, text: DocView.decodeText(buf) };
     });
   }
 
