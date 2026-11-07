@@ -21,7 +21,7 @@ const NotificationCenter = require('../src/services/notification-center');
 const { createMemoryStore } = require('./fixtures/memory-store');
 
 const log = { info() {}, warn() {}, error() {}, debug() {} };
-const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open', 'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test'];
+const NOTIFY_CHANNELS = ['notify:action', 'notify:dnd', 'notify:email', 'notify:email:set', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open', 'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test'];
 
 function fakePush() {
   const p = new EventEmitter();
@@ -151,6 +151,34 @@ describe('notify IPC', () => {
     assert.deepEqual(opened, ['/portal#benachrichtigungen']);
     center.openPortal = async () => { throw new Error('x'); };
     assert.equal(await handlers['notify:quiet:open']({}), false);
+  });
+
+  it('notify:email reads the e-mail channel with the prefs and switches one plugin topic per person', async () => {
+    const { handlers, push } = setup();
+    const sentTopics = [];
+    push.fetchPrefs = async () => ({
+      ok: true, quiet: null, hasQuiet: true,
+      email: { topics: [{ id: 'plugin:gatecontrol-mail:resource_request', label: 'Mail · Buchungsanfrage', enabled: true }], to: 'anna@example.com', ready: true },
+    });
+    push.setEmailTopics = async (list) => { sentTopics.push(list); return { ok: true }; };
+    assert.deepEqual(await handlers['notify:email']({}), { ok: true, known: false, topics: [], to: null, ready: false });
+    const r = await handlers['notify:email']({}, { refresh: true });
+    assert.deepEqual([r.ok, r.known, r.to, r.ready, r.topics.length], [true, true, 'anna@example.com', true, 1]);
+    // only topics the server listed, checked arguments
+    assert.equal((await handlers['notify:email:set']({}, { id: 'plugin:gatecontrol-mail:mail', enabled: true })).error, 'unknown_topic');
+    assert.equal((await handlers['notify:email:set']({}, { id: 'plugin:gatecontrol-mail:resource_request', enabled: 'no' })).error, 'invalid');
+    assert.equal((await handlers['notify:email:set']({}, null)).error, 'invalid');
+    const s = await handlers['notify:email:set']({}, { id: 'plugin:gatecontrol-mail:resource_request', enabled: false });
+    assert.equal(s.ok, true);
+    assert.equal(s.topics[0].enabled, false);
+    assert.deepEqual(sentTopics, [[{ id: 'plugin:gatecontrol-mail:resource_request', enabled: false }]]);
+    // refused by the server: the old choice stays
+    push.setEmailTopics = async () => ({ ok: false, error: 'invalid_email_topics' });
+    const f = await handlers['notify:email:set']({}, { id: 'plugin:gatecontrol-mail:resource_request', enabled: true });
+    assert.deepEqual([f.ok, f.error, f.topics[0].enabled], [false, 'invalid_email_topics', false]);
+    // an older server: unknown again
+    push.fetchPrefs = async () => ({ ok: true, quiet: null, hasQuiet: true, email: null });
+    assert.equal((await handlers['notify:email']({}, { refresh: true })).known, false);
   });
 
   it('notify:test without push client answers not_configured', async () => {

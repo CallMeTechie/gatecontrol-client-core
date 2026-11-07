@@ -124,6 +124,31 @@ function normalizeQuiet(q) {
   };
 }
 
+// Only plugin topics have an e-mail channel (server services/notify/personMail.js mailTopic).
+const EMAIL_TOPIC_RE = /^plugin:[a-z0-9]+(?:-[a-z0-9]+)*:[a-z][a-z0-9_-]{0,31}$/;
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+
+/**
+ * The person's e-mail channel of plugin topics (GET …/push/prefs since
+ * GateControl 1.225.0: `email_topics`, `email_to`, `email_ready`) →
+ * { topics: [{ id, label, enabled }], to, ready } — or null when the server
+ * does not send `email_topics` (older servers: nothing is shown).
+ */
+function normalizeEmail(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.email_topics)) return null;
+  const topics = [];
+  const seen = new Set();
+  for (const t of data.email_topics) {
+    if (!t || typeof t !== 'object' || typeof t.id !== 'string' || !EMAIL_TOPIC_RE.test(t.id) || typeof t.enabled !== 'boolean' || seen.has(t.id)) continue;
+    seen.add(t.id);
+    const label = typeof t.label === 'string' && !CONTROL_CHARS_RE.test(t.label) ? t.label.slice(0, 120) : null;
+    topics.push({ id: t.id, label, enabled: t.enabled });
+    if (topics.length >= 200) break;
+  }
+  const to = typeof data.email_to === 'string' ? data.email_to.trim() : '';
+  return { topics, to: to && to.length <= 254 && !CONTROL_CHARS_RE.test(to) ? to : null, ready: data.email_ready === true };
+}
+
 /**
  * hello.state → { policyVersion, peerEnabled, supportBundleRequested,
  * supportBundleRequestedAt, configHash } or null when absent (older server).
@@ -381,16 +406,38 @@ class PushClient extends EventEmitter {
   }
 
   /**
+   * „Auch per E-Mail“ of plugin topics for the token's person (PUT …/push/prefs
+   * `email_topics`, GateControl 1.225.0): [{ id, enabled }] → { ok } or
+   * { ok: false, error } (invalid here; the server's invalid_email_topics,
+   * no_user, push_disabled; network codes). Per person, not per device: the
+   * portal shows the same switches.
+   */
+  async setEmailTopics(list) {
+    if (!Array.isArray(list) || !list.length || list.length > 100
+      || !list.every((t) => t && typeof t.id === 'string' && EMAIL_TOPIC_RE.test(t.id) && typeof t.enabled === 'boolean')) {
+      return { ok: false, error: 'invalid' };
+    }
+    if (!this.apiClient || typeof this.apiClient.pushPrefs !== 'function') return { ok: false, error: 'unsupported' };
+    try {
+      const data = await this.apiClient.pushPrefs({ email_topics: list.map((t) => ({ id: t.id, enabled: t.enabled })) });
+      return { ok: !data || data.ok !== false, error: data && data.ok === false ? (data.error || 'failed') : undefined };
+    } catch (err) {
+      return { ok: false, error: this._errCode(err) };
+    }
+  }
+
+  /**
    * Device preferences and quiet hours as the server sees them
-   * (GET …/push/prefs): { ok, quiet } or { ok: false, error } (404 on servers
-   * without the route → error 'http_404').
+   * (GET …/push/prefs): { ok, quiet, hasQuiet, email } or { ok: false, error }
+   * (404 on servers without the route → error 'http_404'); email: the e-mail
+   * channel of plugin topics (normalizeEmail), null on servers before 1.225.0.
    */
   async fetchPrefs() {
     if (!this.apiClient || typeof this.apiClient.getPushPrefs !== 'function') return { ok: false, error: 'unsupported' };
     try {
       const data = await this.apiClient.getPushPrefs();
       if (!data || typeof data !== 'object' || data.ok === false) return { ok: false, error: 'bad_response' };
-      return { ok: true, quiet: normalizeQuiet(data.quiet), hasQuiet: 'quiet' in data };
+      return { ok: true, quiet: normalizeQuiet(data.quiet), hasQuiet: 'quiet' in data, email: normalizeEmail(data) };
     } catch (err) {
       return { ok: false, error: this._errCode(err) };
     }
@@ -876,6 +923,7 @@ PushClient.ENDPOINT = ENDPOINT;
 PushClient.STATE = STATE;
 PushClient.DEFAULT_TIMING = DEFAULT_TIMING;
 PushClient.normalizeQuiet = normalizeQuiet;
+PushClient.normalizeEmail = normalizeEmail;
 PushClient.normalizeState = normalizeState;
 PushClient.normalizeControl = normalizeControl;
 

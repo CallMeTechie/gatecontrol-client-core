@@ -223,6 +223,22 @@ the portal origin as before. `portal:open` accepts `{ next }` as well
 (validated with `portalNext`, anything else opens the portal home); apps pass
 it on: `openPortal: (opts) => portalOpener.open(opts)`.
 
+### 9a. „Auch per E-Mail“ of plugin topics (GateControl 1.225.0)
+
+Plugin topics can also reach the person by e-mail (GateControl's SMTP server,
+to the account address; server `docs/plugins.md` „Notifications by e-mail“).
+The switch is **per person**, not per device — the portal shows the same
+„Auch per E-Mail an …“ under each topic. The same `GET …/push/prefs` answer
+that carries the quiet hours carries `email_topics: [{ id, label, enabled }]`,
+`email_to` and `email_ready`; `refreshQuiet()` keeps them
+(`emailState()` → `{ known, topics, to, ready }`, `known: false` on older
+servers: show nothing). `setEmailTopic(id, enabled)` sends only
+`PUT …/push/prefs { email_topics: [{ id, enabled }] }` (the device prefs stay)
+and answers `{ ok, ...emailState() }` or `{ ok: false, error }` (`unknown_topic`
+for a topic the server did not list, `busy` while one is saved, the server's
+`invalid_email_topics` / `no_user`). Without `email_ready` or an address the app
+shows the box greyed with the reason, as the portal does.
+
 ### 10. Where notifications appear (core 1.191, Messenger 1.6)
 
 With a sink plugin (the messenger) each kind of notification (push topic) can
@@ -272,7 +288,8 @@ route itself (its page, or the plugin's portal tab).
 | `fetchInbox({ limit, before })` | `GET …/push/inbox` → `{ ok, items, unread }` |
 | `setPrefs({ enabled, mode \| direct, muted_topics \| mutedTopics })` | `PUT …/push/prefs` → `{ ok }` |
 | `requestTest()` | `POST …/push/test` → `{ ok, seq }` (server: 5/min) |
-| `fetchPrefs()` | `GET …/push/prefs` → `{ ok, quiet, hasQuiet }` (quiet hours, read-only) |
+| `fetchPrefs()` | `GET …/push/prefs` → `{ ok, quiet, hasQuiet, email }` (quiet hours, read-only; `email`: the e-mail channel of plugin topics, null before GateControl 1.225.0) |
+| `setEmailTopics(list)` | `PUT …/push/prefs { email_topics: [{ id, enabled }] }` → `{ ok }` / `{ ok: false, error }` (plugin topics only) |
 | `controlSupported()` | stream open and its hello carried `state` (server with control events) |
 | `refreshPath()` | re-run the kill-switch check |
 | `status()` | see below |
@@ -326,6 +343,7 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `muteTopic(topic, ms)` | local mute |
 | `unreadCount()`, `topics()`, `status()` | status = push status + `unread`, `dnd`, `toasts`, `enabled`, `quiet`, `quietKnown` |
 | `quietState()` / `refreshQuiet()` | `{ known, quiet, source: 'hello'\|'prefs', at }`; refresh asks `GET …/push/prefs` |
+| `emailState()` / `refreshEmail()` / `setEmailTopic(id, enabled)` | „Auch per E-Mail“: `{ known, topics: [{ id, label, enabled }], to, ready }` (section 9a) |
 | `openQuietHoursInPortal()` | portal tab `/portal#benachrichtigungen` (auto-login) |
 | `routes()` / `setRoute(topic, dest)` | where each kind of notification appears (`PushClient.fetchRoutes()` / `setRoute()`): `{ ok, routes }` / `{ ok: false, error }` |
 | `openTarget({ route, topic, data })` | a notice card's link: `navigate` `{ route, id: null, context }` when a click route claims the notification → `{ ok: true, route }`, else `{ ok: false }` |
@@ -364,6 +382,8 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | `notify:dnd` | `dnd(arg?)` | `{ minutes }` / `{ until }` / `null` (off) / no argument (query) → `{ ok, active, until }` |
 | `notify:quiet` | `quiet(opts)` | `{ refresh }` → `{ ok, known, quiet, source, at }` |
 | `notify:quiet:open` | `openQuietHours()` | → boolean (portal tab "Meine Benachrichtigungen") |
+| `notify:email` | `email(opts)` | `{ refresh }` → `{ ok, known, topics, to, ready }` |
+| `notify:email:set` | `setEmail(id, enabled)` | → `{ ok, ...state }` / `{ ok: false, error, ...state }` |
 | `notify:routes` | `routes()` | → `{ ok, routes: { sink, canFamily, groups } }` / `{ ok:false, error }` (`unsupported`: older server) |
 | `notify:routes:set` | `setRoute(topic, dest)` | `'inbox'\|'own'\|'family'` → `{ ok, routes }` / `{ ok:false, error }` |
 | `notify:open` | `open({ route, topic, data })` | notice card link → `{ ok, route? }` (ok false: the app opens the route) |

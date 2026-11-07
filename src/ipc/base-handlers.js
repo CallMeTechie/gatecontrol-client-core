@@ -169,7 +169,7 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notificationCenter] - NotificationCenter (opt-in).
  *   When given: registers notify:list, notify:read, notify:action,
  *   notify:prefs:get, notify:prefs:set, notify:test, notify:status,
- *   notify:dnd, notify:quiet, notify:quiet:open, notify:routes, notify:routes:set,
+ *   notify:dnd, notify:quiet, notify:quiet:open, notify:email, notify:email:set, notify:routes, notify:routes:set,
  *   notify:open; forwards its events to the main window as notify:new,
  *   notify:update, notify:status, notify:navigate; and resets it (cache,
  *   resume position, reconnect) after a successful server:setup.
@@ -872,6 +872,9 @@ function registerBaseHandlers(ipcMain, ctx) {
  *   notify:dnd         ({ minutes } | { until } | null = off | undefined = query) → { ok, active, until }
  *   notify:quiet       ({ refresh? }) → { ok, known, quiet: { from, to, tz, criticalBypass } | null, source, at }
  *   notify:quiet:open  () → boolean (portal tab "Meine Benachrichtigungen", auto-login)
+ *   notify:email       ({ refresh? }) → { ok, known, topics: [{ id, label, enabled }], to, ready }
+ *                      („Auch per E-Mail“ of plugin topics, per person; known false before GateControl 1.225.0)
+ *   notify:email:set   ({ id, enabled }) → { ok, ...state } | { ok: false, error, ...state }
  *   notify:routes      () → { ok, routes: { sink, canFamily, groups } } | { ok: false, error }
  *                      (where each kind of notification appears, core 1.191; 'unsupported' = older server)
  *   notify:routes:set  ({ topic, dest: 'inbox'|'own'|'family' }) → { ok, routes, chat } | { ok: false, error }
@@ -911,6 +914,15 @@ function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow,
   handle('notify:quiet', async (_, opts) => {
     if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshQuiet();
     return { ok: true, ...nc.quietState() };
+  });
+  handle('notify:email', async (_, opts) => {
+    if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshEmail();
+    return { ok: true, ...nc.emailState() };
+  });
+  handle('notify:email:set', (_, arg) => {
+    const a = arg && typeof arg === 'object' && !Array.isArray(arg) ? arg : {};
+    if (typeof a.id !== 'string' || a.id.length > 120 || typeof a.enabled !== 'boolean') return { ok: false, error: 'invalid', ...nc.emailState() };
+    return nc.setEmailTopic(a.id, a.enabled);
   });
   handle('notify:routes', () => nc.routes());
   handle('notify:routes:set', (_, arg) => {
