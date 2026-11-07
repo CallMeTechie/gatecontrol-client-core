@@ -45,7 +45,7 @@ describe('windows-hello on Windows (no prompt)', { skip: win ? false : 'Windows 
     assert.ok(['not_found', 'failed', 'unavailable'].includes(r.status), JSON.stringify(r));
   });
 
-  it('the Hello dialog to the front: the user32 bindings answer (no dialog here), a focuser tick never throws', () => {
+  it('the Hello dialog to the front: the user32 bindings answer (no dialog here), a focuser tick never throws', async () => {
     const koffi = require('koffi');
     const api = loadApi(koffi);
     const lines = [];
@@ -56,6 +56,7 @@ describe('windows-hello on Windows (no prompt)', { skip: win ? false : 'Windows 
     rt.allowForeground();
     const tick = rt.focuser(0x1234n);
     tick();
+    await new Promise((r) => setTimeout(r, 20));   // past findMs
     tick();
     assert.ok(!lines.some((l) => /dialog to the front:|AllowSetForegroundWindow:/.test(l)), lines.join('\n'));
     assert.ok(lines.some((l) => /no dialog after/.test(l)), lines.join('\n'));
