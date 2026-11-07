@@ -65,6 +65,8 @@
 // Drive 1.20: 'offline' (GET offline, PUT / DELETE nodes/<id>/offline; state.offline: nodeId → at; srv.offlineMax),
 // the home cache: GET nodes/<id>/content answers `lan` = srv.lan(node, xGcLocal) when that gives one; the
 // X-GC-Local of every request in state.local [{ method, route, value }].
+// Drive 1.24: GET nodes/<id>/children gives each preview `lan` / `largeLan` = srv.previewLan(node, xGcLocal, 'small' |
+// 'large') when that gives one.
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -1469,6 +1471,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         const offset = Number(url.searchParams.get('offset') || 0);
         const limit = Math.min(srv.pageMax, Number(url.searchParams.get('limit') || 200));
         const items = all.slice(offset, offset + limit);
+        if (typeof srv.previewLan === 'function') {
+          for (const it of items) {
+            if (!it.preview || typeof it.preview !== 'object') continue;
+            const lan = srv.previewLan(it, req.headers['x-gc-local'] || null, 'small');
+            const largeLan = srv.previewLan(it, req.headers['x-gc-local'] || null, 'large');
+            it.preview = { ...it.preview, ...(lan ? { lan } : {}), ...(largeLan ? { largeLan } : {}) };
+          }
+        }
         return json(res, 200, { ok: true, items, total: all.length, next: offset + limit < all.length ? offset + limit : null, role: areaOf(n).role });
       }
       if (seg[2] === 'content' && req.method === 'GET') {

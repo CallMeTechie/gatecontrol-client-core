@@ -73,6 +73,11 @@
  * IPv4 addresses, utils/home-cache.js); in the home network of a gateway that holds the file the answer carries
  * `lan { url, sha256, tlsSha256, exp }` and downloadTo() loads it from there (certificate pinned, SHA-256 checked),
  * else — and on any error there — from the server as before.
+ * Drive 1.24 on GateControl 1.249 (feature 'homeCachePreviews'): the previews are in the home cache too. Every GET goes
+ * out with `X-GC-Local` then; the file nodes of an answer may carry `preview.lan` / `preview.largeLan` (photo items
+ * `previewLan` / `largeLan`), kept per media id for ten minutes at most (their `exp`), and preview() loads the picture
+ * from the gateway first (pinned, SHA-256 checked, at most PREVIEW_LAN_PARALLEL at a time) — on any error, and for a
+ * minute after one, from the server as before.
  *
  * The media upload / download is GateDropApi's code (same core media routes,
  * same resumable protocol) on Drive's media path. Failures are thrown as
@@ -80,8 +85,10 @@
  * `http_<status>`, 'network', 'timeout').
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const axios = require('axios');
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
@@ -94,6 +101,11 @@ const { MessengerError: DriveError } = MessengerApi;
 
 const JSON_TIMEOUT_MS = 25000;
 const PREVIEW_MAX = 2 * 1024 * 1024;
+// Drive 1.24: previews from the home gateway
+const PREVIEW_LANS_MAX = 5000;
+const PREVIEW_LAN_PARALLEL = 6;
+const PREVIEW_LAN_PAUSE_MS = 60 * 1000;
+const PREVIEW_LAN_MARGIN_S = 5;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 const isB64u = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[A-Za-z0-9_-]+$/.test(v);
@@ -120,6 +132,10 @@ class DriveApi {
     this.getInterfaces = getInterfaces;
     this.fetchLan = lanFetch;
     this.lanHostOk = lanHostOk;
+    // Drive 1.24: the previews' hints (`<mediaId>|s|l` → lan), LAN loads running, no LAN until (after a failure)
+    this._previewLans = new Map();
+    this._previewLanBusy = 0;
+    this._previewLanPause = 0;
     this.http = http || new MessengerApi({ apiClient, log: this.log });
     this.getLang = typeof getLang === 'function' ? getLang : () => null;
     this.media = new GateDropApi({
@@ -138,9 +154,78 @@ class DriveApi {
     return l === 'de' || l === 'en' ? { lang: l } : {};
   }
 
-  /** JSON call below …/gatecontrol-drive/api/. */
+  /**
+   * JSON call below …/gatecontrol-drive/api/. Drive 1.24 ('homeCachePreviews'): a GET carries `X-GC-Local` and the
+   * previews' hints of its answer are kept (_keepPreviewLans).
+   */
   api(method, p, { body, params, timeout = JSON_TIMEOUT_MS, headers = null } = {}) {
-    return this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout, ...(headers ? { headers } : {}) });
+    const lans = method === 'GET' && this._previewLanOn();
+    const h = lans && !headers ? HC.localHeaders(this.getInterfaces) : headers;
+    const run = this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout, ...(h && Object.keys(h).length ? { headers: h } : {}) });
+    return lans ? run.then((data) => { this._keepPreviewLans(data); return data; }) : run;
+  }
+
+  /** The last `me` named 'homeCachePreviews' (Drive 1.24 on GateControl 1.249). */
+  _previewLanOn() {
+    return !!(this._features && Array.isArray(this._features.list) && this._features.list.includes('homeCachePreviews'));
+  }
+
+  /**
+   * The hints of the previews in an answer → this._previewLans (`<mediaId>|s` / `|l` → lan): file nodes (node, current,
+   * items, changes[].node, recent, activity[].sample) with `preview.lan` / `.largeLan`, photo items with `previewLan` /
+   * `largeLan`. A hint that is not right (utils/home-cache.js normalizeLan) is not kept.
+   */
+  _keepPreviewLans(data) {
+    if (!data || typeof data !== 'object') return;
+    const list = [];
+    const add = (n) => { if (n && typeof n === 'object' && drive.isMediaId(n.mediaId)) list.push(n); };
+    add(data.node);
+    add(data.current);
+    for (const k of ['items', 'recent']) if (Array.isArray(data[k])) data[k].forEach(add);
+    if (Array.isArray(data.changes)) data.changes.forEach((c) => add(c && c.node));
+    if (Array.isArray(data.activity)) data.activity.forEach((x) => add(x && x.sample));
+    for (const n of list) {
+      const pv = n.preview && typeof n.preview === 'object' ? n.preview : null;
+      const small = HC.normalizeLan(pv ? pv.lan : n.previewLan, { hostOk: this.lanHostOk });
+      const large = HC.normalizeLan(pv ? pv.largeLan : n.largeLan, { hostOk: this.lanHostOk });
+      for (const [k, lan] of [[`${n.mediaId}|s`, small], [`${n.mediaId}|l`, large]]) {
+        if (!lan) continue;
+        this._previewLans.delete(k);
+        this._previewLans.set(k, lan);
+      }
+    }
+    while (this._previewLans.size > PREVIEW_LANS_MAX) this._previewLans.delete(this._previewLans.keys().next().value);
+  }
+
+  /** The kept hint of a preview while it has time left, else null. */
+  _previewLan(mediaId, large) {
+    const k = `${mediaId}|${large ? 'l' : 's'}`;
+    const lan = this._previewLans.get(k);
+    if (!lan) return null;
+    if (lan.exp <= Math.floor(Date.now() / 1000) + PREVIEW_LAN_MARGIN_S) { this._previewLans.delete(k); return null; }
+    return lan;
+  }
+
+  /** A preview from the home gateway → { mime: 'image/jpeg', data } or null (no hint, busy, paused, any error). */
+  async _previewFromLan(mediaId, large) {
+    const lan = this._previewLan(mediaId, large);
+    if (!lan || Date.now() < this._previewLanPause || this._previewLanBusy >= PREVIEW_LAN_PARALLEL) return null;
+    this._previewLanBusy++;
+    const file = path.join(os.tmpdir(), `gc-lan-preview-${crypto.randomBytes(8).toString('hex')}`);
+    try {
+      await this.fetchLan(lan, file, { maxBytes: PREVIEW_MAX });
+      const data = await fs.promises.readFile(file);
+      // GateControl's previews are JPEG
+      if (data.length < 3 || data[0] !== 0xff || data[1] !== 0xd8 || data[2] !== 0xff) throw new DriveError('not a picture', { code: 'bad_response' });
+      return { mime: 'image/jpeg', data };
+    } catch (err) {
+      this._previewLanPause = Date.now() + PREVIEW_LAN_PAUSE_MS;
+      this.log.info(`Drive: Vorschaubild nicht aus dem Heimnetz (${(err && err.code) || 'error'}) – vom Server`);
+      return null;
+    } finally {
+      this._previewLanBusy--;
+      fs.promises.rm(file, { force: true }).catch(() => {});
+    }
   }
 
   _id(v) {
@@ -1267,6 +1352,9 @@ class DriveApi {
    */
   async preview(mediaId, { large = false } = {}) {
     if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    // Drive 1.24: from the home gateway when an answer named it there
+    const home = await this._previewFromLan(mediaId, large);
+    if (home) return home;
     const url = `${drive.MEDIA_PATH}/${mediaId}/preview${large ? '?size=large' : ''}`;
     const r = await this.http._binary(url, PREVIEW_MAX, JSON_TIMEOUT_MS);
     if (!/^image\/(jpeg|png|webp)$/.test(r.mime) || !r.data.length) throw new DriveError('not a picture', { code: 'bad_response' });
