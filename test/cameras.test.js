@@ -177,7 +177,7 @@ function fakeApi(routes = {}) {
     api.calls.push([method, p, opts.params || null]);
     const key = p.replace(cam.API_BASE, '');
     let r = api.routes[key];
-    if (typeof r === 'function') r = r(opts.params);
+    if (typeof r === 'function') r = r(opts.params, opts);
     if (r instanceof Error) throw r;
     if (r === undefined) throw new MessengerError('HTTP 404', { status: 404, code: 'not_found' });
     return JSON.parse(JSON.stringify(r));
@@ -511,7 +511,7 @@ describe('cameras:* IPC', () => {
   it('channels, argument checks and events', async () => {
     const { s } = service();
     const { handlers, sent } = register(s);
-    for (const ch of ['cameras:status', 'cameras:check', 'cameras:list', 'cameras:live', 'cameras:clips', 'cameras:still:save']) assert.ok(handlers[ch], ch);
+    for (const ch of ['cameras:status', 'cameras:check', 'cameras:list', 'cameras:live', 'cameras:clips', 'cameras:still:save', 'cameras:push:set']) assert.ok(handlers[ch], ch);
     assert.equal((await handlers['cameras:check']()).state, 'available');
     assert.equal(sent.at(-1)[0], 'cameras:state');
     assert.equal((await handlers['cameras:list'](null, {})).cameras.length, 2);
@@ -570,5 +570,65 @@ describe('i18n cameras.* (de / en)', () => {
     }
     assert.equal(de.cameras.clips.title, 'Clips heute');
     assert.equal(de.cameras.saveStill, 'Standbild speichern');
+  });
+});
+
+describe('plugin 1.7.0: resolution, sound, own push, "Ansehen" on the toast', () => {
+  it('the list carries width, height, sound and the own push (unknown on an older plugin)', () => {
+    const l = cam.normalizeList({ ...LIST, cameras: [{ ...LIST.cameras[0], width: 2560, height: 1440, audio: true, hasAudio: true, prefs: { push: false } }, { ...LIST.cameras[1], width: 1.5, height: 'x', hasAudio: 'yes' }] });
+    const [a, b] = l.cameras;
+    assert.deepEqual([a.width, a.height, a.audio, a.hasAudio, a.myPush], [2560, 1440, true, true, false]);
+    assert.deepEqual([b.width, b.height, b.audio, b.hasAudio, b.myPush], [null, null, false, null, null]);
+    assert.equal(cam.normalizeCamera({ id: CAM1, state: 'tls_untrusted' }).state, 'tls_untrusted');
+    assert.equal(cam.normalizePrefs({ ok: true, prefs: { push: true } }), true);
+    assert.equal(cam.normalizePrefs({ ok: true }), null);
+  });
+
+  it('setPush: PUT cameras/home/<id>/prefs { push }, the cached list follows; bad arguments refused', async () => {
+    const sent = [];
+    const { s, api } = service({ [`cameras/home/${CAM1}/prefs`]: (_p, opts) => { sent.push(opts.body); return { ok: true, prefs: { push: opts.body.push } }; } });
+    await s.list();
+    assert.deepEqual(await s.setPush(CAM1, false), { ok: true, push: false });
+    assert.deepEqual(sent, [{ push: false }]);
+    assert.equal(api.calls.at(-1)[0], 'PUT');
+    const l = await s.list();
+    assert.equal(l.cameras.find((c) => c.id === CAM1).myPush, false, 'cached list updated');
+    await assert.rejects(s.setPush(CAM1, 'no'), (e) => e.code === 'invalid');
+    await assert.rejects(s.setPush('../x', true), (e) => e.code === 'invalid');
+    await assert.rejects(s.setPush(CAM2, true), (e) => e.code === 'not_found');
+  });
+
+  it('cameras:push:set over IPC', async () => {
+    const { s } = service({ [`cameras/home/${CAM1}/prefs`]: (_p, opts) => ({ ok: true, prefs: { push: opts.body.push } }) });
+    const handlers = {};
+    registerBaseHandlers({ handle: (c, fn) => { handlers[c] = fn; }, on() {} }, {
+      app: { getVersion: () => '1.0.0', getPath: () => os.tmpdir() }, dialog: {}, getMainWindow: () => null, store: { get() {}, set() {}, store: {} },
+      wgService: {}, apiClient: {}, killSwitch: {}, log, connectTunnel() {}, disconnectTunnel() {}, toggleKillSwitch() {},
+      installUpdate() {}, getTunnelState: () => ({}), wgConfigFile: 'wg.conf', cameras: s,
+      userFolders: { userPath: () => os.tmpdir(), dialogPath: (k, n) => n, info: () => ({}), checked: () => Promise.resolve() },
+    });
+    assert.deepEqual(await handlers['cameras:push:set'](null, { id: CAM1, push: true }), { ok: true, push: true });
+    assert.equal((await handlers['cameras:push:set'](null, { id: CAM1, push: 'yes' })).code, 'invalid');
+    assert.equal((await handlers['cameras:push:set'](null, { id: 'x', push: true })).code, 'invalid');
+  });
+
+  it('the toast button "Ansehen" opens the page on that camera like a click; other routes stay as they were', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-cams-view-'));
+    try {
+      const { nc, navigate } = center();
+      const { s } = service({}, { extra: { notificationCenter: nc, tempDir: () => tmp } });
+      s.start();
+      await tick();
+      const view = { id: 'open', type: 'open_app_route', label: 'Ansehen', target: 'plg-gatecontrol-door' };
+      nc.handleNotification(camPush(3, { data: { ...camPush(3).data, actions: [view] } }));
+      await waitFor(() => nc.get && nc.get(703));
+      assert.deepEqual((await nc.performAction(703, 'open')).ok, true);
+      assert.deepEqual(navigate.at(-1), { route: 'plg-gatecontrol-door', id: 703, context: { cameraId: CAM1, eventId: 'e000000000000002' } });
+      // a Ring push with the same button: no camera context — the route as before
+      nc.handleNotification({ ...ringPush(4), data: { ...ringPush(4).data, actions: [view] } });
+      await nc.performAction(704, 'open');
+      assert.deepEqual(navigate.at(-1), { route: 'plg-gatecontrol-door', id: 704 });
+      s.stop();
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 });

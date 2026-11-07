@@ -1566,14 +1566,17 @@
       "away": "Motion: only when nobody is at home",
       "never": "no clips, live view only",
       "retention": "Clips {{days}} days",
-      "noPicture": "No picture yet"
+      "noPicture": "No picture yet",
+      "res": "{{w}}×{{h}}",
+      "withSound": "with sound"
     },
     "state": {
       "unreachable": "unreachable",
       "auth_failed": "sign-in refused",
       "not_allowed": "address not allowed",
       "no_stream": "no video stream",
-      "error": "faulty"
+      "error": "faulty",
+      "tls_untrusted": "certificate not trusted"
     },
     "kind": {
       "person": "Person",
@@ -1613,11 +1616,16 @@
       "too_soon": "Too many requests – please wait a moment.",
       "network": "No connection to the server.",
       "timeout": "The server does not answer.",
-      "failed": "That did not work."
+      "failed": "That did not work.",
+      "cam_tls": "The camera's certificate is not trusted. An administrator can tick “Do not check the certificate” in the plugin."
     },
     "unavailable": {
       "needs_gatecontrol": "Home cameras need GateControl {{version}} or newer.",
       "unsupported": "Home cameras need Door & Camera 1.6.0 or newer."
-    }
+    },
+    "myPush": "Push for people",
+    "myPushHint": "Message with a still when this camera sees a person – only for you",
+    "myPushOn": "Push on for this camera",
+    "myPushOff": "Push off for this camera"
   }
 }

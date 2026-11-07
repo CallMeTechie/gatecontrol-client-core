@@ -296,6 +296,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // day: 'YYYY-MM-DD' (default: today of the plugin)
       clips:     (id, day, opts) => ipcRenderer.invoke('cameras:clips', { id, ...(day ? { day } : {}), refresh: !!(opts && opts.refresh) }),
       saveStill: (id) => ipcRenderer.invoke('cameras:still:save', { id }),
+      setPush:   (id, push) => ipcRenderer.invoke('cameras:push:set', { id, push: push === true }),
       onState:   (cb) => subscribe('cameras:state', cb),
       onPush:    (cb) => subscribe('cameras:push', cb),
     },

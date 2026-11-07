@@ -49,7 +49,7 @@ describe('createBridgeApi', () => {
     const invoked = [...new Set(ipc.calls.invoke.map((c) => c[0]))].sort();
     assert.deepEqual(invoked, [
       'app:version', 'autostart:set',
-      'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:status', 'cameras:still:save',
+      'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:push:set', 'cameras:status', 'cameras:still:save',
       'chat:action', 'chat:actions', 'chat:archive', 'chat:arrival:stop', 'chat:avatar', 'chat:block', 'chat:blocks',
       'chat:cache:clear', 'chat:card:image', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create',
       'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:lists', 'chat:lists:save',

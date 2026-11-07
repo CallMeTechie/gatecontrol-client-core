@@ -1566,14 +1566,17 @@
       "away": "Bewegung: nur wenn niemand zu Hause",
       "never": "keine Clips, nur Live-Bild",
       "retention": "Clips {{days}} Tage",
-      "noPicture": "Noch kein Bild"
+      "noPicture": "Noch kein Bild",
+      "res": "{{w}}×{{h}}",
+      "withSound": "mit Ton"
     },
     "state": {
       "unreachable": "nicht erreichbar",
       "auth_failed": "Anmeldung abgelehnt",
       "not_allowed": "Adresse nicht erlaubt",
       "no_stream": "kein Videostrom",
-      "error": "gestört"
+      "error": "gestört",
+      "tls_untrusted": "Zertifikat nicht vertrauenswürdig"
     },
     "kind": {
       "person": "Person",
@@ -1613,11 +1616,16 @@
       "too_soon": "Zu viele Abrufe – bitte kurz warten.",
       "network": "Keine Verbindung zum Server.",
       "timeout": "Der Server antwortet nicht.",
-      "failed": "Das hat nicht geklappt."
+      "failed": "Das hat nicht geklappt.",
+      "cam_tls": "Das Zertifikat der Kamera ist nicht vertrauenswürdig. Ein Administrator kann im Plugin „Zertifikat nicht prüfen“ setzen."
     },
     "unavailable": {
       "needs_gatecontrol": "Kameras im Heimnetz brauchen GateControl {{version}} oder neuer.",
       "unsupported": "Kameras im Heimnetz brauchen Tür & Kamera 1.6.0 oder neuer."
-    }
+    },
+    "myPush": "Push bei Personen",
+    "myPushHint": "Mitteilung mit Standbild, wenn diese Kamera eine Person sieht – nur für dich",
+    "myPushOn": "Push für diese Kamera an",
+    "myPushOff": "Push für diese Kamera aus"
   }
 }
