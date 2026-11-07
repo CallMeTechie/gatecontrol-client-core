@@ -596,6 +596,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         lockSettings: (patch) => ipcRenderer.invoke('drive:vault:lock-settings', { ...(patch || {}) }),
         touch:        () => ipcRenderer.invoke('drive:vault:touch'),
         helloSettings: () => ipcRenderer.invoke('drive:hello-settings'),
+        // Drive plugin 1.22: the viewer of vault files (decrypted in memory, gcvault://v/<token>)
+        view:         (id, versionId) => ipcRenderer.invoke('drive:vault:view', { id, versionId: versionId || null }),
+        viewClose:    (token) => ipcRenderer.invoke('drive:vault:view:close', { token }),
+        protect:      (on) => ipcRenderer.invoke('drive:vault:protect', { on: on === true }),
         onLock:       (cb) => subscribe('drive:vault-lock', cb),
       },
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
