@@ -10,6 +10,7 @@
  *   GET cameras/home/<id>/live            → live video (VPN / LAN) or a still every 10 s
  *   GET cameras/home/<id>/still           → a still as base64 JPEG (≤ 700 KB)
  *   GET cameras/home/<id>/clips[?day=]    → the clips of a day
+ *   PUT cameras/home/<id>/prefs { push }  → the own push "Personen an der Kamera" (plugin 1.7.0)
  *
  * and the context of a camera push (topic `kamera`, data.door.type
  * `home_camera_event`).
@@ -48,7 +49,7 @@ const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const CTRL_RE = /[\u0000-\u001F\u007F]/g;
 
 const KINDS = ['person', 'vehicle', 'animal', 'motion'];
-const STATES = ['ok', 'unreachable', 'auth_failed', 'not_allowed', 'no_stream', 'error'];
+const STATES = ['ok', 'unreachable', 'auth_failed', 'not_allowed', 'no_stream', 'tls_untrusted', 'error'];
 const RECORD = ['motion', 'away', 'never'];
 const SOURCES = ['onvif', 'rtsp'];
 const EVENT_STATES = ['pullpoint', 'unsupported', 'off', 'error'];
@@ -151,6 +152,17 @@ function settingsOf(v) {
   return { record: oneOf(s.record, RECORD) || 'motion', events: kindsOf(s.events), retentionDays: days, stream: s.stream === 'sub' ? 'sub' : 'main', audio: s.audio === true };
 }
 
+/** A side of the resolution in pixels (16…16384), else null. */
+function dim(v) {
+  return Number.isSafeInteger(v) && v >= 16 && v <= 16384 ? v : null;
+}
+
+/** PUT cameras/home/<id>/prefs → the own push (true/false) or null. */
+function normalizePrefs(raw) {
+  const p = obj(obj(raw).prefs);
+  return typeof p.push === 'boolean' ? p.push : null;
+}
+
 /** One camera of GET cameras/home (never its address or the camera account). */
 function normalizeCamera(c) {
   if (!c || typeof c !== 'object' || !isCameraId(c.id)) return null;
@@ -168,6 +180,13 @@ function normalizeCamera(c) {
     events: { supported: ev.supported === true ? true : ev.supported === false ? false : null, state: oneOf(ev.state, EVENT_STATES), kinds: kindsOf(ev.kinds) },
     settings: settingsOf(c.settings),
     push: c.push !== false,
+    // plugin 1.7.0: resolution (null unknown), sound ("Ton" offered / the stream has a sound track) and the
+    // person's own push of this camera (null: an older plugin without the switch)
+    width: dim(c.width),
+    height: dim(c.height),
+    audio: c.audio === true,
+    hasAudio: c.hasAudio === true ? true : c.hasAudio === false ? false : null,
+    myPush: c.prefs && typeof c.prefs === 'object' && typeof c.prefs.push === 'boolean' ? c.prefs.push : null,
     snapshotUrl: mediaUrl(c.snapshotUrl),
     snapshotAt: msOf(c.snapshotAt),
     lastEventAt: msOf(c.lastEventAt),
@@ -320,6 +339,7 @@ module.exports = {
   normalizeStill,
   normalizeClip,
   normalizeClips,
+  normalizePrefs,
   pushContext,
   stillFileName,
 };

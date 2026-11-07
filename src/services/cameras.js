@@ -13,6 +13,7 @@
  *   GET …/gatecontrol-door/api/cameras/home/<id>/live             live (VPN / LAN) or a still every 10 s
  *   GET …/gatecontrol-door/api/cameras/home/<id>/still            "Standbild speichern"
  *   GET …/gatecontrol-door/api/cameras/home/<id>/clips[?day=]     "Clips heute"
+ *   PUT …/gatecontrol-door/api/cameras/home/<id>/prefs { push }   own push "Personen an der Kamera" (plugin 1.7.0)
  *   GET /camera-media/<token>/<file>                              the media (no login, token 10 min)
  *
  * - Availability: the page exists while the plugin list names
@@ -289,6 +290,28 @@ class CamerasService extends EventEmitter {
       const live = cam.normalizeLive(raw);
       if (!live) throw new MessengerError('no picture', { code: 'bad_response' });
       return { ok: true, live };
+    } catch (err) {
+      throw this._err(err);
+    }
+  }
+
+  /**
+   * PUT cameras/home/<id>/prefs { push } (plugin 1.7.0) → { ok, push }: this person's push of the camera.
+   * The cached list carries the new value at once (the next list from the server says the same).
+   */
+  async setPush(id, on) {
+    this._id(id);
+    if (typeof on !== 'boolean') throw new MessengerError('push must be true or false', { code: 'invalid' });
+    this._ensureScope();
+    try {
+      const raw = await this.api._call('PUT', `${cam.API_BASE}cameras/home/${id}/prefs`, { body: { push: on } });
+      const push = cam.normalizePrefs(raw);
+      if (push === null) throw new MessengerError('bad answer', { code: 'bad_response' });
+      const hit = this._list;
+      if (hit && hit.data && Array.isArray(hit.data.cameras)) {
+        hit.data = { ...hit.data, cameras: hit.data.cameras.map((c) => (c.id === id ? { ...c, myPush: push } : c)) };
+      }
+      return { ok: true, push };
     } catch (err) {
       throw this._err(err);
     }
