@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
-const { createWindowsHello, createConsentVerifier, WinRt, loadApi, IID, SLOT } = require('../src/services/windows-hello');
+const { createWindowsHello, createConsentVerifier, WinRt, loadApi, IID, SLOT, HELLO_DIALOG_CLASS } = require('../src/services/windows-hello');
 
 const win = process.platform === 'win32';
 
@@ -43,6 +43,23 @@ describe('windows-hello on Windows (no prompt)', { skip: win ? false : 'Windows 
     const hello = createWindowsHello();
     const r = await hello.remove(`GateControl CI ${crypto.randomBytes(8).toString('hex')}`);
     assert.ok(['not_found', 'failed', 'unavailable'].includes(r.status), JSON.stringify(r));
+  });
+
+  it('the Hello dialog to the front: the user32 bindings answer (no dialog here), a focuser tick never throws', async () => {
+    const koffi = require('koffi');
+    const api = loadApi(koffi);
+    const lines = [];
+    const rt = new WinRt({ koffi, api, timing: { findMs: 0 }, log: { info: (m) => lines.push(m), warn: (m) => lines.push(m) } });
+    assert.equal(rt.handle(api.FindWindowW(HELLO_DIALOG_CLASS, null)), 0n, 'no Hello dialog open on the runner');
+    assert.equal(typeof rt.handle(api.GetForegroundWindow()), 'bigint');
+    assert.equal(typeof api.AllowSetForegroundWindow(0xFFFFFFFF), 'number');
+    rt.allowForeground();
+    const tick = rt.focuser(0x1234n);
+    tick();
+    await new Promise((r) => setTimeout(r, 20));   // past findMs
+    tick();
+    assert.ok(!lines.some((l) => /dialog to the front:|AllowSetForegroundWindow:/.test(l)), lines.join('\n'));
+    assert.ok(lines.some((l) => /no dialog after/.test(l)), lines.join('\n'));
   });
 
   it('UserConsentVerifier (Drive vaults): availability with a known answer, the interop for a window, our IIDs', async () => {

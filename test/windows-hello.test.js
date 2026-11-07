@@ -206,8 +206,23 @@ const { createConsentVerifier, pinterfaceIid, hwndOf, IID, CONSENT_RESULT, CONSE
 function setupConsent(opts = {}) {
   const rt = fakeWinRt(koffi, opts);
   runtimes.push(rt);
-  const consent = createConsentVerifier({ platform: 'win32', koffi, api: rt.api, timing: { pollMs: 1, quickMs: 2000, promptMs: 2000, focusMs: 2000 } });
-  return { rt, consent };
+  const lines = [];
+  const log = { info: (m) => lines.push(m), warn: (m) => lines.push(`WARN ${m}`) };
+  const consent = createConsentVerifier({ platform: 'win32', koffi, api: rt.api, log, timing: { pollMs: 1, quickMs: 2000, promptMs: 2000, focusMs: 2000, pushMs: 1, ...(opts.timing || {}) } });
+  return { rt, consent, lines };
+}
+
+const APP = 0x4242n;      // the app window (getNativeWindowHandle)
+const DIALOG = 0x7777n;   // 'Credential Dialog Xaml Host'
+const OTHER = 0x9999n;    // another app
+const appWindow = () => { const b = Buffer.alloc(8); b.writeBigUInt64LE(APP); return b; };
+/** Waits until `cond()` (the fake prompt keeps polling meanwhile). */
+async function until(cond, ms = 2000) {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 2));
+  }
 }
 
 describe('windows-hello: UserConsentVerifier', () => {
@@ -285,6 +300,76 @@ describe('windows-hello: UserConsentVerifier', () => {
     rt.asyncError = 0x80004005 | 0;
     assert.deepEqual(await consent.verify('Tresor', { window: 5n }), { status: 'failed' });
     assert.deepEqual(await consent.verify('   '), { status: 'failed' });
+    clean(rt);
+  });
+
+  // The bug of 1.74.0: with the app window (RequestVerificationForWindowAsync) the dialog opened behind the window and
+  // nothing brought it to the front — the button stayed busy, the person saw nothing.
+  it('with the app window: the dialog hidden behind it is brought to the front (foreground allowed first, logged)', async () => {
+    const { rt, consent, lines } = setupConsent({ polls: 40 });
+    rt.dialog = DIALOG;
+    rt.foreground = APP;
+    assert.deepEqual(await consent.verify('GateControl Drive: Tresore entsperren', { window: appWindow() }), { status: 'verified' });
+    assert.equal(rt.consentPrompts[0].kind, 'window');
+    assert.deepEqual(rt.allowed, [0xFFFFFFFF], 'AllowSetForegroundWindow(ASFW_ANY) before the prompt');
+    assert.deepEqual(rt.focused, [DIALOG], 'once in front it is left alone');
+    assert.equal(rt.foreground, DIALOG);
+    const text = lines.join('\n');
+    assert.match(text, /confirmation requested \(for the app window\)/);
+    assert.match(text, /dialog open after \d+ ms/);
+    assert.match(text, /dialog behind the app window → to the front \(SetForegroundWindow ok\)/);
+    assert.match(text, /dialog in front \(brought to the front 1×\)/);
+    assert.match(text, /Windows Hello \(confirmation\): verified/);
+    assert.doesNotMatch(text, /Tresore entsperren/, 'the message is not logged');
+    clean(rt);
+  });
+
+  it('the person clicks into the app (dialog behind again, long after it appeared): brought back; another app is never pushed aside', async () => {
+    const { rt, consent, lines } = setupConsent({ polls: 100000, timing: { focusMs: 0 } });
+    rt.dialog = DIALOG;
+    rt.foreground = DIALOG;
+    const p = consent.verify('x', { window: appWindow() });
+    await until(() => rt.asyncStates.length === 1);
+    rt.asyncStates[0].polls = 0;                 // CheckAvailabilityAsync answers; the prompt stays open
+    await until(() => lines.some((l) => /dialog in front$/.test(l)));
+    assert.deepEqual(rt.focused, []);
+    rt.foreground = OTHER;                       // the person switched to another app
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(rt.focused, [], 'another app keeps the foreground');
+    rt.foreground = APP;                         // … and back into GateControl: the dialog is behind its window
+    await until(() => rt.focused.length === 1);
+    assert.deepEqual(rt.focused, [DIALOG]);
+    assert.equal(rt.foreground, DIALOG);
+    await until(() => lines.some((l) => /brought to the front 1×/.test(l)));
+    for (const s of rt.asyncStates) s.polls = 0;   // the person answers
+    assert.deepEqual(await p, { status: 'verified' });
+    clean(rt);
+  });
+
+  it('SetForegroundWindow refused (foreground lock): BringWindowToTop, logged once', async () => {
+    const { rt, consent, lines } = setupConsent({ polls: 40 });
+    rt.dialog = DIALOG;
+    rt.foreground = APP;
+    rt.refuseFocus = true;
+    assert.deepEqual(await consent.verify('x', { window: appWindow() }), { status: 'verified' });
+    assert.ok(rt.focused.length > 1, 'tried again while it stays behind the app window');
+    assert.equal(rt.raised.length, rt.focused.length);
+    assert.equal(lines.filter((l) => /SetForegroundWindow refused/.test(l)).length, 1);
+    clean(rt);
+  });
+
+  it('without the app window (plain call) the dialog is brought to the front, too; no dialog at all is logged', async () => {
+    const { rt, consent, lines } = setupConsent({ polls: 40, timing: { findMs: 0 } });
+    rt.dialog = DIALOG;
+    rt.foreground = OTHER;
+    assert.deepEqual(await consent.verify('x'), { status: 'verified' });
+    assert.equal(rt.consentPrompts[0].kind, 'plain');
+    assert.deepEqual(rt.focused, [DIALOG], 'right after it appeared');
+    assert.match(lines.join('\n'), /confirmation requested \(without a window\)/);
+    rt.dialog = null;
+    lines.length = 0;
+    assert.deepEqual(await consent.verify('x', { window: appWindow() }), { status: 'verified' });
+    assert.equal(lines.filter((l) => /no dialog after \d+ s/.test(l)).length, 1);
     clean(rt);
   });
 
