@@ -115,7 +115,7 @@ describe('utils/drive-overview: GET overview cleaned', () => {
     assert.equal(o.places, null);
     assert.equal(o.storage, null);
     const empty = OV.normalizeOverview(null);
-    assert.deepEqual(empty, { todo: null, recent: [], memories: [], people: null, places: null, activity: [], storage: null, assembled: false });
+    assert.deepEqual(empty, { todo: null, recent: [], memories: [], memoryPicks: [], people: null, places: null, activity: [], storage: null, assembled: false });
     assert.deepEqual(OV.overviewTiles(empty), []);
   });
 });

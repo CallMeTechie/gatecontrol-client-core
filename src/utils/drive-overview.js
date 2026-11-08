@@ -9,6 +9,8 @@
  *   { todo: { deadlines (≤ 3), deadlinesTotal, review, toFile|null, toFileHint|null } | null,
  *     recent: [{ node, openedAt, changedAt, areaLabel }] (≤ 10, files only — no folders, photos, videos),
  *     memories: [{ yearsAgo, date, cover, count, items }] (≤ 4),
+ *     memoryPicks: [collection of GET memories] (≤ 4; Drive 1.28 'memoryPicks': the page „Erinnerungen“'s collections
+ *       for a day without „Heute vor X Jahren“ — utils/drive.js normalizeMemoryCollection; an older Drive: []),
  *     people: { people (≤ 8 named, not hidden), unnamed, firstUnnamed } | null,
  *     places: { top: [{ key, name, count, lat, lon }] (≤ 3), cluster: { lat, lon, count } | null, total } | null,
  *     activity: [{ at, user: { id, name }, kind, count, area: { id, label }, folder: { id, path } | null, sample }] (≤ 5),
@@ -152,6 +154,8 @@ function normalizeOverview(raw) {
     todo: todoOf(src.todo),
     recent: arr(src.recent).slice(0, 50).map(recentOf).filter(Boolean).slice(0, RECENT_MAX),
     memories: arr(src.memories).slice(0, 20).map(memoryOf).filter(Boolean).slice(0, MEMORIES_MAX),
+    // Drive 1.28: exactly as GET memories answers them (missing on an older Drive: none)
+    memoryPicks: arr(src.memoryPicks).slice(0, 20).map(drive.normalizeMemoryCollection).filter(Boolean).slice(0, MEMORIES_MAX),
     people: peopleOf(src),
     places: placesOf(src.places),
     activity: arr(src.activity).slice(0, 50).map(activityOf).filter(Boolean).slice(0, ACTIVITY_MAX),
@@ -216,7 +220,7 @@ function assembleOverview({ now = Date.now(), deadlines = null, classes = null, 
       total,
     };
   }
-  return { todo, recent: [], memories: cards, people: ov, places: pl, activity: [], storage: storageFromAreas(areas), assembled: true };
+  return { todo, recent: [], memories: cards, memoryPicks: [], people: ov, places: pl, activity: [], storage: storageFromAreas(areas), assembled: true };
 }
 
 // ── The tiles ───────────────────────────────────────────────
@@ -230,6 +234,15 @@ function todoCount(t) {
 }
 
 /**
+ * What "Erinnerungen" shows on a day without „Heute vor X Jahren“ (Drive 1.28): the picks of the page „Erinnerungen“;
+ * none while the overview has a day (the server sends none then, either).
+ */
+function memoryPicks(ov) {
+  if (!ov || arr(ov.memories).length) return [];
+  return arr(ov.memoryPicks);
+}
+
+/**
  * The tiles shown, in order (an empty one is left out): todo, recent, activity, memories, people, places. The storage
  * is the foot of "Neu in …" (mockup); without activity it is a tile of its own ('storage'), right after recent.
  */
@@ -239,7 +252,8 @@ function overviewTiles(ov) {
     todo: hasTodo(ov.todo),
     recent: ov.recent.length > 0,
     activity: ov.activity.length > 0,
-    memories: ov.memories.length > 0,
+    // a day „Heute vor X Jahren“, else a pick of the page „Erinnerungen“ (Drive 1.28)
+    memories: ov.memories.length > 0 || memoryPicks(ov).length > 0,
     people: !!ov.people && (ov.people.people.length > 0 || ov.people.unnamed > 0),
     places: !!ov.places && ov.places.top.length > 0,
   };
@@ -315,7 +329,7 @@ function mapView(places) {
 
 /**
  * What the page shows of an overview at `now`: the tiles in order, the number of "Zu erledigen", each deadline's day,
- * each memory's label, each row of "Neu in …" as text parts and its folder, the area of the heading, how full the
+ * each memory's label, the picks of "Erinnerungen" without a day (Drive 1.28), each row of "Neu in …" as text parts and its folder, the area of the heading, how full the
  * storage is and the small map (box and bubble). The page only puts it into words (its locale).
  */
 function overviewView(ov, now = Date.now()) {
@@ -324,6 +338,7 @@ function overviewView(ov, now = Date.now()) {
     todoCount: todoCount(ov && ov.todo),
     deadlines: ov && ov.todo ? ov.todo.deadlines.map((d) => ({ id: d.id, when: deadlineWhen(d.date, now) })) : [],
     memories: ov ? ov.memories.map((m) => memoryLabel(m, now)) : [],
+    memoryPicks: memoryPicks(ov),
     activity: ov ? ov.activity.map((a) => ({ ...activityLine(a), folder: folderName(a.folder && a.folder.path) })) : [],
     activityArea: activityArea(ov && ov.activity),
     storageFill: storageFill(ov && ov.storage),
@@ -343,6 +358,7 @@ module.exports = {
   hasTodo,
   todoCount,
   overviewTiles,
+  memoryPicks,
   memoryLabel,
   deadlineWhen,
   activityLine,
