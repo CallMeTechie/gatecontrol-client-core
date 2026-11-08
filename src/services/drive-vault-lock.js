@@ -35,6 +35,12 @@ const AUTO_LOCK_CHOICES = Object.freeze([1, 3, 5, 15, 0]);   // minutes; 0 = nev
 const DEFAULT_SETTINGS = Object.freeze({ hello: true, autoLockMinutes: 3, lockOnLeave: true });
 const DEFAULT_TIMING = { minuteMs: 60 * 1000 };
 const REASONS = Object.freeze(['manual', 'timeout', 'hidden', 'system', 'server', 'stop', 'settings']);
+// the Windows Hello dialog (Drive's; Notizen & Aufgaben passes its own)
+const TEXTS = Object.freeze({
+  label: 'Drive vaults',
+  de: { unlock: 'GateControl Drive: Tresore entsperren', settings: 'GateControl Drive: Tresore ohne Windows Hello öffnen' },
+  en: { unlock: 'GateControl Drive: unlock vaults', settings: 'GateControl Drive: open vaults without Windows Hello' },
+});
 
 // what the confirmation answered → the code the page shows
 const HELLO_CODES = {
@@ -52,12 +58,12 @@ const HELLO_CODES = {
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
 /** Settings from the store, every field checked → { hello, autoLockMinutes, lockOnLeave } */
-function cleanSettings(v) {
+function cleanSettings(v, defaults = DEFAULT_SETTINGS) {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   return {
-    hello: typeof o.hello === 'boolean' ? o.hello : DEFAULT_SETTINGS.hello,
-    autoLockMinutes: AUTO_LOCK_CHOICES.includes(o.autoLockMinutes) ? o.autoLockMinutes : DEFAULT_SETTINGS.autoLockMinutes,
-    lockOnLeave: typeof o.lockOnLeave === 'boolean' ? o.lockOnLeave : DEFAULT_SETTINGS.lockOnLeave,
+    hello: typeof o.hello === 'boolean' ? o.hello : defaults.hello,
+    autoLockMinutes: AUTO_LOCK_CHOICES.includes(o.autoLockMinutes) ? o.autoLockMinutes : defaults.autoLockMinutes,
+    lockOnLeave: typeof o.lockOnLeave === 'boolean' ? o.lockOnLeave : defaults.lockOnLeave,
   };
 }
 
@@ -75,9 +81,16 @@ class DriveVaultLock extends EventEmitter {
    *   recovery key): the timers wipe them, too
    * @param {object} [opts.timing] - { minuteMs }
    * @param {object} [opts.log]
+   * @param {string} [opts.storeKey] - where the settings live ('driveVaultLock'; Notizen & Aufgaben: its own)
+   * @param {object} [opts.defaults] - the settings before the person changes them (DEFAULT_SETTINGS)
+   * @param {{ de: object, en: object }} [opts.texts] - the Windows Hello dialog's texts { unlock, settings } and the
+   *   name in log lines { label } (Drive's by default)
    */
-  constructor({ consent, store = null, powerMonitor = null, getWindow = null, getLang = null, busy = null, hasKeys = null, timing = {}, log = null } = {}) {
+  constructor({ consent, store = null, powerMonitor = null, getWindow = null, getLang = null, busy = null, hasKeys = null, timing = {}, log = null, storeKey = STORE_KEY, defaults = DEFAULT_SETTINGS, texts = null } = {}) {
     super();
+    this.storeKey = storeKey;
+    this.defaults = { ...DEFAULT_SETTINGS, ...(defaults || {}) };
+    this.texts = texts || TEXTS;
     this.enforced = consent !== undefined;
     this.consent = consent || null;
     this.store = store;
@@ -115,12 +128,12 @@ class DriveVaultLock extends EventEmitter {
 
   settings() {
     let v = null;
-    try { v = this.store && this.store.get(STORE_KEY); } catch { v = null; }
-    return cleanSettings(v);
+    try { v = this.store && this.store.get(this.storeKey); } catch { v = null; }
+    return cleanSettings(v, this.defaults);
   }
 
   _save(next) {
-    try { if (this.store) this.store.set(STORE_KEY, next); } catch (err) { this.log.warn(`Drive vault lock: settings not stored: ${err.message}`); }
+    try { if (this.store) this.store.set(this.storeKey, next); } catch (err) { this.log.warn(`${this.texts.label} lock: settings not stored: ${err.message}`); }
   }
 
   /** Is a confirmation with Windows Hello possible here → { available, reason } (no prompt). */
@@ -181,9 +194,8 @@ class DriveVaultLock extends EventEmitter {
   }
 
   _message(why) {
-    const de = this.getLang() !== 'en';
-    if (why === 'settings') return de ? 'GateControl Drive: Tresore ohne Windows Hello öffnen' : 'GateControl Drive: open vaults without Windows Hello';
-    return de ? 'GateControl Drive: Tresore entsperren' : 'GateControl Drive: unlock vaults';
+    const tx = this.getLang() === 'en' ? this.texts.en : this.texts.de;
+    return why === 'settings' ? tx.settings : tx.unlock;
   }
 
   async _confirm(why) {
@@ -192,7 +204,7 @@ class DriveVaultLock extends EventEmitter {
     try {
       return (await this.consent.verify(this._message(why), { window: win })) || { status: 'failed' };
     } catch (err) {
-      this.log.warn(`Drive vault lock: confirmation failed: ${err.message}`);
+      this.log.warn(`${this.texts.label} lock: confirmation failed: ${err.message}`);
       return { status: 'failed' };
     }
   }
@@ -215,7 +227,7 @@ class DriveVaultLock extends EventEmitter {
       const r = await this._confirm('unlock');
       if (r.status !== 'verified') throw new DriveError('not confirmed', { code: HELLO_CODES[r.status] || 'hello_failed' });
       this._open();
-      this.log.info('Drive vaults unlocked (Windows Hello)');
+      this.log.info(`${this.texts.label}: unlocked (Windows Hello)`);
       return { unlocked: true, confirmed: true };
     })().finally(() => { this._unlocking = null; });
     return this._unlocking;
@@ -264,7 +276,7 @@ class DriveVaultLock extends EventEmitter {
     const r = REASONS.includes(reason) ? reason : 'manual';
     if (was) {
       this._lastLock = { reason: r, at: Date.now() };
-      this.log.info(`Drive vaults locked (${r})`);
+      this.log.info(`${this.texts.label}: locked (${r})`);
     }
     this.emit('lock', { reason: r, was });
   }

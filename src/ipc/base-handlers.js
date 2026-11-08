@@ -29,6 +29,7 @@ const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
 const { registerMailHandlers } = require('./mail-handlers');
+const { registerNotesHandlers } = require('./notes-handlers');
 const MapService = require('../services/map-service');
 const { createUserFolders } = require('../utils/user-folders');
 
@@ -203,6 +204,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.mail] - MailService (opt-in, "Mail"): registers the
  *   mail:* channels (ipc/mail-handlers.js), forwards its events to the
  *   main window and resets it (and its offline cache) after a successful server:setup.
+ * @param {object} [ctx.notes] - NotesService (opt-in, "Notizen & Aufgaben"): registers the
+ *   notes:* channels (ipc/notes-handlers.js), forwards its events to the main window
+ *   and resets it (its Tresor keys, the export picked) after a successful server:setup.
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @param {object} [ctx.userFolders] - utils/user-folders createUserFolders() (tests);
@@ -235,6 +239,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   // Drive 1.21: the viewer's gcdrive: addresses (DriveStreamService); without it drive:stream answers 'unsupported'
   const driveStream = (driveSvc && ctx.driveStream) || null;
   const mailSvc = ctx.mail || null;
+  const notesSvc = ctx.notes || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
   const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
@@ -293,6 +298,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Mail: availability, accounts and the offline cache belong to the old server.
     if (mailSvc) {
       Promise.resolve().then(() => mailSvc.resetForNewServer()).catch((err) => log.warn(`Mail reset failed: ${err.message}`));
+    }
+    // Notizen & Aufgaben: availability, the Tresor keys and an export picked belong to the old server.
+    if (notesSvc) {
+      Promise.resolve().then(() => notesSvc.resetForNewServer()).catch((err) => log.warn(`Notizen reset failed: ${err.message}`));
     }
   }
 
@@ -841,6 +850,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
   if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });
+
+  // ── Notizen & Aufgaben (plugin gatecontrol-notizen, opt-in) ──
+  if (notesSvc) registerNotesHandlers(handle, { notes: notesSvc, getMainWindow, log });
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).
