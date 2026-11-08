@@ -50,6 +50,8 @@
  *   drive:photos          ({ area?, before?, limit? }) → { ok, items, next }        (Drive 1.7 'photos')
  *   drive:photos:months   ({ area? }) → { ok, months }
  *   drive:photos:memories ({ date? }) → { ok, groups }
+ *   drive:memories ({ date? }) → { ok, date, home, collections }   Drive 1.26 'memoryCollections' (the page „Erinnerungen“)
+ *   drive:memories:photos ({ id, before?, limit? }) → { ok, items, next }
  *   drive:preview:node    ({ id, large? }) → { ok, mime, data }   a photo's preview by its node
  *   drive:albums          () → { ok, albums }                                       (Drive 1.7 'albums')
  *   drive:album           ({ id, before?, limit? }) → { ok, album, items, next }
@@ -157,6 +159,7 @@
  */
 
 const SC = require('../utils/scan');
+const { memoryIdOf } = require('../utils/drive');
 
 const DRIVE_EVENTS = {
   state: 'drive:state',
@@ -331,6 +334,13 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
     if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();
     return s.memories(a.date || null);
   }));
+  // Drive 1.26 'memoryCollections': the page „Erinnerungen“
+  handle('drive:memories', wrap(async (a) => {
+    if (!(a.date === undefined || a.date === null || (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)))) return invalid();
+    return s.memoryCollections(a.date || null);
+  }));
+  handle('drive:memories:photos', wrap(async (a) => (memoryIdOf(a.id) && optCursor(a.before) && optLimit(a.limit)
+    ? s.memoryPhotos(a.id, { before: a.before || null, limit: a.limit || 100 }) : invalid())));
   handle('drive:preview:node', byId(async (a) => {
     const r = await s.previewOf(a.id, { large: a.large === true });
     return { ok: true, mime: r.mime, data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength) };

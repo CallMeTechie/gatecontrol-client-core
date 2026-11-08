@@ -33,6 +33,7 @@
  *   GET    …/api/nodes/<id>/timetravel?at=<ISO>                  Drive 1.7 'timeTravel': what a time travel would do
  *   POST   …/api/nodes/<id>/timetravel { at }                    … and doing it
  *   GET    …/api/photos?area&before&limit · photos/months?area · photos/memories?date   Drive 1.7 'photos'
+ *   GET    …/api/memories?date · memories/photos?id&before&limit                     Drive 1.26 'memoryCollections'
  *   GET/POST …/api/albums · PATCH/DELETE albums/<id> · GET albums/<id>?before&limit
  *   POST/DELETE …/api/albums/<id>/items { ids }                   Drive 1.7 'albums' ('frame': PATCH { frame })
  *   GET    …/api/storage[?all=1] · POST storage/versions/prune { areaId, keep }   Drive 1.7 'storage'
@@ -1000,6 +1001,22 @@ class DriveApi {
       params.date = date;
     }
     return drive.normalizeMemories(await this.api('GET', 'photos/memories', { params }));
+  }
+
+  /** Drive 1.26 'memoryCollections': GET memories?date= → { date, home, collections } (the page „Erinnerungen“) */
+  async memoryCollections(date = null) {
+    const params = {};
+    if (date) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new DriveError('invalid date', { code: 'invalid' });
+      params.date = date;
+    }
+    return drive.normalizeMemoryCollections(await this.api('GET', 'memories', { params }));
+  }
+
+  /** Drive 1.26: GET memories/photos?id=&before=&limit= → { items, next } — the photos of one collection */
+  async memoryPhotos(id, { before = null, limit = 100 } = {}) {
+    if (!drive.memoryIdOf(id)) throw new DriveError('invalid collection', { code: 'invalid' });
+    return drive.normalizePhotos(await this.api('GET', 'memories/photos', { params: { id, ...this._page({ before, limit }) } }));
   }
 
   async albums() {

@@ -1292,6 +1292,24 @@ class DriveService extends EventEmitter {
     });
   }
 
+  // ── Drive 1.26: the page „Erinnerungen“ ─────────────────
+
+  /** The collections of the private photos → { ok, date, home, collections } ('unsupported' without the feature). */
+  async memoryCollections(date = null) {
+    return this._run(async () => {
+      await this._feature('memoryCollections');
+      return { ok: true, ...(await this.api.memoryCollections(date)) };
+    });
+  }
+
+  /** The photos of one collection, page by page → { ok, items, next }. */
+  async memoryPhotos(id, { before = null, limit = 100 } = {}) {
+    return this._run(async () => {
+      await this._feature('memoryCollections');
+      return { ok: true, ...(await this.api.memoryPhotos(id, { before, limit })) };
+    });
+  }
+
   // ── Drive 1.18: the overview ───────────────────────────
 
   /**

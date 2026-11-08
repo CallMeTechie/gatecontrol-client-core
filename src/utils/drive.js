@@ -681,6 +681,61 @@ function normalizeMemories(raw) {
   return { date: typeof r.date === 'string' && DATE_RE.test(r.date.slice(0, 10)) ? r.date.slice(0, 10) : null, groups };
 }
 
+// ── Drive 1.26 'memoryCollections': the page „Erinnerungen“ ──────────────
+
+/** The kinds of the collections, in the order of the page. */
+const MEMORY_KINDS = Object.freeze(['day', 'trip', 'person', 'month', 'year', 'place']);
+/** „Heute vor X Jahren“ only with more than this many photos that day (± 1 day) — as Drive 1.26 decides. */
+const MEMORY_DAY_MORE_THAN = 10;
+const MEMORY_ID_RE = /^(?:day:\d{4}-\d{2}-\d{2}|trip:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}|person:\d{1,15}|month:\d{4}-\d{2}|year:\d{4}|place:geonames:\d{1,10})$/;
+
+/** A collection's id (day:…, trip:…, person:…, month:…, year:…, place:geonames:…) or null. */
+const memoryIdOf = (v) => (typeof v === 'string' && MEMORY_ID_RE.test(v) ? v : null);
+
+/**
+ * One collection of GET memories → { id, kind, count, cover, from, to, yearsAgo, date, month, year, place, places,
+ * days, firstDay, lastDay, person } or null (an unknown kind, no id, no photo).
+ */
+function normalizeMemoryCollection(v) {
+  const o = obj(v);
+  const id = o && memoryIdOf(o.id);
+  if (!id || !MEMORY_KINDS.includes(o.kind) || id.split(':')[0] !== o.kind) return null;
+  const n = count(o.count);
+  if (!n) return null;
+  const day = (x) => (typeof x === 'string' && DATE_RE.test(x) ? x : null);
+  const pl = obj(o.place);
+  const pe = obj(o.person);
+  return {
+    id,
+    kind: o.kind,
+    count: n,
+    cover: normalizePhoto(o.cover),
+    from: msOf(o.from),
+    to: msOf(o.to),
+    yearsAgo: posId(o.yearsAgo),
+    date: day(o.date),
+    month: typeof o.month === 'string' && MONTH_RE.test(o.month) ? o.month : null,
+    year: Number.isInteger(o.year) && o.year > 0 && o.year < 10000 ? o.year : null,
+    place: pl && line(pl.name, NAME_MAX) ? { key: placeKeyOf(pl.key), name: line(pl.name, NAME_MAX) } : null,
+    places: arr(o.places).map((x) => line(x, NAME_MAX)).filter(Boolean).slice(0, 3),
+    days: posId(o.days),
+    firstDay: day(o.firstDay),
+    lastDay: day(o.lastDay),
+    person: pe && personIdOf(pe.id) ? { id: personIdOf(pe.id), name: line(pe.name, NAME_MAX) } : null,
+  };
+}
+
+/** GET memories → { date, home: { key, name } | null, collections } (the server's order, at most 500). */
+function normalizeMemoryCollections(raw) {
+  const r = obj(raw) || {};
+  const h = obj(r.home);
+  return {
+    date: typeof r.date === 'string' && DATE_RE.test(r.date) ? r.date : null,
+    home: h && line(h.name, NAME_MAX) ? { key: placeKeyOf(h.key), name: line(h.name, NAME_MAX) } : null,
+    collections: arr(r.collections).slice(0, 500).map(normalizeMemoryCollection).filter(Boolean),
+  };
+}
+
 /**
  * An album → { id, name, areaId, count, coverId, frame, updatedAt, canEdit, canFrame, createdBy } or null.
  * canFrame: may switch the photo frame (Drive decides; canEdit alone is not enough).
@@ -1711,6 +1766,11 @@ module.exports = {
   normalizePhotos,
   normalizeMonths,
   normalizeMemories,
+  normalizeMemoryCollections,
+  normalizeMemoryCollection,
+  memoryIdOf,
+  MEMORY_KINDS,
+  MEMORY_DAY_MORE_THAN,
   normalizeAlbum,
   normalizeAlbums,
   normalizeAlbumPage,

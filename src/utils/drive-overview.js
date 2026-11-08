@@ -78,6 +78,8 @@ function memoryOf(v) {
     cover,
     count: Math.max(n === null ? items.length : n, 1),
     items,
+    // Drive 1.26 'memoryCollections': the collection „Heute vor X Jahren“ of GET memories/photos, else null
+    id: drive.memoryIdOf(o.id),
   };
 }
 
@@ -190,8 +192,11 @@ function assembleOverview({ now = Date.now(), deadlines = null, classes = null, 
   next.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id));
   const review = classes ? classes.review || 0 : 0;
   const todo = deadlines || classes ? { deadlines: next.slice(0, DEADLINES_MAX), deadlinesTotal: next.length, review, toFile: null, toFileHint: null } : null;
-  const cards = memories ? arr(memories.groups).filter((g) => g && arr(g.items).length).slice(0, MEMORIES_MAX)
-    .map((g) => ({ yearsAgo: g.yearsAgo, date: g.date || null, cover: g.items[0], count: g.items.length, items: g.items })) : [];
+  // only private photos and only a day with more than 10 of them (Drive 1.26 decides so for every overview; an older
+  // Drive's photos/memories: no team folder, the day's photos counted here)
+  const cards = memories ? arr(memories.groups).map((g) => (g ? { ...g, items: arr(g.items).filter((x) => !(x && String(x.areaId || '').startsWith('team:'))) } : g))
+    .filter((g) => g && g.items.length > drive.MEMORY_DAY_MORE_THAN).slice(0, MEMORIES_MAX)
+    .map((g) => ({ yearsAgo: g.yearsAgo, date: g.date || null, cover: g.items[0], count: g.items.length, items: g.items, id: null })) : [];
   let ov = null;
   if (people) {
     const visible = arr(people.people).filter((p) => p && !p.hidden);
