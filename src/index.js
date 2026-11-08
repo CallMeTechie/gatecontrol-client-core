@@ -38,6 +38,8 @@ const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
+const NotesService = require('./services/notes');
+const NotesApi = require('./services/notes-api');
 const { AppSignin, SigninError } = require('./services/app-signin');
 const { startLoopbackListener } = require('./services/signin-loopback');
 
@@ -76,6 +78,7 @@ const vaultUtil = require('./utils/vault');
 const driveUtil = require('./utils/drive');
 const driveSyncUtil = require('./utils/drive-sync');
 const mailUtil = require('./utils/mail');
+const notesUtil = require('./utils/notes');
 const scanUtil = require('./utils/scan');
 
 // ── Shared validators ───────────────────────────────────────
@@ -132,6 +135,9 @@ module.exports = {
   DriveSync,
   MailService,
   MailApi,
+  // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)
+  NotesService,
+  NotesApi,
   AppSignin,
   SigninError,
   startLoopbackListener,
@@ -193,6 +199,7 @@ module.exports = {
   driveUtil,
   driveSyncUtil,
   mailUtil,
+  notesUtil,
   scanUtil,
 
   // Support bundle

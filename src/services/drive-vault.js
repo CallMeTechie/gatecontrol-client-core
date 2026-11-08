@@ -54,9 +54,15 @@ class DriveVault {
    * @param {object} [opts.log]
    * @param {() => number} [opts.now]
    * @param {() => boolean} [opts.isUnlocked] - Drive 1.11: may the device key unwrap vault keys now (Windows Hello)?
+   * @param {object} [opts.crypto] - the format (utils/drive-vault.js; Notizen & Aufgaben: withPrefix('gcnotes-v1'))
+   * @param {string} [opts.storeKey] - the store key of the device keys ('driveVault')
+   * @param {string} [opts.label] - name in log lines ('Drive vault')
    */
-  constructor({ api, store = null, protect = null, scope, deviceName = null, log = null, now = Date.now, isUnlocked = null } = {}) {
+  constructor({ api, store = null, protect = null, scope, deviceName = null, log = null, now = Date.now, isUnlocked = null, crypto: format = null, storeKey = STORE_KEY, label = 'Drive vault' } = {}) {
     this.api = api;
+    this.V = format || V;
+    this.storeKey = storeKey;
+    this.label = label;
     this.store = store;
     this.protect = protect;
     this.scope = typeof scope === 'function' ? scope : () => '';
@@ -77,7 +83,7 @@ class DriveVault {
 
   /** Drive 1.11: the vaults lock — every vault key wiped, the decrypted names forgotten (the device stays). */
   forget() {
-    for (const m of this._keys.values()) for (const k of m.values()) V.wipe(k);
+    for (const m of this._keys.values()) for (const k of m.values()) this.V.wipe(k);
     this._keys.clear();
     this._states.clear();
     this._names.clear();
@@ -86,7 +92,7 @@ class DriveVault {
 
   /** Forget every key and name (a server change, the app ends). */
   clear() {
-    for (const m of this._keys.values()) for (const k of m.values()) V.wipe(k);
+    for (const m of this._keys.values()) for (const k of m.values()) this.V.wipe(k);
     this._keys.clear();
     this._current.clear();
     this._states.clear();
@@ -118,7 +124,7 @@ class DriveVault {
 
   _record() {
     let v = null;
-    try { v = this.store && this.store.get(STORE_KEY); } catch { v = null; }
+    try { v = this.store && this.store.get(this.storeKey); } catch { v = null; }
     const r = v && typeof v === 'object' && v.devices && typeof v.devices === 'object' ? v.devices[this._scopeKey()] : null;
     return r && typeof r.pub === 'string' && typeof r.enc === 'string' ? r : null;
   }
@@ -131,31 +137,31 @@ class DriveVault {
     const r = this._record();
     if (r) {
       let pub;
-      try { pub = V.unb64u(r.pub, 32, 'public key'); } catch { pub = null; }
+      try { pub = this.V.unb64u(r.pub, 32, 'public key'); } catch { pub = null; }
       if (pub) {
-        this._device = { publicRaw: pub, publicKey: r.pub, id: V.deviceId(pub), safetyNumber: V.safetyNumber(pub) };
+        this._device = { publicRaw: pub, publicKey: r.pub, id: this.V.deviceId(pub), safetyNumber: this.V.safetyNumber(pub) };
         return this._public();
       }
     }
     if (!create) return null;
-    const kp = V.generateKeyPair();
+    const kp = this.V.generateKeyPair();
     let enc;
     try {
       enc = Buffer.from(this.protect.encrypt(kp.privateRaw)).toString('base64');
     } finally {
-      V.wipe(kp.privateRaw);
+      this.V.wipe(kp.privateRaw);
     }
-    const pub = V.b64u(kp.publicRaw);
+    const pub = this.V.b64u(kp.publicRaw);
     try {
-      const all = (this.store && this.store.get(STORE_KEY)) || {};
+      const all = (this.store && this.store.get(this.storeKey)) || {};
       const devices = all && typeof all.devices === 'object' && all.devices ? { ...all.devices } : {};
       devices[this._scopeKey()] = { pub, enc, at: this.now() };
-      this.store.set(STORE_KEY, { v: 1, devices });
+      this.store.set(this.storeKey, { v: 1, devices });
     } catch (err) {
       throw new DriveError(`device key not stored: ${err.message}`, { code: 'vault_unsupported' });
     }
-    this._device = { publicRaw: kp.publicRaw, publicKey: pub, id: V.deviceId(kp.publicRaw), safetyNumber: V.safetyNumber(kp.publicRaw) };
-    this.log.info('Drive vault: device key made (DPAPI)');
+    this._device = { publicRaw: kp.publicRaw, publicKey: pub, id: this.V.deviceId(kp.publicRaw), safetyNumber: this.V.safetyNumber(kp.publicRaw) };
+    this.log.info(`${this.label}: device key made (DPAPI)`);
     return this._public();
   }
 
@@ -170,8 +176,8 @@ class DriveVault {
     if (!r || !this._device || r.pub !== this._device.publicKey) throw new DriveError('no device key', { code: 'vault_locked' });
     let raw;
     try { raw = Buffer.from(this.protect.decrypt(Buffer.from(r.enc, 'base64'))); } catch { raw = null; }
-    if (!raw || raw.length !== 32 || !V.publicFromPrivate(raw).equals(this._device.publicRaw)) {
-      if (raw) V.wipe(raw);
+    if (!raw || raw.length !== 32 || !this.V.publicFromPrivate(raw).equals(this._device.publicRaw)) {
+      if (raw) this.V.wipe(raw);
       throw new DriveError('device key unreadable', { code: 'vault_unsupported' });
     }
     return raw;
@@ -209,9 +215,9 @@ class DriveVault {
     for (const w of list) {
       if (m.has(w.keyVersion)) continue;
       try {
-        m.set(w.keyVersion, V.unwrapKey(w.wrap, privRaw, pubRaw, vaultId, w.keyVersion));
+        m.set(w.keyVersion, this.V.unwrapKey(w.wrap, privRaw, pubRaw, vaultId, w.keyVersion));
       } catch (err) {
-        this.log.warn(`Drive vault: a key of version ${w.keyVersion} did not open (${err.code || 'error'})`);
+        this.log.warn(`${this.label}: a key of version ${w.keyVersion} did not open (${err.code || 'error'})`);
       }
     }
     if (m.size) this._keys.set(vaultId, m);
@@ -261,7 +267,7 @@ class DriveVault {
     try {
       this._addKeys(id, r.keys, priv, this._device.publicRaw);
     } finally {
-      V.wipe(priv);
+      this.V.wipe(priv);
     }
     const open = this.isOpen(id);
     this._states.set(id, { state: open ? 'open' : 'none', at: this.now() });
@@ -275,7 +281,7 @@ class DriveVault {
     if (s && this.now() - s.at < RETRY_OPEN_MS && !(s.state === 'locked' && this.isUnlocked())) return s.state;
     try { return (await this.open(vaultId)).state; } catch (err) {
       this._states.set(vaultId, { state: (s && s.state) || null, at: this.now() });
-      this.log.info(`Drive vault: not opened (${err.code || 'error'})`);
+      this.log.info(`${this.label}: not opened (${err.code || 'error'})`);
       return this.stateOf(vaultId);
     }
   }
@@ -317,7 +323,7 @@ class DriveVault {
     const m = this.keysOf(node.vaultId);
     if (!m) return null;
     try {
-      const name = V.decryptName(m, node.vaultId, node.nameCipher);
+      const name = this.V.decryptName(m, node.vaultId, node.nameCipher);
       this._names.set(node.id, name);
       while (this._names.size > NAMES_MAX) this._names.delete(this._names.keys().next().value);
       return name;
@@ -336,7 +342,7 @@ class DriveVault {
     // a key wiped by a lock in between (Drive 1.11) never encrypts anything
     if (cur && this.keys(vaultId).get(cur.keyVersion) !== cur.tk) throw new DriveError('vault is locked', { code: 'vault_locked' });
     const c = cur || this.current(vaultId);
-    return { nameCipher: V.encryptName(c.tk, vaultId, c.keyVersion, name), keyVersion: c.keyVersion };
+    return { nameCipher: this.V.encryptName(c.tk, vaultId, c.keyVersion, name), keyVersion: c.keyVersion };
   }
 
   // ── listing ───────────────────────────────────────────────
@@ -347,7 +353,7 @@ class DriveVault {
     const mine = dev ? v.myDevices.find((d) => d.deviceId === dev.id) : null;
     let name = null;
     const m = this.keysOf(v.id);
-    if (m && v.nameCipher) { try { name = V.decryptName(m, v.id, v.nameCipher); this._names.set(v.nodeId, name); } catch { name = null; } }
+    if (m && v.nameCipher) { try { name = this.V.decryptName(m, v.id, v.nameCipher); this._names.set(v.nodeId, name); } catch { name = null; } }
     if (v.keyVersion) this._current.set(v.id, Math.max(this._current.get(v.id) || 0, v.keyVersion));
     return {
       id: v.id, nodeId: v.nodeId, areaId: v.areaId, parentId: v.parentId, name, keyVersion: v.keyVersion,
@@ -379,20 +385,20 @@ class DriveVault {
   async create(parentId, name) {
     this._ensureScope();
     const dev = await this.device();
-    const id = V.newVaultId();
-    const tk = V.newVaultKey();
-    const rec = await V.newRecoveryKey();
-    const rk = V.recoveryKeyPair(rec.key);
+    const id = this.V.newVaultId();
+    const tk = this.V.newVaultKey();
+    const rec = await this.V.newRecoveryKey();
+    const rk = this.V.recoveryKeyPair(rec.key);
     try {
       const body = {
         id,
         parentId,
-        nameCipher: V.encryptName(tk, id, 1, name),
-        recoveryPub: V.b64u(rk.publicRaw),
-        recoveryAuth: V.recoveryAuth(rec.key),
-        recoveryWrap: V.wrapKey(tk, rk.publicRaw, id, 1),
+        nameCipher: this.V.encryptName(tk, id, 1, name),
+        recoveryPub: this.V.b64u(rk.publicRaw),
+        recoveryAuth: this.V.recoveryAuth(rec.key),
+        recoveryWrap: this.V.wrapKey(tk, rk.publicRaw, id, 1),
         device: { publicKey: dev.publicKey, name: dev.name, platform: 'windows' },
-        wrap: V.wrapKey(tk, this._device.publicRaw, id, 1),
+        wrap: this.V.wrapKey(tk, this._device.publicRaw, id, 1),
       };
       const r = await this.api.createVault(body);
       this._keys.set(id, new Map([[1, Buffer.from(tk)]]));
@@ -401,9 +407,9 @@ class DriveVault {
       this._names.set(r.node.id, name);
       return { vault: this.view(r.vault), node: { ...r.node, name, vaultRoot: true }, recoveryKey: rec.text };
     } finally {
-      V.wipe(tk);
-      V.wipe(rec.key);
-      V.wipe(rk.privateRaw);
+      this.V.wipe(tk);
+      this.V.wipe(rec.key);
+      this.V.wipe(rk.privateRaw);
     }
   }
 
@@ -422,14 +428,14 @@ class DriveVault {
     const list = await this.api.vaultDevices(vaultId);
     return list.map((d) => {
       let safetyNumber = null;
-      try { safetyNumber = V.safetyNumber(V.unb64u(d.publicKey, 32)); } catch { safetyNumber = null; }
+      try { safetyNumber = this.V.safetyNumber(this.V.unb64u(d.publicKey, 32)); } catch { safetyNumber = null; }
       return { ...d, safetyNumber, mine: !!dev && d.deviceId === dev.id };
     });
   }
 
   /** Every key of the vault wrapped for public key `pubRaw` → [{ keyVersion, wrap }]. */
   _wrapsFor(vaultId, pubRaw, keys) {
-    return [...keys.entries()].sort((a, b) => a[0] - b[0]).map(([kv, tk]) => ({ keyVersion: kv, wrap: V.wrapKey(tk, pubRaw, vaultId, kv) }));
+    return [...keys.entries()].sort((a, b) => a[0] - b[0]).map(([kv, tk]) => ({ keyVersion: kv, wrap: this.V.wrapKey(tk, pubRaw, vaultId, kv) }));
   }
 
   /**
@@ -441,8 +447,8 @@ class DriveVault {
     const d = (await this.devices(vaultId)).find((x) => x.deviceId === deviceId);
     if (!d || d.state === 'revoked') throw new DriveError('no such request', { code: 'not_found' });
     if (!d.safetyNumber || d.safetyNumber !== safetyNumber) throw new DriveError('safety number differs', { code: 'safety' });
-    const pub = V.unb64u(d.publicKey, 32, 'public key');
-    if (V.deviceId(pub) !== d.deviceId) throw new DriveError('device id does not match its key', { code: 'safety' });
+    const pub = this.V.unb64u(d.publicKey, 32, 'public key');
+    if (this.V.deviceId(pub) !== d.deviceId) throw new DriveError('device id does not match its key', { code: 'safety' });
     return this.api.approveVaultDevice(vaultId, deviceId, { wraps: this._wrapsFor(vaultId, pub, keys) });
   }
 
@@ -456,21 +462,21 @@ class DriveVault {
    * recoveryPub, its wraps unwrapped, this device asks and approves itself with the key's proof → { state: 'open' }.
    */
   async recover(vaultId, text) {
-    const key = await V.parseRecoveryKey(text);
-    const rk = V.recoveryKeyPair(key);
+    const key = await this.V.parseRecoveryKey(text);
+    const rk = this.V.recoveryKeyPair(key);
     try {
       const dev = await this.device();
       const r = await this.api.vaultRecovery(vaultId);
-      if (V.b64u(rk.publicRaw) !== r.recoveryPub) throw new DriveError('not this vault\'s recovery key', { code: 'recovery_key' });
+      if (this.V.b64u(rk.publicRaw) !== r.recoveryPub) throw new DriveError('not this vault\'s recovery key', { code: 'recovery_key' });
       const keys = new Map();
       for (const w of r.keys) {
-        try { keys.set(w.keyVersion, V.unwrapKey(w.wrap, rk.privateRaw, rk.publicRaw, vaultId, w.keyVersion)); } catch { /* another version */ }
+        try { keys.set(w.keyVersion, this.V.unwrapKey(w.wrap, rk.privateRaw, rk.publicRaw, vaultId, w.keyVersion)); } catch { /* another version */ }
       }
       if (!keys.size) throw new DriveError('the recovery key opens nothing', { code: 'recovery_key' });
       if (r.keyVersion) this._current.set(vaultId, r.keyVersion);
       const asked = await this.api.askVault(vaultId, { publicKey: dev.publicKey, name: dev.name, platform: 'windows' });
       if (asked.state !== 'approved') {
-        await this.api.approveVaultDevice(vaultId, dev.id, { wraps: this._wrapsFor(vaultId, this._device.publicRaw, keys), via: 'recovery', recoveryAuth: V.recoveryAuth(key) });
+        await this.api.approveVaultDevice(vaultId, dev.id, { wraps: this._wrapsFor(vaultId, this._device.publicRaw, keys), via: 'recovery', recoveryAuth: this.V.recoveryAuth(key) });
       }
       const m = this._keys.get(vaultId) || new Map();
       for (const [kv, tk] of keys) if (!m.has(kv)) m.set(kv, tk);
@@ -480,8 +486,8 @@ class DriveVault {
       await this.open(vaultId, { fresh: true }).catch(() => null);
       return { state: 'open' };
     } finally {
-      V.wipe(key);
-      V.wipe(rk.privateRaw);
+      this.V.wipe(key);
+      this.V.wipe(rk.privateRaw);
     }
   }
 
@@ -493,25 +499,25 @@ class DriveVault {
     const keys = this.keys(vaultId);
     const v = await this.api.vault(vaultId);
     const next = v.keyVersion + 1;
-    const tk = V.newVaultKey();
+    const tk = this.V.newVaultKey();
     let rec = null;
     try {
       const all = new Map(keys);
       all.set(next, tk);
       const body = async (forceRecovery) => {
         const devices = (await this.api.vaultDevices(vaultId)).filter((d) => d.state === 'approved');
-        const b = { keyVersion: next, wraps: devices.map((d) => ({ deviceId: d.deviceId, wrap: V.wrapKey(tk, V.unb64u(d.publicKey, 32), vaultId, next) })) };
+        const b = { keyVersion: next, wraps: devices.map((d) => ({ deviceId: d.deviceId, wrap: this.V.wrapKey(tk, this.V.unb64u(d.publicKey, 32), vaultId, next) })) };
         if (forceRecovery) {
-          if (!rec) rec = await V.newRecoveryKey();
-          const rk = V.recoveryKeyPair(rec.key);
+          if (!rec) rec = await this.V.newRecoveryKey();
+          const rk = this.V.recoveryKeyPair(rec.key);
           try {
-            b.recovery = { pub: V.b64u(rk.publicRaw), auth: V.recoveryAuth(rec.key), wraps: this._wrapsFor(vaultId, rk.publicRaw, all) };
+            b.recovery = { pub: this.V.b64u(rk.publicRaw), auth: this.V.recoveryAuth(rec.key), wraps: this._wrapsFor(vaultId, rk.publicRaw, all) };
           } finally {
-            V.wipe(rk.privateRaw);
+            this.V.wipe(rk.privateRaw);
           }
         } else {
           if (!v.recoveryPub) throw new DriveError('no recovery key', { code: 'invalid' });
-          b.recoveryWrap = V.wrapKey(tk, V.unb64u(v.recoveryPub, 32), vaultId, next);
+          b.recoveryWrap = this.V.wrapKey(tk, this.V.unb64u(v.recoveryPub, 32), vaultId, next);
         }
         return b;
       };
@@ -534,8 +540,8 @@ class DriveVault {
       this._current.set(vaultId, next);
       return { vault: this.view(out), recoveryKey: rec ? rec.text : null };
     } finally {
-      V.wipe(tk);
-      if (rec) V.wipe(rec.key);
+      this.V.wipe(tk);
+      if (rec) this.V.wipe(rec.key);
     }
   }
 
