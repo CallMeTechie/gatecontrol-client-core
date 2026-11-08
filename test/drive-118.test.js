@@ -172,7 +172,11 @@ describe('utils/drive-overview: an older Drive without overview', () => {
       now,
       deadlines: { deadlines: [{ id: 2, date: '2026-11-20', node: {} }, { id: 1, date: '2026-10-01', node: {} }, { id: 3, date: '2026-11-02', node: {} }, { id: 4, date: '2026-12-01', node: { encrypted: true } }] },
       classes: { work: 1, private: 2, review: 5 },
-      memories: { groups: [{ yearsAgo: 1, date: '2025-11-01', items: [{ id: 9, name: 'a.jpg' }, { id: 10, name: 'b.jpg' }] }, { yearsAgo: 2, items: [] }] },
+      // Drive 1.26: only a day with more than 10 private photos (a team folder's do not count)
+      memories: { groups: [
+        { yearsAgo: 1, date: '2025-11-01', items: [{ id: 9, name: 'a.jpg', areaId: 'mine:2' }, ...Array.from({ length: 10 }, (_, i) => ({ id: 20 + i, name: `x${i}.jpg`, areaId: 'family:1' })), { id: 40, name: 't.jpg', areaId: 'team:1' }] },
+        { yearsAgo: 2, items: Array.from({ length: 10 }, (_, i) => ({ id: 50 + i, name: `y${i}.jpg`, areaId: 'mine:2' })) },
+        { yearsAgo: 3, items: [] }] },
       people: { people: [{ id: 1, name: 'Mama', count: 5 }, { id: 2, name: null, count: 9 }, { id: 3, name: null, count: 20 }, { id: 4, name: 'X', hidden: true, count: 99 }] },
       places: { places: [{ key: 'b', name: 'Hamburg', count: 2, lat: 53.5, lon: 10 }, { key: 'a', name: 'Köln', count: 7, lat: 50.9, lon: 6.9 }] },
       areas: [{ kind: 'family', storage: { bytes: 9 } }, { kind: 'mine', storage: { bytes: 100, quota: 1000, target: 'NAS' } }],
@@ -182,7 +186,7 @@ describe('utils/drive-overview: an older Drive without overview', () => {
     assert.equal(o.todo.deadlinesTotal, 2);
     assert.equal(o.todo.review, 5);
     assert.equal(o.todo.toFile, null);
-    assert.deepEqual(o.memories.map((m) => [m.yearsAgo, m.count, m.cover.id]), [[1, 2, 9]]);
+    assert.deepEqual(o.memories.map((m) => [m.yearsAgo, m.count, m.cover.id, m.id]), [[1, 11, 9, null]]);
     assert.deepEqual(o.people, { people: [{ id: 1, name: 'Mama', count: 5 }], unnamed: 2, firstUnnamed: 3 });
     assert.deepEqual(o.places.top.map((p) => p.name), ['Köln', 'Hamburg']);
     assert.deepEqual(o.places.cluster, { lat: 50.9, lon: 6.9, count: 9 });

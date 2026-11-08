@@ -1268,6 +1268,22 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     if (has('photoClasses') && req.method === 'GET' && route === 'photos/classes') {
       return json(res, 200, { ok: true, ...(srv.classes || { work: 0, private: 0, review: 0 }) });
     }
+    // Drive 1.26 'memoryCollections': the collections the test put into srv.memoryCollections; the photos of one: every
+    // photo of srv.memoryPhotos[id] (ids of photos), page by page (newest first)
+    if (has('memoryCollections') && req.method === 'GET' && route === 'memories') {
+      return json(res, 200, { ok: true, date: url.searchParams.get('date') || new Date().toISOString().slice(0, 10), home: null, collections: [], ...(srv.memoryCollections || {}) });
+    }
+    if (has('memoryCollections') && req.method === 'GET' && route === 'memories/photos') {
+      const id = url.searchParams.get('id');
+      const ids = (srv.memoryPhotos || {})[id];
+      if (!ids) return json(res, 400, { ok: false, code: 'invalid', field: 'id', error: 'invalid' });
+      const limit = Number(url.searchParams.get('limit')) || 100;
+      const before = url.searchParams.get('before');
+      const all = ids.map((x) => state.nodes.get(x)).filter((n) => n && !n.deleted).sort((a, b) => when(b) - when(a));
+      const from = before ? all.filter((n) => when(n) < Date.parse(before)) : all;
+      const page = from.slice(0, limit);
+      return json(res, 200, { ok: true, id, items: page.map(photo), next: from.length > limit ? iso(when(page[page.length - 1])) : null });
+    }
     if (has('photos') && req.method === 'GET' && route === 'photos/memories') {
       const d = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
       const [y, mo, da] = d.split('-').map(Number);

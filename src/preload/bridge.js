@@ -503,6 +503,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       photos:       (opts) => ipcRenderer.invoke('drive:photos', { ...(opts || {}) }),
       photoMonths:  (area) => ipcRenderer.invoke('drive:photos:months', { area: area || null }),
       memories:     (date) => ipcRenderer.invoke('drive:photos:memories', { date: date || null }),
+      // Drive 1.26 'memoryCollections': the page „Erinnerungen“ — the collections, the photos of one
+      memoryCollections: (date) => ipcRenderer.invoke('drive:memories', { date: date || null }),
+      memoryPhotos: (id, opts) => ipcRenderer.invoke('drive:memories:photos', { ...(opts || {}), id }),
       previewOf:    (id, opts) => ipcRenderer.invoke('drive:preview:node', { id, large: !!(opts && opts.large) }),
       albums:       () => ipcRenderer.invoke('drive:albums'),
       album:        (id, opts) => ipcRenderer.invoke('drive:album', { ...(opts || {}), id }),
