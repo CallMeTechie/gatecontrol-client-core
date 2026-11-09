@@ -14,7 +14,7 @@
     "electron-log": "^5.4.4",
     "electron-store": "^11.0.2",
     "jsqr": "1.4.0",
-    "koffi": "^3.3.5",
+    "koffi": "^3.3.7",
     "libsodium-wrappers-sumo": "0.8.4",
     "unpdf": "1.8.1"
   },
