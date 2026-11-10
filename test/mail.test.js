@@ -95,7 +95,8 @@ describe('utils/mail', () => {
     assert.equal(me.accounts.length, 1);
     assert.deepEqual([me.accounts[0].color, me.accounts[0].provider, me.accounts[0].state, me.accounts[0].name], ['#79B8FF', 'imap', 'ok', 'a@b.de']);
     assert.deepEqual(me.unread, { all: 3, byAccount: { 1: 2 } });
-    assert.deepEqual(me.settings, { threads: false, swipeLeft: 'delete', swipeRight: 'read' });
+    // a swipe value the app does not know does nothing (it used to fall back to the default)
+    assert.deepEqual(me.settings, { threads: false, swipeLeft: 'delete', swipeRight: 'none', confirmDelete: false });
   });
 
   it('summaries, messages, drafts, AI and filing are cleaned', () => {

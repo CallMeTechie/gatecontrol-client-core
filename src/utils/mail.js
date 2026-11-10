@@ -46,6 +46,9 @@ const TEXT_MAX = 1024 * 1024;
 const SUBJECT_MAX = 998;
 const NAME_MAX = 255;
 const IDS_MAX = 500;
+// Mail 1.13: a selection of the app (the list's mails, "Alle N auswählen" from GET messages/ids) goes to the plugin in
+// parts of IDS_MAX; GET messages/ids gives at most BULK_MAX ids, and `all` / `threads` refuse more (413 too_large)
+const BULK_MAX = 2000;
 
 const PROVIDERS = Object.freeze(['gmx', 'webde', 'tonline', 'gmail', 'outlook', 'm365', 'imap']);
 const AUTHS = Object.freeze(['password', 'app_password', 'microsoft', 'imap']);
@@ -54,6 +57,13 @@ const ACCOUNT_STATES = Object.freeze(['ok', 'syncing', 'auth_failed', 'unreachab
 const PUSH_MODES = Object.freeze(['off', 'relevant', 'all']);
 const ATTACH_MODES = Object.freeze(['off', 'suggest', 'auto']);
 const SWIPES = Object.freeze(['archive', 'delete', 'read', 'none']);
+// Mail 1.13 `swipeV2`: `settings.swipe { left, right }` with all seven actions (the old `swipeLeft` / `swipeRight`
+// keep the four above; the plugin shows flag, move and junk there as "none")
+const SWIPES_V2 = Object.freeze(['archive', 'delete', 'read', 'flag', 'move', 'junk', 'none']);
+// Mail 1.13 `undo`: what a token of a bulk answer takes back
+const UNDO_KINDS = Object.freeze(['move', 'copy', 'archive', 'delete', 'junk']);
+const UNDO_TOKEN_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const UNDO_TOKENS_MAX = Math.ceil(BULK_MAX / IDS_MAX);
 const ROLES = Object.freeze(['inbox', 'sent', 'drafts', 'archive', 'junk', 'trash']);
 const TABS = Object.freeze(['relevant', 'other']);
 const SECURITY = Object.freeze(['tls', 'starttls']);
@@ -66,7 +76,9 @@ const WARNINGS = Object.freeze(['password', 'too_large', 'no_subject', 'attachme
 const CONTACT_SOURCES = Object.freeze(['contact', 'group', 'person', 'recent']);
 // Mail 1.9.0: 'freeBusy', 'calendarSharing', 'resources' (the administrator) and 'bookingRequests' (the person decides on requests)
 const FEATURES = Object.freeze(['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay', 'alltagOverlay', 'scan',
-  'freeBusy', 'calendarSharing', 'resources', 'bookingRequests']);
+  'freeBusy', 'calendarSharing', 'resources', 'bookingRequests',
+  // Mail 1.13: POST messages/copy, settings.swipe + confirmDelete, undo tokens, all: true + GET messages/ids, threads: true
+  'copy', 'swipeV2', 'undo', 'bulkAll', 'threadScope']);
 const INVITES = Object.freeze(['request', 'cancel', 'reply', 'counter']);
 const PIM_STATES = Object.freeze(['ok', 'syncing', 'auth_failed', 'unreachable', 'consent_required', 'none', 'off']);
 const SCOPE_RE = /^[A-Za-z0-9_.:/-]{1,100}$/;
@@ -179,12 +191,26 @@ function normalizeAddress(v) {
 
 const addresses = (v, max = 100) => arr(v).map(normalizeAddress).filter(Boolean).slice(0, max);
 
+/**
+ * A swipe side of the settings: since Mail 1.13 `swipe.left` / `swipe.right` (seven actions) win over the old
+ * `swipeLeft` / `swipeRight` (four). A side missing takes the default, a value the app does not know does nothing
+ * ("none", never a guess like "archive").
+ */
+function swipeOf(v2, legacy, fallback) {
+  if (v2 !== undefined && v2 !== null) return SWIPES_V2.includes(v2) ? v2 : 'none';
+  if (legacy === undefined || legacy === null) return fallback;
+  return SWIPES.includes(legacy) ? legacy : 'none';
+}
+
 function normalizeSettings(v) {
   const o = obj(v) || {};
+  const sw = obj(o.swipe) || {};
   return {
     threads: o.threads !== false,
-    swipeLeft: oneOf(SWIPES, o.swipeLeft, 'archive'),
-    swipeRight: oneOf(SWIPES, o.swipeRight, 'read'),
+    swipeLeft: swipeOf(sw.left, o.swipeLeft, 'archive'),
+    swipeRight: swipeOf(sw.right, o.swipeRight, 'read'),
+    // Mail 1.13: ask before "Löschen" (a stored wish only; mails in the trash are always asked for)
+    confirmDelete: o.confirmDelete === true,
   };
 }
 
@@ -625,9 +651,9 @@ function normalizeMedia(v) {
 
 const BOX_RE = /^(all|\d{1,16})$/;
 
-/** Ids of a list action (1 … 500 positive ints), or null. */
-function idList(v) {
-  if (!Array.isArray(v) || !v.length || v.length > IDS_MAX) return null;
+/** Ids of a list action (1 … max positive ints, 500 by default), or null. */
+function idList(v, max = IDS_MAX) {
+  if (!Array.isArray(v) || !v.length || v.length > max) return null;
   const out = [];
   for (const x of v) {
     const id = posId(x);
@@ -877,18 +903,133 @@ function accountPatch(v, { partial = false } = {}) {
   return Object.keys(b).length ? b : null;
 }
 
-/** PUT settings → the patch, or null. */
-function settingsPatch(v) {
+/**
+ * PUT settings ({ threads?, swipeLeft?, swipeRight?, confirmDelete? }) → the patch, or null. With `v2` (the plugin
+ * has `swipeV2`, Mail 1.13) the sides go as `swipe { left?, right? }` with all seven actions and `confirmDelete` is
+ * sent; without, only the old four as `swipeLeft` / `swipeRight` (a new action is refused) and `confirmDelete` is
+ * left out (an older plugin does not know it).
+ */
+function settingsPatch(v, { v2 = false } = {}) {
   const o = obj(v);
   if (!o) return null;
   const b = {};
   if (o.threads !== undefined) { if (typeof o.threads !== 'boolean') return null; b.threads = o.threads; }
-  for (const k of ['swipeLeft', 'swipeRight']) {
-    if (o[k] === undefined) continue;
-    if (!SWIPES.includes(o[k])) return null;
-    b[k] = o[k];
+  const swipe = {};
+  for (const [k, side] of [['swipeLeft', 'left'], ['swipeRight', 'right']]) {
+    if (o[k] === undefined || o[k] === null) continue;
+    if (!(v2 ? SWIPES_V2 : SWIPES).includes(o[k])) return null;
+    if (v2) swipe[side] = o[k];
+    else b[k] = o[k];
+  }
+  if (Object.keys(swipe).length) b.swipe = swipe;
+  if (o.confirmDelete !== undefined && o.confirmDelete !== null) {
+    if (typeof o.confirmDelete !== 'boolean') return null;
+    if (v2) b.confirmDelete = o.confirmDelete;
   }
   return Object.keys(b).length ? b : null;
+}
+
+// ── Several mails at once (Mail 1.13) ─────────────────────
+
+/** [ids] in parts of [size] (the plugin takes ≤ 500 per call). */
+function chunks(ids, size = IDS_MAX) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
+const idsOf = (v, max = BULK_MAX) => arr(v).map(posId).filter(Boolean).slice(0, max);
+
+/** A bulk answer's `undo` → { token, kind, count, expiresAt, items: [{ id, newId, accountId, fromFolderId, toFolderId }] }, or null. */
+function normalizeUndo(v) {
+  const o = obj(v);
+  if (!o || typeof o.token !== 'string' || !UNDO_TOKEN_RE.test(o.token) || !UNDO_KINDS.includes(o.kind)) return null;
+  const items = arr(o.items).map((x) => {
+    const i = obj(x);
+    const id = i && posId(i.id);
+    if (!id) return null;
+    return { id, newId: posId(i.newId), accountId: posId(i.accountId), fromFolderId: posId(i.fromFolderId), toFolderId: posId(i.toFolderId) };
+  }).filter(Boolean).slice(0, BULK_MAX);
+  return { token: o.token, kind: o.kind, count: count(o.count) ?? items.length, expiresAt: msOf(o.expiresAt), items };
+}
+
+/**
+ * The answer of a bulk call (flags, move, copy, archive, delete, junk, tab) → { ok, items, count, ids, undo, purged }.
+ * An older plugin (≤ 1.12) answers `{ ok, items? }` only: `count` / `ids` are then null, `undo` null, `purged` [].
+ */
+function normalizeBulk(v) {
+  const o = obj(v) || {};
+  return {
+    ok: true,
+    items: Array.isArray(o.items) ? o.items.map(normalizeSummary).filter(Boolean) : null,
+    count: count(o.count),
+    ids: Array.isArray(o.ids) ? idsOf(o.ids) : null,
+    undo: normalizeUndo(o.undo),
+    purged: idsOf(o.purged),
+  };
+}
+
+/**
+ * The answers of the parts of one selection → one: items, count and ids together; the undo tokens of the parts in
+ * `undo.tokens` (one per part, all of one kind; `expiresAt` the earliest) or null; `purged` together.
+ */
+function mergeBulk(parts) {
+  const list = arr(parts).filter(Boolean);
+  const items = list.some((p) => Array.isArray(p.items)) ? list.flatMap((p) => p.items || []) : null;
+  const counted = list.every((p) => typeof p.count === 'number');
+  const undos = list.map((p) => p.undo).filter(Boolean);
+  const times = undos.map((u) => u.expiresAt).filter(Boolean);
+  return {
+    ok: true,
+    items,
+    count: counted ? list.reduce((n, p) => n + p.count, 0) : null,
+    ids: list.every((p) => Array.isArray(p.ids)) ? [...new Set(list.flatMap((p) => p.ids))] : null,
+    undo: undos.length ? {
+      tokens: undos.map((u) => u.token),
+      kind: undos[0].kind,
+      count: undos.reduce((n, u) => n + u.count, 0),
+      expiresAt: times.length ? Math.min(...times) : null,
+      items: undos.flatMap((u) => u.items).slice(0, BULK_MAX),
+    } : null,
+    purged: [...new Set(list.flatMap((p) => p.purged || []))],
+  };
+}
+
+/** The undo tokens of a selection (1 … 4, from mergeBulk's `undo.tokens`), or null. */
+function undoTokens(v) {
+  const list = typeof v === 'string' ? [v] : v;
+  if (!Array.isArray(list) || !list.length || list.length > UNDO_TOKENS_MAX) return null;
+  if (!list.every((x) => typeof x === 'string' && UNDO_TOKEN_RE.test(x))) return null;
+  return [...new Set(list)];
+}
+
+/** POST messages/undo → { kind, restored, failed, items }. */
+function normalizeUndone(v) {
+  const o = obj(v) || {};
+  return {
+    kind: UNDO_KINDS.includes(o.kind) ? o.kind : null,
+    restored: count(o.restored) || 0,
+    failed: count(o.failed) || 0,
+    items: arr(o.items).map(normalizeSummary).filter(Boolean).slice(0, BULK_MAX),
+  };
+}
+
+/** Query of GET messages/ids: as GET messages without the page (no `before`, no `limit`), or null. */
+function idsQuery(q = {}) {
+  const o = obj(q) || {};
+  const p = listQuery({ ...o, before: undefined, limit: undefined });
+  if (!p) return null;
+  delete p.limit;
+  delete p.before;
+  return p;
+}
+
+/** GET messages/ids → { ids (newest first, ≤ 2000), total, max, truncated }. */
+function normalizeIds(v) {
+  const o = obj(v) || {};
+  const ids = [...new Set(idsOf(o.ids))];
+  const total = count(o.total) ?? ids.length;
+  return { ids, total: Math.max(total, ids.length), max: count(o.max) || BULK_MAX, truncated: o.truncated === true || total > ids.length };
 }
 
 // ── HTML of a mail (the sandboxed reading frame) ──────────
@@ -1149,6 +1290,10 @@ module.exports = {
   PUSH_MODES,
   ATTACH_MODES,
   SWIPES,
+  SWIPES_V2,
+  UNDO_KINDS,
+  IDS_MAX,
+  BULK_MAX,
   ROLES,
   TABS,
   MODES,
@@ -1211,6 +1356,14 @@ module.exports = {
   accountBody,
   accountPatch,
   settingsPatch,
+  chunks,
+  normalizeUndo,
+  normalizeBulk,
+  mergeBulk,
+  undoTokens,
+  normalizeUndone,
+  idsQuery,
+  normalizeIds,
   escapeHtml,
   rewriteSources,
   textToHtml,

@@ -9,14 +9,16 @@
  *
  *   GET    /api/v1/client/plugins                                    is the plugin there?
  *   GET    …/gatecontrol-mail/api/me                                 features, limits, Microsoft, accounts, unread, settings
- *   PUT    …/api/settings { threads?, swipeLeft?, swipeRight? }
+ *   PUT    …/api/settings { threads?, swipeLeft?, swipeRight? } (Mail 1.13 `swipeV2`: { threads?, swipe { left?, right? }, confirmDelete? })
  *   GET    …/api/providers · POST accounts/discover { email }
  *   POST   …/api/accounts { provider, email, password, … }           (the server checks IMAP and SMTP first)
  *   POST   …/api/accounts/microsoft { code, codeVerifier, redirectUri, name?, color?, kind? }
  *   PATCH  …/api/accounts/<id> · POST accounts/<id>/microsoft · DELETE accounts/<id>
  *   GET    …/api/folders · GET messages?box&folder&tab&unread&flagged&attachments&before&limit · GET search?q&…
  *   GET    …/api/threads/<id> · GET messages/<id> · POST messages/<id>/images { allow }
- *   POST   …/api/messages/flags | move | archive | delete | junk | tab
+ *   POST   …/api/messages/flags | move | archive | delete | junk | tab { ids, …, threads? }
+ *          (Mail 1.13: copy too; the app's selection of ≤ 2000 in parts of 500; answers with count, ids, undo, purged)
+ *   POST   …/api/messages/undo { token } · GET messages/ids?box&folder&tab&unread&flagged&attachments   (Mail 1.13)
  *   GET    …/api/messages/<id>/attachments/<aid>                     → { mediaId, name, mime, size }
  *   GET    …/api/img/<token> · GET cid/<messageId>/<attachmentId>    pictures of the reading frame (binary)
  *                                                                    (cid/ and attachments: 409 busy { reason: 'loading', retryAfter } while the provider sends)
@@ -60,6 +62,7 @@ const mail = require('../utils/mail');
 const { MessengerError: MailError } = MessengerApi;
 
 const JSON_TIMEOUT_MS = 25000;
+const BULK_TIMEOUT_MS = 60000;      // a part of 500 mails: the plugin moves them on the mail server first
 const ACCOUNT_TIMEOUT_MS = 90000;   // adding an account: the server logs in to IMAP and SMTP first
 const IMAGE_TIMEOUT_MS = 20000;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
@@ -153,8 +156,9 @@ class MailApi {
 
   async me() { return mail.normalizeMe(await this.api('GET', 'me')); }
 
-  async settings(patch) {
-    const body = mail.settingsPatch(patch);
+  /** PUT settings; `v2`: the plugin has `swipeV2` (Mail 1.13, see utils/mail.js settingsPatch). */
+  async settings(patch, { v2 = false } = {}) {
+    const body = mail.settingsPatch(patch, { v2 });
     if (!body) throw new MailError('invalid settings', { code: 'invalid' });
     const r = await this.api('PUT', 'settings', { body });
     return mail.normalizeSettings(r.settings || r);
@@ -232,29 +236,73 @@ class MailApi {
     return this._message(await this.api('POST', `messages/${this._id(id)}/images`, { body: { allow }, timeout: 60000 }));
   }
 
-  _items(r) {
-    return { ok: true, items: Array.isArray(r && r.items) ? r.items.map(mail.normalizeSummary).filter(Boolean) : null };
+  _bulkIds(v) {
+    const ids = mail.idList(v, mail.BULK_MAX);
+    if (!ids) throw new MailError('invalid ids', { code: 'invalid' });
+    return ids;
   }
 
-  async flags(ids, { unread, flagged } = {}) {
-    const body = { ids: this._ids(ids) };
+  /**
+   * POST messages/<path> for [ids] (≤ 2000) in parts of 500 with the same [extra] fields (`threads: true` only when
+   * asked) → mergeBulk of the answers ({ ok, items, count, ids, undo, purged }). A part refused after others went
+   * through does not undo those: the answer then carries `partial { code, ids }` (the ids not done); the first
+   * part refused throws.
+   */
+  async _bulk(p, ids, extra = {}, { threads = false } = {}) {
+    const list = this._bulkIds(ids);
+    const parts = [];
+    const todo = mail.chunks(list);
+    for (let i = 0; i < todo.length; i += 1) {
+      const body = { ids: todo[i], ...extra };
+      if (threads === true) body.threads = true;
+      try {
+        parts.push(mail.normalizeBulk(await this.api('POST', `messages/${p}`, { body, timeout: BULK_TIMEOUT_MS })));
+      } catch (err) {
+        if (!parts.length) throw err;
+        const r = mail.mergeBulk(parts);
+        r.partial = { code: err.code || 'error', ids: todo.slice(i).flat() };
+        return r;
+      }
+    }
+    return mail.mergeBulk(parts);
+  }
+
+  async flags(ids, { unread, flagged, threads } = {}) {
+    const body = {};
     if (typeof unread === 'boolean') body.unread = unread;
     if (typeof flagged === 'boolean') body.flagged = flagged;
     if (body.unread === undefined && body.flagged === undefined) throw new MailError('nothing to change', { code: 'invalid' });
-    return this._items(await this.api('POST', 'messages/flags', { body }));
+    return this._bulk('flags', ids, body, { threads });
   }
 
-  async move(ids, folderId) { return this._items(await this.api('POST', 'messages/move', { body: { ids: this._ids(ids), folderId: this._id(folderId) } })); }
+  async move(ids, folderId, { threads } = {}) { return this._bulk('move', ids, { folderId: this._id(folderId) }, { threads }); }
+
+  /** POST messages/copy (Mail 1.13 `copy`): into a folder of the same account. */
+  async copy(ids, folderId, { threads } = {}) { return this._bulk('copy', ids, { folderId: this._id(folderId) }, { threads }); }
 
   /** POST messages/archive | delete | junk { ids }. */
-  async act(action, ids) {
+  async act(action, ids, { threads } = {}) {
     if (!['archive', 'delete', 'junk'].includes(action)) throw new MailError('invalid action', { code: 'invalid' });
-    return this._items(await this.api('POST', `messages/${action}`, { body: { ids: this._ids(ids) } }));
+    return this._bulk(action, ids, {}, { threads });
   }
 
-  async setTab(ids, tab) {
+  async setTab(ids, tab, { threads } = {}) {
     if (!mail.TABS.includes(tab)) throw new MailError('invalid tab', { code: 'invalid' });
-    return this._items(await this.api('POST', 'messages/tab', { body: { ids: this._ids(ids), tab } }));
+    return this._bulk('tab', ids, { tab }, { threads });
+  }
+
+  /** POST messages/undo { token } (Mail 1.13 `undo`) → { kind, restored, failed, items }. */
+  async undo(token) {
+    const list = mail.undoTokens(token);
+    if (!list || list.length !== 1) throw new MailError('invalid token', { code: 'invalid' });
+    return mail.normalizeUndone(await this.api('POST', 'messages/undo', { body: { token: list[0] }, timeout: BULK_TIMEOUT_MS }));
+  }
+
+  /** GET messages/ids (Mail 1.13 `bulkAll`) → { ids, total, max, truncated }: every mail of a list for "Alle auswählen". */
+  async ids(query) {
+    const params = mail.idsQuery(query);
+    if (!params) throw new MailError('invalid list', { code: 'invalid' });
+    return mail.normalizeIds(await this.api('GET', 'messages/ids', { params }));
   }
 
   async attachment(id, aid) {
