@@ -8,7 +8,8 @@
  *   mail:status            () → MailService.status()
  *   mail:check             () → status after asking the server again
  *   mail:me                () → { ok, features, limits, microsoft, accounts, unread, settings, offline? }
- *   mail:settings          ({ threads?, swipeLeft?, swipeRight? }) → { ok, settings }
+ *   mail:settings          ({ threads?, swipeLeft?, swipeRight?, confirmDelete? }) → { ok, settings }
+ *                          (Mail 1.13 `swipeV2`: seven swipe actions + confirmDelete, else the old four)
  *   mail:providers         () → { ok, providers }
  *   mail:discover          ({ email }) → { ok, provider, auth, imap, smtp, hint }
  *   mail:account:add       ({ provider, email, password, username?, name?, color?, kind?, imap?, smtp? }) → { ok, account }
@@ -23,8 +24,12 @@
  *   mail:thread            ({ id }) → { ok, items: [Message + doc + docDark] }
  *   mail:message           ({ id, markRead? }) → { ok, message, doc, docDark, offline? }
  *   mail:images            ({ id, allow: 'once' | 'sender' }) → { ok, message, doc }
- *   mail:flags             ({ ids, unread?, flagged? }) → { ok, items? }
- *   mail:act               ({ action: 'archive'|'delete'|'junk'|'move'|'tab', ids, folderId?, tab? }) → { ok, items? }
+ *   mail:flags             ({ ids, unread?, flagged?, threads? }) → { ok, items, count, ids, undo: null, purged }
+ *   mail:act               ({ action: 'archive'|'delete'|'junk'|'move'|'copy'|'tab', ids, folderId?, tab?, threads? })
+ *                          → { ok, items, count, ids, undo: { tokens, kind, count, expiresAt, items } | null, purged, partial? }
+ *                          ids: 1 … 2000 (sent in parts of 500); copy and threads only with Mail 1.13's features
+ *   mail:undo              ({ tokens }) → { ok, kind, restored, failed, items }     Mail 1.13 `undo`
+ *   mail:ids               ({ box?, folder?, tab?, unread?, flagged?, attachments? }) → { ok, ids, total, max, truncated }   Mail 1.13 `bulkAll`
  *   mail:attachment:open   ({ id, attachmentId, name?, mime? }) → { ok, path } | { ok: false, code: 'unsafe' }
  *                          (still on its way from the provider: { ok: false, code: 'busy', detail: { reason: 'loading', retryAfter } })
  *   mail:attachment:save   ({ id, attachmentId, name? }) → { ok, path } | { ok: false, code: 'cancelled' }
@@ -157,7 +162,8 @@ function fail(err) {
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const invalid = () => ({ ok: false, code: 'invalid', error: 'invalid argument', status: null });
 const isId = (v) => Number.isSafeInteger(v) && v > 0;
-const isIds = (v) => Array.isArray(v) && v.length > 0 && v.length <= 500 && v.every(isId);
+// a selection of the list: ≤ 2000 (Mail 1.13 GET messages/ids), the service sends it in parts of 500
+const isIds = (v) => Array.isArray(v) && v.length > 0 && v.length <= 2000 && v.every(isId);
 const isStr = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
 const optStr = (v, max) => v === undefined || v === null || (typeof v === 'string' && v.length <= max);
 
@@ -186,7 +192,7 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:status', () => s.status());
   handle('mail:check', wrap(async () => s.check()));
   handle('mail:me', wrap(async () => s.me()));
-  handle('mail:settings', wrap(async (a) => s.settings({ threads: a.threads, swipeLeft: a.swipeLeft, swipeRight: a.swipeRight })));
+  handle('mail:settings', wrap(async (a) => s.settings({ threads: a.threads, swipeLeft: a.swipeLeft, swipeRight: a.swipeRight, confirmDelete: a.confirmDelete })));
   handle('mail:providers', wrap(async () => s.providers()));
   handle('mail:discover', wrap(async (a) => (isStr(a.email, 320) ? s.discover(a.email) : invalid())));
   handle('mail:account:add', wrap(async (a) => {
@@ -219,14 +225,21 @@ function registerMailHandlers(handle, { mail: s, getMainWindow, log }) {
   handle('mail:images', byId(async (a) => (a.allow === 'once' || a.allow === 'sender' ? s.allowImages(a.id, a.allow) : invalid())));
   handle('mail:flags', wrap(async (a) => {
     if (!isIds(a.ids) || (typeof a.unread !== 'boolean' && typeof a.flagged !== 'boolean')) return invalid();
-    return s.flags(a.ids, { unread: a.unread, flagged: a.flagged });
+    return s.flags(a.ids, { unread: a.unread, flagged: a.flagged, threads: a.threads === true });
   }));
   handle('mail:act', wrap(async (a) => {
-    if (!isIds(a.ids) || !['archive', 'delete', 'junk', 'move', 'tab'].includes(a.action)) return invalid();
-    if (a.action === 'move' && !isId(a.folderId)) return invalid();
+    if (!isIds(a.ids) || !['archive', 'delete', 'junk', 'move', 'copy', 'tab'].includes(a.action)) return invalid();
+    if ((a.action === 'move' || a.action === 'copy') && !isId(a.folderId)) return invalid();
     if (a.action === 'tab' && a.tab !== 'relevant' && a.tab !== 'other') return invalid();
-    return s.act(a.action, a.ids, { folderId: a.folderId || null, tab: a.tab || null });
+    return s.act(a.action, a.ids, { folderId: a.folderId || null, tab: a.tab || null, threads: a.threads === true });
   }));
+  handle('mail:undo', wrap(async (a) => {
+    const ok = Array.isArray(a.tokens) && a.tokens.length > 0 && a.tokens.length <= 4 && a.tokens.every((x) => isStr(x, 64));
+    return ok ? s.undo(a.tokens) : invalid();
+  }));
+  handle('mail:ids', wrap(async (a) => s.ids({
+    box: a.box, folder: a.folder, tab: a.tab, unread: a.unread === true, flagged: a.flagged === true, attachments: a.attachments === true,
+  })));
   handle('mail:attachment:open', byId(async (a) => (isId(a.attachmentId) && optStr(a.name, 255) && optStr(a.mime, 120)
     ? s.openAttachment(a.id, a.attachmentId, { name: a.name || null, mime: a.mime || null }) : invalid())));
   handle('mail:attachment:save', byId(async (a) => (isId(a.attachmentId) && optStr(a.name, 255) ? s.saveAttachment(a.id, a.attachmentId, { name: a.name || null }) : invalid())));

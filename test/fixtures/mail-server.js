@@ -16,11 +16,18 @@
 //   srv.state.fail = { '<METHOD> <route>': { status, code, extra } } — refuse a route with { error: { code, …extra } }
 //   (e.g. 'GET cid/:id/:id': { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } }),
 //   srv.down = true — every request fails (connection closed), srv.close()
+//   Mail 1.13 (with the features of MAIL13_FEATURES, e.g. `features: [...default, ...MAIL13_FEATURES]`): copy, undo
+//   tokens (srv.state.undo), GET messages/ids, threads: true, the bulk answers with count / ids / undo / purged,
+//   settings.swipe { left, right } with seven actions + confirmDelete (swipeLeft / swipeRight as the plugin maps them)
 
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { pimState, pimRoute, contactSuggestions, invitationView } = require('./mail-pim-server');
 const { planState, planRoute, PLAN_FEATURES } = require('./mail-plan-server');
+
+const MAIL13_FEATURES = ['copy', 'swipeV2', 'undo', 'bulkAll', 'threadScope'];
+const SWIPES_OLD = ['archive', 'delete', 'read', 'none'];
+const SWIPES_V2 = ['archive', 'delete', 'read', 'flag', 'move', 'junk', 'none'];
 
 const PLUGIN = 'gatecontrol-mail';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
@@ -40,6 +47,7 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     media: new Map(),       // mediaId → { bytes, mime }
     uploads: [],
     settings: { threads: true, swipeLeft: 'archive', swipeRight: 'read' },
+    undo: new Map(),        // Mail 1.13: token → { kind, items: [{ id, newId, from, to, snapshot }], expiresAt, used }
     accounts: [
       { id: 1, provider: 'gmx', email: 'max@gmx.de', name: 'Privat · GMX', color: '#F5B544', kind: 'personal', state: 'ok', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: 'Max', calendar: { sync: true, state: 'ok', readOnly: false, server: 'caldav.gmx.net' }, contacts: { sync: true, state: 'ok', readOnly: true, server: 'carddav.gmx.net' }, missingScopes: [] },
       { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '', avatar: { mediaId: 'avatar2abcdef', mime: 'image/png' }, calendar: { sync: true, state: 'ok', readOnly: false, server: null }, contacts: { sync: true, state: 'ok', readOnly: false, server: null }, missingScopes: [] },
@@ -117,6 +125,14 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
     invite: m.inviteId && state.pim.invitations.has(m.inviteId) && state.features.includes('calendar') ? invitationView(state.pim, state.pim.invitations.get(m.inviteId)) : null,
   });
   const inbox = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'inbox');
+  const has13 = (f) => state.features.includes(f);
+  /** GET me's settings: with `swipeV2` the full sides in `swipe`, the old fields only with the old four. */
+  const settingsOut = () => {
+    const st = state.settings;
+    if (!has13('swipeV2')) return { threads: st.threads, swipeLeft: st.swipeLeft, swipeRight: st.swipeRight };
+    const old = (v) => (SWIPES_OLD.includes(v) ? v : 'none');
+    return { threads: st.threads, swipeLeft: old(st.swipeLeft), swipeRight: old(st.swipeRight), swipe: { left: st.swipeLeft, right: st.swipeRight }, confirmDelete: st.confirmDelete === true };
+  };
   const trash = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'trash');
   const archive = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'archive');
 
@@ -216,13 +232,31 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
         },
         accounts: state.accounts,
         unread: { all: Object.values(byAccount).reduce((a, b) => a + b, 0), byAccount },
-        settings: state.settings,
+        settings: settingsOut(),
         extra: 'ignored',
       });
     }
     if (req.method === 'PUT' && route === 'settings') {
-      for (const k of ['threads', 'swipeLeft', 'swipeRight']) if (body[k] !== undefined) state.settings[k] = body[k];
-      return json(res, 200, { settings: state.settings });
+      if (has13('swipeV2')) {
+        const sw = body.swipe || {};
+        for (const [side, legacy] of [['left', 'swipeLeft'], ['right', 'swipeRight']]) {
+          if (sw[side] !== undefined && !SWIPES_V2.includes(sw[side])) return err(res, 400, 'invalid', { field: `swipe.${side}` });
+          if (body[legacy] !== undefined && !SWIPES_V2.includes(body[legacy])) return err(res, 400, 'invalid', { field: legacy });
+          const now = state.settings[legacy];
+          if (sw[side] !== undefined) state.settings[legacy] = sw[side];
+          // an old app sending "none" back does not overwrite flag / move / junk
+          else if (body[legacy] !== undefined && !(body[legacy] === 'none' && !SWIPES_OLD.includes(now))) state.settings[legacy] = body[legacy];
+        }
+        if (body.confirmDelete !== undefined) {
+          if (typeof body.confirmDelete !== 'boolean') return err(res, 400, 'invalid', { field: 'confirmDelete' });
+          state.settings.confirmDelete = body.confirmDelete;
+        }
+        if (body.threads !== undefined) state.settings.threads = body.threads;
+      } else {
+        for (const k of ['threads', 'swipeLeft', 'swipeRight']) if (body[k] !== undefined) state.settings[k] = body[k];
+      }
+      state.lastSettingsBody = body;
+      return json(res, 200, { settings: settingsOut() });
     }
     if (req.method === 'GET' && route === 'providers') {
       return json(res, 200, [
@@ -369,10 +403,87 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
         return json(res, 200, { saved, failed });
       }
     }
+    // Mail 1.13: every id of a list ("Alle N auswählen")
+    if (req.method === 'GET' && route === 'messages/ids' && has13('bulkAll')) {
+      const q = Object.fromEntries(url.searchParams);
+      const box = q.box || 'all';
+      let list = [...state.messages.values()];
+      if (box === 'all') list = list.filter((m) => inbox(m.accountId) && m.folderId === inbox(m.accountId).id);
+      else if (q.folder) list = list.filter((m) => m.accountId === Number(box) && m.folderId === Number(q.folder));
+      else list = list.filter((m) => m.accountId === Number(box) && m.folderId === inbox(Number(box)).id);
+      const isInbox = !q.folder || state.folders.find((f) => f.id === Number(q.folder) && f.role === 'inbox');
+      if (isInbox && (q.tab === 'relevant' || q.tab === 'other')) list = list.filter((m) => m.tab === q.tab);
+      if (q.unread) list = list.filter((m) => m.unread);
+      if (q.flagged) list = list.filter((m) => m.flagged);
+      if (q.attachments) list = list.filter((m) => m.hasAttachments);
+      list.sort((a, b) => b.date - a.date || b.id - a.id);
+      const max = Number(state.idsMax) || 2000;
+      return json(res, 200, { ids: list.slice(0, max).map((m) => m.id), total: list.length, max, truncated: list.length > max });
+    }
+    if (req.method === 'POST' && route === 'messages/undo' && has13('undo')) {
+      if (typeof body.token !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(body.token)) return err(res, 400, 'invalid', { field: 'token' });
+      const u = state.undo.get(body.token);
+      if (!u || u.used) return err(res, 404, 'not_found', { field: 'token' });
+      if (Date.now() > u.expiresAt) return err(res, 410, 'undo_expired');
+      u.used = true;
+      const items = [];
+      let restored = 0;
+      for (const x of u.items) {
+        if (u.kind === 'copy') { if (state.messages.delete(x.newId)) restored += 1; continue; }
+        let m = state.messages.get(x.id);
+        if (!m) { m = { ...x.snapshot }; state.messages.set(m.id, m); }
+        m.folderId = x.from;
+        restored += 1;
+        items.push(sum(m));
+      }
+      return json(res, 200, { ok: true, kind: u.kind, restored, failed: 0, items });
+    }
     if (req.method === 'POST' && seg[0] === 'messages' && seg.length === 2) {
       const ids = Array.isArray(body.ids) ? body.ids : [];
-      const ms = ids.map((id) => state.messages.get(id)).filter(Boolean);
-      if (!ms.length) return err(res, 400, 'invalid');
+      if (ids.length > 500) return err(res, 400, 'invalid', { field: 'ids' });
+      let ms = ids.map((id) => state.messages.get(id)).filter(Boolean);
+      if (!ms.length) return err(res, has13('copy') ? 404 : 400, has13('copy') ? 'not_found' : 'invalid');
+      if (has13('threadScope') && body.threads === true) {
+        // the whole conversation in the folder of each chosen mail
+        const all = new Set(ms);
+        for (const m of ms) for (const x of state.messages.values()) if (x.threadId === m.threadId && x.folderId === m.folderId) all.add(x);
+        ms = [...all];
+      }
+      if (has13('copy')) {
+        state.bulkCalls = (state.bulkCalls || []).concat([{ path: seg[1], ids: ms.map((m) => m.id), body }]);
+        const before = ms.map((m) => ({ id: m.id, from: m.folderId, snapshot: { ...m } }));
+        const purged = [];
+        const done = (kind, extra = {}) => {
+          const items = before.filter((b) => !purged.includes(b.id)).map((b) => ({ ...b, to: (state.messages.get(b.newId || b.id) || {}).folderId || b.to || null, newId: b.newId || b.id }));
+          let undo = null;
+          if (kind && has13('undo') && items.length) {
+            const token = crypto.randomBytes(12).toString('base64url');
+            state.undo.set(token, { kind, items, expiresAt: Date.now() + 120000, used: false });
+            undo = { token, kind, count: items.length, expiresAt: Date.now() + 120000, items: items.map((x) => ({ id: x.id, newId: x.newId, accountId: x.snapshot.accountId, fromFolderId: x.from, toFolderId: x.to })) };
+          }
+          const shown = kind === 'copy' ? items.map((x) => state.messages.get(x.newId)) : ms.filter((m) => state.messages.has(m.id));
+          return json(res, 200, { ok: true, items: shown.filter(Boolean).map(sum), count: ms.length, ids: ms.map((m) => m.id), undo, ...extra });
+        };
+        if (seg[1] === 'flags') {
+          for (const m of ms) { if (typeof body.unread === 'boolean') m.unread = body.unread; if (typeof body.flagged === 'boolean') m.flagged = body.flagged; }
+          return done(null);
+        }
+        if (seg[1] === 'move' || seg[1] === 'copy') {
+          const f = state.folders.find((x) => x.id === body.folderId);
+          if (!f) return err(res, 404, 'not_found', { field: 'folderId' });
+          if (ms.some((m) => m.accountId !== f.accountId)) return err(res, 400, 'invalid', { field: 'folderId', reason: 'account' });
+          if (seg[1] === 'move') { for (const m of ms) m.folderId = f.id; return done('move'); }
+          for (const b of before) { const id = ++nextId; state.messages.set(id, { ...b.snapshot, id, folderId: f.id }); b.newId = id; b.to = f.id; }
+          return done('copy');
+        }
+        if (seg[1] === 'archive') { for (const m of ms) m.folderId = archive(m.accountId).id; return done('archive'); }
+        if (seg[1] === 'delete') {
+          for (const m of ms) { if (m.folderId === trash(m.accountId).id) { state.messages.delete(m.id); purged.push(m.id); } else m.folderId = trash(m.accountId).id; }
+          return done('delete', { purged });
+        }
+        if (seg[1] === 'junk') { for (const b of before) { state.messages.delete(b.id); b.to = null; } return done('junk'); }
+        if (seg[1] === 'tab') { for (const m of ms) m.tab = body.tab; return done(null); }
+      }
       if (seg[1] === 'flags') {
         for (const m of ms) { if (typeof body.unread === 'boolean') m.unread = body.unread; if (typeof body.flagged === 'boolean') m.flagged = body.flagged; }
         return json(res, 200, { ok: true, items: ms.map(sum) });
@@ -520,4 +631,5 @@ async function mailServer({ plugin = true, allowed = true, features = ['mail', '
   return srv;
 }
 
-module.exports = { mailServer, PLUGIN, API, MEDIA, PNG };
+module.exports = {
+  MAIL13_FEATURES, mailServer, PLUGIN, API, MEDIA, PNG };

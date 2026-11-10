@@ -25,7 +25,10 @@
  *   for the dark app (docDark, utils/mail-dark.js; the page picks one).
  *   handleProtocol() serves gcmail://img/<token> and gcmail://cid/<message>/
  *   <attachment> with the client's sign-in.
- * - Act: read / unread, flag, move, archive, delete, junk, Relevant / Sonstige.
+ * - Act: read / unread, flag, move, archive, delete, junk, Relevant / Sonstige —
+ *   several mails at once (≤ 2000, in parts of 500). Mail 1.13 (features of
+ *   `GET me`): copy, undo tokens, every id of a list ("Alle auswählen"),
+ *   whole conversations (`threads`), seven swipe actions and confirmDelete.
  * - Write: drafts (reply / reply all / forward filled by the server), files
  *   of this PC as attachments (media upload), Drive files (copy or link), send
  *   with 10 s to undo, send later, the outbox, recipient suggestions.
@@ -449,9 +452,20 @@ class MailService extends EventEmitter {
     return this._me;
   }
 
+  /** Whether the plugin has [feature] (GET me's features; asked once when not known yet). */
+  async _has(feature) {
+    const me = await this._meFresh();
+    return !!(me && Array.isArray(me.features) && me.features.includes(feature));
+  }
+
+  async _need13(feature) {
+    if (!(await this._has(feature))) throw new MailError(`${feature} not supported`, { code: 'unsupported' });
+  }
+
   async settings(patch) {
     return this._run(async () => {
-      const settings = await this.api.settings(patch);
+      // Mail 1.13 `swipeV2`: the seven swipe actions and confirmDelete, else the old four
+      const settings = await this.api.settings(patch, { v2: await this._has('swipeV2') });
       if (this._me) this._me = { ...this._me, settings };
       return { ok: true, settings };
     });
@@ -640,29 +654,84 @@ class MailService extends EventEmitter {
     });
   }
 
+  /** `threads: true` (the whole conversation in the folder) only where the plugin has `threadScope` (Mail 1.13). */
+  async _threads(on) {
+    return on === true && this._has('threadScope');
+  }
+
+  /** The mails a bulk answer touched: its `ids` (Mail 1.13, with the conversations), else those asked for. */
+  _touched(r, ids) {
+    const asked = mail.idList(ids, mail.BULK_MAX) || [];
+    return r && Array.isArray(r.ids) && r.ids.length ? [...new Set([...r.ids, ...asked])] : asked;
+  }
+
+  /** Read / unread, flag of mails (≤ 2000; `threads`: their conversations) → { ok, items, count, ids, … }. */
   async flags(ids, patch) {
     return this._run(async () => {
-      const r = await this.api.flags(ids, patch || {});
       const p = {};
       if (patch && typeof patch.unread === 'boolean') p.unread = patch.unread;
       if (patch && typeof patch.flagged === 'boolean') p.flagged = patch.flagged;
-      await this.cache.patch(mail.idList(ids), (m) => ({ ...m, ...p }));
+      const r = await this.api.flags(ids, { ...p, threads: await this._threads(patch && patch.threads) });
+      await this.cache.patch(this._touched(r, ids), (m) => ({ ...m, ...p }));
       return r;
     });
   }
 
-  /** archive | delete | junk | move (folderId) | tab (tab) of mails → { ok, items? }; they leave the cached lists. */
-  async act(action, ids, { folderId = null, tab = null } = {}) {
+  /**
+   * archive | delete | junk | move (folderId) | copy (folderId, Mail 1.13 `copy`) | tab (tab) of mails (≤ 2000;
+   * `threads`: their conversations) → { ok, items, count, ids, undo, purged, partial? }; they leave the cached lists
+   * (a copy leaves them where they are).
+   */
+  async act(action, ids, { folderId = null, tab = null, threads = false } = {}) {
     return this._run(async () => {
+      const th = { threads: await this._threads(threads) };
       let r;
-      if (action === 'move') r = await this.api.move(ids, folderId);
-      else if (action === 'tab') r = await this.api.setTab(ids, tab);
-      else r = await this.api.act(action, ids);
-      const list = mail.idList(ids);
+      if (action === 'move') r = await this.api.move(ids, folderId, th);
+      else if (action === 'copy') { await this._need13('copy'); r = await this.api.copy(ids, folderId, th); }
+      else if (action === 'tab') r = await this.api.setTab(ids, tab, th);
+      else r = await this.api.act(action, ids, th);
+      const done = new Set(r.partial ? r.partial.ids : []);
+      const list = this._touched(r, ids).filter((id) => !done.has(id));
       if (action === 'tab') await this.cache.patch(list, (m) => ({ ...m, tab }));
-      else await this.cache.patch(list, () => null);
+      else if (action !== 'copy') await this.cache.patch(list, () => null);
       if (action === 'delete') await this.cache.dropMessages(list);
       return r;
+    });
+  }
+
+  /**
+   * Takes a bulk action back (Mail 1.13 `undo`): the tokens of its parts (mergeBulk's `undo.tokens`) →
+   * { ok, kind, restored, failed, items }. A token refused (expired, used) counts as failed while another went through.
+   */
+  async undo(tokens) {
+    return this._run(async () => {
+      await this._need13('undo');
+      const list = mail.undoTokens(tokens);
+      if (!list) throw new MailError('invalid token', { code: 'invalid' });
+      const out = { ok: true, kind: null, restored: 0, failed: 0, items: [] };
+      let first = null;
+      for (const token of list) {
+        try {
+          const r = await this.api.undo(token);
+          out.kind = out.kind || r.kind;
+          out.restored += r.restored;
+          out.failed += r.failed;
+          out.items.push(...r.items);
+        } catch (err) {
+          if (!first) first = err;
+          out.failed += 1;
+        }
+      }
+      if (first && !out.restored && !out.items.length) throw first;
+      return out;
+    });
+  }
+
+  /** Every mail of a list for "Alle N auswählen" (Mail 1.13 `bulkAll`, GET messages/ids) → { ok, ids, total, max, truncated }. */
+  async ids(query) {
+    return this._run(async () => {
+      await this._need13('bulkAll');
+      return { ok: true, ...(await this.api.ids(query)) };
     });
   }
 

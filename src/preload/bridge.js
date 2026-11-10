@@ -659,9 +659,13 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       thread:       (id) => ipcRenderer.invoke('mail:thread', { id }),
       message:      (id, opts) => ipcRenderer.invoke('mail:message', { id, markRead: !(opts && opts.markRead === false) }),
       allowImages:  (id, allow) => ipcRenderer.invoke('mail:images', { id, allow }),
+      // patch: { unread?, flagged?, threads? } — ids: ≤ 2000 (the core sends parts of 500)
       flags:        (ids, patch) => ipcRenderer.invoke('mail:flags', { ...(patch || {}), ids }),
-      // 'archive' | 'delete' | 'junk' | 'move' (folderId) | 'tab' (tab)
+      // 'archive' | 'delete' | 'junk' | 'move' (folderId) | 'copy' (folderId, Mail 1.13) | 'tab' (tab); opts.threads
       act:          (action, ids, opts) => ipcRenderer.invoke('mail:act', { ...(opts || {}), action, ids }),
+      // Mail 1.13: take a bulk action back (its undo.tokens); every id of a list (GET messages/ids)
+      undo:         (tokens) => ipcRenderer.invoke('mail:undo', { tokens: Array.isArray(tokens) ? tokens : [tokens] }),
+      ids:          (query) => ipcRenderer.invoke('mail:ids', { ...(query || {}) }),
       openAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:open', { ...(opts || {}), id, attachmentId }),
       saveAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:save', { ...(opts || {}), id, attachmentId }),
       // file dialog → { ok, paths }; then upload(paths) → { ok, items: [{ mediaId, … }], rejected }
