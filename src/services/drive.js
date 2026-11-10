@@ -74,7 +74,12 @@
  *   chunk into a temporary file (ciphertext only) and go up as
  *   application/octet-stream with nameCipher / keyVersion; renaming and new
  *   folders send the encrypted name. No previews, text, takenAt, entropy, links,
- *   office or AI for them. Since Drive plugin 1.22 a vault file opens in the
+ *   office or AI for them. "In Tresor verschieben": a file put into a vault from
+ *   this PC is moved — its original is deleted for good (not into the recycle
+ *   bin) once the vault's commit answer is the very ciphertext sent; kept (and
+ *   reported) when it changed meanwhile, is locked / read-only, or anything
+ *   failed (services/drive-vault-move.js, event 'vaultMove').
+ *   Since Drive plugin 1.22 a vault file opens in the
  *   viewer of the page (vaultView(), services/drive-vault-view.js: only the
  *   ciphertext on the disk, the plaintext decrypted in memory through gcvault:);
  *   open() of a vault file — the explicit "Mit anderem Programm öffnen", which
@@ -130,7 +135,8 @@
  * 'timetravel' ({ folderId, at, before }) after a time travel, 'vault'
  * ({ vault, event, device, keyVersion }) a request / approval / new key of a
  * vault folder (live event `vault`), 'vaultLock' ({ locked, reason }) the vaults
- * locked / unlocked (Drive 1.11), 'op' (the row of a job that ended, Drive 1.12).
+ * locked / unlocked (Drive 1.11), 'op' (the row of a job that ended, Drive 1.12),
+ * 'vaultMove' (a batch moved into a vault is through: see upload()).
  */
 
 const EventEmitter = require('events');
@@ -143,6 +149,7 @@ const DriveVault = require('./drive-vault');
 const DriveVaultLock = require('./drive-vault-lock');
 const DriveOps = require('./drive-ops');
 const DriveVaultViews = require('./drive-vault-view');
+const VM = require('./drive-vault-move');
 const DocView = require('./drive-doc-view');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
@@ -295,6 +302,7 @@ class DriveService extends EventEmitter {
     this._transfers = [];           // rows of the transfer list (see _row)
     this._jobs = new Map();         // upload id → job (queued / waiting for a choice)
     this._queue = [];
+    this._moves = new Map();        // "In Tresor verschieben": batch id → batch (see _moveBatch)
     this._pumping = false;
     this._nextId = 0;
     this._emitTimer = null;
@@ -393,6 +401,8 @@ class DriveService extends EventEmitter {
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
     for (const [id, job] of this._jobs) if (job.waiting) this._set(id, { state: 'skipped' });
     this._jobs.clear();
+    // their originals stay (nothing went into a vault)
+    this._moves.clear();
     this._retry = 0;
     this._scope = this._scopeNow();
     this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
@@ -2024,8 +2034,12 @@ class DriveService extends EventEmitter {
 
   /**
    * Queues files (and whole folders) from disk for the folder `parentId`
-   * → { ok, queued, rejected, folders, skipped }. Unreadable paths are rejected ({ name, code });
+   * → { ok, queued, rejected, folders, skipped, move }. Unreadable paths are rejected ({ name, code });
    * a folder is made in Drive with its structure (folders: how many), what is left out counts in skipped.
+   * Into a vault it is "In Tresor verschieben" (services/drive-vault-move.js): `move` is the batch's id, each
+   * original is deleted for good once its upload is verified (its row: `move`, `original` 'deleted' | 'kept' + `originalReason`),
+   * a dropped folder's emptied folders after its last file; when the batch is through: event 'vaultMove'
+   * ({ id, folderId, moved, deleted, kept, keptFiles [{ name, reason }], notMoved, folders { removed, kept } }).
    */
   async upload(parentId, paths) {
     const folderId = drive.posId(parentId);
@@ -2040,29 +2054,95 @@ class DriveService extends EventEmitter {
     }
     const list = Array.isArray(paths) ? paths.slice(0, MAX_PATHS) : [];
     const out = { queued: [], rejected: [], folders: 0, skipped: 0 };
-    for (const p of list) {
-      if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
-      const base = path.basename(p);
-      let st;
-      try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId); continue; }
-      if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      this._queueFile(folderId, p, base, st, out, vaultId);
+    // Drive 1.9: into a vault the files are moved (the originals go once they are in the vault, verified)
+    const batch = vaultId ? this._moveBatch(folderId) : null;
+    try {
+      for (const p of list) {
+        if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
+        const base = path.basename(p);
+        let st;
+        try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
+        if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId, batch); continue; }
+        if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
+        this._queueFile(folderId, p, base, st, out, vaultId, { batch });
+      }
+    } finally {
+      if (batch) {
+        batch.sealed = true;
+        this._finishMove(batch);
+      }
     }
     this._pump();
-    return { ok: true, ...out };
+    return { ok: true, ...out, move: batch ? batch.id : null };
   }
 
-  _queueFile(folderId, p, base, st, out, vaultId = null) {
-    if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); return; }
+  _queueFile(folderId, p, base, st, out, vaultId = null, { batch = null, tree = null } = {}) {
+    if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); VM.keep(tree, path.dirname(p)); return false; }
     const name = drive.safeName(base);
-    if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); VM.keep(tree, path.dirname(p)); return false; }
     const id = `u${++this._nextId}`;
-    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow(), vault: vaultId };
+    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow(), vault: vaultId, batch, tree };
     this._jobs.set(id, job);
     this._queue.push(job);
-    this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now() });
+    if (batch) batch.open.add(id);
+    this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now(), ...(batch ? { move: true } : {}) });
     out.queued.push(id);
+    return true;
+  }
+
+  // ── "In Tresor verschieben" (Drive 1.9 vault; services/drive-vault-move.js) ──
+
+  /** A batch of files going into the vault folder `folderId` (one upload()). */
+  _moveBatch(folderId) {
+    const batch = { id: `m${++this._nextId}`, folderId, open: new Set(), files: [], trees: [], sealed: false, finishing: false };
+    this._moves.set(batch.id, batch);
+    return batch;
+  }
+
+  /**
+   * A file of a batch is through: 'done' with its original's fate ({ original, reason }), 'failed' or 'skipped' (its
+   * original stays). A kept original keeps its folder (and the ones above it) of a dropped folder.
+   */
+  _settleMove(job, state, removal = null) {
+    const batch = job && job.batch;
+    if (!batch || !batch.open.has(job.id)) return;
+    batch.open.delete(job.id);
+    const original = state === 'done' && removal ? removal.original : 'kept';
+    batch.files.push({ id: job.id, name: job.name, state, original, reason: original === 'kept' ? (state === 'done' && removal ? removal.reason : 'not_moved') : null });
+    if (original !== 'deleted') VM.keep(job.tree, path.dirname(job.path));
+    this._finishMove(batch);
+  }
+
+  /** The batch is through (all queued, every file done): the emptied folders of dropped folders go, then 'vaultMove'. */
+  _finishMove(batch) {
+    if (!batch.sealed || batch.open.size || batch.finishing) return null;
+    batch.finishing = true;
+    const run = (async () => {
+      const folders = { removed: 0, kept: 0 };
+      for (const tree of batch.trees) {
+        const r = await VM.removeEmptyDirs(tree).catch(() => ({ removed: 0, kept: tree.dirs.length }));
+        folders.removed += r.removed;
+        folders.kept += r.kept;
+      }
+      // a reset (new server) dropped the batch: nothing to report
+      if (this._moves.get(batch.id) !== batch) return;
+      this._moves.delete(batch.id);
+      const done = batch.files.filter((f) => f.state === 'done');
+      const keptFiles = done.filter((f) => f.original === 'kept');
+      if (!batch.files.length && !folders.removed) return;
+      this.emit('vaultMove', {
+        id: batch.id,
+        folderId: batch.folderId,
+        moved: done.length,
+        deleted: done.length - keptFiles.length,
+        kept: keptFiles.length,
+        keptFiles: keptFiles.slice(0, 50).map((f) => ({ id: f.id, name: f.name, reason: f.reason })),
+        notMoved: batch.files.length - done.length,
+        folders,
+      });
+    })().catch((err) => this.log.warn(`Drive vault move not finished: ${err && err.message}`));
+    batch.done = run;
+    return run;
   }
 
   /**
@@ -2070,10 +2150,20 @@ class DriveService extends EventEmitter {
    * then its files into the queue. Left out like "Ordner sichern": temporary files,
    * node_modules / .git, names Drive does not take, links.
    */
-  async _queueFolder(parentId, abs, out, vaultId = null) {
+  async _queueFolder(parentId, abs, out, vaultId = null, batch = null) {
     const base = path.basename(abs);
     const top = drive.safeName(base);
     if (!top) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    // "In Tresor verschieben": the folders walked, what stays in them (their files go one by one)
+    let tree = null;
+    if (batch) {
+      const root = path.resolve(abs);
+      const realRoot = await fs.promises.realpath(root).catch(() => null);
+      if (!realRoot) { out.rejected.push({ name: base, code: 'missing' }); return; }
+      tree = VM.newTree(root, realRoot);
+      batch.trees.push(tree);
+    }
+    const left = (dirAbs) => { out.skipped++; VM.keep(tree, dirAbs); };
     const row = { id: `f${++this._nextId}`, dir: 'up', name: top, folderId: parentId, total: 0, sent: 0, state: 'running', code: null, at: this.now(), folder: true };
     this._row(row);
     const settings = { ...S.DEFAULT_SETTINGS, maxFileBytes: 0 };
@@ -2084,15 +2174,17 @@ class DriveService extends EventEmitter {
       dirs++;
       const walk = async (dirAbs, nodeId, rel) => {
         let entries;
-        try { entries = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { out.skipped++; return; }
+        try { entries = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { left(dirAbs); return; }
+        if (tree) tree.dirs.push(dirAbs);
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const e of entries) {
           const name = e.name.normalize('NFC');
           const r = S.joinRel(rel, name);
           const p = path.join(dirAbs, e.name);
-          if (e.isSymbolicLink()) { out.skipped++; continue; }
+          // links (and junctions) are never followed — and stay where they are
+          if (e.isSymbolicLink()) { left(dirAbs); continue; }
           if (e.isDirectory()) {
-            if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { out.skipped++; continue; }
+            if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { left(dirAbs); continue; }
             const child = vaultId ? await this._run(() => this._vaultMkdir(vaultId, nodeId, name)) : await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
               if (!(err && err.status === 409)) throw err;
               const kids = await this.api.childrenAll(nodeId);
@@ -2104,18 +2196,22 @@ class DriveService extends EventEmitter {
             await walk(p, child.id, r);
           } else if (e.isFile()) {
             let st;
-            try { st = await fs.promises.stat(p); } catch { out.skipped++; continue; }
+            try { st = await fs.promises.lstat(p); } catch { left(dirAbs); continue; }
+            if (!st.isFile()) { left(dirAbs); continue; }
             const why = S.excluded(r, { dir: false, size: st.size }, settings);
-            if (why) { if (why !== 'temp') out.skipped++; continue; }
+            if (why) { if (why !== 'temp') out.skipped++; VM.keep(tree, dirAbs); continue; }
             // an empty file only goes to Drives that take them (1.5 'emptyFiles'; a vault's file always has its header)
             if (!st.size && !vaultId && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
-            if (files >= FOLDER_MAX_FILES) { out.skipped++; continue; }
+            if (files >= FOLDER_MAX_FILES) { left(dirAbs); continue; }
             files++;
-            this._queueFile(nodeId, p, name, st, out, vaultId);
+            this._queueFile(nodeId, p, name, st, out, vaultId, { batch, tree });
+          } else {
+            VM.keep(tree, dirAbs);
           }
         }
       };
-      await walk(abs, made.id, '');
+      await walk(tree ? tree.root : abs, made.id, '');
+      if (tree) tree.complete = true;
       out.folders += dirs;
       this._set(row.id, { state: 'done', nodeId: made.id, name: made.name, files });
       this.emit('changed', { folderId: parentId });
@@ -2165,6 +2261,7 @@ class DriveService extends EventEmitter {
     if (choice !== 'version' && choice !== 'rename') {
       this._jobs.delete(id);
       this._set(id, { state: 'skipped' });
+      this._settleMove(job, 'skipped');
       return { ok: true };
     }
     job.choice = choice;
@@ -2188,6 +2285,8 @@ class DriveService extends EventEmitter {
           this.log.info(`Drive upload of a file failed: ${code}`);
           this._jobs.delete(job.id);
           this._set(job.id, { state: 'failed', code });
+          // into a vault: its original stays
+          this._settleMove(job, 'failed');
         }
       }
     } finally {
@@ -2278,11 +2377,13 @@ class DriveService extends EventEmitter {
     await fs.promises.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, `${job.id}-${crypto.randomBytes(6).toString('hex')}.enc`);
     let r;
+    let sent = null;   // the ciphertext that went up: { size, mtimeMs, cipherSize, sha256 }
     try {
       r = await this.vault.withCurrent(vaultId, async (cur) => {
         let enc;
         try {
-          enc = await V.encryptFile(cur.tk, vaultId, cur.keyVersion, job.path, tmp);
+          enc = await V.encryptFile(cur.tk, vaultId, cur.keyVersion, job.path, tmp, { sha256: !!job.batch });
+          sent = enc;
         } catch (err) {
           if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'changed' ? 'missing' : 'invalid' });
           throw err;
@@ -2298,7 +2399,19 @@ class DriveService extends EventEmitter {
     }
     this.vault.nameOf(r.node);
     this._jobs.delete(job.id);
-    this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name });
+    // "In Tresor verschieben": the original goes only once the vault holds the very ciphertext sent
+    let removal = null;
+    if (job.batch) {
+      if (VM.verified(r.node, sent)) {
+        removal = await VM.removeOriginal(job.path, sent, { tree: job.tree });
+      } else {
+        this.log.warn('Drive vault: the uploaded file differs from the ciphertext sent; the original stays');
+        removal = { original: 'kept', reason: 'verify' };
+      }
+      if (removal.original !== 'deleted') this.log.info(`Drive vault move: original kept (${removal.reason})`);
+    }
+    this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name, ...(removal ? { original: removal.original, originalReason: removal.reason || null } : {}) });
+    this._settleMove(job, 'done', removal);
     this.emit('changed', { folderId: job.folderId });
   }
 

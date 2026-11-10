@@ -125,7 +125,7 @@ describe('createBridgeApi', () => {
       'cameras:push', 'cameras:state',
       'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:typing', 'chat:unread',
-      'drive:changed', 'drive:guard', 'drive:op', 'drive:remote', 'drive:state', 'drive:sync', 'drive:transfers', 'drive:vault', 'drive:vault-lock',
+      'drive:changed', 'drive:guard', 'drive:op', 'drive:remote', 'drive:state', 'drive:sync', 'drive:transfers', 'drive:vault', 'drive:vault-lock', 'drive:vault-move',
       'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
       'locale:changed', 'mail:calendar', 'mail:changed', 'mail:contacts', 'mail:loading', 'mail:outbox', 'mail:resources', 'mail:state', 'navigate', 'notes:changed', 'notes:import', 'notes:state', 'notes:vault', 'notes:vault-lock', 'notify:fallback', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
       'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',

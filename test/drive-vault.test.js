@@ -232,6 +232,11 @@ describe('DriveService: vault folders', () => {
     const file = [...srv.state.nodes.values()].find((n) => n.parentId === made.node.id && !n.isDir);
     assert.equal(file.mime, 'application/octet-stream');
     assert.equal(fs.readdirSync(path.join(tmp, 'vault-up')).length, 0, 'the ciphertext copy is gone');
+    // "In Tresor verschieben": the original is gone from this PC for good
+    assert.match(q.move, /^m\d+$/);
+    assert.equal(svc.transfers().find((t) => t.id === q.queued[0]).move, true);
+    assert.equal(fs.existsSync(path.join(src, 'Kontoauszug.txt')), false, 'the original is deleted');
+    assert.equal(svc.transfers().find((t) => t.id === q.queued[0]).original, 'deleted');
 
     // inside: the folder with its names and crumbs
     const inside = await svc.folder(made.node.id);
@@ -262,6 +267,7 @@ describe('DriveService: vault folders', () => {
     assert.equal(c2.body.onConflict, 'version');
     assert.equal(srv.state.nodes.get(file.id).rev, 2);
     // "Beide behalten": a free name
+    fs.writeFileSync(path.join(src, 'Kontoauszug.txt'), 'Fassung 3');
     const q3 = await svc.upload(made.node.id, [path.join(src, 'Kontoauszug.txt')]);
     await until(() => svc.transfers().some((t) => t.id === q3.queued[0] && t.state === 'conflict'));
     svc.resolve(q3.queued[0], 'rename');

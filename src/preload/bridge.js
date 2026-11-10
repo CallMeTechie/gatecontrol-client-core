@@ -615,6 +615,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         viewClose:    (token) => ipcRenderer.invoke('drive:vault:view:close', { token }),
         protect:      (on) => ipcRenderer.invoke('drive:vault:protect', { on: on === true }),
         onLock:       (cb) => subscribe('drive:vault-lock', cb),
+        // "In Tresor verschieben": a batch is through (moved, deleted, kept, keptFiles, notMoved, folders)
+        onMove:       (cb) => subscribe('drive:vault-move', cb),
       },
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {
