@@ -26,7 +26,8 @@
  *   drive:preview         ({ mediaId, large? }) → { ok, mime, data: Uint8Array }
  *   drive:pick            () → file dialog → { ok, paths } | { ok: false, code: 'cancelled' }
  *   drive:pick-folders    () → folder dialog ("Ordner hochladen") → { ok, paths } | { ok: false, code: 'cancelled' }
- *   drive:upload          ({ parentId, paths }) → { ok, queued, rejected, folders, skipped }  (files and whole folders)
+ *   drive:upload          ({ parentId, paths }) → { ok, queued, rejected, folders, skipped, move }  (files and whole
+ *                         folders; into a vault `move` is the batch id: the originals are deleted once in the vault)
  *   drive:upload:resolve  ({ id, choice: 'version' | 'rename' | null }) → { ok }
  *   drive:transfers       () → { ok, transfers }
  *   drive:transfers:clear () → { ok, transfers }
@@ -155,7 +156,8 @@
  * Events to the main window: drive:state, drive:transfers, drive:changed, drive:remote
  * ({ areas, seq }: Drive changed elsewhere), drive:guard (guard state), drive:vault ({ vault, event, device,
  * keyVersion }: a vault request / approval / new key), drive:vault-lock ({ locked, reason }: Drive 1.11), drive:op
- * (the row of a job that ended: Drive 1.12), drive:sync.
+ * (the row of a job that ended: Drive 1.12), drive:vault-move ("In Tresor verschieben": a batch is through —
+ * { id, folderId, moved, deleted, kept, keptFiles [{ id, name, reason }], notMoved, folders { removed, kept } }), drive:sync.
  */
 
 const SC = require('../utils/scan');
@@ -170,6 +172,7 @@ const DRIVE_EVENTS = {
   vault: 'drive:vault',
   vaultLock: 'drive:vault-lock',
   op: 'drive:op',
+  vaultMove: 'drive:vault-move',
 };
 
 function fail(err) {

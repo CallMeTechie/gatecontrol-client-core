@@ -381,8 +381,9 @@ function suite(PREFIX) {
 
   /**
    * Encrypts the file `src` chunk by chunk into `dest` (created / replaced) → { size, cipherSize, keyVersion }.
-   * o: { chunkSize, salt (test vectors), onProgress(done, total), signal: { aborted } }. A file that changes its size
-   * while it is read fails with 'changed'.
+   * o: { chunkSize, salt (test vectors), onProgress(done, total), signal: { aborted }, sha256 (true: also the SHA-256
+   * of the ciphertext written, hex) }. A file that changes its size while it is read fails with 'changed'. `mtimeMs`:
+   * the file's mtime when it was opened ("In Tresor verschieben" compares it before deleting the original).
    */
   async function encryptFile(tk, vaultId, keyVersion, src, dest, o = {}) {
     const cs = o.chunkSize || CHUNK;
@@ -391,10 +392,13 @@ function suite(PREFIX) {
     const inp = await fs.promises.open(src, 'r');
     let out = null;
     const key = fileKey(tk, vaultId, salt);
+    const hash = o.sha256 ? crypto.createHash('sha256') : null;
     try {
-      const size = (await inp.stat()).size;
+      const st = await inp.stat();
+      const size = st.size;
       out = await fs.promises.open(dest, 'w');
       await out.write(head, 0, head.length, null);
+      if (hash) hash.update(head);
       const n = Math.max(1, Math.ceil(size / cs));
       const piece = Buffer.alloc(Math.min(cs, Math.max(size, 1)));
       let done = 0;
@@ -405,12 +409,13 @@ function suite(PREFIX) {
         if (got !== want) throw new DriveVaultError('changed', 'the file changed while it was read');
         const ct = gcmSeal(key, chunkNonce(i), chunkAad(head, i, i === n - 1), piece.subarray(0, want));
         await out.write(ct, 0, ct.length, null);
+        if (hash) hash.update(ct);
         done += want;
         if (typeof o.onProgress === 'function') { try { o.onProgress(done, size); } catch { /* the caller's */ } }
       }
       wipe(piece);
       await out.sync().catch(() => {});
-      return { size, cipherSize: cipherSize(size, cs), keyVersion };
+      return { size, cipherSize: cipherSize(size, cs), keyVersion, mtimeMs: st.mtimeMs, sha256: hash ? hash.digest('hex') : null };
     } finally {
       wipe(key);
       await inp.close().catch(() => {});
