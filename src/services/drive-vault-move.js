@@ -11,7 +11,8 @@
  *
  *   'changed'  it changed while it was read or uploaded (size or mtime), is no plain file any more, or does not lie
  *              where it was found any more (a folder on its way became a link / junction out of the folder picked);
- *   'locked'   Windows does not let it go (open in a program, read-only: EPERM / EACCES / EBUSY);
+ *   'locked'   read-only (the Windows attribute — unlink would clear it quietly), or Windows does not let it go
+ *              (open in a program: EPERM / EACCES / EBUSY);
  *   'verify'   the vault's answer is not the ciphertext sent;
  *   'error'    anything else.
  *
@@ -83,6 +84,8 @@ async function removeOriginal(file, read, { tree = null, fsp = fs.promises } = {
     }
     const st = await fsp.lstat(file);
     if (!st.isFile() || st.size !== read.size || st.mtimeMs !== read.mtimeMs) return kept('changed');
+    // read-only (Windows: the attribute, which unlink would quietly clear): the person's protection stays
+    if ((st.mode & 0o222) === 0) return kept('locked');
     await fsp.unlink(file);
     return { original: 'deleted' };
   } catch (err) {

@@ -139,6 +139,12 @@ describe('drive-vault-move: the helpers', () => {
       assert.deepEqual(await VM.removeOriginal(d, read(d), { fsp }), { original: 'kept', reason: 'locked' }, code);
       assert.equal(fs.existsSync(d), true);
     }
+    // read-only: kept (on Windows unlink would clear the attribute and delete it)
+    const ro = write(path.join(dir, 'schreibgeschuetzt.txt'), 'ro');
+    fs.chmodSync(ro, 0o444);
+    cleanup.push(() => { try { fs.chmodSync(ro, 0o644); } catch { /* gone */ } });
+    assert.deepEqual(await VM.removeOriginal(ro, read(ro)), { original: 'kept', reason: 'locked' });
+    assert.equal(fs.existsSync(ro), true);
     assert.deepEqual(await VM.removeOriginal(path.join(dir, 'gone.txt'), { size: 1, mtimeMs: 1 }), { original: 'deleted' });
     assert.deepEqual(await VM.removeOriginal('relative.txt', { size: 1, mtimeMs: 1 }), { original: 'kept', reason: 'error' });
     // a file of a dropped folder: never outside it
@@ -228,22 +234,26 @@ describe('DriveService: "In Tresor verschieben"', () => {
     assert.equal(fs.existsSync(again), false);
   });
 
-  it('a locked or read-only original stays and is reported', async () => {
+  it('a locked (open) or read-only original stays and is reported', async () => {
     const { svc, vaultId, moved, row } = await vaultSetup();
     const src = tmpDir('dvm-lock-');
     const locked = write(path.join(src, 'offen.docx'), 'in Word geöffnet');
     const free = write(path.join(src, 'frei.txt'), 'frei');
+    const ro = write(path.join(src, 'schreibgeschuetzt.pdf'), 'nur lesen');
+    fs.chmodSync(ro, 0o444);
+    cleanup.push(() => { try { fs.chmodSync(ro, 0o644); } catch { /* gone */ } });
     const unlink = fs.promises.unlink;
     fs.promises.unlink = async (p) => {
       if (p === locked) throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' });
       return unlink(p);
     };
     cleanup.push(() => { fs.promises.unlink = unlink; });
-    const q = await svc.upload(vaultId, [locked, free]);
+    const q = await svc.upload(vaultId, [locked, free, ro]);
     const m = await moved(q);
-    assert.deepEqual([m.moved, m.deleted, m.kept], [2, 1, 1]);
-    assert.deepEqual(m.keptFiles, [{ id: q.queued[0], name: 'offen.docx', reason: 'locked' }]);
+    assert.deepEqual([m.moved, m.deleted, m.kept], [3, 1, 2]);
+    assert.deepEqual(m.keptFiles, [{ id: q.queued[0], name: 'offen.docx', reason: 'locked' }, { id: q.queued[2], name: 'schreibgeschuetzt.pdf', reason: 'locked' }]);
     assert.equal(fs.existsSync(locked), true);
+    assert.equal(fs.existsSync(ro), true);
     assert.equal(fs.existsSync(free), false);
     assert.deepEqual([row(q.queued[0]).state, row(q.queued[0]).original, row(q.queued[0]).originalReason], ['done', 'kept', 'locked']);
   });
