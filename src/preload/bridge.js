@@ -288,6 +288,33 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onPush:    (cb) => subscribe('school:push', cb),
     },
 
+    // ── Familie (plugin gatecontrol-familie: "Internet zu Hause") ─
+    // Served when the app passes a FamilieService to registerBaseHandlers
+    // (ipc/familie-handlers.js lists arguments and answers).
+    familie: {
+      status:    () => ipcRenderer.invoke('familie:status'),
+      check:     () => ipcRenderer.invoke('familie:check'),
+      internet:  (opts) => ipcRenderer.invoke('familie:internet', { refresh: !!(opts && opts.refresh) }),
+      // how: exactly one of { minutes } | { until: 'HH:MM' | ISO } | { add }
+      pause:     (childId, how) => ipcRenderer.invoke('familie:internet:pause', { childId, ...(how && typeof how === 'object' ? { minutes: how.minutes, until: how.until, add: how.add } : {}) }),
+      resume:    (childId) => ipcRenderer.invoke('familie:internet:resume', { childId }),
+      // "Heute länger": minutes 0 ends it; fromNow: count from now, not from the start of the blocked time
+      extend:    (childId, minutes, opts) => ipcRenderer.invoke('familie:internet:extend', { childId, minutes, fromNow: !!(opts && opts.fromNow) }),
+      rules:       (opts) => ipcRenderer.invoke('familie:rules', { refresh: !!(opts && opts.refresh) }),
+      ruleOptions: (opts) => ipcRenderer.invoke('familie:rules:options', { refresh: !!(opts && opts.refresh) }),
+      setRuleActive:  (id, active) => ipcRenderer.invoke('familie:rules:active', { id, active }),
+      // actions: every action of the rule (the `input` of those kept, the changed one)
+      setRuleActions: (id, actions) => ipcRenderer.invoke('familie:rules:actions', { id, actions }),
+      presence:  (opts) => ipcRenderer.invoke('familie:presence', { refresh: !!(opts && opts.refresh) }),
+      setShare:  (share) => ipcRenderer.invoke('familie:presence:share', { share }),
+      wifi:      (opts) => ipcRenderer.invoke('familie:wifi', { refresh: !!(opts && opts.refresh) }),
+      setWifi:   (enabled) => ipcRenderer.invoke('familie:wifi:set', { enabled }),
+      setWifiDevice: (id, counts) => ipcRenderer.invoke('familie:wifi:device', { id, counts }),
+      avatar:    (url) => ipcRenderer.invoke('familie:avatar', { url }),
+      onState:   (cb) => subscribe('familie:state', cb),
+      onPush:    (cb) => subscribe('familie:push', cb),
+    },
+
     // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
     // Served when the app passes a CamerasService to registerBaseHandlers
     // (ipc/camera-handlers.js lists arguments and answers). Pictures and

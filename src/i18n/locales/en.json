@@ -1230,6 +1230,277 @@
       "failed": "That did not work ({{code}})."
     }
   },
+  "familie": {
+    "title": "Family",
+    "tabs": "Choose a section",
+    "refresh": "Refresh",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "cancel": "Cancel",
+    "stale": "No connection – you are seeing the last loaded state.",
+    "and": "and",
+    "quoted": "“{{text}}”",
+    "inboxOpen": "Open in “Internet at home”",
+    "tab": {
+      "internet": "Internet at home",
+      "rules": "Rules",
+      "presence": "My presence"
+    },
+    "when": {
+      "tomorrow": "tomorrow {{time}}",
+      "yesterday": "yesterday {{time}}",
+      "day": "{{day}}, {{time}}"
+    },
+    "dur": {
+      "min": "{{n}} min",
+      "h": "{{n}} h",
+      "hm": "{{h}} h {{m}} min"
+    },
+    "btn": {
+      "pause": "Pause",
+      "extend": "Longer today",
+      "resume": "Resume",
+      "add30": "+30 min",
+      "extend30": "+30 min",
+      "endExtra": "End extra time",
+      "reload": "Refresh"
+    },
+    "internet": {
+      "chip": {
+        "on": "Internet on",
+        "paused": "paused until {{time}}",
+        "extended": "longer today until {{time}}",
+        "blocked": "blocked time until {{time}}",
+        "blockedNow": "blocked time",
+        "unfiltered": "not filtered",
+        "error": "not readable"
+      },
+      "presence": {
+        "homeWifi": "at home · Wi-Fi",
+        "homeApp": "at home · app",
+        "home": "at home",
+        "away": "away"
+      },
+      "devices": {
+        "one": "1 device",
+        "other": "{{count}} devices"
+      },
+      "block": {
+        "all": "internet off"
+      },
+      "cat": {
+        "social": "Social networks",
+        "games": "Games",
+        "video": "Videos"
+      },
+      "sub": {
+        "next": "Next blocked time from {{time}}: {{what}}",
+        "active": "Blocked time is running: {{what}}",
+        "noSchedule": "No blocked times",
+        "suspended": "Blocked time from {{time}} suspended",
+        "suspendedAll": "Blocked times suspended",
+        "error": "The state cannot be read right now.",
+        "noDevices": "No devices assigned in the home network. An admin assigns them in the network watch. Pausing would have no effect.",
+        "noFilter": "No gateway with a DNS filter knows the devices of {{name}}. Pausing would have no effect."
+      },
+      "pausedOn": {
+        "one": "Internet off on 1 device. GateControl and allowed sites keep working.",
+        "other": "Internet off on {{count}} devices. GateControl and allowed sites keep working.",
+        "none": "Internet off. GateControl and allowed sites keep working."
+      },
+      "by": "By {{name}} at {{time}}.",
+      "byName": "By {{name}}.",
+      "extBy": "by {{name}} at {{time}}",
+      "byRule": "Paused by the rule",
+      "byRuleUnnamed": "Paused by a rule without a name",
+      "extRule": "Extended by the rule",
+      "extRuleUnnamed": "Extended by a rule without a name",
+      "openRule": "Open rule",
+      "awayPause": "The pause takes effect as soon as {{name}} is at home.",
+      "awayExtra": "The extra time takes effect as soon as {{name}} is at home.",
+      "foot": {
+        "parent": "Applies on the Wi-Fi at home. It does not apply on mobile data. The blocked times are set by the admin in the DNS filter of the gateway.",
+        "child": "View only. Your parents decide on pauses and extra time."
+      },
+      "none": {
+        "title": "This server has no “Internet at home”.",
+        "hint": "It needs a gateway with a DNS filter in the home network. An admin sets it up in GateControl.",
+        "old": "It needs a newer version of the Familie plugin on the server."
+      },
+      "empty": {
+        "title": "No children",
+        "parent": "There are no minor children in your family.",
+        "child": "There is nothing to see here for you."
+      }
+    },
+    "dialog": {
+      "told": "{{name}} gets a notification in GateControl."
+    },
+    "pause": {
+      "title": "Pause for {{name}}",
+      "howLong": "How long",
+      "until": "until a time",
+      "untilLabel": "Pause until",
+      "untilToday": "Today until {{time}}. If the time has already passed, it means tomorrow.",
+      "untilTomorrow": "That time has already passed today: pause until tomorrow {{time}}.",
+      "untilMissing": "Please choose a time.",
+      "durHint": "Pause until {{time}}."
+    },
+    "extend": {
+      "title": "Longer today for {{name}}",
+      "howLong": "How much longer",
+      "from": "Counts from",
+      "fromSchedule": "start of the blocked time ({{time}})",
+      "fromNow": "now",
+      "hintSchedule": "The blocked time only starts at {{time}} today.",
+      "hintNow": "The blocked times are suspended until {{time}}.",
+      "submit": "Allow"
+    },
+    "toast": {
+      "paused": "Internet of {{name}} paused until {{time}}",
+      "resumed": "Internet of {{name}} is back on",
+      "extended": "{{name}} may stay online longer today: until {{time}}",
+      "extraEnded": "Extra time of {{name}} ended"
+    },
+    "rules": {
+      "untitled": "Rule without a name",
+      "someone": "someone",
+      "unavailable": "Action not available",
+      "active": "Rule “{{title}}” active",
+      "edit": "Edit",
+      "editNamed": "Edit “{{title}}”: action “Internet at home”",
+      "saved": "Rule saved",
+      "on": "Rule switched on",
+      "off": "Rule switched off",
+      "foot": "Here you switch rules on and off and edit the action “Internet at home”. New rules, triggers and other actions are edited in the portal or in the Android app.",
+      "empty": {
+        "title": "No rules yet",
+        "hint": "You create rules in the portal or in the Android app. Here you switch them on and off and edit the action “Internet at home”."
+      },
+      "editOff": {
+        "readonly": "You cannot edit this rule.",
+        "parents_only": "Only parents can edit the action “Internet at home”.",
+        "unavailable": "This server does not offer the action “Internet at home”.",
+        "full": "This rule already has 10 actions."
+      },
+      "problem": {
+        "not_found": "{{name}} is no longer a minor child of the family",
+        "not_allowed": "Internet of {{name}}: the owner of the rule is no longer a parent",
+        "unavailable": "Internet of {{name}}: this server has no “Internet at home”"
+      },
+      "trig": {
+        "daily": "Daily at {{time}}",
+        "days": "{{days}} at {{time}}",
+        "all_away": "When everyone is away",
+        "first_home": "When the first person comes home",
+        "child_home_alone": "When a child comes home alone",
+        "person_home": "When {{name}} comes home",
+        "person_away": "When {{name}} leaves",
+        "place_enter": "When {{name}} arrives at {{place}}",
+        "place_exit": "When {{name}} leaves {{place}}",
+        "school": "When the timetable of {{name}} changes",
+        "schoolAny": "When a timetable changes",
+        "other": "Another trigger"
+      },
+      "act": {
+        "pauseFor": "pause the internet of {{name}} ({{dur}})",
+        "pauseUntil": "pause the internet of {{name}} (until {{time}})",
+        "pause": "pause the internet of {{name}}",
+        "resume": "resume the internet of {{name}}",
+        "notifyTo": "notification to {{names}}",
+        "notifyParents": "notification to the parents",
+        "notifyAll": "notification to everyone",
+        "notify": "notification",
+        "chatFamily": "message in the family chat",
+        "chatTo": "chat message to {{names}}",
+        "chat": "chat message",
+        "quick": "switch a device",
+        "quickVerb": "{{title}}: {{verb}}",
+        "other": "another action"
+      },
+      "dialog": {
+        "title": "Action: Internet at home",
+        "which": "Action",
+        "new": "New action",
+        "who": "For whom",
+        "what": "What",
+        "howLong": "How long",
+        "untilLabel": "Pause until",
+        "untilHint": "Until the next such time, in the time zone of the family.",
+        "onBehalf": "The rule pauses on behalf of {{name}}.",
+        "onBehalfResume": "The rule resumes on behalf of {{name}}.",
+        "save": "Save",
+        "remove": "Remove action",
+        "onlyAction": "The only action of a rule cannot be removed.",
+        "full": "A rule has at most 10 actions.",
+        "gone": "{{name}} (not available)",
+        "op": {
+          "pause": "Pause",
+          "resume": "Resume"
+        }
+      }
+    },
+    "presence": {
+      "now": "Right now",
+      "share": {
+        "title": "Share presence",
+        "hint": "The Android app tells your server “at home” or “away”."
+      },
+      "wifi": {
+        "title": "Use Wi-Fi detection",
+        "hint": "The gateway reports “at home” as soon as one of your devices is on the home Wi-Fi.",
+        "off": "Without Wi-Fi detection only what the app reports counts."
+      },
+      "state": {
+        "homeSince": "at home since {{time}}",
+        "home": "at home",
+        "awaySince": "away since {{time}}",
+        "away": "away",
+        "unknown": "nothing reported yet",
+        "not_shared": "not shared"
+      },
+      "source": {
+        "wifi": "Source: Wi-Fi",
+        "app": "Source: app"
+      },
+      "devices": {
+        "title": "My devices on the home Wi-Fi",
+        "empty": "No devices are assigned to you yet.",
+        "unnamed": "Device",
+        "lastSeen": "last seen {{time}}",
+        "never": "not seen yet",
+        "counts": "counts",
+        "countsNot": "does not count",
+        "foot": "An admin assigns the devices in the network watch. This setting applies only to you."
+      }
+    },
+    "off": {
+      "title": "Switched off in Familie",
+      "hint": "This function is not switched on in the settings of the Familie plugin."
+    },
+    "unavailable": {
+      "title": "Family is not available",
+      "hint": "The server does not offer the Familie plugin for this device right now, or you are not a member of a family."
+    },
+    "err": {
+      "network": "No connection to the server.",
+      "timeout": "The server does not answer.",
+      "forbidden": "This is not allowed for this device.",
+      "invalid": "The entry is not valid. Please check it and try again.",
+      "parents_only": "Only parents can do that.",
+      "not_found": "This no longer exists. Please refresh.",
+      "unavailable": "This server has no “Internet at home”.",
+      "not_person": "GateControl sees no signed-in person for this device.",
+      "module_off": "This function is switched off in Familie.",
+      "not_member": "You are not a member of a family.",
+      "not_configured": "The app is not connected to a server yet.",
+      "auth": "The sign-in to the server has expired.",
+      "too_many": "There are already too many of them.",
+      "state_required": "Another action of this rule is incomplete. Please check it in the portal.",
+      "server": "The server reports an error. Please try again later.",
+      "failed": "That did not work ({{code}})."
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Share files, text and links with your devices, people, the NAS or by link",

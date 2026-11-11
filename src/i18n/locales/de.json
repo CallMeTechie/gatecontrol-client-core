@@ -1230,6 +1230,277 @@
       "failed": "Das hat nicht geklappt ({{code}})."
     }
   },
+  "familie": {
+    "title": "Familie",
+    "tabs": "Bereich wählen",
+    "refresh": "Aktualisieren",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "cancel": "Abbrechen",
+    "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
+    "and": "und",
+    "quoted": "„{{text}}“",
+    "inboxOpen": "In „Internet zu Hause“ öffnen",
+    "tab": {
+      "internet": "Internet zu Hause",
+      "rules": "Regeln",
+      "presence": "Meine Anwesenheit"
+    },
+    "when": {
+      "tomorrow": "morgen {{time}}",
+      "yesterday": "gestern {{time}}",
+      "day": "{{day}}, {{time}}"
+    },
+    "dur": {
+      "min": "{{n}} Min.",
+      "h": "{{n}} Std.",
+      "hm": "{{h}} Std. {{m}} Min."
+    },
+    "btn": {
+      "pause": "Pausieren",
+      "extend": "Heute länger",
+      "resume": "Fortsetzen",
+      "add30": "+30 Min.",
+      "extend30": "+30 Min.",
+      "endExtra": "Extra-Zeit beenden",
+      "reload": "Aktualisieren"
+    },
+    "internet": {
+      "chip": {
+        "on": "Internet an",
+        "paused": "pausiert bis {{time}}",
+        "extended": "heute länger bis {{time}}",
+        "blocked": "Sperrzeit bis {{time}}",
+        "blockedNow": "Sperrzeit",
+        "unfiltered": "nicht gefiltert",
+        "error": "nicht lesbar"
+      },
+      "presence": {
+        "homeWifi": "zu Hause · WLAN",
+        "homeApp": "zu Hause · App",
+        "home": "zu Hause",
+        "away": "unterwegs"
+      },
+      "devices": {
+        "one": "1 Gerät",
+        "other": "{{count}} Geräte"
+      },
+      "block": {
+        "all": "Internet aus"
+      },
+      "cat": {
+        "social": "Soziale Netzwerke",
+        "games": "Spiele",
+        "video": "Videos"
+      },
+      "sub": {
+        "next": "Nächste Sperrzeit ab {{time}}: {{what}}",
+        "active": "Sperrzeit läuft: {{what}}",
+        "noSchedule": "Keine Sperrzeiten",
+        "suspended": "Sperrzeit ab {{time}} ausgesetzt",
+        "suspendedAll": "Sperrzeiten ausgesetzt",
+        "error": "Zustand gerade nicht lesbar.",
+        "noDevices": "Keine Geräte im Heimnetz zugeordnet. Ein Admin ordnet sie im Netzwerk-Wächter zu. Pausieren hätte keine Wirkung.",
+        "noFilter": "Kein Gateway mit DNS-Filter kennt die Geräte von {{name}}. Pausieren hätte keine Wirkung."
+      },
+      "pausedOn": {
+        "one": "Internet auf 1 Gerät aus. GateControl und erlaubte Seiten gehen weiter.",
+        "other": "Internet auf {{count}} Geräten aus. GateControl und erlaubte Seiten gehen weiter.",
+        "none": "Internet aus. GateControl und erlaubte Seiten gehen weiter."
+      },
+      "by": "Von {{name}} um {{time}}.",
+      "byName": "Von {{name}}.",
+      "extBy": "von {{name}} um {{time}}",
+      "byRule": "Pausiert von der Regel",
+      "byRuleUnnamed": "Pausiert von einer Regel ohne Namen",
+      "extRule": "Verlängert von der Regel",
+      "extRuleUnnamed": "Verlängert von einer Regel ohne Namen",
+      "openRule": "Regel öffnen",
+      "awayPause": "Die Pause wirkt, sobald {{name}} zu Hause ist.",
+      "awayExtra": "Die Extra-Zeit wirkt, sobald {{name}} zu Hause ist.",
+      "foot": {
+        "parent": "Gilt im WLAN zu Hause. Unterwegs im Mobilfunk gilt es nicht. Die Sperrzeiten legt der Admin im DNS-Filter des Gateways fest.",
+        "child": "Nur zur Ansicht. Pausen und Extra-Zeit legen deine Eltern fest."
+      },
+      "none": {
+        "title": "Auf diesem Server gibt es kein „Internet zu Hause“.",
+        "hint": "Dafür braucht es ein Gateway mit DNS-Filter im Heimnetz. Ein Admin richtet es in GateControl ein.",
+        "old": "Dafür braucht es eine neuere Version des Familie-Plugins auf dem Server."
+      },
+      "empty": {
+        "title": "Keine Kinder",
+        "parent": "In eurer Familie gibt es keine minderjährigen Kinder.",
+        "child": "Für dich gibt es hier nichts zu sehen."
+      }
+    },
+    "dialog": {
+      "told": "{{name}} bekommt eine Mitteilung in GateControl."
+    },
+    "pause": {
+      "title": "Pause für {{name}}",
+      "howLong": "Wie lange",
+      "until": "bis Uhrzeit",
+      "untilLabel": "Pause bis",
+      "untilToday": "Heute bis {{time}} Uhr. Ist die Uhrzeit schon vorbei, gilt sie für morgen.",
+      "untilTomorrow": "Die Uhrzeit ist heute schon vorbei: Pause bis morgen {{time}} Uhr.",
+      "untilMissing": "Bitte eine Uhrzeit wählen.",
+      "durHint": "Pause bis {{time}} Uhr."
+    },
+    "extend": {
+      "title": "Heute länger für {{name}}",
+      "howLong": "Wie viel länger",
+      "from": "Zählt ab",
+      "fromSchedule": "Beginn der Sperrzeit ({{time}})",
+      "fromNow": "jetzt",
+      "hintSchedule": "Die Sperrzeit beginnt heute erst um {{time}}.",
+      "hintNow": "Die Sperrzeiten sind bis {{time}} ausgesetzt.",
+      "submit": "Erlauben"
+    },
+    "toast": {
+      "paused": "Internet von {{name}} pausiert bis {{time}}",
+      "resumed": "Internet von {{name}} läuft wieder",
+      "extended": "{{name}} darf heute länger: bis {{time}}",
+      "extraEnded": "Extra-Zeit von {{name}} beendet"
+    },
+    "rules": {
+      "untitled": "Regel ohne Namen",
+      "someone": "jemand",
+      "unavailable": "Aktion nicht verfügbar",
+      "active": "Regel „{{title}}“ aktiv",
+      "edit": "Bearbeiten",
+      "editNamed": "„{{title}}“ bearbeiten: Aktion „Internet zu Hause“",
+      "saved": "Regel gespeichert",
+      "on": "Regel eingeschaltet",
+      "off": "Regel ausgeschaltet",
+      "foot": "Hier schaltest du Regeln ein und aus und bearbeitest die Aktion „Internet zu Hause“. Neue Regeln, Auslöser und andere Aktionen bearbeitest du im Portal oder in der Android-App.",
+      "empty": {
+        "title": "Noch keine Regeln",
+        "hint": "Regeln legst du im Portal oder in der Android-App an. Hier schaltest du sie ein und aus und bearbeitest die Aktion „Internet zu Hause“."
+      },
+      "editOff": {
+        "readonly": "Diese Regel kannst du nicht bearbeiten.",
+        "parents_only": "Die Aktion „Internet zu Hause“ können nur Eltern bearbeiten.",
+        "unavailable": "Die Aktion „Internet zu Hause“ gibt es auf diesem Server nicht.",
+        "full": "Diese Regel hat schon 10 Aktionen."
+      },
+      "problem": {
+        "not_found": "{{name}} ist kein minderjähriges Kind der Familie mehr",
+        "not_allowed": "Internet von {{name}}: Der Besitzer der Regel ist kein Elternteil mehr",
+        "unavailable": "Internet von {{name}}: Auf diesem Server gibt es kein „Internet zu Hause“"
+      },
+      "trig": {
+        "daily": "Täglich um {{time}}",
+        "days": "{{days}} um {{time}}",
+        "all_away": "Wenn alle weg sind",
+        "first_home": "Wenn die erste Person heimkommt",
+        "child_home_alone": "Wenn ein Kind allein heimkommt",
+        "person_home": "Wenn {{name}} heimkommt",
+        "person_away": "Wenn {{name}} weggeht",
+        "place_enter": "Wenn {{name}} bei {{place}} ankommt",
+        "place_exit": "Wenn {{name}} {{place}} verlässt",
+        "school": "Wenn sich bei {{name}} der Stundenplan ändert",
+        "schoolAny": "Wenn sich ein Stundenplan ändert",
+        "other": "Anderer Auslöser"
+      },
+      "act": {
+        "pauseFor": "Internet von {{name}} pausieren ({{dur}})",
+        "pauseUntil": "Internet von {{name}} pausieren (bis {{time}})",
+        "pause": "Internet von {{name}} pausieren",
+        "resume": "Internet von {{name}} fortsetzen",
+        "notifyTo": "Mitteilung an {{names}}",
+        "notifyParents": "Mitteilung an die Eltern",
+        "notifyAll": "Mitteilung an alle",
+        "notify": "Mitteilung",
+        "chatFamily": "Nachricht im Familienchat",
+        "chatTo": "Chat-Nachricht an {{names}}",
+        "chat": "Chat-Nachricht",
+        "quick": "Gerät schalten",
+        "quickVerb": "{{title}}: {{verb}}",
+        "other": "weitere Aktion"
+      },
+      "dialog": {
+        "title": "Aktion: Internet zu Hause",
+        "which": "Aktion",
+        "new": "Neue Aktion",
+        "who": "Für wen",
+        "what": "Was",
+        "howLong": "Wie lange",
+        "untilLabel": "Pausieren bis",
+        "untilHint": "Bis zur nächsten solchen Uhrzeit, in der Zeitzone der Familie.",
+        "onBehalf": "Die Regel pausiert im Namen von {{name}}.",
+        "onBehalfResume": "Die Regel setzt im Namen von {{name}} fort.",
+        "save": "Speichern",
+        "remove": "Aktion entfernen",
+        "onlyAction": "Die einzige Aktion einer Regel lässt sich nicht entfernen.",
+        "full": "Eine Regel hat höchstens 10 Aktionen.",
+        "gone": "{{name}} (nicht verfügbar)",
+        "op": {
+          "pause": "Pausieren",
+          "resume": "Fortsetzen"
+        }
+      }
+    },
+    "presence": {
+      "now": "Gerade",
+      "share": {
+        "title": "Anwesenheit teilen",
+        "hint": "Die Android-App meldet eurem Server „zu Hause“ oder „unterwegs“."
+      },
+      "wifi": {
+        "title": "WLAN-Erkennung verwenden",
+        "hint": "Das Gateway meldet „zu Hause“, sobald eines deiner Geräte im Heim-WLAN ist.",
+        "off": "Ohne WLAN-Erkennung zählt nur, was die App meldet."
+      },
+      "state": {
+        "homeSince": "zu Hause seit {{time}}",
+        "home": "zu Hause",
+        "awaySince": "unterwegs seit {{time}}",
+        "away": "unterwegs",
+        "unknown": "noch nichts gemeldet",
+        "not_shared": "wird nicht geteilt"
+      },
+      "source": {
+        "wifi": "Quelle: WLAN",
+        "app": "Quelle: App"
+      },
+      "devices": {
+        "title": "Meine Geräte im Heim-WLAN",
+        "empty": "Dir sind noch keine Geräte zugeordnet.",
+        "unnamed": "Gerät",
+        "lastSeen": "zuletzt gesehen {{time}}",
+        "never": "noch nicht gesehen",
+        "counts": "zählt",
+        "countsNot": "zählt nicht",
+        "foot": "Die Geräte ordnet ein Admin im Netzwerk-Wächter zu. Diese Einstellung gilt nur für dich."
+      }
+    },
+    "off": {
+      "title": "In Familie ausgeschaltet",
+      "hint": "Diese Funktion ist in den Einstellungen des Familie-Plugins nicht eingeschaltet."
+    },
+    "unavailable": {
+      "title": "Familie ist nicht verfügbar",
+      "hint": "Der Server bietet das Familie-Plugin für dieses Gerät gerade nicht an, oder du bist kein Mitglied einer Familie."
+    },
+    "err": {
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "forbidden": "Das ist für dieses Gerät nicht erlaubt.",
+      "invalid": "Die Angabe ist ungültig. Bitte prüfen und noch einmal versuchen.",
+      "parents_only": "Das können nur Eltern.",
+      "not_found": "Das gibt es nicht mehr. Bitte aktualisieren.",
+      "unavailable": "Auf diesem Server gibt es kein „Internet zu Hause“.",
+      "not_person": "GateControl erkennt für dieses Gerät keine angemeldete Person.",
+      "module_off": "Diese Funktion ist in Familie ausgeschaltet.",
+      "not_member": "Du bist kein Mitglied einer Familie.",
+      "not_configured": "Die App ist noch nicht mit einem Server verbunden.",
+      "auth": "Die Anmeldung am Server ist abgelaufen.",
+      "too_many": "Es gibt schon zu viele davon.",
+      "state_required": "Eine andere Aktion dieser Regel ist unvollständig. Bitte im Portal prüfen.",
+      "server": "Der Server meldet einen Fehler. Bitte später noch einmal versuchen.",
+      "failed": "Das hat nicht geklappt ({{code}})."
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Dateien, Text und Links an deine Geräte, Personen, das NAS oder per Link teilen",
