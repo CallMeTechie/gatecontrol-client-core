@@ -55,6 +55,7 @@ const GateDropApi = require('./gatedrop-api');
 const { PLUGINS_PATH, posInt } = require('../utils/messenger');
 const SC = require('../utils/scan');
 const print = require('../utils/print');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const { MessengerError } = MessengerApi;
 
@@ -89,7 +90,7 @@ class PrintService extends EventEmitter {
    * @param {object} [opts.drive] - DriveService (fileInfo / fileCopy): files of Drive can be printed
    * @param {Electron.Dialog} [opts.dialog] - the file dialog of pick()
    * @param {() => Electron.BrowserWindow|null} [opts.getMainWindow]
-   * @param {(name: string) => string|null} [opts.dialogPath] - start folder of the file dialog
+   * @param {(key: string) => string|undefined} [opts.dialogPath] - where the file dialog starts (utils/user-folders dialogPath)
    * @param {object} [opts.store] - electron-store: where the files of the last jobs lie ("Erneut drucken")
    * @param {object} [opts.api] - MessengerApi-compatible transport (tests)
    * @param {object} [opts.media] - upload({ path, size, mime }, { onProgress }) → { mediaId, scan? } (tests)
@@ -99,7 +100,7 @@ class PrintService extends EventEmitter {
    */
   constructor({
     apiClient, log, notificationCenter = null, pushClient = null, drive = null, dialog = null, getMainWindow = null,
-    dialogPath = null, store = null, api = null, media = null, timing = {}, now = Date.now, sleep = null,
+    dialogPath = defaultDialogPath, store = null, api = null, media = null, timing = {}, now = Date.now, sleep = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -113,7 +114,7 @@ class PrintService extends EventEmitter {
     this.drive = drive;
     this.dialog = dialog;
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
-    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : () => null;
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : () => undefined;
     this.store = store;
 
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };

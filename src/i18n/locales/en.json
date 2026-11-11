@@ -1509,7 +1509,6 @@
     "loading": "Loading …",
     "retry": "Try again",
     "cancel": "Cancel",
-    "close": "Close",
     "inboxOpen": "Open in “Print”",
     "navCount": {
       "one": "1 open job",
@@ -1521,8 +1520,7 @@
       "types": "PDF files, pictures, text and office files up to 50 MB.",
       "left": "{{left}} of {{total}} pages left today.",
       "waits": "The job waits until the printer is on.",
-      "nav": "Drop to print",
-      "label": "Drop area for printing. Enter opens the file dialog."
+      "nav": "Drop to print"
     },
     "printers": {
       "title": "Printers"
@@ -1806,10 +1804,7 @@
       "one": "Print …",
       "many": "Print {{count}} files …",
       "viewer": "Print",
-      "none": "Nothing here can be printed – PDF files, pictures, text and office files work.",
-      "blocked": "The virus scan blocked this file.",
-      "noRight": "You may not print – ask your admin.",
-      "key": "Ctrl+P"
+      "none": "Nothing here can be printed – PDF files, pictures, text and office files work."
     },
     "vault": {
       "title": "Print from the vault?",

@@ -1509,7 +1509,6 @@
     "loading": "Wird geladen …",
     "retry": "Erneut versuchen",
     "cancel": "Abbrechen",
-    "close": "Schließen",
     "inboxOpen": "In „Drucken“ öffnen",
     "navCount": {
       "one": "1 offener Auftrag",
@@ -1521,8 +1520,7 @@
       "types": "PDF, Bilder, Text und Office-Dateien bis 50 MB.",
       "left": "Heute noch {{left}} von {{total}} Seiten.",
       "waits": "Der Auftrag wartet, bis der Drucker an ist.",
-      "nav": "Zum Drucken ablegen",
-      "label": "Ablagefläche zum Drucken. Eingabetaste öffnet die Dateiauswahl."
+      "nav": "Zum Drucken ablegen"
     },
     "printers": {
       "title": "Drucker"
@@ -1806,10 +1804,7 @@
       "one": "Drucken …",
       "many": "{{count}} Dateien drucken …",
       "viewer": "Drucken",
-      "none": "Hier ist nichts zum Drucken dabei – es gehen PDF-Dateien, Bilder, Text und Office-Dateien.",
-      "blocked": "Der Virenscan hat diese Datei gesperrt.",
-      "noRight": "Du darfst nicht drucken – frag deinen Admin.",
-      "key": "Strg+P"
+      "none": "Hier ist nichts zum Drucken dabei – es gehen PDF-Dateien, Bilder, Text und Office-Dateien."
     },
     "vault": {
       "title": "Aus dem Tresor drucken?",
