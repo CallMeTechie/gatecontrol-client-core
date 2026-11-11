@@ -348,8 +348,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       },
       transfers: () => ipcRenderer.invoke('print:transfers'),
       cancelTransfer: (id) => ipcRenderer.invoke('print:transfer:cancel', { id }),
-      // "Erneut drucken": { jobId } | { transferId } → { ok, files, rejected, options }
-      again:     (ref) => ipcRenderer.invoke('print:again', { jobId: ref && ref.jobId, transferId: ref && ref.transferId }),
+      // "Erneut drucken": { jobId } | { transferId } → { ok, files, rejected, options }; opts.vault: the yes for a vault file
+      again:     (ref, opts) => ipcRenderer.invoke('print:again', { jobId: ref && ref.jobId, transferId: ref && ref.transferId, vault: !!(opts && opts.vault) }),
       sources:   () => ipcRenderer.invoke('print:sources'),
       onState:   (cb) => subscribe('print:state', cb),
       onPush:    (cb) => subscribe('print:push', cb),

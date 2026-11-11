@@ -517,9 +517,10 @@ class PrintService extends EventEmitter {
   /**
    * "Erneut drucken": the file of a job (`jobId`) or of a failed job in the making (`transferId`) again, when it
    * still lies where it was → { ok, files, rejected, options: { deviceId, copies, color, duplex, media, source } | null }
-   * | { ok: false, code: 'source_gone' } (the file is not known any more).
+   * | { ok: false, code: 'source_gone' } (the file is not known any more) | { ok: false, code: 'vault_confirm' } (a
+   * file of a vault: the person is asked again every time — `vault: true` is that yes).
    */
-  async again({ jobId = null, transferId = null } = {}) {
+  async again({ jobId = null, transferId = null, vault = false } = {}) {
     let src = null;
     let options = null;
     if (typeof transferId === 'string' && TRANSFER_ID_RE.test(transferId)) {
@@ -529,7 +530,8 @@ class PrintService extends EventEmitter {
       src = this._sourceMap().get(jobId) || null;
     }
     if (!src) return { ok: false, code: 'source_gone', error: 'the file is not known any more' };
-    const r = src.kind === 'drive' ? await this.addDrive([src.nodeId], { vault: src.vault === true }) : await this.addPaths([src.path]);
+    const r = src.kind === 'drive' ? await this.addDrive([src.nodeId], { vault: vault === true }) : await this.addPaths([src.path]);
+    if (!r.files.length && r.rejected.some((x) => x.code === 'vault_confirm')) return { ok: false, code: 'vault_confirm', error: 'a file of a vault' };
     if (!r.files.length) return { ok: false, code: 'source_gone', error: 'the file is not there any more' };
     return { ...r, options };
   }

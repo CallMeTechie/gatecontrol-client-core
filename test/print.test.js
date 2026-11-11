@@ -566,7 +566,7 @@ describe('PrintService: printing', () => {
 
   it('"Erneut drucken": the file again while it lies where it was; a failed one with its options', async () => {
     const store = createMemoryStore();
-    const drive = fakeDrive({ 11: { name: 'Mietvertrag.pdf', content: PDF(6), mime: 'application/pdf' } });
+    const drive = fakeDrive({ 11: { name: 'Mietvertrag.pdf', content: PDF(6), mime: 'application/pdf' }, 16: { name: 'Pass.jpg', content: JPEG, encrypted: true } });
     let n = 0;
     const { s, api, settled } = service({ 'POST print': (b) => ({ ok: true, job: job(`a${++n}`, 'queued', { name: b.name }), pagesLeft: 3 }) }, { store, drive });
     const pc = await s.addPaths([file('n.pdf', PDF(1))]);
@@ -593,6 +593,15 @@ describe('PrintService: printing', () => {
     const t = s.transfers()[0];
     const b = await s.again({ transferId: t.id });
     assert.deepEqual([b.files[0].name, b.options], ['o.pdf', { deviceId: BROTHER.id, copies: 3, color: false, duplex: true }]);
+    // a file of a vault is asked about again every time — the yes of the first print does not last
+    api.routes['POST print'] = (body) => ({ ok: true, job: job('v1', 'queued', { name: body.name }), pagesLeft: 3 });
+    const v = await s.addDrive([16], { vault: true });
+    await s.submit({ tokens: [v.files[0].token], deviceId: HP.id });
+    await settled();
+    assert.equal(JSON.stringify(store.get('printSources')).includes('"vault":true'), true);
+    assert.deepEqual(await s.again({ jobId: 'v1' }), { ok: false, code: 'vault_confirm', error: 'a file of a vault' });
+    const yes = await s.again({ jobId: 'v1', vault: true });
+    assert.deepEqual([yes.ok, yes.files[0].name, yes.files[0].vault], [true, 'Pass.jpg', true]);
   });
 });
 

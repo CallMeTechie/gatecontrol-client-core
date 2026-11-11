@@ -24,7 +24,8 @@
  *                           (codes: invalid, not_picked)
  *   print:transfers         () → { ok, transfers }
  *   print:transfer:cancel   ({ id }) → { ok }
- *   print:again             ({ jobId } | { transferId }) → { ok, files, rejected, options } | code 'source_gone'
+ *   print:again             ({ jobId } | { transferId }, vault?) → { ok, files, rejected, options } | code 'source_gone'
+ *                           | code 'vault_confirm' (a vault file: asked again every time; vault: the person's yes)
  *   print:sources           () → { ok, ids }   (jobs whose file is still known for "Erneut drucken")
  *
  * Events to the main window: print:state (status()), print:push ({ type,
@@ -95,8 +96,8 @@ function registerPrintHandlers(handle, { print: s, getMainWindow, log }) {
   handle('print:transfers', wrap(async () => ({ ok: true, transfers: s.transfers() })));
   handle('print:transfer:cancel', wrap(async (a) => (typeof a.id === 'string' && TRANSFER_ID_RE.test(a.id) ? s.cancelTransfer(a.id) : invalid())));
   handle('print:again', wrap(async (a) => {
-    if (P.isJobId(a.jobId)) return s.again({ jobId: a.jobId });
-    if (typeof a.transferId === 'string' && TRANSFER_ID_RE.test(a.transferId)) return s.again({ transferId: a.transferId });
+    if (P.isJobId(a.jobId)) return s.again({ jobId: a.jobId, vault: a.vault === true });
+    if (typeof a.transferId === 'string' && TRANSFER_ID_RE.test(a.transferId)) return s.again({ transferId: a.transferId, vault: a.vault === true });
     return invalid();
   }));
   handle('print:sources', wrap(async () => s.sources()));
