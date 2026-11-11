@@ -120,6 +120,7 @@ class PrintService extends EventEmitter {
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
     this._overview = null;        // { at, data }
     this._overviewRun = null;
+    this._printerNames = new Map(); // device id → name, of the last overview (for the jobs in the making)
     this._jobRoute = null;        // does the plugin answer jobs/<id> (≥ 1.1.0)? null until known
     this._tokens = new Map();     // token → { file (what the page sees), src, at }
     this._transfers = [];         // jobs in the making, oldest first
@@ -177,6 +178,7 @@ class PrintService extends EventEmitter {
 
   _dropAll() {
     this._overview = null;
+    this._printerNames.clear();
     this._jobRoute = null;
     this._tokens.clear();
     for (const tr of this._transfers) tr.canceled = true;
@@ -278,7 +280,10 @@ class PrintService extends EventEmitter {
         const data = print.normalizeOverview(await this.api._call('GET', `${print.API_BASE}overview`));
         if (!data) throw new MessengerError('unexpected answer', { code: 'bad_response' });
         const at = this.now();
-        if (scope === this._scope) this._overview = { at, data };
+        if (scope === this._scope) {
+          this._overview = { at, data };
+          if (data.rights.print) this._printerNames = new Map(data.printers.map((p) => [p.id, p.name]));
+        }
         return { ok: true, ...this._copy(data), fetchedAt: at, stale: false };
       } catch (err) {
         const e = this._error(err);
@@ -530,9 +535,7 @@ class PrintService extends EventEmitter {
   }
 
   _printerName(deviceId) {
-    const o = this._overview && this._overview.data;
-    const p = o ? o.printers.find((x) => x.id === deviceId) : null;
-    return p ? p.name : null;
+    return this._printerNames.get(deviceId) || null;
   }
 
   _touch(tr, patch) {

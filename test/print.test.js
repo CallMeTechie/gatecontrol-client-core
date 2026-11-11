@@ -457,10 +457,17 @@ describe('PrintService: printing', () => {
   it('several files: one after the other, each a job with the same options', async () => {
     let n = 0;
     const { s, media, events, settled } = service({ 'POST print': (b) => ({ ok: true, job: job(`n${++n}`, 'queued', { name: b.name }), pagesLeft: null }) });
+    await s.overview();
     const { files } = await s.addPaths([file('eins.pdf', PDF(1)), file('zwei.jpg', JPEG), file('drei.txt', 'x')]);
     const r = await s.submit({ tokens: files.map((f) => f.token), deviceId: BROTHER.id });
     assert.deepEqual(r.transfers.map((t) => t.id), ['t1', 't2', 't3']);
     await settled();
+    // the printer's name stays known for the next jobs although every job made drops the list
+    const more = await s.addPaths([path.join(tmp, 'eins.pdf')]);
+    assert.equal((await s.submit({ tokens: [more.files[0].token], deviceId: BROTHER.id })).transfers[0].device, 'Brother HL-L2350DW');
+    await settled();
+    media.uploads.pop();
+    events.job.pop();
     assert.deepEqual(media.uploads.map((u) => u.mime), ['application/pdf', 'image/jpeg', 'text/plain']);
     assert.deepEqual(events.job.map((j) => [j.job.name, j.pagesLeft]), [['eins.pdf', null], ['zwei.jpg', null], ['drei.txt', null]]);
   });
