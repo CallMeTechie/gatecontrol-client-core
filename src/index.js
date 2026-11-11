@@ -26,6 +26,7 @@ const MessengerOutbox = require('./services/messenger-outbox');
 const ChatNotifier = require('./services/chat-notifier');
 const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
+const FamilieService = require('./services/familie');
 const CamerasService = require('./services/cameras');
 const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
@@ -70,6 +71,7 @@ const { createUpdateInstaller, installErrorText } = require('./utils/update-inst
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
+const familieUtil = require('./utils/familie');
 const camerasUtil = require('./utils/cameras');
 const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
@@ -122,6 +124,7 @@ module.exports = {
   ChatNotifier,
   MapService,
   SchoolService,
+  FamilieService,
   CamerasService,
   GateDropService,
   GateDropApi,
@@ -191,6 +194,7 @@ module.exports = {
   clientPolicy,
   messengerUtil,
   schoolUtil,
+  familieUtil,
   camerasUtil,
   notifyRoutes,
   gatedropUtil,
