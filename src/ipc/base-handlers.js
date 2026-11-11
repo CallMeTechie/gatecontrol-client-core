@@ -25,6 +25,7 @@ const { parseLogText, filterByPeriod } = require('../utils/log-parse');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerFamilieHandlers } = require('./familie-handlers');
+const { registerPrintHandlers } = require('./print-handlers');
 const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
@@ -189,6 +190,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.familie] - FamilieService (opt-in, "Familie"): registers
  *   the familie:* channels (ipc/familie-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.print] - PrintService (opt-in, "Drucken"): registers
+ *   the print:* channels (ipc/print-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.cameras] - CamerasService (opt-in, "Kameras im Heimnetz" of Tür & Kamera):
  *   registers the cameras:* channels (ipc/camera-handlers.js), forwards its events to
  *   the main window and resets it after a successful server:setup.
@@ -236,6 +240,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
   const familieSvc = ctx.familie || null;
+  const printSvc = ctx.print || null;
   const camerasSvc = ctx.cameras || null;
   const gatedropSvc = ctx.gatedrop || null;
   const vaultSvc = ctx.vault || null;
@@ -281,6 +286,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Familie: membership, role and answers belong to the old server.
     if (familieSvc) {
       Promise.resolve().then(() => familieSvc.resetForNewServer()).catch((err) => log.warn(`Familie reset failed: ${err.message}`));
+    }
+    // Drucken: availability, printers, jobs and picked files belong to the old server.
+    if (printSvc) {
+      Promise.resolve().then(() => printSvc.resetForNewServer()).catch((err) => log.warn(`Drucken reset failed: ${err.message}`));
     }
     // Kameras: availability, the list and the clips belong to the old server.
     if (camerasSvc) {
@@ -845,6 +854,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Familie ("Internet zu Hause", opt-in) ──────────────
   if (familieSvc) registerFamilieHandlers(handle, { familie: familieSvc, getMainWindow, log });
+
+  // ── Drucken (plugin gatecontrol-print, opt-in) ─────────
+  if (printSvc) registerPrintHandlers(handle, { print: printSvc, getMainWindow, log });
 
   // ── Kameras im Heimnetz (plugin gatecontrol-door, opt-in) ──
   if (camerasSvc) registerCameraHandlers(handle, { cameras: camerasSvc, getMainWindow, log, dialog, dialogPath: folders.dialogPath });

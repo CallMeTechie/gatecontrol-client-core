@@ -1501,6 +1501,322 @@
       "failed": "That did not work ({{code}})."
     }
   },
+  "print": {
+    "title": "Print",
+    "sub": "Printers at home – also on the go and with the VPN",
+    "pick": "Print a file …",
+    "refresh": "Refresh",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "cancel": "Cancel",
+    "close": "Close",
+    "inboxOpen": "Open in “Print”",
+    "navCount": {
+      "one": "1 open job",
+      "other": "{{count}} open jobs"
+    },
+    "drop": {
+      "title": "Drag a file here",
+      "active": "Drop here to print",
+      "types": "PDF files, pictures, text and office files up to 50 MB.",
+      "left": "{{left}} of {{total}} pages left today.",
+      "waits": "The job waits until the printer is on.",
+      "nav": "Drop to print",
+      "label": "Drop area for printing. Enter opens the file dialog."
+    },
+    "printers": {
+      "title": "Printers"
+    },
+    "printer": {
+      "ready": "ready",
+      "off": "off",
+      "busy": "busy",
+      "stopped": "stopped",
+      "cert": "waiting for an admin",
+      "color": "colour",
+      "bw": "black and white",
+      "duplex": "double-sided",
+      "note": {
+        "off": "prints as soon as it is on",
+        "busy": "printing right now",
+        "stopped": "stopped – have a look at the printer",
+        "cert": "waiting for an admin (certificate changed)"
+      }
+    },
+    "banner": {
+      "allOff": {
+        "title": "No printer is on right now.",
+        "text": "You can print anyway: the job waits up to 24 hours and prints as soon as the printer is on."
+      },
+      "cert": "The printer's certificate has changed. An admin has to confirm it; until then the printer takes no jobs.",
+      "offline": {
+        "title": "No connection to GateControl.",
+        "text": "The list shows the state of {{time}}. New jobs go out once the connection is back.",
+        "noCopy": "New jobs go out once the connection is back."
+      }
+    },
+    "empty": {
+      "noPrinter": {
+        "title": "No printer found yet",
+        "text": "You may print, but no printer has been found yet. Printers are found by a gateway in the home network with “Print & scan” switched on.",
+        "foot": "For admins: Gateways › your gateway › Functions › “Devices at home”."
+      },
+      "unavailable": {
+        "title": "Printing is not available here",
+        "text": "The plugin “Print & Scan” is not installed on your GateControl server, not licensed or not released for the apps. Ask your admin."
+      },
+      "noRight": {
+        "title": "You may not print",
+        "text": "An admin has switched printing off for your account. Ask your admin."
+      },
+      "error": {
+        "title": "Printing could not be loaded"
+      }
+    },
+    "jobs": {
+      "title": "Jobs",
+      "open": {
+        "one": "1 open",
+        "other": "{{count}} open"
+      },
+      "none": "none open",
+      "updated": "updated {{time}}",
+      "empty": "No jobs yet. What you print shows here with its state.",
+      "foot": {
+        "one": "The list shows your last job.",
+        "other": "The list shows your last {{count}} jobs."
+      },
+      "footPortal": "Older ones are in the portal under “Print & Scan”.",
+      "portal": "Open in the portal",
+      "stale": "State of {{time}}. The job goes on at the server, even when this PC is off.",
+      "cancel": "Cancel",
+      "cancelOf": "Cancel “{{name}}”",
+      "again": "Print again",
+      "againOf": "Print “{{name}}” again",
+      "remove": "Remove",
+      "removeOf": "Remove “{{name}}” from the list",
+      "canceled": "Job canceled.",
+      "cancelLate": "The job cannot be canceled any more – it is at the printer already.",
+      "sent": {
+        "one": "Job created.",
+        "other": "{{count}} jobs created."
+      }
+    },
+    "steps": {
+      "gc": "GateControl",
+      "gateway": "Gateway",
+      "printer": "Printer",
+      "done": "Printed",
+      "label": "Step {{n}} of 4: {{name}}"
+    },
+    "state": {
+      "queuedLocal": "Waiting for the job before it",
+      "loading": "Loading from Drive …",
+      "uploading": "Going to GateControl … {{percent}} %",
+      "creating": "Creating the job …",
+      "notSent": "Not sent",
+      "queued": "On its way home",
+      "sending": "Going to the printer",
+      "converting": "Being converted for the printer",
+      "convertingOffice": "Being turned into a PDF",
+      "printing": "Printing",
+      "stopped": "Stopped",
+      "waiting": "Waiting",
+      "done": "Printed",
+      "doneUnconfirmed": "At the printer",
+      "failed": "Failed",
+      "expired": "Expired",
+      "canceled": "Canceled"
+    },
+    "stop": {
+      "paper": "Out of paper – please add some.",
+      "jam": "Paper jam at the printer.",
+      "open": "A cover of the printer is open.",
+      "ink": "Ink or toner is empty.",
+      "tray": "The paper tray is missing.",
+      "full": "The output tray is full.",
+      "held": "Held at the printer (e.g. for a PIN).",
+      "stopped": "The printer stopped.",
+      "resume": "The printer goes on by itself afterwards."
+    },
+    "wait": {
+      "off": "Waiting until the printer is on",
+      "busy": "Waiting – the printer is busy",
+      "notAccepting": "Waiting – the printer takes no jobs right now",
+      "cert": "Waiting – an admin has to confirm the printer's certificate",
+      "office": "Waiting until the gateway's office service runs",
+      "until": "{{reason}} – until {{when}}.",
+      "plain": "{{reason}} (up to 24 hours)."
+    },
+    "done": {
+      "unconfirmed": "The printer did not confirm the end."
+    },
+    "fail": {
+      "format": "The printer cannot print this format.",
+      "convert": "The PDF file could not be converted for the printer (damaged or password-protected).",
+      "convertLarge": "Too large once converted for the printer – please print it in parts.",
+      "office": "The office file could not be turned into a PDF (damaged or password-protected?).",
+      "officeTimeout": "Turning the office file into a PDF took too long.",
+      "rejected": "The printer refused the job.",
+      "atPrinter": "Canceled at the printer.",
+      "expired": "Not printed within 24 hours.",
+      "device": "This device does not print.",
+      "failed": "Printing failed."
+    },
+    "err": {
+      "network": "No connection to GateControl.",
+      "timeout": "The server does not answer.",
+      "not_configured": "GateControl is not set up on this PC yet.",
+      "too_large": "The file is too large (at most 50 MB).",
+      "format": "This file cannot be printed: PDF files, pictures, text and office files work.",
+      "damaged": "The file is damaged and cannot be printed.",
+      "printer_format": "This printer takes no PDF files, and the gateway cannot convert them for it.",
+      "gateway_update": "The gateway is too old to convert PDF files for this printer. An admin updates it under Gateways.",
+      "convert_off": "Converting PDF files is switched off for this printer at the gateway.",
+      "office_off": "Office files are not switched on for this printer. Saved as a PDF the file prints right away.",
+      "office_missing": "The gateway's office service does not run yet. Try again later.",
+      "quota": "There is no room for print jobs on the server any more.",
+      "infected": "The virus scan blocked this file.",
+      "scan": "The virus scan is still checking this file or cannot be reached right now – try again later.",
+      "limit": "That would be {{pages}} pages – {{left}} left today.",
+      "limitPlain": "Today's page limit is reached.",
+      "no_right": "You may not print – ask your admin.",
+      "read": "The file could not be read.",
+      "empty": "The file is empty.",
+      "folder": "Folders cannot be printed.",
+      "too_many": "At most 20 files at once.",
+      "unavailable": "“Print & Scan” is not available for the app on your GateControl server.",
+      "offline": "No gateway at home can be reached right now.",
+      "cert_changed": "The printer's certificate has changed. An admin has to confirm it.",
+      "not_found": "This printer is gone. Please refresh.",
+      "busy": "Too many jobs are open. Wait until one is done.",
+      "vault_locked": "The vault is locked. Open it in Drive first.",
+      "source_gone": "The file is not where it was any more. Pick it again.",
+      "invalid": "The input is not valid. Please check and try again.",
+      "failed": "Printing did not work."
+    },
+    "rejected": {
+      "one": "“{{name}}”: {{reason}}",
+      "more": {
+        "one": "1 more file cannot be printed.",
+        "other": "{{count}} more files cannot be printed."
+      }
+    },
+    "meta": {
+      "pages": {
+        "one": "1 page",
+        "other": "{{count}} pages"
+      },
+      "copies": {
+        "one": "1 copy",
+        "other": "{{count}} copies"
+      },
+      "times": "{{pages}} × {{copies}}",
+      "color": "colour",
+      "bw": "black and white",
+      "duplex": "double-sided",
+      "justNow": "just now",
+      "yesterday": "yesterday, {{time}}",
+      "tomorrow": "tomorrow, {{time}}",
+      "today": "today, {{time}}",
+      "at": "{{day}}, {{time}}"
+    },
+    "paper": {
+      "a4": "A4",
+      "a5": "A5",
+      "a6": "A6",
+      "a3": "A3",
+      "letter": "Letter",
+      "legal": "Legal",
+      "photo10x15": "Photo 4 × 6 in",
+      "photo13x18": "Photo 5 × 7 in",
+      "photo9x13": "Photo 3.5 × 5 in",
+      "default": "{{name}} (the printer's default)",
+      "size": "{{w}} × {{h}} {{unit}}"
+    },
+    "tray": {
+      "auto": "Automatic",
+      "main": "Main tray",
+      "manual": "Manual feed",
+      "photo": "Photo tray",
+      "bypass": "Multi-purpose tray",
+      "envelope": "Envelope tray",
+      "top": "Top tray",
+      "middle": "Middle tray",
+      "bottom": "Bottom tray",
+      "rear": "Rear tray",
+      "side": "Side tray",
+      "number": "Tray {{n}}",
+      "default": "{{name}} (the printer's default)"
+    },
+    "kind": {
+      "pdf": "PDF",
+      "image": "Picture",
+      "text": "Text",
+      "docx": "Word file",
+      "xlsx": "Excel file",
+      "pptx": "PowerPoint file",
+      "odt": "OpenDocument text",
+      "ods": "OpenDocument spreadsheet",
+      "odp": "OpenDocument presentation",
+      "rtf": "RTF file",
+      "office": "Office file"
+    },
+    "from": {
+      "pc": "from this PC",
+      "drive": "from Drive",
+      "vault": "from a vault in Drive"
+    },
+    "dialog": {
+      "title": "Print at home",
+      "files": {
+        "one": "1 file",
+        "other": "{{count}} files"
+      },
+      "each": "Each file becomes a job of its own with the same options.",
+      "printer": "Printer",
+      "copies": "Copies",
+      "copiesMax": "at most {{max}}",
+      "less": "One copy less",
+      "more": "One copy more",
+      "color": "Colour",
+      "colorOn": "Colour",
+      "colorOff": "Black and white",
+      "bwPrinter": "This printer prints black and white",
+      "bwOnly": "Your account prints black and white only",
+      "duplex": "Double-sided",
+      "duplexOn": "2 pages on 1 sheet of paper",
+      "duplexOff": "off",
+      "paper": "Paper",
+      "tray": "Tray",
+      "info": "The job goes through GateControl to the gateway at home. When the printer is off it waits up to 24 hours.",
+      "left": "{{left}} of {{total}} pages left today",
+      "go": "Print at home",
+      "sending": "Sending …",
+      "office": {
+        "title": "Office files are not switched on for this printer.",
+        "text": "An admin switches “Print office files” on at the gateway. Saved as a PDF the file prints right away."
+      },
+      "limit": "That would be {{pages}} pages – {{left}} left today.",
+      "limitAtLeast": "That would be at least {{pages}} pages – {{left}} left today.",
+      "cert": "This printer takes no jobs right now: an admin has to confirm its changed certificate.",
+      "noPrinter": "There is no printer."
+    },
+    "menu": {
+      "one": "Print …",
+      "many": "Print {{count}} files …",
+      "viewer": "Print",
+      "none": "Nothing here can be printed – PDF files, pictures, text and office files work.",
+      "blocked": "The virus scan blocked this file.",
+      "noRight": "You may not print – ask your admin.",
+      "key": "Ctrl+P"
+    },
+    "vault": {
+      "title": "Print from the vault?",
+      "text": "To print it the file leaves the vault: the app decrypts it and hands it to your GateControl server and the printer. On that way it is not end-to-end encrypted any more.",
+      "go": "Print anyway"
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Share files, text and links with your devices, people, the NAS or by link",

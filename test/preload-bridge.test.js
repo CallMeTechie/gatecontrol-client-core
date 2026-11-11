@@ -106,7 +106,10 @@ describe('createBridgeApi', () => {
       'notes:attach', 'notes:attachment:delete', 'notes:attachment:image', 'notes:attachment:open', 'notes:attachment:save', 'notes:check', 'notes:dsnote:cancel', 'notes:dsnote:import', 'notes:dsnote:pick', 'notes:group:create', 'notes:group:delete', 'notes:group:update', 'notes:item', 'notes:item:carry', 'notes:item:complete', 'notes:job', 'notes:list:create', 'notes:list:delete', 'notes:list:members', 'notes:list:update', 'notes:lists', 'notes:me', 'notes:mstodo:accounts', 'notes:mstodo:consent', 'notes:mstodo:links', 'notes:mstodo:open', 'notes:mstodo:poll', 'notes:mstodo:preview', 'notes:mstodo:start', 'notes:mstodo:unlink', 'notes:nav', 'notes:note', 'notes:note:check', 'notes:note:create', 'notes:note:delete', 'notes:note:task', 'notes:note:update', 'notes:notebook:create', 'notes:notebook:delete', 'notes:notebook:members', 'notes:notebook:update', 'notes:notebooks', 'notes:notes', 'notes:parse', 'notes:people', 'notes:prefs', 'notes:prefs:set', 'notes:search', 'notes:sources', 'notes:sources:sync', 'notes:status', 'notes:task', 'notes:task:complete', 'notes:task:create', 'notes:task:delete', 'notes:task:update', 'notes:vault:approve', 'notes:vault:decline', 'notes:vault:devices', 'notes:vault:info', 'notes:vault:lock', 'notes:vault:open', 'notes:vault:recover', 'notes:vault:request', 'notes:vault:rotate', 'notes:vault:settings', 'notes:vault:status', 'notes:vault:unlock', 'notes:view',
       'notify:action', 'notify:dnd', 'notify:email', 'notify:email:set', 'notify:list', 'notify:open', 'notify:prefs:get', 'notify:prefs:set', 'notify:quiet', 'notify:quiet:open',
       'notify:read', 'notify:routes', 'notify:routes:set', 'notify:status', 'notify:test',
-      'permissions:get', 'policy:get', 'policy:refresh', 'portal:open', 'rdp-allow:toggle',
+      'permissions:get', 'policy:get', 'policy:refresh', 'portal:open',
+      'print:again', 'print:cancel', 'print:check', 'print:drive', 'print:dropped', 'print:forget', 'print:job', 'print:overview', 'print:pick', 'print:sources',
+      'print:status', 'print:submit', 'print:transfer:cancel', 'print:transfers',
+      'rdp-allow:toggle',
       'school:absences', 'school:attachment:drive', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',
       'server:setup', 'server:test', 'services:list', 'shell:open-external',
       'signin:cancel', 'signin:methods', 'signin:microsoft', 'signin:password', 'support:send', 'system:run-as', 'traffic:stats',
@@ -132,7 +135,7 @@ describe('createBridgeApi', () => {
       'familie:push', 'familie:state',
       'gatedrop:changed', 'gatedrop:compose', 'gatedrop:navigate', 'gatedrop:progress', 'gatedrop:received', 'gatedrop:state',
       'locale:changed', 'mail:calendar', 'mail:changed', 'mail:contacts', 'mail:loading', 'mail:outbox', 'mail:resources', 'mail:state', 'navigate', 'notes:changed', 'notes:import', 'notes:state', 'notes:vault', 'notes:vault-lock', 'notify:fallback', 'notify:navigate', 'notify:new', 'notify:status', 'notify:update',
-      'peer-expiry', 'policy:changed', 'portal-url', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
+      'peer-expiry', 'policy:changed', 'portal-url', 'print:job', 'print:push', 'print:state', 'print:transfers', 'school:push', 'school:state', 'tunnel-state', 'update-ready', 'update:policy',
       'vault:push', 'vault:state',
     ]);
   });
@@ -213,6 +216,7 @@ describe('createBridgeApi', () => {
       messenger: { on() {} },
       school: { on() {} },
       familie: { on() {} },
+      print: { on() {} },
       cameras: { on() {} },
       gatedrop: { on() {} },
       vault: { on() {} },

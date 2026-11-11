@@ -162,3 +162,22 @@ describe('DriveService.docView', () => {
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'bridge.js'), 'utf8'), /docView: +\(id\) => ipcRenderer\.invoke\('drive:doc-view', \{ id \}\)/);
   });
 });
+
+describe('DriveService.fileInfo / fileCopy (a file handed on, e.g. to the printer)', () => {
+  it('what the file is without loading it; the copy open() uses; folders and blocked files refused', async () => {
+    const { srv, svc, temp } = await setup();
+    const info = await svc.fileInfo(12);
+    assert.deepEqual([info.ok, info.id, info.name, info.encrypted, info.mime], [true, 12, 'Brief.pdf', false, 'application/pdf']);
+    assert.equal(svc.transfers().length, 0, 'nothing loaded');
+    const c = await svc.fileCopy(12);
+    assert.equal(c.path, path.join(temp, '12-1', 'Brief.pdf'));
+    assert.equal(c.size, fs.statSync(c.path).size);
+    await c.dispose();
+    assert.ok(fs.existsSync(c.path), 'the copy of a normal file stays for the next "Öffnen"');
+    await assert.rejects(svc.fileInfo(10), (e) => e.code === 'invalid');
+    await assert.rejects(svc.fileCopy(10), (e) => e.code === 'invalid');
+    srv.state.nodes.get(12).scan = { state: 'infected', blocked: true, finding: 'Eicar-Test-Signature' };
+    await assert.rejects(svc.fileInfo(12), (e) => e.status === 423 && e.code === 'quarantined');
+    await assert.rejects(svc.fileCopy(12), (e) => e.status === 423);
+  });
+});
