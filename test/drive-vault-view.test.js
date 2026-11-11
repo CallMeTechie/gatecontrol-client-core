@@ -156,6 +156,22 @@ describe('utils/drive-vault: random access to a content', () => {
 });
 
 describe('DriveService: the viewer of vault files (Drive plugin 1.22)', () => {
+  it('fileInfo / fileCopy of a vault file: its real name, a decrypted copy in a folder of its own that dispose() removes', async () => {
+    const { svc, tmp, opened, made } = await setup();
+    const SECRET = 'Geheimnis 4711 im Tresor';
+    const ids = await put(svc, made.node.id, { 'Pass.txt': Buffer.from(SECRET) });
+    const info = await svc.fileInfo(ids['Pass.txt']);
+    assert.deepEqual([info.name, info.encrypted], ['Pass.txt', true]);
+    const c = await svc.fileCopy(ids['Pass.txt']);
+    assert.ok(c.path.startsWith(path.join(tmp, 'vault')), c.path);
+    assert.equal(path.basename(c.path), 'Pass.txt');
+    assert.equal(fs.readFileSync(c.path, 'utf8'), SECRET);
+    assert.equal(c.size, SECRET.length);
+    assert.deepEqual(opened, [], 'nothing is opened');
+    await c.dispose();
+    assert.equal(fs.existsSync(path.dirname(c.path)), false);
+  });
+
   it('a picture, a text, a video by ranges — decrypted in memory; only ciphertext in %TEMP%; close revokes the token', async () => {
     const { svc, tmp, opened, made } = await setup();
     const SECRET = 'Geheimnis 4711 im Tresor';

@@ -333,6 +333,9 @@ describe('windows-hello: UserConsentVerifier', () => {
     rt.asyncStates[0].polls = 0;                 // CheckAvailabilityAsync answers; the prompt stays open
     await until(() => lines.some((l) => /dialog in front$/.test(l)));
     assert.deepEqual(rt.focused, []);
+    // "long after it appeared": the clock has to move on first — in the millisecond the dialog showed it still counts
+    // as just opened (focusMs 0) and would be brought to the front whoever is in front
+    for (const t0 = Date.now(); Date.now() - t0 < 3;) await new Promise((r) => setTimeout(r, 2));
     rt.foreground = OTHER;                       // the person switched to another app
     await new Promise((r) => setTimeout(r, 30));
     assert.deepEqual(rt.focused, [], 'another app keeps the foreground');

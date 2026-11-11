@@ -1501,6 +1501,317 @@
       "failed": "Das hat nicht geklappt ({{code}})."
     }
   },
+  "print": {
+    "title": "Drucken",
+    "sub": "Drucker zu Hause – auch unterwegs und mit VPN",
+    "pick": "Datei drucken …",
+    "refresh": "Aktualisieren",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "cancel": "Abbrechen",
+    "inboxOpen": "In „Drucken“ öffnen",
+    "navCount": {
+      "one": "1 offener Auftrag",
+      "other": "{{count}} offene Aufträge"
+    },
+    "drop": {
+      "title": "Datei hierher ziehen",
+      "active": "Zum Drucken hier ablegen",
+      "types": "PDF, Bilder, Text und Office-Dateien bis 50 MB.",
+      "left": "Heute noch {{left}} von {{total}} Seiten.",
+      "waits": "Der Auftrag wartet, bis der Drucker an ist.",
+      "nav": "Zum Drucken ablegen"
+    },
+    "printers": {
+      "title": "Drucker"
+    },
+    "printer": {
+      "ready": "bereit",
+      "off": "aus",
+      "busy": "beschäftigt",
+      "stopped": "angehalten",
+      "cert": "wartet auf Admin",
+      "color": "Farbe",
+      "bw": "schwarz-weiß",
+      "duplex": "beidseitig",
+      "note": {
+        "off": "druckt, sobald er an ist",
+        "busy": "druckt gerade",
+        "stopped": "angehalten – am Drucker nachsehen",
+        "cert": "wartet auf einen Admin (Zertifikat geändert)"
+      }
+    },
+    "banner": {
+      "allOff": {
+        "title": "Kein Drucker ist gerade an.",
+        "text": "Du kannst trotzdem drucken: Der Auftrag wartet bis zu 24 Stunden und druckt, sobald der Drucker an ist."
+      },
+      "cert": "Das Zertifikat des Druckers hat sich geändert. Ein Admin muss es bestätigen, vorher nimmt der Drucker keine Aufträge an.",
+      "offline": {
+        "title": "Keine Verbindung zu GateControl.",
+        "text": "Die Liste zeigt den Stand von {{time}}. Neue Aufträge gehen erst wieder mit Verbindung.",
+        "noCopy": "Neue Aufträge gehen erst wieder mit Verbindung."
+      }
+    },
+    "empty": {
+      "noPrinter": {
+        "title": "Noch kein Drucker gefunden",
+        "text": "Du darfst drucken, aber es ist noch kein Drucker gefunden. Drucker findet ein Gateway im Heimnetz, bei dem „Drucken & Scannen“ eingeschaltet ist.",
+        "foot": "Für Admins: Gateways › dein Gateway › Funktionen › „Geräte im Heimnetz“."
+      },
+      "unavailable": {
+        "title": "Drucken ist hier nicht verfügbar",
+        "text": "Das Plugin „Drucken & Scannen“ ist auf deinem GateControl-Server nicht installiert, nicht lizenziert oder nicht für die Apps freigegeben. Frag deinen Admin."
+      },
+      "noRight": {
+        "title": "Du darfst nicht drucken",
+        "text": "Ein Admin hat das Drucken für dein Konto ausgeschaltet. Frag deinen Admin."
+      },
+      "error": {
+        "title": "Drucken konnte nicht geladen werden"
+      }
+    },
+    "jobs": {
+      "title": "Aufträge",
+      "open": {
+        "one": "1 offen",
+        "other": "{{count}} offen"
+      },
+      "none": "keine offenen",
+      "updated": "aktualisiert {{time}}",
+      "empty": "Noch keine Aufträge. Was du druckst, steht hier mit seinem Zustand.",
+      "foot": {
+        "one": "Die Liste zeigt deinen letzten Auftrag.",
+        "other": "Die Liste zeigt deine letzten {{count}} Aufträge."
+      },
+      "footPortal": "Ältere stehen im Portal unter „Drucken & Scannen“.",
+      "portal": "Im Portal öffnen",
+      "stale": "Stand von {{time}}. Der Auftrag läuft am Server weiter, auch wenn dieser PC aus ist.",
+      "cancel": "Abbrechen",
+      "cancelOf": "„{{name}}“ abbrechen",
+      "again": "Erneut drucken",
+      "againOf": "„{{name}}“ erneut drucken",
+      "remove": "Entfernen",
+      "removeOf": "„{{name}}“ aus der Liste entfernen",
+      "canceled": "Auftrag abgebrochen.",
+      "cancelLate": "Der Auftrag lässt sich nicht mehr abbrechen – er ist schon beim Drucker.",
+      "sent": {
+        "one": "Auftrag angelegt.",
+        "other": "{{count}} Aufträge angelegt."
+      }
+    },
+    "steps": {
+      "gc": "GateControl",
+      "gateway": "Gateway",
+      "printer": "Drucker",
+      "done": "Gedruckt",
+      "label": "Station {{n}} von 4: {{name}}"
+    },
+    "state": {
+      "queuedLocal": "Wartet auf den Auftrag davor",
+      "loading": "Wird aus dem Drive geladen …",
+      "uploading": "Geht an GateControl … {{percent}} %",
+      "creating": "Auftrag wird angelegt …",
+      "notSent": "Nicht gesendet",
+      "queued": "Unterwegs nach Hause",
+      "sending": "Geht an den Drucker",
+      "converting": "Wird für den Drucker umgewandelt",
+      "convertingOffice": "Wird in ein PDF umgewandelt",
+      "printing": "Wird gedruckt",
+      "stopped": "Angehalten",
+      "waiting": "Wartet",
+      "done": "Gedruckt",
+      "doneUnconfirmed": "Beim Drucker angekommen",
+      "failed": "Fehlgeschlagen",
+      "expired": "Verfallen",
+      "canceled": "Abgebrochen"
+    },
+    "stop": {
+      "paper": "Papier fehlt – bitte nachlegen.",
+      "jam": "Papierstau am Drucker.",
+      "open": "Eine Klappe des Druckers ist offen.",
+      "ink": "Tinte oder Toner ist leer.",
+      "tray": "Das Papierfach fehlt.",
+      "full": "Das Ausgabefach ist voll.",
+      "held": "Wartet am Drucker (z. B. auf eine PIN).",
+      "stopped": "Der Drucker hat angehalten.",
+      "resume": "Der Drucker macht danach von selbst weiter."
+    },
+    "wait": {
+      "off": "Wartet, bis der Drucker an ist",
+      "busy": "Wartet – der Drucker ist beschäftigt",
+      "notAccepting": "Wartet – der Drucker nimmt gerade nichts an",
+      "cert": "Wartet – ein Admin muss das Zertifikat des Druckers bestätigen",
+      "office": "Wartet, bis der Office-Dienst des Gateways läuft",
+      "until": "{{reason}} – noch bis {{when}}.",
+      "plain": "{{reason}} (bis zu 24 Stunden)."
+    },
+    "done": {
+      "unconfirmed": "Der Drucker hat das Ende nicht bestätigt."
+    },
+    "fail": {
+      "format": "Der Drucker kann dieses Format nicht.",
+      "convert": "Die PDF-Datei ließ sich für den Drucker nicht umwandeln (beschädigt oder mit Kennwort geschützt).",
+      "convertLarge": "Umgewandelt für den Drucker zu groß – bitte in Teilen drucken.",
+      "office": "Die Office-Datei ließ sich nicht in ein PDF umwandeln (beschädigt oder mit Kennwort geschützt?).",
+      "officeTimeout": "Das Umwandeln der Office-Datei hat zu lange gedauert.",
+      "rejected": "Der Drucker hat den Auftrag abgelehnt.",
+      "atPrinter": "Am Drucker abgebrochen.",
+      "expired": "Nicht innerhalb von 24 Stunden gedruckt.",
+      "device": "Dieses Gerät druckt nicht.",
+      "failed": "Drucken fehlgeschlagen."
+    },
+    "err": {
+      "network": "Keine Verbindung zu GateControl.",
+      "timeout": "Der Server antwortet nicht.",
+      "not_configured": "GateControl ist auf diesem PC noch nicht eingerichtet.",
+      "too_large": "Die Datei ist zu groß (höchstens 50 MB).",
+      "format": "Diese Datei lässt sich nicht drucken: Es gehen PDF-Dateien, Bilder, Text und Office-Dateien.",
+      "damaged": "Die Datei ist beschädigt und lässt sich nicht drucken.",
+      "printer_format": "Dieser Drucker nimmt keine PDF-Dateien, und das Gateway kann sie für ihn nicht umwandeln.",
+      "gateway_update": "Das Gateway ist zu alt, um PDF-Dateien für diesen Drucker umzuwandeln. Ein Admin aktualisiert es unter Gateways.",
+      "convert_off": "Das Umwandeln von PDF-Dateien ist für diesen Drucker am Gateway ausgeschaltet.",
+      "office_off": "Office-Dateien sind für diesen Drucker nicht eingeschaltet. Als PDF gespeichert lässt sich die Datei sofort drucken.",
+      "office_missing": "Der Office-Dienst des Gateways läuft noch nicht. Später noch einmal versuchen.",
+      "quota": "Auf dem Server ist kein Platz mehr für Druckaufträge.",
+      "infected": "Der Virenscan hat diese Datei gesperrt.",
+      "scan": "Der Virenscan prüft diese Datei noch oder ist gerade nicht erreichbar – später noch einmal versuchen.",
+      "limit": "Das wären {{pages}} Seiten – heute gehen noch {{left}}.",
+      "limitPlain": "Die Seitengrenze für heute ist erreicht.",
+      "no_right": "Du darfst nicht drucken – frag deinen Admin.",
+      "read": "Die Datei konnte nicht gelesen werden.",
+      "empty": "Die Datei ist leer.",
+      "folder": "Ordner lassen sich nicht drucken.",
+      "too_many": "Höchstens 20 Dateien auf einmal.",
+      "unavailable": "„Drucken & Scannen“ ist auf deinem GateControl-Server für die App nicht verfügbar.",
+      "offline": "Kein Gateway zu Hause ist gerade erreichbar.",
+      "cert_changed": "Das Zertifikat des Druckers hat sich geändert. Ein Admin muss es bestätigen.",
+      "not_found": "Diesen Drucker gibt es nicht mehr. Bitte aktualisieren.",
+      "busy": "Es sind zu viele Aufträge offen. Warte, bis einer fertig ist.",
+      "vault_locked": "Der Tresor ist gesperrt. Öffne ihn zuerst im Drive.",
+      "source_gone": "Die Datei liegt nicht mehr dort, wo sie war. Wähle sie neu aus.",
+      "invalid": "Die Angabe ist ungültig. Bitte prüfen und noch einmal versuchen.",
+      "failed": "Drucken hat nicht geklappt."
+    },
+    "rejected": {
+      "one": "„{{name}}“: {{reason}}",
+      "more": {
+        "one": "1 weitere Datei lässt sich nicht drucken.",
+        "other": "{{count}} weitere Dateien lassen sich nicht drucken."
+      }
+    },
+    "meta": {
+      "pages": {
+        "one": "1 Seite",
+        "other": "{{count}} Seiten"
+      },
+      "copies": {
+        "one": "1 Kopie",
+        "other": "{{count}} Kopien"
+      },
+      "times": "{{pages}} × {{copies}}",
+      "color": "Farbe",
+      "bw": "schwarz-weiß",
+      "duplex": "beidseitig",
+      "justNow": "gerade eben",
+      "yesterday": "gestern, {{time}}",
+      "tomorrow": "morgen, {{time}} Uhr",
+      "today": "heute, {{time}} Uhr",
+      "at": "{{day}}, {{time}} Uhr"
+    },
+    "paper": {
+      "a4": "A4",
+      "a5": "A5",
+      "a6": "A6",
+      "a3": "A3",
+      "letter": "Letter",
+      "legal": "Legal",
+      "photo10x15": "Foto 10 × 15 cm",
+      "photo13x18": "Foto 13 × 18 cm",
+      "photo9x13": "Foto 9 × 13 cm",
+      "default": "{{name}} (Standard des Druckers)",
+      "size": "{{w}} × {{h}} {{unit}}"
+    },
+    "tray": {
+      "auto": "Automatisch",
+      "main": "Hauptfach",
+      "manual": "Manuelle Zufuhr",
+      "photo": "Fotofach",
+      "bypass": "Mehrzweckfach",
+      "envelope": "Umschlagfach",
+      "top": "Oberes Fach",
+      "middle": "Mittleres Fach",
+      "bottom": "Unteres Fach",
+      "rear": "Hinteres Fach",
+      "side": "Seitliches Fach",
+      "number": "Fach {{n}}",
+      "default": "{{name}} (Standard des Druckers)"
+    },
+    "kind": {
+      "pdf": "PDF",
+      "image": "Bild",
+      "text": "Text",
+      "docx": "Word-Datei",
+      "xlsx": "Excel-Datei",
+      "pptx": "PowerPoint-Datei",
+      "odt": "OpenDocument-Text",
+      "ods": "OpenDocument-Tabelle",
+      "odp": "OpenDocument-Präsentation",
+      "rtf": "RTF-Datei",
+      "office": "Office-Datei"
+    },
+    "from": {
+      "pc": "vom PC",
+      "drive": "aus Drive",
+      "vault": "aus einem Tresor im Drive"
+    },
+    "dialog": {
+      "title": "Zu Hause drucken",
+      "files": {
+        "one": "1 Datei",
+        "other": "{{count}} Dateien"
+      },
+      "each": "Jede Datei wird ein eigener Auftrag mit denselben Optionen.",
+      "printer": "Drucker",
+      "copies": "Kopien",
+      "copiesMax": "höchstens {{max}}",
+      "less": "Eine Kopie weniger",
+      "more": "Eine Kopie mehr",
+      "color": "Farbe",
+      "colorOn": "Farbe",
+      "colorOff": "Schwarz-weiß",
+      "bwPrinter": "Dieser Drucker druckt schwarz-weiß",
+      "bwOnly": "Dein Konto druckt nur schwarz-weiß",
+      "duplex": "Beidseitig",
+      "duplexOn": "2 Seiten auf 1 Blatt Papier",
+      "duplexOff": "aus",
+      "paper": "Papier",
+      "tray": "Fach",
+      "info": "Der Auftrag läuft über GateControl zum Gateway zu Hause. Ist der Drucker aus, wartet er bis zu 24 Stunden.",
+      "left": "Heute noch {{left}} von {{total}} Seiten",
+      "go": "Zu Hause drucken",
+      "sending": "Wird gesendet …",
+      "office": {
+        "title": "Office-Dateien sind für diesen Drucker nicht eingeschaltet.",
+        "text": "Ein Admin schaltet „Office-Dateien drucken“ am Gateway ein. Als PDF gespeichert lässt sich die Datei sofort drucken."
+      },
+      "limit": "Das wären {{pages}} Seiten – heute gehen noch {{left}}.",
+      "limitAtLeast": "Das wären mindestens {{pages}} Seiten – heute gehen noch {{left}}.",
+      "cert": "Dieser Drucker nimmt gerade keine Aufträge an: Ein Admin muss sein geändertes Zertifikat bestätigen.",
+      "noPrinter": "Es ist kein Drucker da."
+    },
+    "menu": {
+      "one": "Drucken …",
+      "many": "{{count}} Dateien drucken …",
+      "viewer": "Drucken",
+      "none": "Hier ist nichts zum Drucken dabei – es gehen PDF-Dateien, Bilder, Text und Office-Dateien."
+    },
+    "vault": {
+      "title": "Aus dem Tresor drucken?",
+      "text": "Zum Drucken verlässt die Datei den Tresor: Die App entschlüsselt sie und gibt sie an deinen GateControl-Server und den Drucker. Auf diesem Weg ist sie nicht mehr Ende-zu-Ende verschlüsselt.",
+      "go": "Trotzdem drucken"
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Dateien, Text und Links an deine Geräte, Personen, das NAS oder per Link teilen",

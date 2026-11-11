@@ -2499,6 +2499,61 @@ class DriveService extends EventEmitter {
   }
 
   /**
+   * A file of Drive for a part of the app that hands it on (printing), without loading it →
+   * { ok, id, name, size, mime, encrypted, parentId }. A folder: 'invalid'; blocked by the virus scan: 423 as
+   * open(); a vault file needs its vault open on this PC (its name is decrypted here).
+   */
+  async fileInfo(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.deleted) throw new DriveError('not a file', { code: 'invalid' });
+      refuseBlocked(node);
+      let name = drive.safeName(node.name) || 'Datei';
+      const encrypted = !!(node.encrypted && node.vaultId);
+      if (encrypted) {
+        await this.vault.tryOpen(node.vaultId);
+        this.vault.keys(node.vaultId);
+        name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+      }
+      return { ok: true, id: node.id, name, size: node.size, mime: node.mime || null, encrypted, parentId: node.parentId };
+    });
+  }
+
+  /**
+   * The file as a copy on this PC → { ok, path, name, size, dispose } — the copy of this revision in the temp folder
+   * (as open() loads it), a vault file decrypted into a folder of its own that `dispose()` removes again (call it
+   * when done; the copy of a normal file stays for the next "Öffnen"). Nothing is opened.
+   */
+  async fileCopy(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.deleted) throw new DriveError('not a file', { code: 'invalid' });
+      refuseBlocked(node);
+      if (node.encrypted && node.vaultId) {
+        await this.vault.tryOpen(node.vaultId);
+        this.vault.keys(node.vaultId);
+        const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+        const dir = path.join(this.tempDir(), 'vault', crypto.randomBytes(8).toString('hex'));
+        const file = path.join(dir, safeFileName(name, 'Datei'));
+        const dispose = () => fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+        const row = this._downloadRow(name, node.size);
+        try {
+          await this._vaultFetchTo(node, null, file, row);
+          this._set(row.id, { state: 'done', sent: row.total });
+        } catch (err) {
+          this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+          await dispose();
+          throw err;
+        }
+        return { ok: true, path: file, name, size: (await fs.promises.stat(file)).size, dispose };
+      }
+      const name = drive.safeName(node.name) || 'Datei';
+      const file = await this._localCopy(node, null, name);
+      return { ok: true, path: file, name, size: (await fs.promises.stat(file)).size, dispose: () => Promise.resolve() };
+    });
+  }
+
+  /**
    * The viewer of a PDF, text or Markdown of Drive (not of a vault; services/drive-doc-view.js) →
    * { ok, kind: 'pdf', name, size, data } (the bytes for pdf.js) | { ok, kind: 'text' | 'markdown', name, size, text }
    * | { ok, kind, name, note: 'too_large', limitMb } (nothing loaded). The file comes as for open() — the copy of this

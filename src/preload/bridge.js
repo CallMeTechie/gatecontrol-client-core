@@ -315,6 +315,48 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onPush:    (cb) => subscribe('familie:push', cb),
     },
 
+    // ── Drucken (plugin gatecontrol-print: the printers at home) ─
+    // Served when the app passes a PrintService to registerBaseHandlers
+    // (ipc/print-handlers.js lists arguments and answers). The page never
+    // names a file by its path: pick / addDropped / addDrive answer tokens.
+    print: {
+      status:    () => ipcRenderer.invoke('print:status'),
+      check:     () => ipcRenderer.invoke('print:check'),
+      overview:  (opts) => ipcRenderer.invoke('print:overview', { refresh: !!(opts && opts.refresh) }),
+      job:       (id) => ipcRenderer.invoke('print:job', { id }),
+      cancel:    (id) => ipcRenderer.invoke('print:cancel', { id }),
+      // file dialog → { ok, files: [{ token, name, size, type, kind, from, vault, pages }], rejected }
+      pick:      () => ipcRenderer.invoke('print:pick'),
+      // dropped File objects (drag & drop from the Explorer) → the same as pick(). The path comes from Electron's
+      // webUtils only — never from a property of the object, which a page script could set to any path.
+      addDropped: (fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : ''; } catch { p = ''; }
+          if (typeof p === 'string' && p) paths.push(p);
+        }
+        return ipcRenderer.invoke('print:dropped', { paths });
+      },
+      // files of Drive (node ids); opts.vault: the person said yes to printing vault files
+      addDrive:  (ids, opts) => ipcRenderer.invoke('print:drive', { ids, vault: !!(opts && opts.vault) }),
+      forget:    (tokens) => ipcRenderer.invoke('print:forget', { tokens }),
+      // { tokens, deviceId, copies, color, duplex, media?, source? } → { ok, transfers }
+      submit:    (job) => {
+        const j = job && typeof job === 'object' ? job : {};
+        return ipcRenderer.invoke('print:submit', { tokens: j.tokens, deviceId: j.deviceId, copies: j.copies, color: j.color, duplex: j.duplex, media: j.media, source: j.source });
+      },
+      transfers: () => ipcRenderer.invoke('print:transfers'),
+      cancelTransfer: (id) => ipcRenderer.invoke('print:transfer:cancel', { id }),
+      // "Erneut drucken": { jobId } | { transferId } → { ok, files, rejected, options }; opts.vault: the yes for a vault file
+      again:     (ref, opts) => ipcRenderer.invoke('print:again', { jobId: ref && ref.jobId, transferId: ref && ref.transferId, vault: !!(opts && opts.vault) }),
+      sources:   () => ipcRenderer.invoke('print:sources'),
+      onState:   (cb) => subscribe('print:state', cb),
+      onPush:    (cb) => subscribe('print:push', cb),
+      onTransfers: (cb) => subscribe('print:transfers', cb),
+      onJob:     (cb) => subscribe('print:job', cb),
+    },
+
     // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
     // Served when the app passes a CamerasService to registerBaseHandlers
     // (ipc/camera-handlers.js lists arguments and answers). Pictures and
