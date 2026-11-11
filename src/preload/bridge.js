@@ -327,13 +327,14 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       cancel:    (id) => ipcRenderer.invoke('print:cancel', { id }),
       // file dialog → { ok, files: [{ token, name, size, type, kind, from, vault, pages }], rejected }
       pick:      () => ipcRenderer.invoke('print:pick'),
-      // dropped File objects (drag & drop from the Explorer) → the same as pick()
+      // dropped File objects (drag & drop from the Explorer) → the same as pick(). The path comes from Electron's
+      // webUtils only — never from a property of the object, which a page script could set to any path.
       addDropped: (fileList) => {
         const paths = [];
         for (const f of Array.from(fileList || [])) {
           let p = '';
-          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
-          if (p) paths.push(p);
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : ''; } catch { p = ''; }
+          if (typeof p === 'string' && p) paths.push(p);
         }
         return ipcRenderer.invoke('print:dropped', { paths });
       },

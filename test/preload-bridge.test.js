@@ -140,6 +140,17 @@ describe('createBridgeApi', () => {
     ]);
   });
 
+  it('print.addDropped: the path of a dropped file comes from webUtils only, never from the object', async () => {
+    const ipc = fakeIpcRenderer();
+    const real = { name: 'Brief.pdf' };
+    const webUtils = { getPathForFile: (f) => { if (f !== real) throw new TypeError('not a File'); return 'C:\\Users\\anna\\Brief.pdf'; } };
+    createBridgeApi(ipc, i18n, { webUtils }).print.addDropped([real, { name: 'x', path: 'C:\\Windows\\win.ini' }, null]);
+    assert.deepEqual(ipc.calls.invoke.at(-1), ['print:dropped', { paths: ['C:\\Users\\anna\\Brief.pdf'] }]);
+    // without webUtils nothing is read from the objects
+    createBridgeApi(ipc, i18n).print.addDropped([{ name: 'x', path: 'C:\\Windows\\win.ini' }]);
+    assert.deepEqual(ipc.calls.invoke.at(-1), ['print:dropped', { paths: [] }]);
+  });
+
   it('subscriptions pass the payload and unsubscribe the same handler', () => {
     const ipc = fakeIpcRenderer();
     const api = createBridgeApi(ipc, i18n);
