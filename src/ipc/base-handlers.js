@@ -25,6 +25,7 @@ const { parseLogText, filterByPeriod } = require('../utils/log-parse');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerFamilieHandlers } = require('./familie-handlers');
+const { registerDnsProtectHandlers } = require('./dns-protect-handlers');
 const { registerPrintHandlers } = require('./print-handlers');
 const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
@@ -193,6 +194,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.print] - PrintService (opt-in, "Drucken"): registers
  *   the print:* channels (ipc/print-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.dnsProtect] - DnsProtectService (opt-in, "DNS-Schutz"): registers
+ *   the dnsprotect:* channels (ipc/dns-protect-handlers.js), forwards its event to the
+ *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.cameras] - CamerasService (opt-in, "Kameras im Heimnetz" of Tür & Kamera):
  *   registers the cameras:* channels (ipc/camera-handlers.js), forwards its events to
  *   the main window and resets it after a successful server:setup.
@@ -240,6 +244,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
   const familieSvc = ctx.familie || null;
+  const dnsProtectSvc = ctx.dnsProtect || null;
   const printSvc = ctx.print || null;
   const camerasSvc = ctx.cameras || null;
   const gatedropSvc = ctx.gatedrop || null;
@@ -290,6 +295,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Drucken: availability, printers, jobs and picked files belong to the old server.
     if (printSvc) {
       Promise.resolve().then(() => printSvc.resetForNewServer()).catch((err) => log.warn(`Drucken reset failed: ${err.message}`));
+    }
+    // DNS-Schutz: whether there is one, and its state, belong to the old server.
+    if (dnsProtectSvc) {
+      Promise.resolve().then(() => dnsProtectSvc.resetForNewServer()).catch((err) => log.warn(`DNS-Schutz reset failed: ${err.message}`));
     }
     // Kameras: availability, the list and the clips belong to the old server.
     if (camerasSvc) {
@@ -857,6 +866,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Drucken (plugin gatecontrol-print, opt-in) ─────────
   if (printSvc) registerPrintHandlers(handle, { print: printSvc, getMainWindow, log });
+
+  // ── DNS-Schutz (plugin behind permissions.vpnDns, opt-in) ──
+  if (dnsProtectSvc) registerDnsProtectHandlers(handle, { dnsProtect: dnsProtectSvc, getMainWindow, log });
 
   // ── Kameras im Heimnetz (plugin gatecontrol-door, opt-in) ──
   if (camerasSvc) registerCameraHandlers(handle, { cameras: camerasSvc, getMainWindow, log, dialog, dialogPath: folders.dialogPath });

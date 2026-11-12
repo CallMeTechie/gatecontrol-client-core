@@ -357,6 +357,21 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onJob:     (cb) => subscribe('print:job', cb),
     },
 
+    // ── DNS-Schutz (the DNS filter of the VPN devices, plugin gatecontrol-dns) ─
+    // Served when the app passes a DnsProtectService to registerBaseHandlers
+    // (ipc/dns-protect-handlers.js lists arguments and answers).
+    dnsProtect: {
+      status:    () => ipcRenderer.invoke('dnsprotect:status'),
+      check:     () => ipcRenderer.invoke('dnsprotect:check'),
+      refresh:   () => ipcRenderer.invoke('dnsprotect:refresh'),
+      // how: exactly one of { minutes } | { forever: true } | { extend }
+      pause:     (how) => ipcRenderer.invoke('dnsprotect:pause', how && typeof how === 'object' ? { minutes: how.minutes, forever: how.forever, extend: how.extend } : {}),
+      resume:    () => ipcRenderer.invoke('dnsprotect:resume'),
+      // the card is on screen: the status is asked more often
+      watch:     (on) => ipcRenderer.invoke('dnsprotect:watch', { on: on === true }),
+      onChange:  (cb) => subscribe('dnsprotect:change', cb),
+    },
+
     // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
     // Served when the app passes a CamerasService to registerBaseHandlers
     // (ipc/camera-handlers.js lists arguments and answers). Pictures and

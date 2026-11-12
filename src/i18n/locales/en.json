@@ -1501,6 +1501,127 @@
       "failed": "That did not work ({{code}})."
     }
   },
+  "dnsProtect": {
+    "title": "DNS protection",
+    "retry": "Try again",
+    "stale": "DNS protection cannot be reached right now – you are seeing the last loaded state.",
+    "unreachable": "DNS protection cannot be reached right now.",
+    "disconnected": "VPN not connected: this device is only filtered while it is connected.",
+    "forever": "Until I switch it back on",
+    "resume": "Switch back on",
+    "extend": "+30 min",
+    "remaining": "{{time}} left",
+    "chip": {
+      "active": "active",
+      "paused": "paused",
+      "fallback": "unfiltered",
+      "unfiltered": "not filtered",
+      "starting": "starting",
+      "error": "not reachable"
+    },
+    "sub": {
+      "active": "Ads and malicious sites are blocked",
+      "pausedUntil": "Paused until {{time}} · switches itself back on",
+      "pausedOpenMe": "Paused until you switch it back on",
+      "pausedOpenBy": "Paused until {{name}} switches it back on",
+      "pausedOpen": "Paused until someone switches it back on",
+      "fallbackSince": "Down since {{time}}",
+      "fallback": "Down",
+      "starting": "Protection is starting.",
+      "ownDns": "This device uses its own DNS server ({{dns}}) and is not filtered.",
+      "ownDnsPlain": "This device uses its own DNS server and is not filtered.",
+      "excluded": "This device is exempt from protection.",
+      "disabled": "This device is disabled on the server and is not filtered.",
+      "noDevice": "You have no VPN device the protection applies to.",
+      "unfiltered": "This device is not filtered."
+    },
+    "kv": {
+      "queries": "Queries today",
+      "blocked": "Blocked",
+      "percent": "Share"
+    },
+    "scope": {
+      "person": "Figures of all your devices",
+      "server": "Figures of all devices of the server"
+    },
+    "pauseFor": {
+      "device": "Pause for this device:",
+      "devices": "Pause for your devices:"
+    },
+    "dur": {
+      "5": "5 min",
+      "30": "30 min",
+      "60": "1 h",
+      "240": "4 h"
+    },
+    "hint": {
+      "endsSelf": "Ends by itself.",
+      "foreverOff": "Ends by itself. Your admin has not enabled “Until I switch it back on”.",
+      "notOffered": "Your admin has not enabled this duration."
+    },
+    "note": {
+      "byMe": "Paused by you at {{time}} for {{duration}}.",
+      "byMeOpen": "Paused by you at {{time}}.",
+      "byOther": "Paused by {{name}} at {{time}} for {{duration}}.",
+      "byOtherOpen": "Paused by {{name}} at {{time}}.",
+      "plain": "Paused at {{time}} for {{duration}}.",
+      "plainOpen": "Paused at {{time}}.",
+      "device": "Nothing is blocked on this device meanwhile.",
+      "devices": "Nothing is blocked on your devices meanwhile.",
+      "all": "An admin has paused protection for all devices. Only an admin can switch it back on."
+    },
+    "duration": {
+      "minute": "1 minute",
+      "minutes": "{{n}} minutes",
+      "hour": "1 hour",
+      "hours": "{{n}} hours",
+      "hm": "{{h}} h {{m}} min"
+    },
+    "banner": {
+      "fallbackTitle": "The filter on the server is not answering.",
+      "fallbackText": "Your internet keeps working, but without protection. Your admin has been notified. Protection switches itself back on.",
+      "notAllowedTitle": "Pausing is not allowed.",
+      "profile": "The admin has locked pausing for your profile. If a site you need does not work, ask your parents or the admin.",
+      "admins_only": "Only admins may pause here."
+    },
+    "top": {
+      "title": "Top blocked domains",
+      "empty": "Nothing has been blocked today yet."
+    },
+    "done": {
+      "paused": "DNS protection paused.",
+      "extended": "Pause extended by 30 minutes.",
+      "resumed": "DNS protection switched back on.",
+      "notPaused": "Protection was already back on."
+    },
+    "error": {
+      "network": "No connection to the server.",
+      "timeout": "The server is not answering.",
+      "unavailable": "The filter service is not answering right now. Try again later.",
+      "rate_limited": "Too many requests. Try again in a moment.",
+      "failed": "That did not work."
+    },
+    "tray": {
+      "active": "DNS protection: active",
+      "pausedUntil": "DNS protection: paused until {{time}}",
+      "paused": "DNS protection: paused",
+      "fallback": "DNS protection: down (unfiltered)",
+      "unfiltered": "DNS protection: this device is not filtered",
+      "pause": "Pause DNS protection",
+      "resume": "Switch DNS protection back on",
+      "minutes": {
+        "5": "5 minutes",
+        "30": "30 minutes",
+        "60": "1 hour",
+        "240": "4 hours"
+      }
+    },
+    "toast": {
+      "outageTitle": "DNS protection: filter down",
+      "outageBody": "Your internet keeps working, but unfiltered. Protection switches itself back on.",
+      "failed": "DNS protection: {{error}}"
+    }
+  },
   "print": {
     "title": "Print",
     "sub": "Printers at home – also on the go and with the VPN",

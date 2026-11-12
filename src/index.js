@@ -27,6 +27,7 @@ const ChatNotifier = require('./services/chat-notifier');
 const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
 const FamilieService = require('./services/familie');
+const DnsProtectService = require('./services/dns-protect');
 const PrintService = require('./services/print');
 const CamerasService = require('./services/cameras');
 const GateDropService = require('./services/gatedrop');
@@ -73,6 +74,7 @@ const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
 const familieUtil = require('./utils/familie');
+const dnsProtectUtil = require('./utils/dns-protect');
 const printUtil = require('./utils/print');
 const camerasUtil = require('./utils/cameras');
 const notifyRoutes = require('./utils/notify-routes');
@@ -127,6 +129,7 @@ module.exports = {
   MapService,
   SchoolService,
   FamilieService,
+  DnsProtectService,
   PrintService,
   CamerasService,
   GateDropService,
@@ -198,6 +201,7 @@ module.exports = {
   messengerUtil,
   schoolUtil,
   familieUtil,
+  dnsProtectUtil,
   printUtil,
   camerasUtil,
   notifyRoutes,

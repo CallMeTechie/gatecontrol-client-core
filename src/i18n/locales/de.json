@@ -1501,6 +1501,127 @@
       "failed": "Das hat nicht geklappt ({{code}})."
     }
   },
+  "dnsProtect": {
+    "title": "DNS-Schutz",
+    "retry": "Erneut versuchen",
+    "stale": "Der DNS-Schutz ist gerade nicht erreichbar – du siehst den zuletzt geladenen Stand.",
+    "unreachable": "Der DNS-Schutz ist gerade nicht erreichbar.",
+    "disconnected": "VPN nicht verbunden: Gefiltert wird auf diesem Gerät nur, solange es verbunden ist.",
+    "forever": "Bis ich wieder einschalte",
+    "resume": "Wieder einschalten",
+    "extend": "+30 Min.",
+    "remaining": "Restzeit {{time}}",
+    "chip": {
+      "active": "aktiv",
+      "paused": "unterbrochen",
+      "fallback": "ungefiltert",
+      "unfiltered": "nicht gefiltert",
+      "starting": "startet",
+      "error": "nicht erreichbar"
+    },
+    "sub": {
+      "active": "Werbung und Schadseiten werden gesperrt",
+      "pausedUntil": "Unterbrochen bis {{time}} Uhr · schaltet sich von selbst ein",
+      "pausedOpenMe": "Unterbrochen, bis du wieder einschaltest",
+      "pausedOpenBy": "Unterbrochen, bis {{name}} wieder einschaltet",
+      "pausedOpen": "Unterbrochen, bis jemand wieder einschaltet",
+      "fallbackSince": "Ausgefallen seit {{time}} Uhr",
+      "fallback": "Ausgefallen",
+      "starting": "Der Schutz startet gerade.",
+      "ownDns": "Dieses Gerät nutzt einen eigenen DNS-Server ({{dns}}) und wird nicht gefiltert.",
+      "ownDnsPlain": "Dieses Gerät nutzt einen eigenen DNS-Server und wird nicht gefiltert.",
+      "excluded": "Dieses Gerät ist vom Schutz ausgenommen.",
+      "disabled": "Dieses Gerät ist auf dem Server deaktiviert und wird nicht gefiltert.",
+      "noDevice": "Du hast kein VPN-Gerät, für das der Schutz gilt.",
+      "unfiltered": "Dieses Gerät wird nicht gefiltert."
+    },
+    "kv": {
+      "queries": "Anfragen heute",
+      "blocked": "Gesperrt",
+      "percent": "Anteil"
+    },
+    "scope": {
+      "person": "Zahlen aller deiner Geräte",
+      "server": "Zahlen aller Geräte des Servers"
+    },
+    "pauseFor": {
+      "device": "Unterbrechen für dieses Gerät:",
+      "devices": "Unterbrechen für deine Geräte:"
+    },
+    "dur": {
+      "5": "5 Min.",
+      "30": "30 Min.",
+      "60": "1 Std.",
+      "240": "4 Std."
+    },
+    "hint": {
+      "endsSelf": "Endet von selbst.",
+      "foreverOff": "Endet von selbst. „Bis ich wieder einschalte“ hat dein Admin nicht freigegeben.",
+      "notOffered": "Diese Dauer hat dein Admin nicht freigegeben."
+    },
+    "note": {
+      "byMe": "Unterbrochen von dir um {{time}} für {{duration}}.",
+      "byMeOpen": "Unterbrochen von dir um {{time}}.",
+      "byOther": "Unterbrochen von {{name}} um {{time}} für {{duration}}.",
+      "byOtherOpen": "Unterbrochen von {{name}} um {{time}}.",
+      "plain": "Unterbrochen um {{time}} für {{duration}}.",
+      "plainOpen": "Unterbrochen um {{time}}.",
+      "device": "Solange wird auf diesem Gerät nichts gesperrt.",
+      "devices": "Solange wird auf deinen Geräten nichts gesperrt.",
+      "all": "Ein Admin hat den Schutz für alle Geräte unterbrochen. Nur ein Admin schaltet ihn wieder ein."
+    },
+    "duration": {
+      "minute": "1 Minute",
+      "minutes": "{{n}} Minuten",
+      "hour": "1 Stunde",
+      "hours": "{{n}} Stunden",
+      "hm": "{{h}} Std. {{m}} Min."
+    },
+    "banner": {
+      "fallbackTitle": "Der Filter auf dem Server antwortet nicht.",
+      "fallbackText": "Dein Internet läuft weiter, aber ohne Schutz. Dein Admin wurde benachrichtigt. Der Schutz schaltet sich von selbst wieder ein.",
+      "notAllowedTitle": "Unterbrechen nicht erlaubt.",
+      "profile": "Für dein Profil hat der Admin das Unterbrechen gesperrt. Geht eine Seite nicht, die du brauchst, frag deine Eltern oder den Admin.",
+      "admins_only": "Unterbrechen dürfen hier nur Admins."
+    },
+    "top": {
+      "title": "Top gesperrte Domains",
+      "empty": "Heute wurde noch nichts gesperrt."
+    },
+    "done": {
+      "paused": "DNS-Schutz unterbrochen.",
+      "extended": "Unterbrechung um 30 Minuten verlängert.",
+      "resumed": "DNS-Schutz wieder eingeschaltet.",
+      "notPaused": "Der Schutz war schon wieder eingeschaltet."
+    },
+    "error": {
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "unavailable": "Der Filter-Dienst antwortet gerade nicht. Versuch es später noch einmal.",
+      "rate_limited": "Zu viele Anfragen. Versuch es gleich noch einmal.",
+      "failed": "Das hat nicht geklappt."
+    },
+    "tray": {
+      "active": "DNS-Schutz: aktiv",
+      "pausedUntil": "DNS-Schutz: unterbrochen bis {{time}}",
+      "paused": "DNS-Schutz: unterbrochen",
+      "fallback": "DNS-Schutz: ausgefallen (ungefiltert)",
+      "unfiltered": "DNS-Schutz: dieses Gerät wird nicht gefiltert",
+      "pause": "DNS-Schutz unterbrechen",
+      "resume": "DNS-Schutz wieder einschalten",
+      "minutes": {
+        "5": "5 Minuten",
+        "30": "30 Minuten",
+        "60": "1 Stunde",
+        "240": "4 Stunden"
+      }
+    },
+    "toast": {
+      "outageTitle": "DNS-Schutz: Filter ausgefallen",
+      "outageBody": "Dein Internet läuft weiter, aber ungefiltert. Der Schutz schaltet sich von selbst wieder ein.",
+      "failed": "DNS-Schutz: {{error}}"
+    }
+  },
   "print": {
     "title": "Drucken",
     "sub": "Drucker zu Hause – auch unterwegs und mit VPN",
