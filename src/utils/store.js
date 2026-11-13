@@ -73,7 +73,7 @@ function createStores({ userDataPath, log }) {
           splitTunnel:   { type: 'boolean', default: false },
           splitRoutes:   { type: 'string', default: '' },
           configPath:    { type: 'string', default: '' },
-          // { domain, server } from GET /client/config, null = internal DNS off
+          // { domain, server, domains?, primary? } from GET /client/config, null = internal DNS off
           internalDns:   { type: ['object', 'null'] },
         },
         default: {},

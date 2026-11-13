@@ -63,4 +63,22 @@ describe('ApiClient internal DNS', () => {
     await c.checkConfigUpdate();
     assert.deepEqual(c.internalDns, { domain: 'lan.x', server: '10.9.0.1' });
   });
+
+  it('config/check without a new config still reports the zones (the zone can change while the hash stays)', async () => {
+    const internalDns = { domain: 'gc.internal', server: '10.8.0.1', domains: ['vpn.example.com', 'gc.internal'], primary: 'vpn.example.com' };
+    const c = answering({ ok: true, updated: false, internalDns });
+    assert.equal(await c.checkConfigUpdate(), null);
+    assert.deepEqual(c.internalDns, internalDns);
+
+    const off = answering({ ok: true, updated: false, internalDns: null });
+    off.internalDns = { domain: 'gc.internal', server: '10.8.0.1' };
+    await off.checkConfigUpdate();
+    assert.equal(off.internalDns, null);
+
+    // an older server says nothing with `updated: false`: what the config reported stays
+    const old = answering({ ok: true, updated: false });
+    old.internalDns = { domain: 'gc.internal', server: '10.8.0.1' };
+    await old.checkConfigUpdate();
+    assert.deepEqual(old.internalDns, { domain: 'gc.internal', server: '10.8.0.1' });
+  });
 });

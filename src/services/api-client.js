@@ -166,7 +166,7 @@ class ApiClient {
 
     if (data.config) {
       this.configHash = data.hash || null;
-      // { domain, server } | null; stays undefined for servers that do not send it.
+      // { domain, server, domains?, primary? } | null; stays undefined for servers that do not send it.
       this.internalDns = Object.prototype.hasOwnProperty.call(data, 'internalDns') ? data.internalDns : undefined;
       return data.config;
     }
@@ -186,9 +186,11 @@ class ApiClient {
       if (this.configHash) params.hash = this.configHash;
       const { data } = await this.client.get('/api/v1/client/config/check', { params });
 
+      // Also with `updated: false` (GateControl >= 1.271): the zones can change while the config hash stays.
+      if (data && Object.prototype.hasOwnProperty.call(data, 'internalDns')) this.internalDns = data.internalDns;
+
       if (data.updated && data.config) {
         this.configHash = data.hash;
-        if (Object.prototype.hasOwnProperty.call(data, 'internalDns')) this.internalDns = data.internalDns;
         this.log.info('New configuration available');
         return data.config;
       }
