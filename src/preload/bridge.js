@@ -901,7 +901,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       nav:           (area) => ipcRenderer.invoke('notes:nav', { area }),
       // 'myday' | 'important' | 'planned' | 'assigned' | 'list:<id>' | 'source:<plugin>'
       view:          (name, area) => ipcRenderer.invoke('notes:view', { name, area }),
-      parse:         (text, area) => ipcRenderer.invoke('notes:parse', { text, area }),
+      parse:         (text, area, listId) => ipcRenderer.invoke('notes:parse', { text, area, listId: listId || null }),
       people:        () => ipcRenderer.invoke('notes:people'),
       search:        (q, area) => ipcRenderer.invoke('notes:search', { q, area }),
       prefs:         () => ipcRenderer.invoke('notes:prefs'),
@@ -920,7 +920,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       createTask:    (task) => ipcRenderer.invoke('notes:task:create', { task: { ...(task || {}) } }),
       task:          (id) => ipcRenderer.invoke('notes:task', { id }),
       updateTask:    (id, patch) => ipcRenderer.invoke('notes:task:update', { id, patch: { ...(patch || {}) } }),
-      completeTask:  (id, done) => ipcRenderer.invoke('notes:task:complete', { id, done: done !== false }),
+      // userId (plugin 1.6.0): a parent ticks a task of the family's list off for this member of the family
+      completeTask:  (id, done, userId) => ipcRenderer.invoke('notes:task:complete', { id, done: done !== false, userId: userId || null }),
+      familySeen:    () => ipcRenderer.invoke('notes:family:seen'),
       deleteTask:    (id) => ipcRenderer.invoke('notes:task:delete', { id }),
       // „Gestern offen geblieben“ (plugin 1.3.0): to → 'today' | 'tomorrow' | 'weekend' | 'YYYY-MM-DD'
       moveTask:      (id, to) => ipcRenderer.invoke('notes:task:move', { id, to }),

@@ -131,3 +131,48 @@ center shows on the toast and answers itself; a click on the message opens the t
 
 Live: `changed { what: [..., 'places'] }` (a task with a place made, changed or done, the consent, own places, the
 switches) — the page fetches again; there is nothing to re-register on a PC.
+
+## Plugin 1.6.0: whose turn, stars, the family's list
+
+Told by `me.features` only (never by a version): `taskTurns`, `taskStars`, `familyTasks`, `doneFeedback`, `placeMine`.
+An older plugin sends none of the fields; the service refuses what an older plugin would pass over in silence — a task
+body with `turn`, `people` or `stars`, `completeTask(id, done, userId)`, `familySeen()`, a prefs patch with `feedback` —
+with `unsupported` before the server is asked.
+
+| What | Where |
+|---|---|
+| A task's `turn` (`rotate` „reihum“: `assignee` is who is on now / `first` „wer zuerst“: nobody is assigned, the task is for everybody in `people` / null), `people` ([{ id, name }], [] without a turn), `stars` (0: none), `doneBy` (who it was ticked off for), `family` (a task of the family's list) | `normalizeTask` |
+| Writing them: `turn` (null / `rotate` / `first`), `people` (ids, in order), `stars` (0…10) of `POST tasks` and `PATCH tasks/<id>`; with `rotate` `assigneeId` says who starts | `taskPatch`, `taskCreate`, `peopleArg` |
+| What the typed line says: `parsed.people`, `parsed.turn`, `parsed.stars` (and the cleaned `title`) of POST parse and POST tasks; `listId` of POST parse — the list the line is typed in, only there the server reads stars | `normalizeParsed`, `parse({ text, area, listId })`; IPC `notes:parse ({ text, area, listId? })` |
+| The family's list: `List.family` (at most one), `me.familyTasks` ({ available, bound, listId, parent, stars, starsMax, moved: { at, tasks, places, seen } / null }) | `normalizeList`, `normalizeMe` |
+| A parent ticks off for a member of the family: `POST tasks/<id>/complete { done, userId }` | `completeTask(id, done, userId)`; IPC `notes:task:complete ({ id, done, userId? })` |
+| The note „Umzug abgeschlossen“ was read: `POST family/seen` | `familySeen()`; IPC `notes:family:seen` |
+| The message to a parent when a child ticks off: `prefs.feedback` (`all` / `stars` / `off`) | `normalizePrefs`; IPC `notes:prefs:set { patch: { feedback } }` |
+| Who may accept a place: `place.mine`, `place.canConsent` (only when the server sends them — without `placeMine` the page decides as before) | `normalizeTask` (`taskPlaceOf`) |
+
+Whose turn from the typed line. The parser (`src/vendor/notizen/quickparse.js`) and its frozen vectors are **unchanged**
+(a test holds their checksums). Several people („@Mia @Jonas“), „reihum“ / „wer zuerst“ and „2 Sterne“ are read by a
+second small module **after** the parser: `src/vendor/notizen/turnwords.js` — the plugin's own `ui/turnwords.js`,
+unchanged, with its vectors `test/fixtures/notes/turnwords-vectors.json` (16 cases, all of them checked in
+`test/notes-family.test.js`). `TW.apply(parsed, { people, stars }) → { title, people, turn, stars }`; `stars: true` is
+passed only when the person may give stars and the task goes into the family's list (`me.familyTasks.bound && parent &&
+stars`, the list is `familyTasks.listId`). The server reads the line the same way (`POST parse`, `POST tasks { text }`);
+what does not fit there (somebody is no member of the list, stars without the right) is dropped in silence.
+
+What a child may is enforced by the server; the page follows `canEdit` / `canComplete` of a task and
+`me.familyTasks.parent`. The server's answers arrive with their code and — in the IPC's failure — `reason` / `field`:
+`invalid` (`field: turn | people | stars | userId`; `reason: family` for stars outside the family's list),
+`not_member` (409, `field: people`), `forbidden` (403, `reason: parents_only` — a child gives stars, changes a task of
+the parents or ticks off for somebody else; `reason: family` — the family's list is deleted, left or shared: that is
+decided by the Familie plugin). The stars are counted and settled in the Familie plugin; the hub only carries the number
+at the task.
+
+Pushes. „… hat ‚…‘ erledigt“ (topic `shared`, `data.notizen.kind === 'done_feedback'`) carries two buttons: „Ansehen“
+(`open_app_route`) opens the task like a click on the message (`pushTarget()` → `{ kind: 'task', taskId }`), „Noch nicht
+fertig“ is a `callback` action the notification center shows on the toast and in the inbox and answers itself — the
+server opens the task again and takes the stars back; the same is reached with `completeTask(id, false)`. „Erledigt von
+…“ (topic `reminders`, kind `reminder_done`, no buttons) comes with the collapse key of the reminder (`task:<id>`) and so
+replaces the reminder of a task „wer zuerst“ somebody else did; a click opens the task (it names it as `taskId`).
+
+The test server (`test/fixtures/notes-server.js`) has the 1.6.0 routes and fields only with these words in `features`
+(`STAGE4`); its default stays an older plugin. `srv.addFamily()` makes the family's list; `state.user` decides who asks.

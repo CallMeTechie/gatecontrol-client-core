@@ -376,10 +376,15 @@ class NotesService extends EventEmitter {
    * The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or
    * null; `place`: the place it names (plugin 1.5.0, `places` — found by the server, not by the parser) or null.
    */
-  async parse({ text, area } = {}) {
+  async parse({ text, area, listId = null } = {}) {
     return this._run(async () => {
-      const r = await this.api.suggest(text, N.areaOf(area) || undefined);
-      return { ok: true, parsed: r.parsed, attach: this._offers('taskList') ? r.attach : null, place: this._offers('places') ? r.place : null };
+      // plugin 1.6.0: the list the line is typed in (only there the server reads „2 Sterne“); what it says about several
+      // people, „reihum“ / „wer zuerst“ and stars comes back in `parsed` (people, turn, stars) — never from an older plugin
+      const turns = this._offers('taskTurns');
+      const stars = this._offers('taskStars');
+      const r = await this.api.suggest(text, N.areaOf(area) || undefined, (turns || stars) && N.posId(listId) ? listId : null);
+      const parsed = { ...r.parsed, ...(turns ? {} : { people: [], turn: null }), ...(stars ? {} : { stars: null }) };
+      return { ok: true, parsed, attach: this._offers('taskList') ? r.attach : null, place: this._offers('places') ? r.place : null };
     });
   }
 
@@ -404,6 +409,8 @@ class NotesService extends EventEmitter {
     return this._run(async () => {
       // plugin 1.5.0: the switches of places — an older plugin would pass them over in silence
       if (patch && patch.places !== undefined) this._feature('places');
+      // plugin 1.6.0: the message to a parent when a child ticks off
+      if (patch && patch.feedback !== undefined) this._feature('doneFeedback');
       const prefs = await this.api.setPrefs(patch);
       if (this._me) this._me.prefs = prefs;
       // … and `me.places` (is the search on for this person now?) follows them
@@ -452,7 +459,26 @@ class NotesService extends EventEmitter {
 
   async updateTask(id, body) { return this._run(async () => { this._listFields(body); return { ok: true, task: await this.api.updateTask(id, body) }; }); }
 
-  async completeTask(id, done) { return this._run(async () => ({ ok: true, ...(await this.api.completeTask(id, done)) })); }
+  /**
+   * Ticked off (or back). `userId` (plugin 1.6.0, `familyTasks`): a parent ticks a task of the family's list off for
+   * this member of the family — an older plugin would tick it off for the parent, so it is refused here.
+   */
+  async completeTask(id, done, userId = null) {
+    return this._run(async () => {
+      if (userId) this._feature('familyTasks');
+      return { ok: true, ...(await this.api.completeTask(id, done, userId || null)) };
+    });
+  }
+
+  /** The note „Umzug abgeschlossen“ was read (once per person) → { ok }; `me.familyTasks.moved.seen` follows. */
+  async familySeen() {
+    return this._run(async () => {
+      this._feature('familyTasks');
+      await this.api.familySeen();
+      if (this._me && this._me.familyTasks && this._me.familyTasks.moved) this._me.familyTasks.moved.seen = true;
+      return { ok: true };
+    });
+  }
 
   async deleteTask(id) { return this._run(async () => { await this.api.deleteTask(id); return { ok: true }; }); }
 
@@ -476,6 +502,9 @@ class NotesService extends EventEmitter {
     if (b.attachedListId !== undefined || b.attachedListUid !== undefined || b.attach !== undefined) this._feature('taskList');
     // plugin 1.5.0: `place` likewise — an older plugin would make the task and say nothing about the place
     if (b.place !== undefined) this._feature('places');
+    // plugin 1.6.0: whose turn and the stars likewise — an older plugin would make a task for one person without stars
+    if (b.turn !== undefined || b.people !== undefined) this._feature('taskTurns');
+    if (b.stars !== undefined) this._feature('taskStars');
   }
 
   // ── places (plugin 1.5.0) ────────────────────────────────
