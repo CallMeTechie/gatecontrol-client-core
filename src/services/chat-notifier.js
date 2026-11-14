@@ -29,6 +29,10 @@
  *     reaction) show the server's title and body as they are, in a toast of
  *     their own per kind (tag `chat-<id>-<kind>`) that a new message of the
  *     chat does not replace; they are acked with the chat.
+ *   - Messenger 1.14: the push of a chat over a bridge (`data.bridge`) reads
+ *     „Kim Muster · WhatsApp“ (without preview „Neue Nachricht über
+ *     WhatsApp“ and no text); its actions carry `bridged: true` in their
+ *     body, sent on unchanged.
  *   - The rules of the other toasts apply (on/off, "Windows-Benachrichtigung
  *     anzeigen", topic muted, "Nicht stören", quiet hours = silent → no
  *     toast, replay/burst caps); no toast for the chat that is open and
@@ -42,7 +46,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { t } = require('../i18n');
-const { parseChatNotification, posInt, isAvatarPath } = require('../utils/messenger');
+const { parseChatNotification, posInt, isAvatarPath, bridgeLabel } = require('../utils/messenger');
 const { buildChatToastXml, parseChatArgs } = require('../utils/toast-xml');
 
 const AVATAR_TIMEOUT_MS = 1500;
@@ -167,6 +171,9 @@ class ChatNotifier extends EventEmitter {
     rec.seqs.set(p.id, p.seq);
     if (p.pushKind) rec.extras.set(p.pushKind, { latest: p, toast: (rec.extras.get(p.pushKind) || {}).toast || null });
     else rec.latest = p;
+    // Messenger 1.14: a chat over a bridge — the messenger marks its calls from now on (?bridged=1), so the reply
+    // from the toast, "Gelesen" and opening the chat work even before the chat list knew such a chat
+    if (p.bridge && this.messenger && typeof this.messenger.noteBridge === 'function') this.messenger.noteBridge();
 
     // The chat is on screen: nothing to show, it is read.
     if (this.messenger && typeof this.messenger.isOpenAndVisible === 'function' && this.messenger.isOpenAndVisible(cid)) {
@@ -201,6 +208,8 @@ class ChatNotifier extends EventEmitter {
     if (p.isGroup && !kind) {
       title = p.conversationTitle || title;
       body = p.body ? (sender ? `${sender}: ${p.body}` : p.body) : p.title;
+      // Messenger 1.14: a group of another messenger keeps the service in its title („Grillen · WhatsApp“)
+      if (p.bridge && p.conversationTitle && p.body) title = `${p.conversationTitle} · ${bridgeLabel(p.bridge)}`;
     }
     const imagePath = (await this._avatarFile(p.sender.avatarUrl)) || this.toastImagePath;
     // Superseded while the picture loaded (a newer message / push of this kind).

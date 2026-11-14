@@ -211,4 +211,36 @@ describe('messenger IPC', () => {
     await new Promise((res) => setTimeout(res, 5));
     assert.ok(messenger.calls.some((c) => c[0] === 'reset'));
   });
+  it('Messenger 1.13 / 1.14: linked services and resend pass through, a refusal keeps its reason', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    messenger.bridges = async () => ({ available: true, location: 'server', networks: [] });
+    messenger.bridgeConsent = async (n) => { calls.push(['consent', n]); return { consent: true }; };
+    messenger.bridgeLogin = async (n, f) => { calls.push(['login', n, f]); return { processId: 'p1', step: { id: 's1', type: 'phone', fieldId: 'phone_number' } }; };
+    messenger.bridgeStep = async (n, p, st, o) => {
+      calls.push(['step', n, p, st, o]);
+      if (st === 'gone') throw Object.assign(new Error('bridge_failed'), { code: 'bridge_failed', status: 502, body: { reason: 'timeout' } });
+      return { processId: p, waiting: true };
+    };
+    messenger.bridgeCancel = async (n, p) => { calls.push(['cancel', n, p]); return true; };
+    messenger.bridgeUnlink = async (n, l) => { calls.push(['unlink', n, l]); return true; };
+    messenger.resend = async (id) => ({ id, bridge: { state: 'sent' } });
+    assert.deepEqual(await call('chat:bridges'), { ok: true, bridges: { available: true, location: 'server', networks: [] } });
+    assert.deepEqual(await call('chat:bridge:consent', { network: 'whatsapp' }), { ok: true, consent: true });
+    assert.equal((await call('chat:bridge:login', { network: 'whatsapp', flow: 'phone' })).login.step.type, 'phone');
+    assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 's1', phone: '+49 1512 0000000', fieldId: 'phone_number' }), { ok: true, login: { processId: 'p1', waiting: true } });
+    assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'c1', phone: 4915 }), { ok: true, login: { processId: 'p1', waiting: true } });
+    const gone = await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'gone' });
+    assert.deepEqual([gone.ok, gone.code, gone.reason, gone.status], [false, 'bridge_failed', 'timeout', 502]);
+    assert.deepEqual(await call('chat:bridge:cancel', { network: 'whatsapp', processId: 'p1' }), { ok: true });
+    assert.deepEqual(await call('chat:bridge:unlink', { network: 'whatsapp', loginId: 'login1' }), { ok: true });
+    assert.deepEqual(calls, [
+      ['consent', 'whatsapp'], ['login', 'whatsapp', 'phone'],
+      ['step', 'whatsapp', 'p1', 's1', { phone: '+49 1512 0000000', fieldId: 'phone_number' }],
+      ['step', 'whatsapp', 'p1', 'c1', {}], ['step', 'whatsapp', 'p1', 'gone', {}],
+      ['cancel', 'whatsapp', 'p1'], ['unlink', 'whatsapp', 'login1'],
+    ]);
+    assert.deepEqual(await call('chat:resend', { id: 4711 }), { ok: true, message: { id: 4711, bridge: { state: 'sent' } } });
+    assert.equal((await call('chat:resend', { id: 'x' })).code, 'invalid');
+  });
 });

@@ -272,6 +272,50 @@ With `GET me` features `scan` (known, no update hint; GateControl 1.223.0):
 - `chat:media` / `chat:media:save` of a blocked file → `{ ok: false, code:
   'scan_pending' | 'quarantined' | 'scan_blocked', scan?, finding?, retryAfter? }`.
 
+## Messenger 1.13 / 1.14: linked services and chats over a bridge
+
+Both parts are detected by feature words of `GET me`, never by a version:
+
+* `linked_services` (1.13) — the server offers a bridge to another messenger
+  (today WhatsApp). „Verknüpfte Dienste“ in the chat settings links the
+  person's OWN account: `bridges()`, `bridgeConsent(network)`,
+  `bridgeLogin(network, 'phone' | 'qr')`, `bridgeStep(network, processId,
+  stepId, { phone?, fieldId? })`, `bridgeCancel`, `bridgeUnlink`. A step comes
+  back normalized (`utils/messenger.js` `normalizeBridgeLogin`): `phone` (the
+  number is asked for), `code` (the pairing code), `qr` (the code's modules
+  `matrix: { size, rows }` — the page draws them, there is never a picture
+  address), `complete`, `unsupported`, or `{ waiting: true }` (ask again; the
+  server waits up to 15 s per call, so these calls get 30 s). The number is
+  checked in the main process (`bridgePhone`), sent once and never stored or
+  logged; the same holds for the pairing code and the QR content. Refusals:
+  `bridge_off`, `consent_required`, `bridge_locked`, `bridge_unsupported`,
+  `bridge_failed` (with `reason`, e.g. `timeout`), `bridge_unreachable`,
+  `rate_limited`; the IPC answer carries `reason` as well.
+* `bridge_chats` (1.14) — set only for a person who HAS a chat over a bridge.
+  Such a chat exists only for a client that says so: every call below
+  `conversations` and `messages` carries `?bridged=1` (`MessengerApi.bridged`)
+  as soon as the server names `linked_services` or `bridge_chats`, or an event
+  (`message.new` with `bridge`) or a chat push (`data.bridge`) named such a
+  chat (`MessengerService.noteBridge()` — it also reads `GET me` again, since
+  the word appears with the first chat). An older plugin never gets the mark;
+  its requests are byte for byte what they were.
+
+What a bridged chat looks like to the page: `conversation.bridge` (`network`,
+`label`, `state`: ok / unreachable / logged_out / unlinked / locked / off,
+`closed`), no `peer`, one member; `typingContacts` (`[{ contactId, name }]`)
+next to `typing`; `message.bridge` (`sender` — the contact, `remote`, `state`,
+`reason`, `placeholder`). `messageStatus()` answers `failed` / `pending` for
+the bridge's word on an own message. Only a text crosses a bridge: `send()`
+refuses everything else with `bridge_text_only` before it is queued, and the
+outbox does not retry a `bridge_*` refusal (the server keeps no queue for the
+other messenger) — the message shows why and can be sent again. A message the
+server stored but the bridge did not take (`bridge.state: failed`) goes out
+again with `resend(messageId)`.
+
+The push of such a chat reads „Kim Muster · WhatsApp“ (without preview „Neue
+Nachricht über WhatsApp“ and no text); a group keeps the service in its title.
+Its actions carry `bridged: true` in their body and are sent on unchanged.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -399,8 +443,9 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `deleteReminder`, `suggest`, `toList`, `toCalendar`, `places`, `poll(id, op,
 args)`, `event(id, op, args)`, `stopArrival`, `actions`, `action(id, op,
 args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
-(`{ mime, data: Uint8Array }`), `storage`,
-`clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+(`{ mime, data: Uint8Array }`), 1.13 / 1.14: `bridges`, `bridgeConsent`,
+`bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`,
+`storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
@@ -417,7 +462,9 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 * The toast reply field needs Electron's `Notification.handleActivation`
   (Electron 44 in both apps) and the app's start-menu shortcut (AUMID), like
   every Windows toast; the portable build shows no toasts.
-* Bridges (WhatsApp, Signal, …) and end-to-end encryption are not part of V1.
+* End-to-end encryption is not part of V1. Chats over a bridge (Messenger
+  1.14) carry text only: files, voice messages, pictures of contacts, older
+  history and "new chat with a number" follow with a later plugin version.
 * Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
   departure hint push of an event opens the chat.
 * Server storage: the server reports only whether the chat file quota is

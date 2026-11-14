@@ -22,10 +22,15 @@
 
 const {
   PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isNotifyMediaPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
+  BRIDGE_FLOWS, isBridgeNet, isBridgeId,
 } = require('../utils/messenger');
 const scan = require('../utils/scan');
 
 const JSON_TIMEOUT_MS = 15000;
+// POST bridges/:network/login/:process/:step waits at the server for the phone (up to 15 s per call).
+const BRIDGE_WAIT_TIMEOUT_MS = 30000;
+// Routes that know chats over a bridge (Messenger 1.14): they carry ?bridged=1 while `bridged` is set.
+const BRIDGED_ROUTE_RE = /^(?:conversations|messages)(?:\/|$)/;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DOWNLOAD = 64 * 1024 * 1024;
@@ -109,6 +114,9 @@ class MessengerApi {
   constructor({ apiClient, log } = {}) {
     this.apiClient = apiClient;
     this.log = log || { info() {}, warn() {}, debug() {}, error() {} };
+    // Messenger 1.14: this app shows chats over a bridge — set by the service once the server names the feature
+    // (`linked_services` / `bridge_chats`). Without the mark such a chat does not exist for a client (404).
+    this.bridged = false;
   }
 
   _client() {
@@ -139,6 +147,10 @@ class MessengerApi {
 
   /** Plugin route below …/gatecontrol-messenger/api/. */
   api(method, path, opts) {
+    if (this.bridged && BRIDGED_ROUTE_RE.test(path)) {
+      const o = opts || {};
+      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1 } });
+    }
     return this._call(method, API_BASE + path, opts);
   }
 
@@ -342,6 +354,38 @@ class MessengerApi {
     return this.api('POST', p, { body: body && typeof body === 'object' ? body : {} });
   }
 
+  // ── Messenger 1.13 / 1.14: linked services and chats over a bridge ──
+
+  /** The own links to other messengers → { bridges: { available, location, networks } }. */
+  async bridges() { return this.api('GET', 'bridges'); }
+
+  /** The notes before the first link were read → { consent }. */
+  async bridgeConsent(network) { return this.api('POST', `bridges/${this._net(network)}/consent`, { body: { accept: true } }); }
+
+  /** Start linking with a pairing code ('phone') or a QR code ('qr') → { login: { processId, step } }. */
+  async bridgeLogin(network, flow) {
+    if (!BRIDGE_FLOWS.includes(flow)) throw new MessengerError('invalid flow', { code: 'invalid' });
+    return this.api('POST', `bridges/${this._net(network)}/login`, { body: { flow }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /**
+   * The next step of a login: with `input` ({ <fieldId>: value }) it sends what the person typed, without it the
+   * server waits for the phone → { login: { processId, step } | { processId, waiting: true } }.
+   */
+  async bridgeStep(network, processId, stepId, input = null) {
+    const path = `bridges/${this._net(network)}/login/${this._bid(processId)}/${this._bid(stepId)}`;
+    return this.api('POST', path, { body: input ? { input } : {}, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Drop a login that was not finished. */
+  async bridgeCancel(network, processId) { return this.api('DELETE', `bridges/${this._net(network)}/login/${this._bid(processId)}`); }
+
+  /** Unlink the own account. */
+  async bridgeUnlink(network, loginId) { return this.api('DELETE', `bridges/${this._net(network)}/logins/${this._bid(loginId)}`); }
+
+  /** Messenger 1.14: an own message the bridge did not take, once more → { message }. */
+  async resend(messageId) { return this.api('POST', `messages/${this._id(messageId)}/resend`, { body: {}, timeout: BRIDGE_WAIT_TIMEOUT_MS }); }
+
   // ── Media ────────────────────────────────────────────────
 
   /**
@@ -418,6 +462,17 @@ class MessengerApi {
     const n = posInt(v);
     if (!n) throw new MessengerError('invalid id', { code: 'invalid' });
     return n;
+  }
+
+  _net(v) {
+    if (!isBridgeNet(v)) throw new MessengerError('invalid network', { code: 'invalid' });
+    return v;
+  }
+
+  /** A login / process / step id of the bridge as a path segment. */
+  _bid(v) {
+    if (!isBridgeId(v)) throw new MessengerError('invalid id', { code: 'invalid' });
+    return encodeURIComponent(v);
   }
 }
 
