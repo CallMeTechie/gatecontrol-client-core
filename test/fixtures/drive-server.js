@@ -40,6 +40,9 @@
 // state.opCalls), 'zip' (POST zip { ids } → a media path of a fake ZIP listing the files; state.zips; srv.zipUrl(mediaId)
 // for another address; without 'zipMixed' one folder or ≤ 20 files), 'multiLink' (POST links { nodeIds }: files only,
 // ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
+// Drive 1.30.0: 'deadlineHub' (in the features only while „Notizen & Aufgaben“ rings the reminders of the deadlines):
+// a reminder set here is `by: 'notizen'`. Without the word the field is left out (the default stays an older Drive);
+// srv.remindBy = 'drive' | 'notizen' names it (a Drive 1.30.0 that reminds itself: 'drive').
 // Drive 1.14: 'deadlineCalendar' (POST deadlines/<id>/calendar → deadline.calendar; srv.familie = false → 409
 // familie_unavailable { reason }; state.calendarCalls; PATCH areas/<id> { deadlinesToCalendar }, areas[].deadlinesToCalendar),
 // Drive 1.17: 'deadlineMailCalendar' (GET deadlines/calendars, GET|PUT deadlines/targets, POST deadlines/<id>/calendar
@@ -797,7 +800,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (req.method === 'POST') {
         const days = Number(body.daysBefore);
         if (!Number.isInteger(days) || days < 0 || days > 90) return json(res, 400, { ok: false, code: 'invalid', field: 'daysBefore', error: 'invalid' });
-        d.reminder = { at: iso(Date.parse(`${d.date}T07:00:00Z`) - days * 86400000), daysBefore: days, sent: false };
+        // Drive 1.30.0 names who rings: 'notizen' while the hub reminds ('deadlineHub'); srv.remindBy = 'drive': a 1.30.0 that reminds itself
+        const by = srv.remindBy || (has('deadlineHub') ? 'notizen' : null);
+        d.reminder = { at: iso(Date.parse(`${d.date}T07:00:00Z`) - days * 86400000), daysBefore: days, sent: false, ...(by ? { by } : {}) };
         return json(res, 200, { ok: true, deadline: plain() });
       }
       if (req.method === 'DELETE') { d.reminder = null; return json(res, 200, { ok: true, deadline: plain() }); }

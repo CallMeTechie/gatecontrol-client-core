@@ -903,9 +903,11 @@ function normalizeDeadlineTargets(raw) {
 }
 
 /**
- * A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent } | null,
+ * A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent, by } | null,
  * calendar: { eventId, at, target } | null, node? } or null. calendar (Drive 1.14 'deadlineCalendar'): the person's
  * entry in the family calendar; Drive 1.17 names its target ({ kind, label }; null: the family calendar, older Drives).
+ * reminder.by (Drive 1.30.0): 'notizen' — „Notizen & Aufgaben“ rings this reminder (a task there, Drive sends no
+ * message of its own) | 'drive' — Drive reminds itself (also every older Drive, which names nobody).
  */
 function normalizeDeadline(v) {
   const o = obj(v);
@@ -921,7 +923,7 @@ function normalizeDeadline(v) {
     kind: o.kind,
     date,
     label: line(o.label, 200),
-    reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent) } : null,
+    reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent), by: r.by === 'notizen' ? 'notizen' : 'drive' } : null,
     calendar: c && (eventId || c.at) ? { eventId, at: msOf(c.at), target: normalizeDeadlineTarget(c.target) } : null,
   };
   if (o.node !== undefined) out.node = normalizeNode(o.node);

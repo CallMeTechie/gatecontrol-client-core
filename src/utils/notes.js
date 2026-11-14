@@ -21,7 +21,9 @@
  * `taskStars` (a task's `stars`, `stars` when writing and of POST parse), `familyTasks` (the family's list: `List.family`,
  * `Task.family`, `Task.doneBy`, `me.familyTasks`, POST tasks/<id>/complete { userId }, POST family/seen),
  * `doneFeedback` (`prefs.feedback`, the push kind done_feedback with „Noch nicht fertig“) and `placeMine` (a place's
- * `mine` / `canConsent`: who may accept or decline it).
+ * `mine` / `canConsent`: who may accept or decline it). Plugin 1.7.0: `driveDeadlines` (the hub rings the reminders of
+ * Drive's deadlines: a task's `deadline` — the day, the kind, the file, how many days before, the file's `open` —,
+ * `deadline` in the data of the reminder's push with the button „Datei öffnen“, `me.driveDeadlines`).
  *
  * Every text from the server stays text: the renderer puts it into textContent only.
  */
@@ -74,6 +76,11 @@ const TURNS = Object.freeze(['rotate', 'first']);
 const STARS_MAX = 10;
 const PEOPLE_MAX = 50;
 const FEEDBACK = Object.freeze(['all', 'stars', 'off']);
+// plugin 1.7.0: a task that reminds of a deadline of a file in Drive
+const DEADLINE_KINDS = Object.freeze(['payment', 'cancellation', 'objection', 'warranty', 'renewal']);
+const DEADLINE_DAYS_MAX = 90;
+// a member's role in a list or a notebook (plugin 1.2.0: 'read' only looks)
+const ROLES = Object.freeze(['owner', 'write', 'read']);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -389,6 +396,24 @@ function openOf(v) {
   return { plugin, route: typeof o.route === 'string' && ROUTE_RE.test(o.route) ? o.route : '' };
 }
 
+/**
+ * A task's `deadline` (plugin 1.7.0: the deadline of a file in Drive the task reminds of) → { date, kind, file,
+ * daysBefore, open } or null. `daysBefore`: what the person chose in Drive (0: on the day itself); `open`: the file,
+ * the same form as an item's `open` (null: the file cannot be named).
+ */
+function deadlineOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  return {
+    date: dateOf(o.date), kind: DEADLINE_KINDS.includes(o.kind) ? o.kind : null, file: line(o.file, 200),
+    daysBefore: Number.isSafeInteger(o.daysBefore) && o.daysBefore >= 0 && o.daysBefore <= DEADLINE_DAYS_MAX ? o.daysBefore : null,
+    open: openOf(o.open),
+  };
+}
+
+/** The own role in a list or a notebook → 'owner' | 'write' | 'read' | null ('member' of plugin 1.0 / 1.1: 'write'). */
+const roleOf = (v) => (ROLES.includes(v) ? v : v === 'member' ? 'write' : null);
+
 // ── the answers ─────────────────────────────────────────────
 
 /** Task (README "API") → cleaned, or null. */
@@ -415,6 +440,8 @@ function normalizeTask(v) {
     // everybody in `people`), the stars (0: none), who it was ticked off for, a task of the family's list
     turn: turnOf(o.turn), people: arr(o.people).slice(0, PEOPLE_MAX).map(memberOf).filter(Boolean), stars: starsOf(o.stars),
     doneBy: memberOf(o.doneBy), family: bool(o.family),
+    // plugin 1.7.0 — the deadline of a file in Drive this task reminds of (null: every other task, an older plugin)
+    deadline: deadlineOf(o.deadline),
   };
   if (!t.turn || t.people.length < 2) { t.turn = null; t.people = []; }
   // GET tasks/<id>: the details
@@ -466,7 +493,8 @@ function normalizeList(v) {
   if (!id) return null;
   return {
     id, name: line(o.name, NAME_MAX) || '', area: areaOf(o.area) || 'private', color: colorOf(o.color), icon: line(o.icon, 40),
-    isDefault: bool(o.isDefault), owner: personOf(o.owner), role: o.role === 'owner' || o.role === 'member' ? o.role : null,
+    // `canEdit` (plugin 1.2.0): false for a member who only reads — an older plugin sends none and has no such role
+    isDefault: bool(o.isDefault), owner: personOf(o.owner), role: roleOf(o.role), canEdit: o.canEdit !== false && o.role !== 'read',
     groupId: posId(o.groupId), position: Number.isFinite(o.position) ? o.position : 0, shared: bool(o.shared),
     members: personList(o.members), open: count(o.open), ext: obj(o.ext) && typeof o.ext.kind === 'string' ? { kind: o.ext.kind.slice(0, 20) } : null,
     // plugin 1.6.0: the family's list (at most one) — who belongs to it is decided by the Familie plugin
@@ -497,7 +525,7 @@ function normalizeNotebook(v) {
   const b = obj(o.bound);
   return {
     id, name: vault ? null : line(o.name, NAME_MAX) || '', area: areaOf(o.area) || 'private', color: colorOf(o.color),
-    isDefault: bool(o.isDefault), role: o.role === 'owner' || o.role === 'member' ? o.role : null, owner: personOf(o.owner),
+    isDefault: bool(o.isDefault), role: roleOf(o.role), canEdit: o.canEdit !== false && o.role !== 'read', owner: personOf(o.owner),
     members: personList(o.members), shared: bool(o.shared), vault,
     bound: b && pluginOf(b.plugin) ? { plugin: b.plugin, key: line(b.key, 32), kind: b.kind === 'checklists' ? 'checklists' : 'notes', label: line(b.label, 60) || b.plugin } : null,
     count: count(o.count), position: Number.isFinite(o.position) ? o.position : 0,
@@ -754,6 +782,7 @@ function normalizeMe(v) {
   const cal = obj(o.calendar);
   const yd = obj(o.yesterday);
   const fam = obj(o.shopping) && obj(o.shopping.family);
+  const dd = obj(o.driveDeadlines);
   return {
     user: { id: posId(u.id), name: line(u.name, 120) || '' }, lang: o.lang === 'en' ? 'en' : 'de', today: dateOf(o.today),
     time: timeOf(o.time), timezone: line(o.timezone, 60), features: arr(o.features).filter((f) => typeof f === 'string' && /^[A-Za-z]{1,30}$/.test(f)).slice(0, 50),
@@ -770,6 +799,8 @@ function normalizeMe(v) {
     places: mePlacesOf(o.places),
     // plugin 1.6.0: the family's list, may this person give stars, was the move told already
     familyTasks: familyTasksOf(o.familyTasks),
+    // plugin 1.7.0: can Drive be asked, has Drive handed reminders of its deadlines over (the same for everybody)
+    driveDeadlines: dd ? { available: bool(dd.available), active: bool(dd.active) } : null,
   };
 }
 
@@ -1262,7 +1293,8 @@ function toggleCheck(md, lineNo, done) {
  * buttons are callbacks the notification center answers itself. Plugin 1.6.0: „… hat ‚…‘ erledigt“ (kind
  * 'done_feedback': „Ansehen“ and a click open the task, „Noch nicht fertig“ is such a callback) and „Erledigt von …“
  * (kind 'reminder_done', it takes the place of the reminder of a task „wer zuerst“) open the task — the latter names it
- * as `taskId` only.
+ * as `taskId` only. Plugin 1.7.0: the reminder of a deadline in Drive is a reminder like any other (a click opens the
+ * task); its fourth button „Datei öffnen“ ('open_file') is a link to the file in the portal — see `pushFile`.
  */
 function pushTarget(topic, data, actionId = null) {
   if (typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
@@ -1284,6 +1316,20 @@ function pushTarget(topic, data, actionId = null) {
     if (vaultIdOf(n.vault)) return { kind: 'vault', vaultId: n.vault, event: n.event === 'request' || n.event === 'approved' ? n.event : null };
   }
   return { kind: 'home' };
+}
+
+/**
+ * The button „Datei öffnen“ ('open_file') of the reminder of a deadline in Drive (plugin 1.7.0,
+ * data.notizen.deadline.open) → the file's `open` { plugin, route } or null (another button, another push, no file).
+ * The server sends the button as a link to the portal; an app with a page of that plugin opens the file there instead
+ * (DriveService.clickContext).
+ */
+function pushFile(topic, data, actionId) {
+  if (actionId !== 'open_file' || typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
+  const d = obj(data);
+  const n = d && obj(d.notizen);
+  const dl = n && deadlineOf(n.deadline);
+  return dl && dl.open && dl.open.route ? dl.open : null;
 }
 
 /** The live event `changed` { what } → the kinds that changed. */
@@ -1312,5 +1358,5 @@ module.exports = {
   normalizeAttachment, normalizeYesterday, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,
   normalizeParsed, normalizeJob, normalizeMsAccounts, normalizeMsPreview, normalizeConsent, normalizeMsLinks, normalizeVault,
   viewName, dueArg, remindArg, taskPatch, taskCreate, moveArg, yesterdayArg, nameArg, membersArg, notesQuery, notePatch, toggleCheck,
-  pushTarget, changedOf, errorCode,
+  pushTarget, pushFile, changedOf, errorCode,
 };
