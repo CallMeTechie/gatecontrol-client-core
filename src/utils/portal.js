@@ -39,6 +39,16 @@ function portalNext(raw) {
 }
 
 /**
+ * The portal tab a portal path names ('/portal#plg-x', '/portal?drive=41#plg-x' → 'plg-x') or null. Unlike
+ * portalNext the path may carry a query — the tab is only compared, the path is opened as it is.
+ */
+function portalTab(raw) {
+  if (typeof raw !== 'string' || !raw || raw.length > 300) return null;
+  const m = /^\/(?:portal\/?)?(?:\?[^#]*)?#([a-z0-9-]{1,60})$/.exec(raw);
+  return m && (PORTAL_TABS.includes(m[1]) || PLUGIN_TAB_RE.test(m[1])) ? m[1] : null;
+}
+
+/**
  * The login link with the target: servers with `next` support put it into
  * the link already; otherwise it is appended (the contract allows it, the
  * server checks it again when the link is opened, older servers ignore it).
@@ -143,4 +153,4 @@ function createPortalOpener({ apiClient, getPortalUrl, getShell, log }) {
   return { open };
 }
 
-module.exports = { createPortalOpener, resolvePortalUrl, isOpenablePortalUrl, portalPageUrl, portalNext, PORTAL_TABS };
+module.exports = { createPortalOpener, resolvePortalUrl, isOpenablePortalUrl, portalPageUrl, portalNext, portalTab, PORTAL_TABS };

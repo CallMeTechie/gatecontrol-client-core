@@ -54,7 +54,7 @@ const { readNotificationSettings } = require('../utils/notify-schema');
 const { buildToastXml, parseActionUrl } = require('../utils/toast-xml');
 const notifyRoutes = require('../utils/notify-routes');
 const { isNotifyMediaPath } = require('../utils/messenger');
-const { portalNext } = require('../utils/portal');
+const { portalTab } = require('../utils/portal');
 
 const PRIORITIES = ['info', 'normal', 'high', 'critical'];
 const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+)*)$/;
@@ -690,9 +690,10 @@ class NotificationCenter extends EventEmitter {
       case 'open_portal': {
         // A plugin without an app tab gets its buttons as a link to its portal tab. A page of the app that claimed
         // the entry and answers this very button (context.action — Notizen & Aufgaben on „Gestern offen geblieben“:
-        // „Erledigt“ of several tasks, „Verschieben“) opens instead of the portal.
+        // „Erledigt“ of several tasks, „Verschieben“; Drive on „Datei öffnen“ of a reminder of one of its deadlines,
+        // a link with the file as its query) opens instead of the portal.
         const target = this.clickTarget(entry, action);
-        if (target && target.context && target.context.action === action.id && portalNext(action.target) === `/portal#${target.route}`) {
+        if (target && target.context && target.context.action === action.id && portalTab(action.target) === target.route) {
           this._show();
           this.emit('navigate', { route: target.route, id: entry.id, context: target.context });
           break;

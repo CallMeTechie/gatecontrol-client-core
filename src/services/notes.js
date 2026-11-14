@@ -206,11 +206,14 @@ class NotesService extends EventEmitter {
   /**
    * A click on a push of the plugin while the page exists → the target (utils/notes.js pushTarget) or null. `action`:
    * the button that was pressed (NotificationCenter.performAction) — „Erledigt“ of several tasks and „Verschieben“ of
-   * the morning hint open „Mein Tag“ with the card instead of the portal.
+   * the morning hint open „Mein Tag“ with the card instead of the portal. „Datei öffnen“ of the reminder of a deadline
+   * in Drive (plugin 1.7.0) is not this page's: the Drive page opens the file when it can (DriveService.clickContext),
+   * else the button stays the link to the portal the server sent.
    */
   clickContext(entry, action = null) {
     if (!this.available() || !entry || typeof entry !== 'object') return null;
     const id = action && typeof action === 'object' ? action.id : null;
+    if (N.pushFile(entry.topic, entry.data, id)) return null;
     // „Liste öffnen“ of a reminder opens the list only while the plugin offers the lists; else the task as before
     const lists = !!this._me && this._me.features.includes('shoppingLists') && this._me.features.includes('taskList');
     return N.pushTarget(entry.topic, entry.data, id === 'open_list' && !lists ? null : id);

@@ -154,6 +154,7 @@ const DocView = require('./drive-doc-view');
 const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
+const notes = require('../utils/notes');
 const SC = require('../utils/scan');
 const OV = require('../utils/drive-overview');
 const S = require('../utils/drive-sync');
@@ -342,7 +343,8 @@ class DriveService extends EventEmitter {
     const nc = this.notificationCenter;
     if (nc && typeof nc.addClickRoute === 'function') {
       // Drive 1.8 / 1.9: a deadline reminder opens its file, a vault request the vault on the page
-      this._unsub.push(nc.addClickRoute(drive.APP_ROUTE, (entry) => this.clickContext(entry)));
+      // Notizen & Aufgaben 1.7.0: „Datei öffnen“ at the reminder of a deadline the hub rings opens the file here too
+      this._unsub.push(nc.addClickRoute(drive.APP_ROUTE, (entry, action) => this.clickContext(entry, action)));
     }
     this.vaultLock.start();
     // decrypted files a crash left behind
@@ -369,11 +371,20 @@ class DriveService extends EventEmitter {
 
   /**
    * A click on a Drive push while the page exists → { kind: 'deadline', nodeId, deadlineId, areaId } |
-   * { kind: 'vault', vaultId, nodeId, event } | null (the inbox opens).
+   * { kind: 'vault', vaultId, nodeId, event } | null (the inbox opens). `action`: the button that was pressed
+   * (NotificationCenter.performAction). „Datei öffnen“ ('open_file') of a reminder of „Notizen & Aufgaben“ for one of
+   * Drive's deadlines (Notizen 1.7.0 — the hub rings, the button is a link to the file in the portal) →
+   * { kind: 'deadline', nodeId, deadlineId: null, areaId: null, action: 'open_file' }: the file opens on the page
+   * instead of in the portal. A click on that message itself, and its other buttons, are not Drive's.
    */
-  clickContext(entry) {
+  clickContext(entry, action = null) {
     if (!this.available() || !entry || typeof entry !== 'object') return null;
     const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {};
+    const file = action && typeof action === 'object' ? notes.pushFile(entry.topic, data, action.id) : null;
+    if (file) {
+      const m = file.plugin === drive.PLUGIN_ID ? /^node\/([1-9]\d{0,14})$/.exec(file.route) : null;
+      return m ? { kind: 'deadline', nodeId: Number(m[1]), deadlineId: null, areaId: null, action: 'open_file' } : null;
+    }
     const d = data.drive && typeof data.drive === 'object' && !Array.isArray(data.drive) ? data.drive : null;
     if (!d) return null;
     if (entry.topic === DEADLINE_TOPIC && drive.posId(d.node)) {

@@ -30,6 +30,12 @@
 // the parser), stars, the family's list (srv.addFamily(): `List.family`, `Task.family`, `Task.doneBy`, `me.familyTasks`,
 // what a child may, POST tasks/<id>/complete { userId }, POST family/seen), `prefs.feedback` and a place's `mine` /
 // `canConsent`. state.user decides who asks (a parent or a child of the family).
+//
+// With the 1.7.0 word (STAGE5: driveDeadlines — not in the default either): a task's `deadline` (srv.addDeadline():
+// the task the hub made for a reminder of one of Drive's deadlines), `me.driveDeadlines`, and srv.reminderPush(taskId):
+// the push of that task's reminder as the plugin sends it („Frist in 3 Tagen: …“, four buttons, the fourth a link to
+// the file in the portal). A list's own role is 'owner' | 'write' | 'read' with `canEdit` as the plugin says them;
+// `readers` of a list (user ids) only read: their tasks are `canEdit: false`, writing answers 403 read_only.
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
 //   requests …), srv.addTask({ id, listId, title, due, … }), srv.addShopList({ id, name, icon?, area?, family?, role?,
@@ -65,6 +71,7 @@ const STAGE1 = ['reminderActions', 'yesterdayOpen', 'taskCalendar'];
 const STAGE2 = ['shoppingLists', 'taskList', 'familyShopping'];
 const STAGE3 = ['places', 'placeSearch'];
 const STAGE4 = ['taskTurns', 'taskStars', 'familyTasks', 'doneFeedback', 'placeMine'];
+const STAGE5 = ['driveDeadlines'];
 const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
@@ -146,7 +153,7 @@ async function notesServer({
   if (features.includes('places')) state.prefs.places = { search: true, nearby: true, quiet: { from: '21:00', to: '07:00' } };
   const has = (f) => state.features.includes(f);
   // lists, tasks
-  const list = (o) => { const l = { color: null, icon: null, isDefault: false, ownerId: 1, members: [1], groupId: null, position: 0, ext: null, ...o }; state.lists.set(l.id, l); return l; };
+  const list = (o) => { const l = { color: null, icon: null, isDefault: false, ownerId: 1, members: [1], readers: [], groupId: null, position: 0, ext: null, ...o }; state.lists.set(l.id, l); return l; };
   list({ id: 1, name: 'Aufgaben', area: 'private', isDefault: true });
   list({ id: 2, name: 'Haus & Garten', area: 'private', color: 'green', members: [1, 12] });
   list({ id: 3, name: 'Gesundheit', area: 'private' });
@@ -182,10 +189,13 @@ async function notesServer({
   const area = (v) => (v === 'work' ? 'work' : 'private');
   const me = () => state.user.id;
   const nameOf = (uid) => (state.people.find((p) => p.id === uid) || {}).name || null;
+  // the own role in a list as the plugin names it (1.2.0: 'read' only looks)
+  const roleIn = (l) => (l.ownerId === me() ? 'owner' : l.readers.includes(me()) ? 'read' : 'write');
+  const readOnly = (listId) => { const l = state.lists.get(listId); return !!l && roleIn(l) === 'read'; };
   const listView = (l) => ({
     id: l.id, name: l.name, area: l.area, color: l.color, icon: l.icon, isDefault: l.isDefault, owner: { id: l.ownerId, name: nameOf(l.ownerId) },
-    role: l.ownerId === me() ? 'owner' : 'member', groupId: l.groupId, position: l.position, shared: l.members.length > 1,
-    members: l.members.filter((m) => m !== l.ownerId).map((m) => ({ id: m, name: nameOf(m) })),
+    role: roleIn(l), canEdit: roleIn(l) !== 'read', groupId: l.groupId, position: l.position, shared: l.members.length > 1,
+    members: l.members.filter((m) => m !== l.ownerId).map((m) => ({ id: m, name: nameOf(m), role: l.readers.includes(m) ? 'read' : 'write' })),
     open: [...state.tasks.values()].filter((x) => x.listId === l.id && !x.doneAt && !x.deleted && !x.parentId).length, ext: l.ext,
     ...(has('familyTasks') ? { family: isFamilyList(l.id) } : {}),
   });
@@ -590,6 +600,10 @@ async function notesServer({
       v.canEdit = mayEdit(x);
       v.canComplete = mayComplete(x);
     }
+    // 1.2.0: a member who only reads changes nothing and ticks off only what is assigned to them
+    if (readOnly(x.listId)) { v.canEdit = false; v.canComplete = x.assigneeId === me(); }
+    // 1.7.0: the deadline of a file in Drive this task reminds of
+    if (has('driveDeadlines')) v.deadline = x.deadline || null;
     if (has('taskCalendar')) {
       const c = state.calendar;
       v.calendar = c.available && c.enabled && c.mine && x.due && x.due.time && !x.doneAt ? { state: 'synced', eventId: 900 + x.id, calendarId: 7, mine: true } : null;
@@ -707,7 +721,7 @@ async function notesServer({
   const bookView = (b) => {
     const v = b.vault ? state.vaults.get(b.vault) : null;
     return {
-      id: b.id, name: v ? null : b.name, area: b.area, color: b.color, isDefault: b.isDefault, role: b.ownerId === me() ? 'owner' : 'member',
+      id: b.id, name: v ? null : b.name, area: b.area, color: b.color, isDefault: b.isDefault, role: b.ownerId === me() ? 'owner' : 'write', canEdit: true,
       owner: { id: b.ownerId, name: nameOf(b.ownerId) }, members: b.members.filter((m) => m !== b.ownerId).map((m) => ({ id: m, name: nameOf(m) })),
       shared: b.members.length > 1, vault: v ? { id: b.vault, nameCipher: v.nameCipher, keyVersion: v.keyVersion, needsRotation: v.needsRotation } : null,
       bound: b.bound, count: [...state.notes.values()].filter((n) => n.notebookId === b.id && !n.deleted).length, position: b.position,
@@ -809,6 +823,7 @@ async function notesServer({
     if (!title || typeof title !== 'string') throw fail(400, 'invalid', { field: 'title' });
     if (b.parentId) { const p = accessTask(b.parentId); listId = p.listId; }
     if (!listId) listId = myLists(a).find((l) => l.isDefault).id;
+    if (readOnly(listId)) throw fail(403, 'forbidden', { reason: 'read_only' });
     if (!state.lists.has(listId)) throw fail(404, 'not_found');
     // 1.4.0: a list to carry — named, or (attach: 'auto') the one the line names when exactly one fits; never by itself
     let attach = null;
@@ -856,6 +871,7 @@ async function notesServer({
           nearby: state.prefs.places.nearby !== false, quiet: state.prefs.places.quiet || null, perTask: 5, radius: { min: 50, max: 2000, default: 150 }, family: state.familyPlaces.length > 0,
         } } : {}),
         ...(has('familyTasks') ? { familyTasks: familyTasksView() } : {}),
+        ...(has('driveDeadlines') ? { driveDeadlines: { available: true, active: [...state.tasks.values()].some((r) => r.deadline && !r.deleted) } } : {}),
       };
     }
     if (is('GET', 1, 'nav')) {
@@ -1053,6 +1069,7 @@ async function notesServer({
       const carry = attachArg(b);
       if (carry !== undefined) { if (carry) state.attached.set(r.id, carry); else state.attached.delete(r.id); }
       if (b.listId !== undefined && shopByNum(posInt(b.listId))) throw fail(400, 'invalid', { field: 'listId', reason: 'shopping' });
+      if (readOnly(r.listId) && Object.keys(b).some((k) => k !== 'myDay' && k !== 'base')) throw fail(403, 'forbidden', { reason: 'read_only' });
       // 1.6.0: a child changes only „Mein Tag“ at a task a parent made
       if (!mayEdit(r) && Object.keys(b).some((k) => k !== 'myDay' && k !== 'base')) throw fail(403, 'forbidden', { reason: 'parents_only' });
       if (b.place !== undefined && has('places') && !r.parentId) setTaskPlace(r, b.place);
@@ -1072,6 +1089,7 @@ async function notesServer({
     }
     if (method === 'DELETE' && n === 2 && a === 'tasks') {
       const r = accessTask(x);
+      if (readOnly(r.listId)) throw fail(403, 'forbidden', { reason: 'read_only' });
       if (!mayEdit(r)) throw fail(403, 'forbidden', { reason: 'parents_only' });
       r.deleted = true;
       return {};
@@ -1466,6 +1484,38 @@ async function notesServer({
       Object.assign(state.family, { listId: l.id, parents: [...parents], kids: [...kids], stars, moved: moved ? { at: '2026-11-08T07:00:00Z', tasks: moved.tasks || 0, places: moved.places || 0, seenBy: [] } : null });
       return l;
     },
+    /**
+     * The task the hub made for a reminder of one of Drive's deadlines (plugin 1.7.0) → the task. `nodeId`: the file in
+     * Drive, `deadlineId`: Drive's deadline, `daysBefore`: what the person chose there.
+     */
+    addDeadline: ({ title, date, kind = null, file = null, daysBefore = 3, nodeId = 41, deadlineId = 12, listId = 1, remindAt }) => task({
+      id: id(), listId, title, due: { date, time: null }, source: { plugin: 'gatecontrol-drive', id: `deadline:${deadlineId}` },
+      remindAt: remindAt || `${new Date(Date.parse(`${date}T00:00:00Z`) - daysBefore * 86400000).toISOString().slice(0, 10)}T08:00:00+01:00`,
+      deadline: { date, kind, file, daysBefore, open: { plugin: 'gatecontrol-drive', route: `node/${nodeId}` } },
+    }),
+    /** The push of a task's reminder as the plugin sends it (topic, title, body, collapseKey, data) — a deadline's with four buttons. */
+    reminderPush: (taskId) => {
+      const x = state.tasks.get(taskId);
+      const l = state.lists.get(x.listId);
+      const atMs = Date.parse(x.remindAt);
+      const dl = has('driveDeadlines') ? x.deadline || null : null;
+      const node = dl ? /^node\/(\d+)$/.exec(dl.open.route) : null;
+      const kinds = { payment: 'Zahlung', cancellation: 'Kündigung', objection: 'Widerspruch', warranty: 'Garantie', renewal: 'Kündigung vor Verlängerung' };
+      const days = dl ? Math.round((Date.parse(`${dl.date}T00:00:00Z`) - Date.parse(`${x.remindAt.slice(0, 10)}T00:00:00Z`)) / 86400000) : 0;
+      return {
+        topic: `plugin:${PLUGIN}:reminders`,
+        title: dl ? `${days > 1 ? `Frist in ${days} Tagen` : days === 1 ? 'Frist morgen' : days === 0 ? 'Frist heute' : 'Frist abgelaufen'}: ${x.title}` : x.title,
+        body: dl ? `${kinds[dl.kind] || 'Frist'} bis ${dl.date.slice(8)}.${dl.date.slice(5, 7)}.${dl.date.slice(0, 4)}${dl.file ? ` · ${dl.file}` : ''}` : 'Erinnerung',
+        collapseKey: `task:${x.id}`,
+        data: {
+          notizen: { kind: 'reminder', taskId: x.id, task: x.id, listId: x.listId, area: l.area, tag: `task:${x.id}:${atMs}`, remindAtMs: atMs, dueAt: null, late: false, snoozed: false, ...(dl ? { deadline: dl } : {}) },
+          actions: [
+            { type: 'callback', id: 'done', label: 'Erledigt' }, { type: 'callback', id: 'snooze_1h', label: 'In 1 Std.' }, { type: 'callback', id: 'snooze_eve', label: 'Heute Abend' },
+            ...(node ? [{ type: 'open_portal', id: 'open_file', label: 'Datei öffnen', target: `/portal?drive=${node[1]}#plg-gatecontrol-drive` }] : []),
+          ],
+        },
+      };
+    },
     /** A shopping list of the hub with its items → { uid, num, items: [ids] } (num: Task.attachedList.id). */
     addShopList: ({ id: uid, name, icon = 'cart', area: ar = 'private', family = false, role = 'owner', members = [], items = [] }) => {
       const l = { uid, num: id(), name, icon, area: ar, ownerId: role === 'owner' ? 1 : 12, members: role === 'owner' ? members : [{ id: 1, role }, ...members], family, deletedAt: null, updatedAt: state.now, was: [1] };
@@ -1494,4 +1544,4 @@ async function notesServer({
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, STAGE5, noteMeta };

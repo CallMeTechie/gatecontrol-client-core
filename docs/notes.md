@@ -176,3 +176,44 @@ replaces the reminder of a task „wer zuerst“ somebody else did; a click open
 
 The test server (`test/fixtures/notes-server.js`) has the 1.6.0 routes and fields only with these words in `features`
 (`STAGE4`); its default stays an older plugin. `srv.addFamily()` makes the family's list; `state.user` decides who asks.
+
+## Plugin 1.7.0: the reminders of Drive's deadlines ring from here
+
+Told by words only (never by a version): `driveDeadlines` in the hub's `me.features`, `deadlineHub` in Drive's (there
+only while the hub rings). An older plugin sends none of the fields; nothing new is asked — there is **no new route
+and no new kind of push**. Such a reminder is an ordinary task of the hub with an ordinary reminder: it is completed,
+put off, changed and deleted with the calls of every task.
+
+| What | Where |
+|---|---|
+| A task's `deadline` ({ date, kind: `payment` / `cancellation` / `objection` / `warranty` / `renewal` / null, file, daysBefore (0…90, 0: on the day itself), open: { plugin, route } / null } or null — every other task, an older plugin) | `normalizeTask` (`deadlineOf`) |
+| `me.driveDeadlines` ({ available, active } or null — a hint for a line of help, the same for everybody) | `normalizeMe` |
+| Who rings a reminder of a deadline in Drive: `Deadline.reminder.by` (`notizen` / `drive`; an older Drive names nobody: `drive`) | `utils/drive.js normalizeDeadline` |
+| The file of the button „Datei öffnen“ of the reminder's push (`data.notizen.deadline.open`) | `pushFile(topic, data, actionId)` |
+
+„Datei öffnen“. `deadline.open` is the same form as an item's `open` (contract § 5): the Pro app opens Drive's
+`node/<id>` on its Drive page. The reminder's push carries four buttons — „Erledigt“, „In 1 Std.“, „Heute Abend“
+(the `callback` actions of every reminder) and „Datei öffnen“ (`open_file`), which the server sends as a link to the
+portal (`open_portal`, `/portal?drive=<id>#plg-gatecontrol-drive`). `DriveService.clickContext(entry, action)` claims
+that button while Drive is available and the push names a file of Drive: the notification center then opens the Drive
+page with `{ kind: 'deadline', nodeId, deadlineId: null, areaId: null, action: 'open_file' }` — the context of a click
+on Drive's own deadline message — instead of the portal (`NotificationCenter.performAction`: an `open_portal` button
+whose path leads to the claiming page's own portal tab, `utils/portal.js portalTab`, the query does not matter).
+`NotesService.clickContext` leaves that button alone; without a Drive page it stays the link to the portal the server
+sent. A click on the message itself opens the task, as with every reminder.
+
+No alarm of its own, still: the Windows apps do not call `GET reminders`, so there is no local alarm to add a button
+to, and the Drive page sets no alarm for a deadline either — for a reminder `by: 'notizen'` Drive sends no message of
+its own, the hub's push is the one message. The page says „über Notizen & Aufgaben“ at such a reminder.
+
+Deleting such a task means „no reminder of this deadline“ (neither the hub nor Drive rings until another reminder is
+set in Drive); the deadline stays in Drive. The page says so where the task is deleted.
+
+The own role in a list and a notebook is `owner` / `write` / `read` as the plugin names it (`normalizeList`,
+`normalizeNotebook`; `member` of the first versions reads as `write`), with `canEdit` (false for somebody who only
+reads; a plugin that names none: true). Before, every role but `owner` arrived as null and `canEdit` not at all.
+
+The test server (`test/fixtures/notes-server.js`) has `Task.deadline` and `me.driveDeadlines` only with the word
+(`STAGE5`); its default stays an older plugin. `srv.addDeadline()` makes such a task, `srv.reminderPush(taskId)` its
+push. `test/fixtures/drive-server.js` names `reminder.by` with `deadlineHub` (or `srv.remindBy`). Tests:
+`test/notes-deadlines.test.js`.
