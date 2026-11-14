@@ -33,7 +33,7 @@ const ApiClient = require('../src/services/api-client');
 const { openNsx } = require('../src/services/notes-import');
 const { registerNotesHandlers, NOTES_EVENTS } = require('../src/ipc/notes-handlers');
 const { createMemoryStore } = require('./fixtures/memory-store');
-const { notesServer } = require('./fixtures/notes-server');
+const { notesServer, FEATURES, STAGE1 } = require('./fixtures/notes-server');
 const vectors = require('./fixtures/notes-vault-vectors.json');
 const qv = require('./fixtures/notes/quickparse-vectors.json');
 const rv = require('./fixtures/notes/repeat-vectors.json');
@@ -214,6 +214,49 @@ describe('utils/notes', () => {
     assert.deepEqual(N.pushTarget('plugin:gatecontrol-notizen:reminders', null), { kind: 'home' });
     assert.equal(N.pushTarget('plugin:gatecontrol-mail:mail', { notizen: { task: 7 } }), null);
     assert.deepEqual(N.changedOf({ what: ['notes', 'x'] }), { what: ['notes'] });
+  });
+
+  it('plugin 1.3.0: a task\'s reminder and calendar, „Gestern offen geblieben“, what may be sent, the morning hint', () => {
+    const raw = {
+      id: 41, title: 'Mülltonne rausstellen', due: { date: '2026-11-15', time: '09:00' }, remindAt: '2026-11-15T09:00:00+01:00',
+      reminder: { tag: 'task:41:1794729600000', at: '2026-11-15T09:00:00+01:00', atMs: 1794729600000, mine: true, snoozed: false, evil: '<b>' },
+      snoozed: false, missedReminder: true, calendar: { state: 'synced', eventId: 912, calendarId: 7, mine: true }, canEdit: false,
+    };
+    const t = N.normalizeTask(raw);
+    assert.deepEqual(t.reminder, { tag: 'task:41:1794729600000', at: '2026-11-15T09:00:00+01:00', atMs: 1794729600000, mine: true, snoozed: false });
+    assert.deepEqual(t.calendar, { state: 'synced', eventId: 912, calendarId: 7, mine: true });
+    assert.deepEqual([t.snoozed, t.missedReminder, t.canEdit], [false, true, false]);
+    // an older plugin: none of the fields — nothing shows
+    const old = N.normalizeTask({ id: 41, title: 'x' });
+    assert.deepEqual([old.reminder, old.calendar, old.snoozed, old.missedReminder, old.canEdit], [null, null, false, false, true]);
+    assert.equal(N.normalizeTask({ ...raw, reminder: { tag: 'task:41:x', atMs: 5 } }).reminder, null);
+    assert.equal(N.normalizeTask({ ...raw, calendar: { state: 'gone', mine: true } }).calendar, null);
+
+    const y = N.normalizeYesterday({ day: '2026-11-18', title: 'Gestern offen geblieben', count: 2, items: [raw, { id: 'x' }, { id: 42, title: 'Rezept abholen' }],
+      moveOptions: [{ to: 'tomorrow', date: '2026-11-20', label: 'Morgen' }, { to: 'weekend', date: '2026-11-21', label: 'Am Wochenende' }, { to: 'today', label: 'x' }, { to: '../x' }] });
+    assert.deepEqual([y.day, y.count, y.items.map((x) => x.uid)], ['2026-11-18', 2, ['t:41', 't:42']]);
+    assert.deepEqual(y.moveOptions, [{ to: 'tomorrow', date: '2026-11-20', label: 'Morgen' }, { to: 'weekend', date: '2026-11-21', label: 'Am Wochenende' }]);
+    assert.equal(N.normalizeView({ view: 'myday', sections: [] }).yesterday, null);
+    assert.equal(N.normalizeView({ view: 'myday', sections: [], yesterday: { count: 0, items: [] } }).yesterday.count, 0);
+    const me = N.normalizeMe({ features: ['tasks', 'yesterdayOpen'], calendar: { available: true, enabled: true, mine: false, name: 'Aufgaben' }, yesterday: { push: true, at: '07:30' } });
+    assert.deepEqual(me.calendar, { available: true, enabled: true, mine: false, name: 'Aufgaben' });
+    assert.deepEqual(me.yesterday, { push: true, at: '07:30' });
+    assert.deepEqual([N.normalizeMe({}).calendar, N.normalizeMe({}).yesterday], [null, null]);
+
+    assert.deepEqual(['today', 'tomorrow', 'weekend', '2026-11-22', 'later', '22.11.2026', null].map(N.moveArg), ['today', 'tomorrow', 'weekend', '2026-11-22', null, null, null]);
+    assert.deepEqual(N.yesterdayArg({ action: 'done', ids: [41, 42, 41], evil: 1 }), { action: 'done', ids: [41, 42] });
+    assert.deepEqual(N.yesterdayArg({ action: 'move', to: 'weekend', area: 'work' }), { action: 'move', to: 'weekend', area: 'work' });
+    assert.deepEqual(N.yesterdayArg({ action: 'today' }), { action: 'today' });
+    for (const bad of [{ action: 'delete' }, { action: 'move' }, { action: 'move', to: 'today' }, { action: 'done', ids: [] }, { action: 'done', ids: [0] }, { action: 'done', area: 'x' }, null]) assert.equal(N.yesterdayArg(bad), null);
+
+    const topic = 'plugin:gatecontrol-notizen:reminders';
+    const data = { notizen: { kind: 'yesterday', day: '2026-11-18', count: 2, taskIds: [41, 42, 'x', 41], area: null } };
+    assert.deepEqual(N.pushTarget(topic, data), { kind: 'yesterday', day: '2026-11-18', taskIds: [41, 42], action: null });
+    assert.deepEqual(N.pushTarget(topic, data, 'done_ask').action, 'done_ask');
+    assert.deepEqual(N.pushTarget(topic, data, 'move').action, 'move');
+    assert.deepEqual(N.pushTarget(topic, data, 'today').action, null);
+    // a reminder: the task, whatever button
+    assert.deepEqual(N.pushTarget(topic, { notizen: { kind: 'reminder', taskId: 41, task: 41 } }, 'done'), { kind: 'task', taskId: 41 });
   });
 });
 
@@ -511,6 +554,75 @@ describe('NotesService: moving over', () => {
   });
 });
 
+describe('NotesService: plugin 1.3.0 („Gestern offen geblieben“, reminders, the calendar)', () => {
+  it('an older plugin: no card, no marks, the new calls are not offered', async () => {
+    const { srv, svc } = await setup();
+    srv.addTask({ title: 'Schrauben kaufen', due: { date: '2026-11-07', time: null } });
+    assert.equal(STAGE1.some((f) => svc.status().features.includes(f)), false);
+    const md = (await svc.view({ name: 'myday', area: 'private' })).view;
+    assert.equal(md.yesterday, null);
+    assert.ok(md.sections.find((s) => s.id === 'overdue').items.some((x) => x.title === 'Schrauben kaufen'));
+    assert.deepEqual([(await svc.me()).me.calendar, (await svc.me()).me.yesterday], [null, null]);
+    const before = srv.state.requests.length;
+    for (const p of [svc.moveTask(11, 'today'), svc.yesterday(), svc.decideYesterday({ action: 'today' })]) await assert.rejects(p, (e) => e.code === 'unsupported');
+    assert.equal(srv.state.requests.length, before);
+  });
+
+  it('the card of Mein Tag, a row moved, all at once; a task\'s reminder and calendar; the push buttons', async () => {
+    const routes = new Map();
+    const nc = Object.assign(new EventEmitter(), { addClickRoute: (r, fn) => { routes.set(r, fn); return () => routes.delete(r); } });
+    const { srv, svc } = await setup({ features: [...FEATURES, ...STAGE1] }, { notificationCenter: nc });
+    const a = srv.addTask({ title: 'Schrauben kaufen', listId: 2, due: { date: '2026-11-07', time: null } });
+    const b = srv.addTask({ title: 'Rezept abholen', due: { date: '2026-11-07', time: '17:00' } });
+    const c = srv.addTask({ title: 'Leiter zurückgeben' });
+    srv.state.yesterdayDay.add(c.id);
+    srv.state.tasks.get(17).remindAt = '2026-11-13T10:00:00+01:00';
+    srv.state.snoozed.add(17);
+
+    const me = (await svc.me({ refresh: true })).me;
+    assert.deepEqual(me.calendar, { available: true, enabled: true, mine: true, name: 'Aufgaben' });
+    assert.deepEqual(me.yesterday, { push: true, at: '07:30' });
+    const md = (await svc.view({ name: 'myday', area: 'private' })).view;
+    assert.deepEqual(md.yesterday.items.map((x) => x.title), ['Rezept abholen', 'Schrauben kaufen', 'Leiter zurückgeben']);
+    assert.deepEqual(md.yesterday.moveOptions.map((o) => [o.to, o.date]), [['tomorrow', '2026-11-09'], ['weekend', '2026-11-14']]);
+    // older apps: the same tasks stay in „Überfällig“
+    assert.ok(md.sections.find((s) => s.id === 'overdue').items.some((x) => x.id === a.id));
+    const dentist = md.sections.find((s) => s.id === 'today').items.find((x) => x.id === 11);
+    assert.deepEqual(dentist.calendar, { state: 'synced', eventId: 911, calendarId: 7, mine: true });
+    const offer = (await svc.task(17)).task;
+    assert.deepEqual([offer.reminder.tag, offer.reminder.snoozed, offer.snoozed], [`task:17:${Date.parse('2026-11-13T10:00:00+01:00')}`, true, true]);
+
+    // a row: Heute, Verschieben (a word, a date); the same day twice changes nothing
+    assert.deepEqual((await svc.moveTask(a.id, 'today')).task.due, { date: '2026-11-08', time: null });
+    assert.deepEqual((await svc.moveTask(b.id, 'weekend')).task.due, { date: '2026-11-14', time: '17:00' });
+    assert.deepEqual((await svc.moveTask(b.id, 'weekend')).task.due, { date: '2026-11-14', time: '17:00' });
+    await assert.rejects(svc.moveTask(b.id, '2026-11-01'), (e) => e.code === 'invalid' && e.body.field === 'to');
+    await assert.rejects(svc.moveTask(99999, 'today'), (e) => e.code === 'not_found');
+    assert.deepEqual((await svc.yesterday({ area: 'private' })).yesterday.items.map((x) => x.id), [c.id]);
+    // without a due date: „Heute“ puts it into Mein Tag of today
+    const moved = (await svc.moveTask(c.id, 'today')).task;
+    assert.deepEqual([moved.due, moved.myDay], [null, true]);
+    assert.equal((await svc.yesterday()).yesterday.count, 0);
+
+    // all at once: „Alle heute“, and „Erledigt“ of the morning hint for its tasks only
+    const d = srv.addTask({ title: 'Altglas wegbringen', due: { date: '2026-11-07', time: null } });
+    const e = srv.addTask({ title: 'Pfand wegbringen', due: { date: '2026-11-07', time: null } });
+    const done = await svc.decideYesterday({ action: 'done', ids: [d.id] });
+    assert.deepEqual([done.changed, done.failed, done.yesterday.items.map((x) => x.id)], [1, [], [e.id]]);
+    assert.ok(srv.state.tasks.get(d.id).doneAt);
+    const all = await svc.decideYesterday({ action: 'today', area: 'private' });
+    assert.deepEqual([all.changed, all.yesterday.count], [1, 0]);
+    assert.deepEqual(srv.state.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/api/yesterday')).map((r) => r.body), [{ action: 'done', ids: [d.id] }, { action: 'today', area: 'private' }]);
+
+    // the morning hint: a click and the two buttons the page answers
+    const resolve = routes.get('plg-gatecontrol-notizen');
+    const entry = { topic: 'plugin:gatecontrol-notizen:reminders', data: { notizen: { kind: 'yesterday', day: '2026-11-07', count: 2, taskIds: [d.id, e.id] } } };
+    assert.deepEqual(resolve(entry), { kind: 'yesterday', day: '2026-11-07', taskIds: [d.id, e.id], action: null });
+    assert.deepEqual(resolve(entry, { id: 'done_ask', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' }).action, 'done_ask');
+    assert.deepEqual(resolve(entry, { id: 'today', type: 'callback', target: null }).action, null);
+  });
+});
+
 describe('ipc/notes-handlers', () => {
   it('checks arguments, answers failures as { ok: false, code }, forwards events', async () => {
     const { svc } = await setup();
@@ -536,5 +648,11 @@ describe('ipc/notes-handlers', () => {
     assert.equal(st.state, 'available');
     const api = new NotesApi({ apiClient: null });
     assert.throws(() => api._id('x'), (e) => e.code === 'invalid');
+    // plugin 1.3.0: the arguments are checked before the service is asked (an older plugin: unsupported)
+    assert.deepEqual([(await call('notes:task:move', { id: 12, to: 'gestern' })).field, (await call('notes:task:move', { id: 'x', to: 'today' })).field], ['to', 'id']);
+    assert.equal((await call('notes:yesterday', { area: 'nowhere' })).field, 'area');
+    assert.equal((await call('notes:yesterday:decide', { action: 'move' })).code, 'invalid');
+    assert.equal((await call('notes:task:move', { id: 12, to: 'today' })).code, 'unsupported');
+    assert.equal((await call('notes:yesterday:decide', { action: 'today' })).code, 'unsupported');
   });
 });

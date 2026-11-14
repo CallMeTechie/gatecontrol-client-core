@@ -5,7 +5,10 @@
  * the answers of its API cleaned (README "API": Task, Item, List, Notebook, NoteSummary, Attachment, the views, the
  * menu), the arguments the renderer may send, the targets of a push click and of an item's `open` (the contract
  * docs/notes-sources-contract.md § 5) and the check boxes of a note's Markdown (the plugin's ui/notemd.js `toggle`,
- * for the Tresor notebooks the device changes itself).
+ * for the Tresor notebooks the device changes itself). Plugin 1.3.0 (what `me.features` names — never a version):
+ * `reminderActions` (a task's pending `reminder`, `snoozed`, `missedReminder`), `yesterdayOpen` (the card „Gestern offen
+ * geblieben“: `yesterday` of GET views/myday, POST tasks/<id>/move, POST yesterday) and `taskCalendar` (a task's
+ * `calendar`, `me.calendar`).
  *
  * Every text from the server stays text: the renderer puts it into textContent only.
  */
@@ -31,6 +34,9 @@ const BODY_MAX = 1000000;
 const NOTE_MAX = 20000;
 const NAME_MAX = 80;
 const QUERY_MAX = 200;
+const MOVE_WORDS = Object.freeze(['today', 'tomorrow', 'weekend']);
+const YESTERDAY_ACTIONS = Object.freeze(['done', 'today', 'move']);
+const YESTERDAY_MAX = 200;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -41,6 +47,7 @@ const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
 const VAULT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 const B64U_RE = /^[A-Za-z0-9_-]+$/;
 const CODE_RE = /^[A-Za-z0-9_.-]{1,60}$/;
+const REMINDER_TAG_RE = /^task:[1-9]\d{0,14}:[1-9]\d{0,15}$/;
 const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const CTRL_LINE_RE = /[\u0000-\u001F\u007F]/g;
 
@@ -122,6 +129,21 @@ function repeatOf(v) {
   return r;
 }
 
+/** A task's pending reminder (plugin 1.3.0) → { tag, at, atMs, mine, snoozed } or null. */
+function reminderOf(v) {
+  const o = obj(v);
+  const tag = o && typeof o.tag === 'string' && REMINDER_TAG_RE.test(o.tag) ? o.tag : null;
+  const atMs = o && msOf(o.atMs);
+  return tag && atMs ? { tag, at: isoOf(o.at), atMs, mine: bool(o.mine), snoozed: bool(o.snoozed) } : null;
+}
+
+/** A task's event in the calendar „Aufgaben“ of Mail (plugin 1.3.0) → { state, eventId, calendarId, mine } or null. */
+function calendarOf(v) {
+  const o = obj(v);
+  if (!o || (o.state !== 'synced' && o.state !== 'pending')) return null;
+  return { state: o.state, eventId: posId(o.eventId), calendarId: posId(o.calendarId), mine: bool(o.mine) };
+}
+
 /** `meta` of an item: flat, strings ≤ 120 / numbers / booleans (contract § 2). */
 function metaOf(v) {
   const o = obj(v);
@@ -159,7 +181,9 @@ function normalizeTask(v) {
     assignee: personOf(o.assignee), myDay: bool(o.myDay), progress: progressOf(o.progress), attachments: count(o.attachments) || 0,
     source: src && pluginOf(src.plugin) && typeof src.id === 'string' ? { plugin: src.plugin, id: src.id.slice(0, 120) } : null,
     noteId: posId(o.noteId), position: Number.isFinite(o.position) ? o.position : 0, canComplete: o.canComplete !== false,
-    updatedAt: msOf(o.updatedAt),
+    canEdit: o.canEdit !== false, updatedAt: msOf(o.updatedAt),
+    // plugin 1.3.0 — an older plugin sends none of these
+    reminder: reminderOf(o.reminder), snoozed: bool(o.snoozed), missedReminder: bool(o.missedReminder), calendar: calendarOf(o.calendar),
   };
   // GET tasks/<id>: the details
   if (typeof o.note === 'string') t.note = text(o.note, NOTE_MAX);
@@ -298,12 +322,30 @@ function normalizeAttachment(v) {
   };
 }
 
+/**
+ * „Gestern offen geblieben“ (GET yesterday, `yesterday` of GET views/myday, the answer of POST yesterday) →
+ * { day, title, count, items: [Task], moveOptions: [{ to, date, label }] } or null (an older plugin has none).
+ */
+function normalizeYesterday(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const items = arr(o.items).slice(0, YESTERDAY_MAX).map(normalizeTask).filter(Boolean);
+  return {
+    day: dateOf(o.day), title: line(o.title, 120) || '', count: count(o.count) ?? items.length, items,
+    moveOptions: arr(o.moveOptions).slice(0, 10).map((m) => {
+      const x = obj(m);
+      const to = x && (MOVE_WORDS.includes(x.to) ? x.to : dateOf(x.to));
+      return to && to !== 'today' ? { to, date: dateOf(x.date), label: line(x.label, 60) || '' } : null;
+    }).filter(Boolean),
+  };
+}
+
 /** GET views/<name> → { view, title, date?, list?, plugin?, sections: [{ id, title, count, items, collapsed }] } */
 function normalizeView(v) {
   const o = obj(v) || {};
   return {
     view: line(o.view, 40) || 'myday', title: line(o.title, 120) || '', date: dateOf(o.date),
-    list: o.list ? normalizeList(o.list) : null, plugin: pluginOf(o.plugin),
+    list: o.list ? normalizeList(o.list) : null, plugin: pluginOf(o.plugin), yesterday: normalizeYesterday(o.yesterday),
     sections: arr(o.sections).slice(0, 40).map((s) => {
       const x = obj(s);
       if (!x || typeof x.id !== 'string') return null;
@@ -369,12 +411,17 @@ function normalizeMe(v) {
   const o = obj(v) || {};
   const u = obj(o.user) || {};
   const im = obj(o.imports) || {};
+  const cal = obj(o.calendar);
+  const yd = obj(o.yesterday);
   return {
     user: { id: posId(u.id), name: line(u.name, 120) || '' }, lang: o.lang === 'en' ? 'en' : 'de', today: dateOf(o.today),
     time: timeOf(o.time), timezone: line(o.timezone, 60), features: arr(o.features).filter((f) => typeof f === 'string' && /^[A-Za-z]{1,30}$/.test(f)).slice(0, 50),
     prefs: normalizePrefs(o.prefs), sharing: ['all', 'groups', 'off'].includes(o.sharing) ? o.sharing : 'all', vaults: o.vaults !== false,
     imports: { mstodo: bool(im.mstodo), mstodoSync: bool(im.mstodoSync), dsnote: bool(im.dsnote) },
     attachMB: Number.isSafeInteger(o.attachMB) && o.attachMB > 0 ? Math.min(o.attachMB, 100) : 25, readOnly: bool(o.readOnly),
+    // plugin 1.3.0: the calendar „Aufgaben“ of Mail (shown only when all three are true), the morning hint
+    calendar: cal ? { available: bool(cal.available), enabled: bool(cal.enabled), mine: bool(cal.mine), name: line(cal.name, NAME_MAX) || '' } : null,
+    yesterday: yd ? { push: bool(yd.push), at: timeOf(yd.at) } : null,
   };
 }
 
@@ -570,6 +617,25 @@ function taskCreate(p) {
   return { ...b, ...rest };
 }
 
+/** The target of POST tasks/<id>/move: 'today' | 'tomorrow' | 'weekend' | 'YYYY-MM-DD' → the value or null. */
+function moveArg(v) {
+  return MOVE_WORDS.includes(v) ? v : dateOf(v);
+}
+
+/** POST yesterday { action, to?, ids?, area? } → the body, or null when a part is wrong. */
+function yesterdayArg(p) {
+  const o = obj(p);
+  if (!o || !YESTERDAY_ACTIONS.includes(o.action)) return null;
+  const b = { action: o.action };
+  if (o.action === 'move') { const to = moveArg(o.to); if (!to || to === 'today') return null; b.to = to; }
+  if (o.ids !== undefined && o.ids !== null) {
+    if (!Array.isArray(o.ids) || !o.ids.length || o.ids.length > YESTERDAY_MAX || !o.ids.every((x) => posId(x))) return null;
+    b.ids = [...new Set(o.ids)];
+  }
+  if (o.area !== undefined && o.area !== null) { if (!areaOf(o.area)) return null; b.area = o.area; }
+  return b;
+}
+
 function nameArg(v) {
   return line(v, NAME_MAX);
 }
@@ -626,13 +692,23 @@ function toggleCheck(md, lineNo, done) {
 
 /**
  * A click on a push of the hub → { kind: 'task', taskId } | { kind: 'list', listId } | { kind: 'notebook', notebookId }
- * | { kind: 'vault', vaultId, event } | { kind: 'home' } (topic of the plugin without data) | null (not ours).
- * The plugin's pushes carry data.notizen = { task | list | notebook | vault } (README "Live updates").
+ * | { kind: 'vault', vaultId, event } | { kind: 'yesterday', day, taskIds, action } | { kind: 'home' } (topic of the
+ * plugin without data) | null (not ours).
+ * The plugin's pushes carry data.notizen = { task | list | notebook | vault } (README "Live updates"). The morning hint
+ * (plugin 1.3.0, data.notizen.kind 'yesterday') opens „Mein Tag“ with the card; `actionId` is the button that was
+ * pressed: 'done_ask' and 'move' — which GateControl sends as a portal link, the plugin has no app tab — are answered
+ * by the page (`action`), every other button stays what it is (`action: null`).
  */
-function pushTarget(topic, data) {
+function pushTarget(topic, data, actionId = null) {
   if (typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
   const d = obj(data);
   const n = d && obj(d.notizen);
+  if (n && n.kind === 'yesterday') {
+    return {
+      kind: 'yesterday', day: dateOf(n.day), taskIds: [...new Set(arr(n.taskIds).filter((x) => posId(x)))].slice(0, YESTERDAY_MAX),
+      action: actionId === 'done_ask' || actionId === 'move' ? actionId : null,
+    };
+  }
   if (n) {
     if (posId(n.task)) return { kind: 'task', taskId: n.task };
     if (posId(n.list)) return { kind: 'list', listId: n.list };
@@ -660,8 +736,8 @@ module.exports = {
   AREAS, SMART_VIEWS, SOURCES, COLORS, ITEM_KINDS, REPEAT_TYPES, DONE_DAYS, TITLE_MAX, BODY_MAX, NOTE_MAX, NAME_MAX, QUERY_MAX,
   line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf,
   normalizeTask, normalizeItem, normalizeEntry, normalizeList, normalizeGroup, normalizeNotebook, normalizeNoteSummary, normalizeNote,
-  normalizeAttachment, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,
+  normalizeAttachment, normalizeYesterday, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,
   normalizeParsed, normalizeJob, normalizeMsAccounts, normalizeMsPreview, normalizeConsent, normalizeMsLinks, normalizeVault,
-  viewName, dueArg, remindArg, taskPatch, taskCreate, nameArg, membersArg, notesQuery, notePatch, toggleCheck,
+  viewName, dueArg, remindArg, taskPatch, taskCreate, moveArg, yesterdayArg, nameArg, membersArg, notesQuery, notePatch, toggleCheck,
   pushTarget, changedOf, errorCode,
 };

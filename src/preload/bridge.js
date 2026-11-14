@@ -922,6 +922,11 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       updateTask:    (id, patch) => ipcRenderer.invoke('notes:task:update', { id, patch: { ...(patch || {}) } }),
       completeTask:  (id, done) => ipcRenderer.invoke('notes:task:complete', { id, done: done !== false }),
       deleteTask:    (id) => ipcRenderer.invoke('notes:task:delete', { id }),
+      // „Gestern offen geblieben“ (plugin 1.3.0): to → 'today' | 'tomorrow' | 'weekend' | 'YYYY-MM-DD'
+      moveTask:      (id, to) => ipcRenderer.invoke('notes:task:move', { id, to }),
+      yesterday:     (area) => ipcRenderer.invoke('notes:yesterday', { area: area || null }),
+      // { action: 'done' | 'today' | 'move', to?, ids?, area? } — every task of the card (or `ids`) at once
+      decideYesterday: (input) => ipcRenderer.invoke('notes:yesterday:decide', { ...(input || {}) }),
       item:          (id) => ipcRenderer.invoke('notes:item', { id }),
       completeItem:  (id, done) => ipcRenderer.invoke('notes:item:complete', { id, done: done !== false }),
       carryItem:     (id) => ipcRenderer.invoke('notes:item:carry', { id }),

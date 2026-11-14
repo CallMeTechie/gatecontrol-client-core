@@ -54,6 +54,7 @@ const { readNotificationSettings } = require('../utils/notify-schema');
 const { buildToastXml, parseActionUrl } = require('../utils/toast-xml');
 const notifyRoutes = require('../utils/notify-routes');
 const { isNotifyMediaPath } = require('../utils/messenger');
+const { portalNext } = require('../utils/portal');
 
 const PRIORITIES = ['info', 'normal', 'high', 'critical'];
 const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+)*)$/;
@@ -676,16 +677,26 @@ class NotificationCenter extends EventEmitter {
         this._show();
         // A page of the app that claimed this entry (addClickRoute, e.g. Kameras on "Personen an der Kamera"):
         // its button ("Ansehen") opens the same as a click on the toast — with the claimed context.
-        const target = this.clickTarget(entry);
+        const target = this.clickTarget(entry, action);
         this.emit('navigate', target && target.route === action.target
           ? { route: target.route, id: entry.id, context: target.context }
           : { route: action.target, id: entry.id });
         break;
       }
-      case 'open_portal':
+      case 'open_portal': {
+        // A plugin without an app tab gets its buttons as a link to its portal tab. A page of the app that claimed
+        // the entry and answers this very button (context.action — Notizen & Aufgaben on „Gestern offen geblieben“:
+        // „Erledigt“ of several tasks, „Verschieben“) opens instead of the portal.
+        const target = this.clickTarget(entry, action);
+        if (target && target.context && target.context.action === action.id && portalNext(action.target) === `/portal#${target.route}`) {
+          this._show();
+          this.emit('navigate', { route: target.route, id: entry.id, context: target.context });
+          break;
+        }
         // target goes to the portal as `next` (one-time login link, utils/portal.js).
         await this._openPortal(action.target);
         break;
+      }
       case 'mute_1h':
         if (entry.topic) this.muteTopic(entry.topic, MUTE_MS);
         break;
@@ -1081,10 +1092,13 @@ class NotificationCenter extends EventEmitter {
   /**
    * A click on the toast of an entry normally opens it in the inbox. An app
    * page with its own view of a plugin (e.g. Schule) can claim its entries:
-   * `resolve(entry)` → a context object (or true) when the page should open
-   * — navigate { route, id, context } — and null / false otherwise (the
+   * `resolve(entry, action)` → a context object (or true) when the page should
+   * open — navigate { route, id, context } — and null / false otherwise (the
    * page is not available, the entry is not one of its own; the inbox opens
-   * as before). The route must be an app route (`plg-<id>`, …).
+   * as before). The route must be an app route (`plg-<id>`, …). `action` is
+   * the button that was pressed ({ id, type, target }; null for a click on
+   * the toast itself): a context with `action` = that button's id makes an
+   * `open_portal` button on the route's own portal tab open the page.
    * @returns {() => void} removes the resolver again
    */
   addClickRoute(route, resolve) {
@@ -1099,11 +1113,11 @@ class NotificationCenter extends EventEmitter {
    * Where a click on this entry leads: { route, context } of the first
    * resolver that claims it, or null (inbox). Resolver errors count as null.
    */
-  clickTarget(entry) {
+  clickTarget(entry, action = null) {
     if (!entry || !this._clickRoutes.size) return null;
     for (const [route, resolve] of this._clickRoutes) {
       let ctx = null;
-      try { ctx = resolve(entry); } catch (err) { this.log.warn(`Click route ${route} failed: ${err.message}`); }
+      try { ctx = resolve(entry, action); } catch (err) { this.log.warn(`Click route ${route} failed: ${err.message}`); }
       if (ctx) return { route, context: ctx && typeof ctx === 'object' ? ctx : null };
     }
     return null;

@@ -8,11 +8,14 @@
 // Familie as in the mockups), notebooks, notes (Markdown: check boxes, tags, rev), attachments with the core media
 // routes (PUT …/media, GET /plugin-media/<token>), the Tresor routes (Drive's vault routes: keys, devices, recovery,
 // rotate — only public keys and wraps are kept) and the moves from Microsoft To Do (device code, preview, a job) and
-// DS Note (start, notebook, notes, finish).
+// DS Note (start, notebook, notes, finish). With the plugin's 1.3.0 words in `features` (STAGE1: reminderActions,
+// yesterdayOpen, taskCalendar — not in the default, which stays an older plugin): a task's `reminder` / `snoozed` /
+// `missedReminder` / `calendar`, `me.calendar` / `me.yesterday`, „Gestern offen geblieben“ (`yesterday` of
+// views/myday, GET yesterday, POST yesterday, POST tasks/<id>/move); without them those routes answer 404.
 //
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
-//   requests …), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
+//   requests …), srv.addTask({ id, listId, title, due, … }), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -38,6 +41,7 @@ const PLUGIN = 'gatecontrol-notizen';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
 const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 const FEATURES = ['tasks', 'notes', 'sources', 'vault', 'mstodo', 'dsnote', 'search', 'quickparse', 'attachments', 'ocrText'];
+const STAGE1 = ['reminderActions', 'yesterdayOpen', 'taskCalendar'];
 const TEXTS = {
   'v.myday': 'Mein Tag', 'v.important': 'Wichtig', 'v.planned': 'Geplant', 'v.assigned': 'Mir zugewiesen', 'v.events': 'Termine heute',
   'v.overdue': 'Überfällig', 'v.today': 'Heute', 'v.upcoming': 'Demnächst', 'v.done': 'Erledigt', 'v.tomorrow': 'Morgen', 'v.week': 'Nächste 7 Tage',
@@ -92,7 +96,11 @@ async function notesServer({
     ms: { accounts: [{ id: 3, email: 'max@outlook.com', label: 'Privat · Outlook', kind: 'personal', tasks: false }], consents: new Map(), links: [], interval: 5 },
     jobs: new Map(),
     sync: [],
+    // plugin 1.3.0
+    snoozed: new Set(), missed: new Set(), yesterdayDay: new Set(),   // task ids: put off with „Später“, reminder lost, in „Mein Tag“ yesterday
+    calendar: { available: true, enabled: true, mine: true, name: 'Aufgaben' }, yesterdayPrefs: { push: true, at: '07:30' },
   };
+  const has = (f) => state.features.includes(f);
   // lists, tasks
   const list = (o) => { const l = { color: null, icon: null, isDefault: false, ownerId: 1, members: [1], groupId: null, position: 0, ext: null, ...o }; state.lists.set(l.id, l); return l; };
   list({ id: 1, name: 'Aufgaben', area: 'private', isDefault: true });
@@ -147,8 +155,18 @@ async function notesServer({
       assignee: x.assigneeId ? { id: x.assigneeId, name: nameOf(x.assigneeId) } : null, myDay: state.myDay.has(x.id),
       progress: subs.length ? { done: subs.filter((s) => s.doneAt).length, total: subs.length } : null,
       attachments: [...state.attachments.values()].filter((a) => a.kind === 'task' && a.refId === x.id).length,
-      source: x.source, noteId: x.noteId, position: x.position, canComplete: true, updatedAt: x.updatedAt,
+      source: x.source, noteId: x.noteId, position: x.position, canComplete: true, canEdit: true, updatedAt: x.updatedAt,
     };
+    if (has('reminderActions')) {
+      const atMs = x.remindAt ? Date.parse(x.remindAt) : NaN;
+      v.reminder = !x.doneAt && atMs > state.now ? { tag: `task:${x.id}:${atMs}`, at: x.remindAt, atMs, mine: true, snoozed: state.snoozed.has(x.id) } : null;
+      v.snoozed = !!v.reminder && state.snoozed.has(x.id);
+      v.missedReminder = state.missed.has(x.id);
+    }
+    if (has('taskCalendar')) {
+      const c = state.calendar;
+      v.calendar = c.available && c.enabled && c.mine && x.due && x.due.time && !x.doneAt ? { state: 'synced', eventId: 900 + x.id, calendarId: 7, mine: true } : null;
+    }
     if (full) {
       v.note = x.note;
       v.subtasks = subs.map((s) => ({ id: s.id, title: s.title, done: !!s.doneAt }));
@@ -177,6 +195,28 @@ async function notesServer({
   const section = (sid, items, extra) => ({ id: sid, title: t(`v.${sid}`), count: items.length, items, ...(extra || {}) });
   const dayStart = now - ((Number(state.time.slice(0, 2)) * 60 + Number(state.time.slice(3))) * 60000);
 
+  // „Gestern offen geblieben“: open tasks due yesterday, in „Mein Tag“ yesterday, or whose reminder was lost
+  const weekend = () => { let d = addDays(state.today, 1); while (R.weekday(d) !== (R.weekday(state.today) === 6 ? 7 : 6)) d = addDays(d, 1); return d; };
+  const yesterdayTasks = (a) => openTasks(a).filter((x) => !x.doneAt && ((x.due && x.due.date === addDays(state.today, -1)) || state.yesterdayDay.has(x.id) || state.missed.has(x.id)));
+  function yesterdayView(a) {
+    const items = yesterdayTasks(a).map((r) => taskView(r)).sort(byTime);
+    return {
+      day: addDays(state.today, -1), title: 'Gestern offen geblieben', count: items.length, items,
+      moveOptions: [{ to: 'tomorrow', date: addDays(state.today, 1), label: 'Morgen' }, { to: 'weekend', date: weekend(), label: 'Am Wochenende' }],
+    };
+  }
+  function moveTask(r, to) {
+    const date = to === 'today' ? state.today : to === 'tomorrow' ? addDays(state.today, 1) : to === 'weekend' ? weekend() : to;
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date < state.today) throw fail(400, 'invalid', { field: 'to' });
+    if (r.due && r.due.date <= state.today) r.due = { date, time: r.due.time };
+    else if (to === 'today') state.myDay.add(r.id);
+    else r.due = { date, time: r.due ? r.due.time : null };
+    state.yesterdayDay.delete(r.id);
+    state.missed.delete(r.id);
+    r.updatedAt = state.now;
+    return r;
+  }
+
   function myDayView(a) {
     const soon = addDays(state.today, 14);
     const out = { events: [], overdue: [], today: [], upcoming: [], done: [] };
@@ -195,7 +235,7 @@ async function notesServer({
       else if (x.show.date <= soon && x.kind !== 'event') out.upcoming.push(x);
     }
     for (const k of Object.keys(out)) out[k].sort(byTime);
-    return { view: 'myday', title: t('v.myday'), date: state.today, sections: [section('events', out.events), section('overdue', out.overdue), section('today', out.today), section('upcoming', out.upcoming), section('done', out.done, { collapsed: true })] };
+    return { view: 'myday', title: t('v.myday'), date: state.today, ...(has('yesterdayOpen') ? { yesterday: yesterdayView(a) } : {}), sections: [section('events', out.events), section('overdue', out.overdue), section('today', out.today), section('upcoming', out.upcoming), section('done', out.done, { collapsed: true })] };
   }
 
   function view(name, a) {
@@ -342,7 +382,9 @@ async function notesServer({
     const is = (m, len, first) => method === m && n === len && a === first;
     if (!state.allowed) throw fail(403, 'forbidden');
     if (is('GET', 1, 'me')) {
-      return { user: state.user, lang: 'de', today: state.today, time: state.time, timezone: 'Europe/Berlin', features: state.features, prefs: state.prefs, sharing: 'all', vaults: state.vaultsOn, imports: state.imports, attachMB: 25, readOnly: false };
+      return { user: state.user, lang: 'de', today: state.today, time: state.time, timezone: 'Europe/Berlin', features: state.features, prefs: state.prefs, sharing: 'all', vaults: state.vaultsOn, imports: state.imports, attachMB: 25, readOnly: false,
+        ...(has('taskCalendar') ? { calendar: state.calendar } : {}), ...(has('yesterdayOpen') ? { yesterday: state.yesterdayPrefs } : {}),
+      };
     }
     if (is('GET', 1, 'nav')) {
       const ar = area(q.area);
@@ -454,6 +496,26 @@ async function notesServer({
         r.repeat = null;
       }
       return { task: taskView(r), ...(next ? { next: taskView(next) } : {}) };
+    }
+
+    // „Gestern offen geblieben“ (plugin 1.3.0) — an older plugin has none of these routes
+    if (method === 'POST' && n === 3 && a === 'tasks' && y === 'move') {
+      if (!has('yesterdayOpen')) throw fail(404, 'not_found');
+      return { task: taskView(moveTask(accessTask(x), b.to), true) };
+    }
+    if (is('GET', 1, 'yesterday')) {
+      if (!has('yesterdayOpen')) throw fail(404, 'not_found');
+      return yesterdayView(q.area ? area(q.area) : null);
+    }
+    if (is('POST', 1, 'yesterday')) {
+      if (!has('yesterdayOpen')) throw fail(404, 'not_found');
+      if (!['done', 'today', 'move'].includes(b.action)) throw fail(400, 'invalid', { field: 'action' });
+      const ar = b.area ? area(b.area) : null;
+      const rows = yesterdayTasks(ar).filter((r) => !Array.isArray(b.ids) || b.ids.includes(r.id));
+      for (const r of rows) {
+        if (b.action === 'done') { r.doneAt = state.now; r.updatedAt = state.now; } else moveTask(r, b.action === 'today' ? 'today' : b.to);
+      }
+      return { changed: rows.length, failed: [], yesterday: yesterdayView(ar) };
     }
 
     // items
@@ -777,10 +839,11 @@ async function notesServer({
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     state,
+    addTask: (o) => task({ id: id(), listId: 1, ...o }),
     get down() { return state.down; },
     set down(v) { state.down = !!v; },
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, noteMeta };
