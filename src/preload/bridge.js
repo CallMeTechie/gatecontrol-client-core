@@ -927,6 +927,15 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       yesterday:     (area) => ipcRenderer.invoke('notes:yesterday', { area: area || null }),
       // { action: 'done' | 'today' | 'move', to?, ids?, area? } — every task of the card (or `ids`) at once
       decideYesterday: (input) => ipcRenderer.invoke('notes:yesterday:decide', { ...(input || {}) }),
+      // shopping lists of the hub (plugin 1.4.0, feature `shoppingLists`): every list with its items; operations
+      // ({ op: 'item_check', id, checked } …, new rows get their id in the main process) are queued and sent in order
+      shopping:      (opts) => ipcRenderer.invoke('notes:shopping', { full: !!(opts && opts.full) }),
+      shoppingOps:   (ops) => ipcRenderer.invoke('notes:shopping:ops', { ops: Array.isArray(ops) ? ops.map((o) => ({ ...(o || {}) })) : [] }),
+      shoppingFamily: (id, on) => ipcRenderer.invoke('notes:shopping:family', { id, on: on === true }),
+      shoppingGoing: (id) => ipcRenderer.invoke('notes:shopping:going', { id }),
+      shoppingAssign: (id, input) => ipcRenderer.invoke('notes:shopping:assign', { ...(input || {}), id }),
+      // a shopping list deleted by mistake, by its number (`listId`) — its owner, within 30 days
+      shoppingRestore: (listId) => ipcRenderer.invoke('notes:shopping:restore', { listId }),
       item:          (id) => ipcRenderer.invoke('notes:item', { id }),
       completeItem:  (id, done) => ipcRenderer.invoke('notes:item:complete', { id, done: done !== false }),
       carryItem:     (id) => ipcRenderer.invoke('notes:item:carry', { id }),

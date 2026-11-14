@@ -27,6 +27,14 @@
  *   push of the plugin (topics reminders / shared / vault, data.notizen) opens the page (NotificationCenter.addClickRoute).
  *   The buttons of a reminder (plugin 1.3.0: Erledigt, In 1 Std., Heute Abend) are callbacks the notification center
  *   answers itself; the morning hint's „Erledigt“ (several tasks) and „Verschieben“ open „Mein Tag“ with the card.
+ * - Shopping lists (plugin 1.4.0, feature `shoppingLists`; utils/notes-shopping.js): the lists and their items are kept
+ *   between two calls and fetched with `since` after the first time. What the person changes (POST shopping/ops, ids
+ *   made here) shows at once and waits in a queue — in order, stored (`notesShopQueue`), sent again unchanged after a
+ *   network error or a reconnect; what the server rejects is not sent again. „Alles abgehakt“ comes back as
+ *   `completed` (the tasks the list completed; „Rückgängig“ is completeTask(id, false)). A task carries a list
+ *   (`attachedList`, feature `taskList`): `attach` of parse() and createTask(), attachedListId / attachedListUid when
+ *   writing; the reminder's button „Liste öffnen“ opens that list in the page. Without the words the calls are refused
+ *   with `unsupported` before the server is asked.
  *
  * Events: 'state' (status()), 'changed' ({ what }), 'vault' ({ vault, event }), 'vaultLock' ({ locked, reason }),
  * 'import' (the DS Note import: { state, done, total, notes, skipped, protectedSkipped, vault?, code? }).
@@ -43,6 +51,7 @@ const DriveVaultLock = require('./drive-vault-lock');
 const MessengerApi = require('./messenger-api');
 const { openNsx, runImport, ImportError } = require('./notes-import');
 const N = require('../utils/notes');
+const Shop = require('../utils/notes-shopping');
 const { guessMime } = require('../utils/gatedrop');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { openExternalSafely } = require('../utils/external-url');
@@ -58,6 +67,7 @@ const DEFAULT_TIMING = {
   minuteMs: 60 * 1000,      // the vault lock's minutes
 };
 const MAX_PATHS = 20;
+const SHOP_QUEUE_KEY = 'notesShopQueue';
 const OCR_MAX_BYTES = 12 * 1024 * 1024;
 const OCR_MIME_RE = /^image\/(jpeg|png|bmp|gif|tiff)$/;
 // Microsoft's device-code pages (Mail 1.12.0 ms_tasks_consent): only these open in the browser
@@ -101,6 +111,7 @@ class NotesService extends EventEmitter {
     super();
     this.log = log || noopLog();
     this.api = api || new NotesApi({ apiClient, log: this.log });
+    this.store = store && typeof store.get === 'function' && typeof store.set === 'function' ? store : null;
     this.shell = shell;
     this.dialog = dialog;
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
@@ -132,6 +143,9 @@ class NotesService extends EventEmitter {
     this._unsub = [];
     this._nsx = null;            // the .nsx export picked: { archive, summary, close }
     this._import = null;         // { signal } while an import runs
+    this._shop = Shop.newState(); // the shopping lists as the server said last (utils/notes-shopping.js)
+    this._shopQueue = null;      // operations not confirmed yet (null: not read from the store yet)
+    this._shopFlushing = null;
     this._scope = this._scopeNow();
   }
 
@@ -145,7 +159,9 @@ class NotesService extends EventEmitter {
     if (pc && typeof pc.on === 'function') {
       const onHello = () => {
         if (this._state.state !== 'available') { this.check().catch(() => {}); return; }
-        this.emit('changed', N.changedOf({}));
+        // what was ticked off without the server goes out first; the pages fetch again either way
+        if (this._queue().length) this._shopFlush().catch(() => {}).then(() => this.emit('changed', N.changedOf({})));
+        else this.emit('changed', N.changedOf({}));
       };
       const onEvent = (ev) => {
         if (!ev || ev.event !== 'plugin' || !ev.data || ev.data.plugin !== N.PLUGIN_ID) return;
@@ -186,7 +202,10 @@ class NotesService extends EventEmitter {
    */
   clickContext(entry, action = null) {
     if (!this.available() || !entry || typeof entry !== 'object') return null;
-    return N.pushTarget(entry.topic, entry.data, action && typeof action === 'object' ? action.id : null);
+    const id = action && typeof action === 'object' ? action.id : null;
+    // „Liste öffnen“ of a reminder opens the list only while the plugin offers the lists; else the task as before
+    const lists = !!this._me && this._me.features.includes('shoppingLists') && this._me.features.includes('taskList');
+    return N.pushTarget(entry.topic, entry.data, id === 'open_list' && !lists ? null : id);
   }
 
   /** server:setup: the old server's state, its keys and the export picked go, the new one is asked. */
@@ -197,6 +216,8 @@ class NotesService extends EventEmitter {
     this._closeNsx();
     this._me = null;
     this._nbVault.clear();
+    this._shop = Shop.newState();
+    this._shopQueue = null;
     this._retry = 0;
     this._scope = this._scopeNow();
     this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
@@ -283,6 +304,8 @@ class NotesService extends EventEmitter {
     this._scope = s;
     this._me = null;
     this._nbVault.clear();
+    this._shop = Shop.newState();
+    this._shopQueue = null;
     this.vault.clear();
     this.vaultLock.lock('server');
   }
@@ -341,8 +364,12 @@ class NotesService extends EventEmitter {
     return this._run(async () => ({ ok: true, view: await this.api.view(name, N.areaOf(area) || undefined) }));
   }
 
+  /** The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or null. */
   async parse({ text, area } = {}) {
-    return this._run(async () => ({ ok: true, parsed: await this.api.parse(text, N.areaOf(area) || undefined) }));
+    return this._run(async () => {
+      const r = await this.api.suggest(text, N.areaOf(area) || undefined);
+      return { ok: true, parsed: r.parsed, attach: this._offers('taskList') ? r.attach : null };
+    });
   }
 
   async people() {
@@ -398,11 +425,11 @@ class NotesService extends EventEmitter {
 
   // ── tasks and items ──────────────────────────────────────
 
-  async createTask(body) { return this._run(async () => ({ ok: true, ...(await this.api.createTask(body)) })); }
+  async createTask(body) { return this._run(async () => { this._listFields(body); return { ok: true, ...(await this.api.createTask(body)) }; }); }
 
   async task(id) { return this._run(async () => ({ ok: true, task: await this.api.task(id) })); }
 
-  async updateTask(id, body) { return this._run(async () => ({ ok: true, task: await this.api.updateTask(id, body) })); }
+  async updateTask(id, body) { return this._run(async () => { this._listFields(body); return { ok: true, task: await this.api.updateTask(id, body) }; }); }
 
   async completeTask(id, done) { return this._run(async () => ({ ok: true, ...(await this.api.completeTask(id, done)) })); }
 
@@ -415,6 +442,164 @@ class NotesService extends EventEmitter {
   async yesterday({ area } = {}) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, yesterday: await this.api.yesterday(N.areaOf(area) || undefined) }; }); }
 
   async decideYesterday(body) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, ...(await this.api.decideYesterday(body)) }; }); }
+
+  // ── shopping lists, a list at a task (plugin 1.4.0) ──────
+
+  _offers(name) {
+    return !!this._me && this._me.features.includes(name);
+  }
+
+  /** attachedListId / attachedListUid / attach of a task: an older plugin would pass them over in silence — refused here. */
+  _listFields(body) {
+    const b = body && typeof body === 'object' ? body : {};
+    if (b.attachedListId !== undefined || b.attachedListUid !== undefined || b.attach !== undefined) this._feature('taskList');
+  }
+
+  /** The operations not confirmed yet (read once from the store: those of this server and person). */
+  _queue() {
+    if (!this._shopQueue) {
+      let stored = null;
+      try { stored = this.store ? this.store.get(SHOP_QUEUE_KEY) : null; } catch { stored = null; }
+      this._shopQueue = Shop.storedQueue(stored, this._scopeNow());
+    }
+    return this._shopQueue;
+  }
+
+  _saveQueue() {
+    if (!this.store) return;
+    try { this.store.set(SHOP_QUEUE_KEY, { scope: this._scopeNow(), ops: this._queue().slice(0, Shop.QUEUE_MAX) }); } catch (err) { this.log.warn(`Notizen: shopping queue not stored: ${err.message}`); }
+  }
+
+  _shopCtx() {
+    return { userId: this._me ? this._me.user.id : null };
+  }
+
+  /**
+   * Sends the queue in order, 200 operations a call. A network error keeps it (sent again unchanged later — the ids
+   * are the device's, nothing is made twice); what the server refuses is dropped and never sent again.
+   * @returns {Promise<{ applied, rejected: [{ op, id, listId, code }], completed, offline, dropped }>}
+   */
+  _shopFlush() {
+    // one after the other: every caller gets its own answer, and what an earlier run sent is not told twice
+    const run = (this._shopFlushing || Promise.resolve()).catch(() => {}).then(() => this._shopFlushNow());
+    this._shopFlushing = run;
+    run.catch(() => {}).then(() => { if (this._shopFlushing === run) this._shopFlushing = null; });
+    return run;
+  }
+
+  async _shopFlushNow() {
+    const out = { applied: 0, rejected: [], completed: [], offline: false, dropped: false, added: false };
+    const scope = this._scopeNow();
+    // another server or person since the last call: nothing of the old one goes out (the next call starts anew)
+    if (scope !== this._scope) return out;
+    const queue = this._queue();
+    while (queue.length) {
+      const batch = queue.slice(0, N.SHOP_OPS_MAX);
+      let r = null;
+      try {
+        r = await this.api.shoppingOps(batch);
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (scope !== this._scopeNow()) break;
+        // the server cannot be reached, is busy or wants a new sign-in: the batch stays as it is
+        if (!e.status || e.status >= 500 || e.status === 401 || e.status === 429) { out.offline = true; break; }
+        // refused as a whole (an older plugin, a broken batch): never sent again
+        queue.splice(0, batch.length);
+        this._saveQueue();
+        out.dropped = true;
+        for (const op of batch) out.rejected.push({ op: op.op, id: op.id || null, listId: op.listId || null, code: N.errorCode(e) });
+        this._shop.loaded = false;
+        continue;
+      }
+      if (scope !== this._scopeNow()) break;
+      queue.splice(0, batch.length);
+      this._saveQueue();
+      Shop.confirm(this._shop, batch, r.rejected, this._shopCtx());
+      out.applied += r.applied;
+      if (batch.some((op, i) => op.op === 'list_add' && !r.rejected.some((x) => x.index === i))) out.added = true;
+      for (const x of r.rejected) { const op = batch[x.index]; if (op) out.rejected.push({ op: op.op, id: op.id || null, listId: op.listId || null, code: x.code }); }
+      out.completed.push(...r.completed);
+      // the device guessed what the server then refused: the next answer is taken whole
+      if (r.rejected.length) this._shop.loaded = false;
+    }
+    return out;
+  }
+
+  _shopView(extra = {}) {
+    return { ok: true, ...Shop.view(this._shop, this._queue(), this._shopCtx()), pending: this._queue().length, ...extra };
+  }
+
+  /**
+   * Every shopping list the person sees and their items → { ok, lists, items, pending, stale, completed }. Asked with
+   * `since` after the first time (`full`: without); `stale: true` — the server could not be reached, the last copy
+   * with what waits in the queue. `completed`: tasks a batch sent late has completed („Alles abgehakt“).
+   */
+  async shopping({ full = false } = {}) {
+    return this._run(async () => {
+      this._feature('shoppingLists');
+      const sent = await this._shopFlush();
+      try {
+        await this._shopFetch(full);
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (e.status || !this._shop.loaded) throw e;
+        return this._shopView({ stale: true, completed: sent.completed });
+      }
+      return this._shopView({ stale: false, completed: sent.completed });
+    });
+  }
+
+  /** GET shopping into what the service holds: with `since` after the first time, whole when asked or when a list is new. */
+  async _shopFetch(full = false) {
+    const st = this._shop;
+    const whole = full || !st.loaded;
+    const r = await this.api.shopping(whole ? null : st.since);
+    if (st !== this._shop) return;
+    if (Shop.merge(st, r, { full: whole }).needFull) Shop.merge(st, await this.api.shopping(null), { full: true });
+  }
+
+  /**
+   * Operations on the shopping lists (utils/notes.js shopOps — checked by the IPC): shown at once, queued, sent in
+   * order → { ok, lists, items, pending, offline, applied, rejected: [{ op, id, listId, code }], completed, ids }.
+   * `offline: true`: they wait for the server. `ids`: the id of each operation (those made here for new rows).
+   */
+  async shoppingOps(ops) {
+    return this._run(async () => {
+      this._feature('shoppingLists');
+      const queue = this._queue();
+      if (queue.length + ops.length > Shop.QUEUE_MAX) throw new NotesError('too many changes are waiting', { code: 'too_many' });
+      queue.push(...ops);
+      this._saveQueue();
+      const sent = await this._shopFlush();
+      // a list made here has its number (listId: sharing, attaching, restoring) only in the server's answer
+      if (sent.added) { try { await this._shopFetch(); } catch { /* the next shopping() brings it */ } }
+      return this._shopView({ offline: sent.offline, applied: sent.applied, rejected: sent.rejected, completed: sent.completed, ids: ops.map((o) => o.id || null) });
+    });
+  }
+
+  /** A shopping list deleted by mistake comes back (its number; the owner, within 30 days) — the next answer is taken whole. */
+  async shoppingRestore(listId) {
+    return this._run(async () => { this._feature('shoppingLists'); await this.api.restoreList(listId); this._shop.loaded = false; return { ok: true }; });
+  }
+
+  /** A shopping list shared with the whole family or not any more (feature `familyShopping`; parents only). */
+  async shoppingFamily(uid, on) {
+    return this._run(async () => { this._feature('familyShopping'); const r = await this.api.shoppingFamily(uid, on); this._shopPut(r.list); return { ok: true, list: r.list }; });
+  }
+
+  /** „Ich gehe einkaufen“ of a family list — Familie tells the others. */
+  async shoppingGoing(uid) {
+    return this._run(async () => { this._feature('familyShopping'); return { ok: true, ...(await this.api.shoppingGoing(uid)) }; });
+  }
+
+  /** „Kannst du einkaufen gehen?“ of a family list ({ userId | null, dueAt?, notify? }) — Familie sends the card. */
+  async shoppingAssign(uid, body) {
+    return this._run(async () => { this._feature('familyShopping'); const r = await this.api.shoppingAssign(uid, body); this._shopPut(r.list); return { ok: true, ...r }; });
+  }
+
+  _shopPut(list) {
+    if (list && !list.deleted && this._shop.loaded) this._shop.lists.set(list.id, list);
+  }
 
   async item(id) { return this._run(async () => ({ ok: true, ...(await this.api.item(id)) })); }
 

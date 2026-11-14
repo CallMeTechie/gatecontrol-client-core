@@ -13,6 +13,10 @@
  *   POST   tasks · GET|PATCH|DELETE tasks/<id> · POST tasks/<id>/complete
  *   POST   tasks/<id>/move { to } · GET yesterday?area · POST yesterday { action, to?, ids?, area? }
  *          („Gestern offen geblieben“, plugin 1.3.0 — an older plugin answers 404)
+ *   GET    shopping[?since] · POST shopping/ops { ops } · PUT shopping/lists/<uid>/family { on }
+ *   POST   shopping/lists/<uid>/going · POST shopping/lists/<uid>/assign { userId, dueAt?, notify? }
+ *   POST   lists/<n>/restore (a deleted shopping list back from the trash — its owner, 30 days)
+ *          (the shopping lists of the hub, plugin 1.4.0 — an older plugin answers 404)
  *   GET    items/<id> · POST items/<id>/complete · POST items/<id>/carry
  *   GET|POST notebooks · PATCH|DELETE notebooks/<id> · PUT notebooks/<id>/members
  *   GET|POST notes · GET|PATCH|DELETE notes/<id> · POST notes/<id>/check · POST notes/<id>/task
@@ -102,6 +106,12 @@ class NotesApi {
     return N.normalizeParsed(r.parsed);
   }
 
+  /** POST parse → what the parser made of the line and the shopping list it names ({ via, word, list, lists } | null, plugin 1.4.0). */
+  async suggest(text, area) {
+    const r = await this.api('POST', 'parse', { body: { text, ...(area ? { area } : {}) } });
+    return { parsed: N.normalizeParsed(r.parsed), attach: N.normalizeAttach(r.attach) };
+  }
+
   async people() { return N.normalizePeople(await this.api('GET', 'people')); }
 
   async search(q, area) { return N.normalizeSearch(await this.api('GET', 'search', { params: { q, ...(area ? { area } : {}) } })); }
@@ -142,7 +152,7 @@ class NotesApi {
 
   async createTask(body) {
     const r = await this.api('POST', 'tasks', { body });
-    return { task: N.normalizeTask(r.task), parsed: r.parsed ? N.normalizeParsed(r.parsed) : null };
+    return { task: N.normalizeTask(r.task), parsed: r.parsed ? N.normalizeParsed(r.parsed) : null, attach: N.normalizeAttach(r.attach) };
   }
 
   async task(id) { return N.normalizeTask((await this.api('GET', `tasks/${this._id(id)}`)).task); }
@@ -171,6 +181,38 @@ class NotesApi {
       failed: (Array.isArray(r.failed) ? r.failed : []).slice(0, 200).map((f) => (f && N.posId(f.id) ? { id: f.id, code: N.errorCode(f) } : null)).filter(Boolean),
       yesterday: N.normalizeYesterday(r.yesterday),
     };
+  }
+
+  // ── shopping lists (plugin 1.4.0) ────────────────────────
+
+  _uid(v) {
+    const id = N.shopIdOf(v);
+    if (!id) throw new NotesError('invalid list', { code: 'invalid' });
+    return id;
+  }
+
+  /** GET shopping[?since=<serverTime>] → { lists, items, serverTime } (with `since`: every list, the items changed since, tombstones) */
+  async shopping(since = null) { return N.normalizeShopping(await this.api('GET', 'shopping', { params: since ? { since } : undefined })); }
+
+  /** POST shopping/ops { ops } (≤ 200, in order, safe to repeat) → { applied, rejected, serverTime, completed } */
+  async shoppingOps(ops) { return N.normalizeOpsAnswer(await this.api('POST', 'shopping/ops', { body: { ops } })); }
+
+  /** POST lists/<n>/restore: a list the person deleted comes back with its members (the owner, within 30 days). */
+  async restoreList(id) { await this.api('POST', `lists/${this._id(id)}/restore`, { body: {} }); return {}; }
+
+  async shoppingFamily(uid, on) {
+    const r = await this.api('PUT', `shopping/lists/${this._uid(uid)}/family`, { body: { on: on === true } });
+    return { list: N.normalizeShopList(r.list) };
+  }
+
+  async shoppingGoing(uid) {
+    const r = await this.api('POST', `shopping/lists/${this._uid(uid)}/going`, { body: {} });
+    return { notified: N.count(r.notified) || 0, chat: r.chat === true };
+  }
+
+  async shoppingAssign(uid, body) {
+    const r = await this.api('POST', `shopping/lists/${this._uid(uid)}/assign`, { body });
+    return { list: N.normalizeShopList(r.list), notified: N.count(r.notified) || 0 };
   }
 
   async item(id) {
