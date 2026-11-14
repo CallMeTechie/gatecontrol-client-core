@@ -35,6 +35,14 @@
  *   (`attachedList`, feature `taskList`): `attach` of parse() and createTask(), attachedListId / attachedListUid when
  *   writing; the reminder's button „Liste öffnen“ opens that list in the page. Without the words the calls are refused
  *   with `unsupported` before the server is asked.
+ * - Places (plugin 1.5.0, features `places` / `placeSearch`): a task hangs on a place (`place`: one place or „Jeder
+ *   Lidl“, on arriving or leaving). The phone of the person the task belongs to watches the place and shows the
+ *   reminder — a Windows PC watches nothing (no geofences, no places/watch, no places/fired); it shows the place and
+ *   lets it be changed: `place` of parse() and createTask(), `place` when writing, „Meine Orte“ (places(), createPlace(),
+ *   updatePlace(), deletePlace(), setPlaceFav()), the search (searchPlaces() — only when the person asks for it, near one
+ *   of their places: this PC has no position and sends none; refused here while `me.places.search.state` is not `on`)
+ *   and the consent for a place someone else set (placeConsent(); the push's buttons are callbacks the notification
+ *   center answers itself). Without the words the calls — and a task body with `place` — are refused with `unsupported`.
  *
  * Events: 'state' (status()), 'changed' ({ what }), 'vault' ({ vault, event }), 'vaultLock' ({ locked, reason }),
  * 'import' (the DS Note import: { state, done, total, notes, skipped, protectedSkipped, vault?, code? }).
@@ -364,11 +372,14 @@ class NotesService extends EventEmitter {
     return this._run(async () => ({ ok: true, view: await this.api.view(name, N.areaOf(area) || undefined) }));
   }
 
-  /** The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or null. */
+  /**
+   * The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or
+   * null; `place`: the place it names (plugin 1.5.0, `places` — found by the server, not by the parser) or null.
+   */
   async parse({ text, area } = {}) {
     return this._run(async () => {
       const r = await this.api.suggest(text, N.areaOf(area) || undefined);
-      return { ok: true, parsed: r.parsed, attach: this._offers('taskList') ? r.attach : null };
+      return { ok: true, parsed: r.parsed, attach: this._offers('taskList') ? r.attach : null, place: this._offers('places') ? r.place : null };
     });
   }
 
@@ -391,8 +402,12 @@ class NotesService extends EventEmitter {
 
   async setPrefs(patch) {
     return this._run(async () => {
+      // plugin 1.5.0: the switches of places — an older plugin would pass them over in silence
+      if (patch && patch.places !== undefined) this._feature('places');
       const prefs = await this.api.setPrefs(patch);
       if (this._me) this._me.prefs = prefs;
+      // … and `me.places` (is the search on for this person now?) follows them
+      if (patch && patch.places !== undefined) { try { this._me = await this.api.me(); } catch { /* the next me() brings it */ } }
       return { ok: true, prefs };
     });
   }
@@ -425,7 +440,13 @@ class NotesService extends EventEmitter {
 
   // ── tasks and items ──────────────────────────────────────
 
-  async createTask(body) { return this._run(async () => { this._listFields(body); return { ok: true, ...(await this.api.createTask(body)) }; }); }
+  async createTask(body) {
+    return this._run(async () => {
+      this._listFields(body);
+      const r = await this.api.createTask(body);
+      return { ok: true, ...r, place: this._offers('places') ? r.place : null };
+    });
+  }
 
   async task(id) { return this._run(async () => ({ ok: true, task: await this.api.task(id) })); }
 
@@ -453,6 +474,44 @@ class NotesService extends EventEmitter {
   _listFields(body) {
     const b = body && typeof body === 'object' ? body : {};
     if (b.attachedListId !== undefined || b.attachedListUid !== undefined || b.attach !== undefined) this._feature('taskList');
+    // plugin 1.5.0: `place` likewise — an older plugin would make the task and say nothing about the place
+    if (b.place !== undefined) this._feature('places');
+  }
+
+  // ── places (plugin 1.5.0) ────────────────────────────────
+
+  /** „Meine Orte“, the places of the family and the remembered place per kind / name → { ok, places, family, favs } */
+  async places() { return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.places()) }; }); }
+
+  async createPlace(body) { return this._run(async () => { this._feature('places'); return { ok: true, place: await this.api.createPlace(body) }; }); }
+
+  async updatePlace(id, body) { return this._run(async () => { this._feature('places'); return { ok: true, place: await this.api.updatePlace(id, body) }; }); }
+
+  async deletePlace(id) { return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.deletePlace(id)) }; }); }
+
+  /** The remembered place for a kind or a name ({ key, placeId | null }) → { ok, favs } */
+  async setPlaceFav(body) { return this._run(async () => { this._feature('places'); return { ok: true, favs: await this.api.setPlaceFav(body) }; }); }
+
+  /**
+   * The places near one of the person's places (utils/notes.js placeSearchArg) → { ok, key, label, kind, radiusKm, results,
+   * any, approx, attribution }. Only ever called because the person asked (a button, Enter) — never while typing, never
+   * on a timer. While the search is off (the administrator, the person) or not set up, the server is not asked at all:
+   * `module_off` / `unavailable`.
+   */
+  async searchPlaces(body) {
+    return this._run(async () => {
+      this._feature('places');
+      this._feature('placeSearch');
+      const st = this._me && this._me.places ? this._me.places.search.state : 'off';
+      if (st === 'off') throw new NotesError('the place search is switched off', { code: 'module_off' });
+      if (st !== 'on') throw new NotesError('the place search is not set up', { code: 'unavailable' });
+      return { ok: true, ...(await this.api.searchPlaces(body)) };
+    });
+  }
+
+  /** A place someone else set at the person's task: accepted (their phone watches it from now on) or declined → { ok, consent } */
+  async placeConsent(id, accept) {
+    return this._run(async () => { this._feature('places'); return { ok: true, consent: await this.api.placeConsent(id, accept) }; });
   }
 
   /** The operations not confirmed yet (read once from the store: those of this server and person). */

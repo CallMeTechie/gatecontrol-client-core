@@ -16,6 +16,9 @@
  *   notes:shopping ({ full? }) · notes:shopping:ops ({ ops }) · notes:shopping:family ({ id, on })
  *   notes:shopping:going ({ id }) · notes:shopping:assign ({ id, userId, dueAt?, notify? })
  *   notes:shopping:restore ({ listId })  (plugin 1.4.0)
+ *   notes:places · notes:place:create ({ place }) · notes:place:update ({ id, patch }) · notes:place:delete ({ id })
+ *   notes:place:fav ({ key, placeId | null }) · notes:place:search ({ key | q, address?, nearPlaceId | nearFamilyId })
+ *   notes:task:place:consent ({ id, accept })  (plugin 1.5.0)
  *   notes:task:delete ({ id }) · notes:item ({ id }) · notes:item:complete ({ id, done }) · notes:item:carry ({ id })
  *   notes:notebooks ({ area }) · notes:notebook:create ({ name, area, color?, vault? }) → recoveryKey for a Tresor
  *   notes:notebook:update ({ id, patch }) · notes:notebook:delete ({ id }) · notes:notebook:members ({ id, members })
@@ -52,6 +55,8 @@ function fail(err) {
   if (b && typeof b === 'object') {
     if (typeof b.field === 'string') out.field = b.field.slice(0, 60);
     if (typeof b.reason === 'string') out.reason = b.reason.slice(0, 60);
+    // 429 busy of the place search: try again after so many seconds
+    if (Number.isSafeInteger(b.retryAfter) && b.retryAfter > 0) out.retryAfter = Math.min(b.retryAfter, 3600);
   }
   return out;
 }
@@ -107,6 +112,7 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
       body.groups = clean;
     }
     if (p.times !== undefined) body.times = N.normalizePrefs({ times: p.times }).times;
+    if (p.places !== undefined) { const pl = N.placePrefsArg(p.places); if (!pl) return invalid('places'); body.places = pl; }
     return Object.keys(body).length ? s.setPrefs(body) : invalid('patch');
   });
   on('notes:sources', async () => s.sources());
@@ -173,6 +179,17 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
     const b = N.assignArg({ userId: a.userId === undefined ? null : a.userId, dueAt: a.dueAt, notify: a.notify });
     return b ? s.shoppingAssign(a.id, b) : invalid('userId');
   });
+  // places (plugin 1.5.0): shown and changed here, watched by the phone. A search carries a place to search near, never a position
+  on('notes:places', async () => s.places());
+  on('notes:place:create', async (a) => { const b = N.placeCreate(a.place); return b ? s.createPlace(b) : invalid('place'); });
+  on('notes:place:update', async (a) => {
+    const b = N.placePatch(a.patch);
+    return id(a.id) && b && Object.keys(b).length ? s.updatePlace(a.id, b) : invalid('patch');
+  });
+  on('notes:place:delete', async (a) => (id(a.id) ? s.deletePlace(a.id) : invalid('id')));
+  on('notes:place:fav', async (a) => { const b = N.favArg({ key: a.key, placeId: a.placeId === undefined ? null : a.placeId }); return b ? s.setPlaceFav(b) : invalid('key'); });
+  on('notes:place:search', async (a) => { const b = N.placeSearchArg(a); return b ? s.searchPlaces(b) : invalid('near'); });
+  on('notes:task:place:consent', async (a) => (id(a.id) && typeof a.accept === 'boolean' ? s.placeConsent(a.id, a.accept) : invalid('accept')));
   on('notes:item', async (a) => (id(a.id) ? s.item(a.id) : invalid('id')));
   on('notes:item:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeItem(a.id, a.done) : invalid('id')));
   on('notes:item:carry', async (a) => (id(a.id) ? s.carryItem(a.id) : invalid('id')));

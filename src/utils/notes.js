@@ -11,7 +11,12 @@
  * `calendar`, `me.calendar`). Plugin 1.4.0: `shoppingLists` (GET shopping, POST shopping/ops — the lists and their items
  * with ids the device makes, `nav.shopping`, `me.shopping`, the event `shopping`), `taskList` (a task's `attachedList`,
  * `attachedListId` / `attachedListUid` when writing, `attach` of POST parse and POST tasks, the button „Liste öffnen“ of
- * a reminder) and `familyShopping` (family lists: PUT shopping/lists/<id>/family, POST …/going, …/assign).
+ * a reminder) and `familyShopping` (family lists: PUT shopping/lists/<id>/family, POST …/going, …/assign). Plugin 1.5.0:
+ * `places` (a task's `place` — one place or „Jeder Lidl“, on arriving or leaving —, `place` when writing, `place` of POST
+ * parse and POST tasks, GET / POST / PATCH / DELETE places, PUT places/favs, POST tasks/<id>/place/consent, `me.places`,
+ * `prefs.places`, the event `places`) and `placeSearch` (POST places/search — a Windows PC has no position of its own:
+ * it searches near one of the person's places, never with coordinates). The phone watches the places; a PC shows and
+ * changes them only (no places/watch, no places/fired).
  *
  * Every text from the server stays text: the renderer puts it into textContent only.
  */
@@ -49,6 +54,16 @@ const SHOP_OPS = Object.freeze(['list_add', 'list_rename', 'list_delete', 'item_
 const SHOP_REJECTS = Object.freeze(['invalid', 'not_found', 'forbidden', 'too_many']);
 const ATTACH_VIA = Object.freeze(['tag', 'name', 'word']);
 const ASSIGN_NOTIFY = Object.freeze(['direct', 'family', 'push']);
+// plugin 1.5.0: places
+const PLACE_NAME_MAX = 80;
+const PLACE_ADDRESS_MAX = 160;
+const PLACE_LABEL_MAX = 40;
+const PLACE_QUERY_MAX = 80;
+const PLACE_RADIUS = Object.freeze({ min: 50, max: 2000, default: 150 });
+const PLACE_TRIGGERS = Object.freeze(['enter', 'exit']);
+const PLACE_VIA = Object.freeze(['own', 'family', 'kind', 'address', 'name']);
+const PLACE_CONSENT = Object.freeze(['accepted', 'pending', 'declined']);
+const SEARCH_STATES = Object.freeze(['on', 'off', 'unavailable']);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -61,6 +76,11 @@ const B64U_RE = /^[A-Za-z0-9_-]+$/;
 const CODE_RE = /^[A-Za-z0-9_.-]{1,60}$/;
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const ICON_RE = /^[a-z][a-z0-9-]{0,39}$/;
+const OSM_REF_RE = /^osm:[NWR]\d{1,18}$/;
+const PLACE_REF_RE = /^(?:osm:[NWR]\d{1,18}|familie:(?:home|place:\d{1,15}))$/;
+const FAMILY_ID_RE = /^(?:home|place:\d{1,15})$/;
+const PLACE_KEY_RE = /^(?:kind:[a-z]{2,20}|name:[^\u0000-\u001f\u007f]{2,40})$/;
+const HTTPS_RE = /^https:\/\/[A-Za-z0-9.-]{1,120}(?:\/[A-Za-z0-9._~\/?=&%#-]{0,300})?$/;
 const REMINDER_TAG_RE = /^task:[1-9]\d{0,14}:[1-9]\d{0,15}$/;
 const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const CTRL_LINE_RE = /[\u0000-\u001F\u007F]/g;
@@ -174,6 +194,155 @@ function attachedListOf(v) {
   return { id, uid, name: line(o.name, SHOP_NAME_MAX) || '', icon: iconOf(o.icon), open, total, done: total - open, family: bool(o.family) };
 }
 
+// ── places (plugin 1.5.0) ───────────────────────────────────
+
+const placeKeyOf = (v) => (typeof v === 'string' && PLACE_KEY_RE.test(v) ? v : null);
+const familyIdOf = (v) => (typeof v === 'string' && FAMILY_ID_RE.test(v) ? v : null);
+const placeRefOf = (v) => (typeof v === 'string' && PLACE_REF_RE.test(v) ? v : null);
+const coordOf = (v, max) => (typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max ? v : null);
+const radiusOf = (v) => (Number.isFinite(v) && v > 0 ? Math.max(PLACE_RADIUS.min, Math.min(PLACE_RADIUS.max, Math.round(v))) : null);
+const roundOf = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
+const searchStateOf = (v) => (SEARCH_STATES.includes(v) ? v : 'off');
+
+/** „© OpenStreetMap“ with its link → { text, url } or null (the link opens in the browser: https only). */
+function attributionOf(v) {
+  const o = obj(v);
+  const txt = o && line(o.text, 80);
+  return txt ? { text: txt, url: typeof o.url === 'string' && HTTPS_RE.test(o.url) ? o.url : null } : null;
+}
+
+/** `quiet` of the hint „in der Nähe“ → { from, to } or null (no quiet hours; the same time twice is none). */
+function quietOf(v) {
+  const o = obj(v);
+  return o && timeOf(o.from) && timeOf(o.to) && o.from !== o.to ? { from: o.from, to: o.to } : null;
+}
+
+/**
+ * A task's `place` (plugin 1.5.0) → { mode: 'place' | 'any', id, name, address, lat, lon, radius, ref, own, trigger, key,
+ * label, by, consent, watch, nearby, skipped, later } or null (no place, an older plugin, a place without a point).
+ */
+function taskPlaceOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const any = o.mode === 'any';
+  const lat = any ? null : coordOf(o.lat, 90);
+  const lon = any ? null : coordOf(o.lon, 180);
+  const name = line(o.name, 120);
+  const key = placeKeyOf(o.key);
+  if (!name || (any ? !key : lat === null || lon === null)) return null;
+  return {
+    mode: any ? 'any' : 'place', id: any ? null : posId(o.id), name, address: line(o.address, PLACE_ADDRESS_MAX) || '', lat, lon,
+    radius: any ? null : radiusOf(o.radius), ref: any ? null : placeRefOf(o.ref), own: bool(o.own),
+    trigger: o.trigger === 'exit' ? 'exit' : 'enter', key, label: line(o.label, PLACE_LABEL_MAX), by: posId(o.by),
+    consent: PLACE_CONSENT.includes(o.consent) ? o.consent : 'accepted', watch: bool(o.watch), nearby: bool(o.nearby),
+    skipped: count(o.skipped) || 0, later: isoOf(o.later),
+  };
+}
+
+/** One of „Meine Orte“ (GET places, POST / PATCH places, a suggestion's place) → cleaned, or null. */
+function normalizePlace(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const name = o && line(o.name, PLACE_NAME_MAX);
+  const lat = o ? coordOf(o.lat, 90) : null;
+  const lon = o ? coordOf(o.lon, 180) : null;
+  if (!id || !name || lat === null || lon === null) return null;
+  return {
+    id, name, address: line(o.address, PLACE_ADDRESS_MAX) || '', lat, lon, radius: radiusOf(o.radius) || PLACE_RADIUS.default, named: bool(o.named),
+    ref: placeRefOf(o.ref), family: bool(o.family),
+    favFor: arr(o.favFor).slice(0, 50).map((f) => { const x = obj(f); const key = x && placeKeyOf(x.key); return key ? { key, label: line(x.label, PLACE_LABEL_MAX) || '' } : null; }).filter(Boolean),
+    uses: count(o.uses) || 0, updatedAt: msOf(o.updatedAt),
+  };
+}
+
+/** A place of the family („Zuhause“, a rule place of Familie) → { familyId, name, address, lat, lon, radius, family: true } or null. */
+function normalizeFamilyPlace(v) {
+  const o = obj(v);
+  const familyId = o && familyIdOf(o.familyId);
+  const name = o && line(o.name, PLACE_NAME_MAX);
+  const lat = o ? coordOf(o.lat, 90) : null;
+  const lon = o ? coordOf(o.lon, 180) : null;
+  if (!familyId || !name || lat === null || lon === null) return null;
+  return { familyId, name, address: line(o.address, PLACE_ADDRESS_MAX) || '', lat, lon, radius: radiusOf(o.radius) || PLACE_RADIUS.default, family: true };
+}
+
+/** GET places → { places, family, favs: [{ key, label, placeId, uses }] } */
+function normalizePlaces(v) {
+  const o = obj(v) || {};
+  return {
+    places: arr(o.places).slice(0, 1000).map(normalizePlace).filter(Boolean),
+    family: arr(o.family).slice(0, 100).map(normalizeFamilyPlace).filter(Boolean),
+    favs: normalizeFavs(o.favs),
+  };
+}
+
+/** The remembered place per kind / name (GET places, PUT places/favs) → [{ key, label, placeId, uses }] */
+function normalizeFavs(v) {
+  return arr(v).slice(0, 2000).map((f) => {
+    const x = obj(f);
+    const key = x && placeKeyOf(x.key);
+    const placeId = x && posId(x.placeId);
+    return key && placeId ? { key, label: line(x.label, PLACE_LABEL_MAX) || '', placeId, uses: count(x.uses) || 0 } : null;
+  }).filter(Boolean);
+}
+
+/**
+ * `place` of POST parse / POST tasks — the place a line of the quick entry names → { via, word, query, key, label, title,
+ * certain, trigger, place (decided already: one of „Meine Orte“, a place of the family, or null), uses, options, search }
+ * or null (the line names none, an older plugin).
+ */
+function normalizePlaceSuggest(v) {
+  const o = obj(v);
+  if (!o || !PLACE_VIA.includes(o.via)) return null;
+  const one = (x) => (obj(x) && x.familyId != null ? normalizeFamilyPlace(x) : normalizePlace(x));
+  return {
+    via: o.via, word: line(o.word, 120), query: line(o.query, PLACE_QUERY_MAX), key: placeKeyOf(o.key), label: line(o.label, PLACE_QUERY_MAX),
+    title: line(o.title, TITLE_MAX), certain: bool(o.certain), trigger: o.trigger === 'exit' ? 'exit' : 'enter', place: one(o.place),
+    uses: count(o.uses) || 0, options: arr(o.options).slice(0, 20).map(normalizePlace).filter(Boolean), search: searchStateOf(o.search),
+  };
+}
+
+/**
+ * POST places/search → { key, label, kind, radiusKm, results: [{ ref, name, address, lat, lon, distanceM, minutes, placeId,
+ * fav, uses }], any, approx, attribution }. Distance and minutes are counted from the place the search was made near.
+ */
+function normalizePlaceSearch(v) {
+  const o = obj(v) || {};
+  return {
+    key: placeKeyOf(o.key), label: line(o.label, PLACE_QUERY_MAX), kind: ['kind', 'name', 'address'].includes(o.kind) ? o.kind : 'name',
+    radiusKm: Number.isFinite(o.radiusKm) && o.radiusKm > 0 ? Math.min(o.radiusKm, 1000) : 15,
+    results: arr(o.results).slice(0, 20).map((r) => {
+      const x = obj(r);
+      const name = x && line(x.name, 120);
+      const lat = x ? coordOf(x.lat, 90) : null;
+      const lon = x ? coordOf(x.lon, 180) : null;
+      if (!name || lat === null || lon === null) return null;
+      return {
+        ref: typeof x.ref === 'string' && OSM_REF_RE.test(x.ref) ? x.ref : null, name, address: line(x.address, PLACE_ADDRESS_MAX) || '', lat, lon,
+        distanceM: roundOf(x.distanceM), minutes: roundOf(x.minutes), placeId: posId(x.placeId), fav: bool(x.fav), uses: count(x.uses) || 0,
+      };
+    }).filter(Boolean),
+    any: bool(o.any), approx: o.approx !== false, attribution: attributionOf(o.attribution),
+  };
+}
+
+/** `me.places` → what the page needs to know before it asks, or null (an older plugin). */
+function mePlacesOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const s = obj(o.search) || {};
+  const r = obj(o.radius) || {};
+  return {
+    search: {
+      state: searchStateOf(s.state), enabled: bool(s.enabled), mine: s.mine !== false, service: ['off', 'osm', 'own'].includes(s.service) ? s.service : 'off',
+      radiusKm: Number.isFinite(s.radiusKm) && s.radiusKm > 0 ? Math.min(s.radiusKm, 1000) : 15, attribution: attributionOf(s.attribution),
+    },
+    nearby: o.nearby !== false, quiet: quietOf(o.quiet), perTask: count(o.perTask) || 0,
+    radius: { min: radiusOf(r.min) || PLACE_RADIUS.min, max: radiusOf(r.max) || PLACE_RADIUS.max, default: radiusOf(r.default) || PLACE_RADIUS.default },
+    family: bool(o.family),
+  };
+}
+
 /** `meta` of an item: flat, strings ≤ 120 / numbers / booleans (contract § 2). */
 function metaOf(v) {
   const o = obj(v);
@@ -216,6 +385,8 @@ function normalizeTask(v) {
     reminder: reminderOf(o.reminder), snoozed: bool(o.snoozed), missedReminder: bool(o.missedReminder), calendar: calendarOf(o.calendar),
     // plugin 1.4.0 — null without a list, and when the person does not see the list
     attachedList: attachedListOf(o.attachedList),
+    // plugin 1.5.0 — null without a place; the phone of the person the task belongs to watches it, never this PC
+    place: taskPlaceOf(o.place),
   };
   // GET tasks/<id>: the details
   if (typeof o.note === 'string') t.note = text(o.note, NOTE_MAX);
@@ -519,7 +690,11 @@ function normalizePrefs(v) {
   for (const [k, x] of Object.entries(obj(o.groups) || {}).slice(0, 500)) {
     if (/^[a-z0-9-]{1,60}\|[A-Za-z0-9:._-]{1,80}$/.test(k) && ['private', 'work', 'hide'].includes(x)) groups[k] = x;
   }
-  return { area: areaOf(o.area) || 'private', evening: timeOf(o.evening) || '18:00', sources, groups, times: t };
+  const out = { area: areaOf(o.area) || 'private', evening: timeOf(o.evening) || '18:00', sources, groups, times: t };
+  // plugin 1.5.0: the person's switches of places (an older plugin has none)
+  const pl = obj(o.places);
+  if (pl) out.places = { search: pl.search !== false, nearby: pl.nearby !== false, quiet: quietOf(pl.quiet) };
+  return out;
 }
 
 /** GET me */
@@ -542,6 +717,8 @@ function normalizeMe(v) {
     // plugin 1.4.0: the symbols a list may carry, what Familie adds to the shopping lists
     listIcons: arr(o.listIcons).map(iconOf).filter(Boolean).slice(0, 40),
     shopping: obj(o.shopping) ? { family: { available: bool(fam && fam.available), bound: bool(fam && fam.bound), parent: bool(fam && fam.parent) } } : null,
+    // plugin 1.5.0: is the place search on (the one field to ask: places.search.state), the hints on the way, the radius
+    places: mePlacesOf(o.places),
   };
 }
 
@@ -722,6 +899,52 @@ function taskPatch(p) {
   // plugin 1.4.0 (`taskList`): the shopping list a task carries — its number (null takes it off) or its text id
   if (o.attachedListId !== undefined) { if (o.attachedListId !== null && !posId(o.attachedListId)) return null; b.attachedListId = o.attachedListId; }
   else if (o.attachedListUid !== undefined) { if (o.attachedListUid === null) b.attachedListId = null; else if (!shopIdOf(o.attachedListUid)) return null; else b.attachedListUid = o.attachedListUid; }
+  // plugin 1.5.0 (`places`): the place a task hangs on (null takes it off)
+  if (o.place !== undefined) { const pl = placeArg(o.place); if (pl === undefined) return null; b.place = pl; }
+  return b;
+}
+
+/**
+ * `place` of POST / PATCH tasks as the renderer may send it → null (no place) | the object | undefined (a part is wrong):
+ * { placeId } (one of „Meine Orte“) | { familyId } (a place of the family) | { ref?, name, address?, lat, lon, radius? }
+ * (a hit of the search unchanged; without ref a point) | { any: true, key } („Jeder Lidl“) | { trigger } alone; each with
+ * trigger?, key? (null deletes it), label?, remember? (the place becomes the remembered one for `key`).
+ */
+function placeArg(v) {
+  if (v === null) return null;
+  const o = obj(v);
+  if (!o) return undefined;
+  const b = {};
+  if (o.trigger !== undefined) { if (!PLACE_TRIGGERS.includes(o.trigger)) return undefined; b.trigger = o.trigger; }
+  if (o.key !== undefined) { if (o.key !== null && !placeKeyOf(o.key)) return undefined; b.key = o.key; }
+  if (o.label !== undefined && o.label !== null) { const l = line(o.label, PLACE_LABEL_MAX); if (!l) return undefined; b.label = l; }
+  let concrete = false;
+  if (o.any === true) {
+    if (!b.key) return undefined;
+    b.any = true;
+  } else if (o.placeId != null) {
+    if (!posId(o.placeId)) return undefined;
+    b.placeId = o.placeId;
+    concrete = true;
+  } else if (o.familyId != null) {
+    if (!familyIdOf(o.familyId)) return undefined;
+    b.familyId = o.familyId;
+  } else if (o.lat !== undefined || o.lon !== undefined || o.name !== undefined || o.ref != null) {
+    const name = line(o.name, PLACE_NAME_MAX);
+    const lat = coordOf(o.lat, 90);
+    const lon = coordOf(o.lon, 180);
+    if (!name || lat === null || lon === null) return undefined;
+    if (o.ref != null) { if (typeof o.ref !== 'string' || !OSM_REF_RE.test(o.ref)) return undefined; b.ref = o.ref; }
+    Object.assign(b, { name, lat, lon });
+    const address = line(o.address, PLACE_ADDRESS_MAX);
+    if (address) b.address = address;
+    if (o.radius !== undefined && o.radius !== null) { if (!Number.isFinite(o.radius) || o.radius < PLACE_RADIUS.min || o.radius > PLACE_RADIUS.max) return undefined; b.radius = Math.round(o.radius); }
+    concrete = true;
+  } else if (b.trigger === undefined && b.key === undefined) return undefined;
+  if (o.remember !== undefined && o.remember !== null && o.remember !== false) {
+    if (o.remember !== true || !b.key || !concrete) return undefined;
+    b.remember = true;
+  }
   return b;
 }
 
@@ -741,6 +964,12 @@ function taskCreate(p) {
   if (o.attachedListId !== undefined && o.attachedListId !== null) { if (!posId(o.attachedListId)) return null; b.attachedListId = o.attachedListId; }
   else if (o.attachedListUid !== undefined && o.attachedListUid !== null) { if (!shopIdOf(o.attachedListUid)) return null; b.attachedListUid = o.attachedListUid; }
   else if (o.attach !== undefined && o.attach !== null) { if (o.attach !== 'auto') return null; b.attach = 'auto'; }
+  // plugin 1.5.0: the place, or `place: 'auto'` — the server sets it when the line's place is decided and surely meant.
+  // null means "no place" for a new task: nothing is sent (without the field the server never sets one by itself)
+  if (o.place !== undefined && o.place !== null) {
+    if (o.place === 'auto') b.place = 'auto';
+    else { const pl = placeArg(o.place); if (!pl) return null; b.place = pl; }
+  }
   return { ...b, ...rest };
 }
 
@@ -827,6 +1056,75 @@ function assignArg(p) {
   return b;
 }
 
+/** POST places { name, lat, lon, address?, radius?, ref? } — a new one of „Meine Orte“ → the body, or null. */
+function placeCreate(p) {
+  const o = obj(p);
+  const b = o && placePatch({ name: o.name, lat: o.lat, lon: o.lon, address: o.address, radius: o.radius });
+  if (!b || !b.name || b.lat === undefined || b.lon === undefined) return null;
+  if (o.ref != null) { if (typeof o.ref !== 'string' || !OSM_REF_RE.test(o.ref)) return null; b.ref = o.ref; }
+  return b;
+}
+
+/** PATCH places/<id> { name?, address?, lat?, lon?, radius?, named? } → the body, or null when a part is wrong. */
+function placePatch(p) {
+  const o = obj(p);
+  if (!o) return null;
+  const b = {};
+  if (o.name !== undefined) { const n = line(o.name, PLACE_NAME_MAX); if (!n) return null; b.name = n; }
+  if (o.address !== undefined && o.address !== null) { if (typeof o.address !== 'string') return null; b.address = line(o.address, PLACE_ADDRESS_MAX) || ''; }
+  if (o.lat !== undefined) { if (coordOf(o.lat, 90) === null) return null; b.lat = o.lat; }
+  if (o.lon !== undefined) { if (coordOf(o.lon, 180) === null) return null; b.lon = o.lon; }
+  if (o.radius !== undefined && o.radius !== null) { if (!Number.isFinite(o.radius) || o.radius < PLACE_RADIUS.min || o.radius > PLACE_RADIUS.max) return null; b.radius = Math.round(o.radius); }
+  if (o.named !== undefined && o.named !== null) { if (typeof o.named !== 'boolean') return null; b.named = o.named; }
+  return b;
+}
+
+/** PUT places/favs { key, placeId | null } → the body, or null. */
+function favArg(p) {
+  const o = obj(p);
+  if (!o || !placeKeyOf(o.key) || (o.placeId !== null && !posId(o.placeId))) return null;
+  return { key: o.key, placeId: o.placeId };
+}
+
+/**
+ * POST places/search as a PC may ask: { key, label? } (of POST parse) or { q, address? } (2…80 characters), near one of
+ * the person's places — { nearPlaceId } or { nearFamilyId }; only an address may be searched without one. A position
+ * (`near { lat, lon }`) is never sent: this PC has none. → the body, or null.
+ */
+function placeSearchArg(p) {
+  const o = obj(p);
+  if (!o) return null;
+  const b = {};
+  if (o.key != null) {
+    if (!placeKeyOf(o.key)) return null;
+    b.key = o.key;
+    const l = line(o.label, PLACE_LABEL_MAX);
+    if (l) b.label = l;
+  } else {
+    const q = line(o.q, PLACE_QUERY_MAX);
+    if (!q || q.length < 2 || (typeof o.q === 'string' && o.q.trim().length > PLACE_QUERY_MAX)) return null;
+    b.q = q;
+    if (o.address === true) b.address = true;
+  }
+  if (o.nearPlaceId != null) { if (!posId(o.nearPlaceId)) return null; b.nearPlaceId = o.nearPlaceId; }
+  else if (o.nearFamilyId != null) { if (!familyIdOf(o.nearFamilyId)) return null; b.nearFamilyId = o.nearFamilyId; }
+  else if (b.address !== true) return null;
+  return b;
+}
+
+/** `places` of PUT prefs { search?, nearby?, quiet?: { from, to } | null } → the part, or null when it is wrong or empty. */
+function placePrefsArg(p) {
+  const o = obj(p);
+  if (!o) return null;
+  const b = {};
+  for (const k of ['search', 'nearby']) if (o[k] !== undefined) { if (typeof o[k] !== 'boolean') return null; b[k] = o[k]; }
+  if (o.quiet !== undefined) {
+    if (o.quiet === null) b.quiet = null;
+    else { const q = quietOf(o.quiet); if (!q) return null; b.quiet = q; }
+  }
+  return Object.keys(b).length ? b : null;
+}
+
 function nameArg(v) {
   return line(v, NAME_MAX);
 }
@@ -890,7 +1188,9 @@ function toggleCheck(md, lineNo, done) {
  * pressed: 'done_ask' and 'move' — which GateControl sends as a portal link, the plugin has no app tab — are answered
  * by the page (`action`), every other button stays what it is (`action: null`). A reminder of a task with a shopping
  * list (plugin 1.4.0, data.notizen.attachedList): its button „Liste öffnen“ ('open_list') → { kind: 'shopping', uid,
- * listId, taskId } — the list to tick off; a click on the message itself stays the task.
+ * listId, taskId } — the list to tick off; a click on the message itself stays the task. „… möchte dich erinnern“
+ * (plugin 1.5.0, data.notizen.kind 'place_consent') opens the task, where the place is accepted or declined; its
+ * buttons are callbacks the notification center answers itself.
  */
 function pushTarget(topic, data, actionId = null) {
   if (typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
@@ -916,7 +1216,7 @@ function pushTarget(topic, data, actionId = null) {
 /** The live event `changed` { what } → the kinds that changed. */
 function changedOf(data) {
   const d = obj(data) || {};
-  const all = ['tasks', 'notes', 'items', 'lists', 'notebooks', 'shopping'];
+  const all = ['tasks', 'notes', 'items', 'lists', 'notebooks', 'shopping', 'places'];
   const what = arr(d.what).filter((w) => all.includes(w));
   return { what: what.length ? [...new Set(what)] : all };
 }
@@ -932,6 +1232,8 @@ module.exports = {
   SHOP_OPS, SHOP_OPS_MAX, SHOP_NAME_MAX, SHOP_TEXT_MAX, SHOP_QTY_MAX,
   line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf, shopIdOf, isoOf,
   normalizeShopList, normalizeShopItem, normalizeShopping, normalizeOpsAnswer, normalizeAttach, shopOp, shopOps, assignArg,
+  PLACE_RADIUS, PLACE_TRIGGERS, placeKeyOf, familyIdOf, normalizePlace, normalizeFamilyPlace, normalizePlaces, normalizeFavs, normalizePlaceSuggest,
+  normalizePlaceSearch, placeArg, placeCreate, placePatch, favArg, placeSearchArg, placePrefsArg,
   normalizeTask, normalizeItem, normalizeEntry, normalizeList, normalizeGroup, normalizeNotebook, normalizeNoteSummary, normalizeNote,
   normalizeAttachment, normalizeYesterday, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,
   normalizeParsed, normalizeJob, normalizeMsAccounts, normalizeMsPreview, normalizeConsent, normalizeMsLinks, normalizeVault,

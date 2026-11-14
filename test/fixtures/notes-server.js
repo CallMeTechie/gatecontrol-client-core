@@ -17,11 +17,19 @@
 // open item of a list is ticked —, nav.shopping, me.shopping, PUT shopping/lists/<uid>/family, POST …/going, …/assign;
 // PATCH / DELETE lists/<n> and PUT lists/<n>/members with a shopping list's number), a task's `attachedList`
 // (attachedListId / attachedListUid, `attach: 'auto'`) and `attach` of POST parse; without them: 404, fields passed over.
+// With the 1.5.0 words (STAGE3: places, placeSearch — not in the default either): a task's `place` (one place or
+// „Jeder Lidl“, on arriving / leaving, consent), `place` of POST / PATCH tasks and of POST parse (a small table of the
+// plugin's words: Baumarkt, Bäcker, Apotheke, Tankstelle, Supermarkt; „bei <Name>“; „zu Hause“; an own place by its
+// name; an address), GET / POST / PATCH / DELETE places, PUT places/favs, POST places/search (a fixed catalogue; 403
+// module_off while state.placeCfg.mode is 'off' or the person switched it off, 503 while state.placeCfg.down),
+// POST tasks/<id>/place/consent, me.places, prefs.places. POST places/watch and POST places/fired are the phone's:
+// the fake has neither, and state.requests shows that a Windows app never asks for them.
 //
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
 //   requests …), srv.addTask({ id, listId, title, due, … }), srv.addShopList({ id, name, icon?, area?, family?, role?,
-//   members?, items: [{ id?, text, qty?, checked? }] }), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
+//   members?, items: [{ id?, text, qty?, checked? }] }), srv.addPlace({ name, address?, lat, lon, radius?, named?, ref?, fav? }),
+//   srv.setTaskPlace(taskId, { placeId | any, key?, label?, trigger?, by?, who?, consent? }), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -49,6 +57,7 @@ const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 const FEATURES = ['tasks', 'notes', 'sources', 'vault', 'mstodo', 'dsnote', 'search', 'quickparse', 'attachments', 'ocrText'];
 const STAGE1 = ['reminderActions', 'yesterdayOpen', 'taskCalendar'];
 const STAGE2 = ['shoppingLists', 'taskList', 'familyShopping'];
+const STAGE3 = ['places', 'placeSearch'];
 const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
@@ -114,7 +123,15 @@ async function notesServer({
     shopItems: new Map(),     // id → { id, list (uid), text, qty, checked, checkedBy, updatedAt, deleted, seq }
     attached: new Map(),      // task id → the number of the shopping list it carries
     shopFamily: { available: true, bound: true, parent: true }, shopSeq: 0, going: [], assigned: [],
+    // plugin 1.5.0
+    places: new Map(),        // id → { id, userId, name, address, lat, lon, radius, named, ref, deleted, updatedAt }
+    picks: new Map(),         // `${key}|${placeId}` → { key, placeId, uses, fav }
+    taskPlace: new Map(),     // task id → { placeId, key, label, any, trigger, by, who, consent }
+    familyPlaces: [{ id: 'home', name: 'Zuhause', lat: 52.5203, lon: 13.4051, radius: 150 }, { id: 'place:3', name: 'Schule', lat: 52.5301, lon: 13.4101, radius: 300 }],
+    placeCfg: { mode: 'osm', down: false },   // the administrator's choice (off | osm | own); down: the map service does not answer
+    placeSearches: [],        // the bodies of POST places/search
   };
+  if (features.includes('places')) state.prefs.places = { search: true, nearby: true, quiet: { from: '21:00', to: '07:00' } };
   const has = (f) => state.features.includes(f);
   // lists, tasks
   const list = (o) => { const l = { color: null, icon: null, isDefault: false, ownerId: 1, members: [1], groupId: null, position: 0, ext: null, ...o }; state.lists.set(l.id, l); return l; };
@@ -322,6 +339,162 @@ async function notesServer({
     return { via, ...(via === 'word' ? { word } : {}), list: out.length === 1 ? out[0] : null, lists: out };
   }
 
+  // ── 1.5.0: places ──────────────────────────────────────────
+  const KIND_LABEL = { 'kind:diy': 'Baumarkt', 'kind:bakery': 'Bäcker', 'kind:pharmacy': 'Apotheke', 'kind:fuel': 'Tankstelle', 'kind:supermarket': 'Supermarkt' };
+  const KIND_WORDS = { baumarkt: 'kind:diy', 'bäcker': 'kind:bakery', 'bäckerei': 'kind:bakery', apotheke: 'kind:pharmacy', tankstelle: 'kind:fuel', supermarkt: 'kind:supermarket' };
+  const POI = {
+    'kind:diy': [{ ref: 'osm:W101', name: 'Baumarkt Nord', address: 'Industriestraße 4, Berlin', lat: 52.539, lon: 13.424 }, { ref: 'osm:W102', name: 'Baumarkt am Ring', address: 'Ringstraße 21, Berlin', lat: 52.501, lon: 13.362 },
+      { ref: 'osm:W103', name: 'Baumarkt Süd', address: 'Am Hafen 2, Berlin', lat: 52.455, lon: 13.47 }],
+    'name:lidl': [{ ref: 'osm:N201', name: 'Lidl Marktstraße', address: 'Marktstraße 3, Berlin', lat: 52.526, lon: 13.401 }, { ref: 'osm:N202', name: 'Lidl Bahnhofsplatz', address: 'Bahnhofsplatz 1, Berlin', lat: 52.511, lon: 13.435 }],
+    'kind:bakery': [{ ref: 'osm:N301', name: 'Bäckerei am Markt', address: 'Marktplatz 1, Berlin', lat: 52.522, lon: 13.412 }],
+  };
+  const ADDRESSES = [{ ref: 'osm:W900', name: 'Ringstraße 21', address: 'Ringstraße 21, 10115 Berlin', lat: 52.5012, lon: 13.3621 }, { ref: 'osm:W901', name: 'Gartenweg 5', address: 'Gartenweg 5, 12345 Musterstadt', lat: 52.4, lon: 13.2 }];
+  const ATTRIBUTION = { text: '© OpenStreetMap', url: 'https://www.openstreetmap.org/copyright' };
+  const KEY_RE = /^(?:kind:[a-z]{2,20}|name:[^\u0000-\u001f\u007f]{2,40})$/;
+  const OSM_RE = /^osm:[NWR]\d{1,18}$/;
+  const ADDRESS_RE = /(?:^|\s)(\p{Lu}[\p{L}.-]*(?:straße|str\.|weg|platz|allee|gasse)\s+\d+[a-z]?)(?=$|[\s,.])/u;
+  const validKey = (k) => typeof k === 'string' && KEY_RE.test(k) && (!k.startsWith('kind:') || !!KIND_LABEL[k]);
+  const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+  const labelOf = (key, as) => (key.startsWith('kind:') ? KIND_LABEL[key] : as || cap(key.slice(5)));
+  const famPlaces = () => (has('places') ? state.familyPlaces : []);
+  const myPlaces = () => [...state.places.values()].filter((r) => r.userId === me() && !r.deleted);
+  const favsOf = () => [...state.picks.values()].filter((k) => k.fav && myPlaces().some((r) => r.id === k.placeId));
+  const placeView = (r, extra = {}) => ({ id: r.id, name: r.name, address: r.address || '', lat: r.lat, lon: r.lon, radius: r.radius, named: !!r.named, ref: r.ref || null, family: !!(r.ref && r.ref.startsWith('familie:')),
+    ...(extra.favFor ? { favFor: extra.favFor } : {}), ...(extra.uses != null ? { uses: extra.uses } : {}), updatedAt: r.updatedAt });
+  const minePlace = (pid) => { const r = state.places.get(posInt(pid)); if (!r || r.deleted || r.userId !== me()) throw fail(404, 'not_found', { field: 'place' }); return r; };
+  const clampRadius = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(50, Math.min(2000, n)) : 150; };
+  const coord = (v, max, field) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > max) throw fail(400, 'invalid', { field }); return Math.round(v * 1e6) / 1e6; };
+  const searchState = () => (state.placeCfg.mode === 'off' || (state.prefs.places && state.prefs.places.search === false) ? 'off' : state.placeCfg.mode === 'own' && state.placeCfg.down ? 'unavailable' : 'on');
+  const placesAll = () => {
+    const favs = favsOf();
+    const favFor = (pid) => favs.filter((k) => k.placeId === pid).map((k) => ({ key: k.key, label: labelOf(k.key) }));
+    return {
+      places: myPlaces().filter((r) => r.named || favFor(r.id).length).sort((x, y) => (y.named - x.named) || x.name.localeCompare(y.name)).map((r) => placeView(r, { favFor: favFor(r.id) })),
+      family: famPlaces().map((f) => ({ familyId: f.id, name: f.name, lat: f.lat, lon: f.lon, radius: f.radius })),
+      favs: favs.map((k) => ({ key: k.key, label: labelOf(k.key), placeId: k.placeId, uses: k.uses })),
+    };
+  };
+  /** The person's row for a place taken once (a search hit, a point, a place of the family) — found again by its ref. */
+  function upsertPlace(f) {
+    const have = f.ref ? myPlaces().find((r) => r.ref === f.ref) : null;
+    if (have) return have.id;
+    const r = { id: id(), userId: me(), name: f.name, address: f.address || '', lat: f.lat, lon: f.lon, radius: f.radius, named: !!f.named, ref: f.ref || null, deleted: false, updatedAt: state.now };
+    state.places.set(r.id, r);
+    return r.id;
+  }
+  const chosenFor = (key) => [...state.picks.values()].filter((k) => k.key === key && myPlaces().some((r) => r.id === k.placeId)).sort((x, y) => (y.fav - x.fav) || (y.uses - x.uses));
+  /** Task.place of a task → the object or null. */
+  function taskPlaceView(x) {
+    const j = state.taskPlace.get(x.id);
+    if (!j || x.parentId) return null;
+    const r = j.placeId ? state.places.get(j.placeId) : null;
+    if (!j.any && !r) return null;
+    const label = j.key ? labelOf(j.key, j.label) : null;
+    return {
+      mode: j.any ? 'any' : 'place', id: r ? r.id : null, name: r ? r.name : `Jeder ${label}`, address: r ? r.address || '' : '', lat: r ? r.lat : null, lon: r ? r.lon : null, radius: r ? r.radius : null,
+      ref: r ? r.ref || null : null, own: !!(r && r.named && r.userId === me()), trigger: j.trigger === 'exit' ? 'exit' : 'enter', key: j.key || null, label, by: j.by || null,
+      consent: j.consent || 'accepted', watch: j.who === me() && (j.consent || 'accepted') === 'accepted', nearby: !!j.key && j.trigger !== 'exit' && !j.any, skipped: 0, later: null,
+    };
+  }
+  /** `place` of POST / PATCH tasks for task `x` (the plugin's places.argFor): written into state.taskPlace. */
+  function setTaskPlace(x, v) {
+    const was = state.taskPlace.get(x.id) || null;
+    if (v === null) { state.taskPlace.delete(x.id); return; }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw fail(400, 'invalid', { field: 'place' });
+    const trigger = v.trigger !== undefined ? v.trigger : (was ? was.trigger : 'enter');
+    if (!['enter', 'exit'].includes(trigger)) throw fail(400, 'invalid', { field: 'place.trigger' });
+    let key = was ? was.key || null : null;
+    if (v.key !== undefined) { if (v.key !== null && !validKey(v.key)) throw fail(400, 'invalid', { field: 'place.key' }); key = v.key; }
+    let placeId = was ? was.placeId || null : null;
+    let any = !!(was && was.any);
+    if (v.any === true) {
+      if (!key) throw fail(400, 'invalid', { field: 'place.key' });
+      placeId = null; any = true;
+    } else if (v.placeId != null) { placeId = minePlace(v.placeId).id; any = false; } else if (v.familyId != null) {
+      const f = famPlaces().find((q) => q.id === v.familyId);
+      if (!f) throw fail(404, 'not_found', { field: 'place' });
+      placeId = upsertPlace({ ref: `familie:${f.id}`, name: f.name, address: '', lat: f.lat, lon: f.lon, radius: f.radius });
+      any = false;
+    } else if (v.lat !== undefined || v.lon !== undefined) {
+      if (typeof v.name !== 'string' || !v.name.trim()) throw fail(400, 'invalid', { field: 'place.name' });
+      if (v.ref != null && (typeof v.ref !== 'string' || !OSM_RE.test(v.ref))) throw fail(400, 'invalid', { field: 'place.ref' });
+      placeId = upsertPlace({ ref: v.ref || null, name: v.name.trim().slice(0, 80), address: v.address || '', lat: coord(v.lat, 90, 'place.lat'), lon: coord(v.lon, 180, 'place.lon'), radius: v.radius === undefined ? 150 : clampRadius(v.radius) });
+      any = false;
+    } else if (!was) throw fail(400, 'invalid', { field: 'place' });
+    if (v.remember === true && (!key || !placeId)) throw fail(400, 'invalid', { field: 'place.remember' });
+    const fresh = !was || (was.placeId || null) !== placeId || !!was.any !== any;
+    const who = x.assigneeId || x.by || 1;
+    // another place asks anew; only the trigger changes nothing
+    const consent = fresh ? (who === me() ? 'accepted' : 'pending') : was.consent;
+    state.taskPlace.set(x.id, { placeId, key, label: key ? labelOf(key, typeof v.label === 'string' ? v.label.slice(0, 40) : was && was.key === key ? was.label : null) : null, any, trigger, by: fresh ? me() : was.by, who, consent });
+    if (key && placeId) {
+      const pk = `${key}|${placeId}`;
+      const k = state.picks.get(pk) || { key, placeId, uses: 0, fav: false };
+      if (fresh) k.uses++;
+      if (v.remember === true) { for (const o of state.picks.values()) if (o.key === key) o.fav = false; k.fav = true; }
+      state.picks.set(pk, k);
+    }
+  }
+  /** The place a line names (the plugin's placewords.detect, a small part of it) → the suggestion or null. */
+  function placeSuggest(title) {
+    const s2 = String(title || '');
+    if (!has('places') || !s2.trim()) return null;
+    const PREP = '(?:beim|bei|im|in der|an der|am|zum|zur|zu)';
+    const escRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const find = (re) => { const m = re.exec(s2); if (!m) return null; const from = m.index + m[0].indexOf(m[1]); return { m, from, to: from + m[1].length, word: m[1] }; };
+    const without = (h) => { const rest = `${s2.slice(0, h.from)} ${s2.slice(h.to)}`.replace(/\s+/g, ' ').trim(); return rest.split(' ').length >= 2 ? rest : s2.trim(); };
+    const out = (h, o) => ({ via: o.via, word: h.word, query: o.query, key: o.key || null, label: o.label, title: without(h), certain: o.certain, trigger: 'enter', place: o.place || null, uses: o.uses || 0, options: o.options || [], search: searchState() });
+    for (const r of myPlaces().filter((q) => q.named)) {
+      const h = find(new RegExp(`(?:^|\\s)(${PREP}\\s+${escRe(r.name)})(?=$|[\\s,.])`, 'iu'));
+      if (h) return out(h, { via: 'own', query: r.name, label: r.name, certain: true, place: placeView(r) });
+    }
+    const home = famPlaces().find((f) => f.id === 'home');
+    const hh = home ? find(/(?:^|\s)(zu hause|zuhause|daheim|at home)(?=$|[\s,.])/iu) : null;
+    if (hh) return out(hh, { via: 'family', query: home.name, label: home.name, certain: true, place: { familyId: home.id, name: home.name, address: '', lat: home.lat, lon: home.lon, radius: home.radius, family: true } });
+    const ha = find(ADDRESS_RE);
+    if (ha) return out(ha, { via: 'address', query: ha.word, label: ha.word, certain: true });
+    const decided = (key) => { const list = chosenFor(key); const options = list.map((k) => placeView(state.places.get(k.placeId), { uses: k.uses })); return list.length && list[0].fav ? { options, place: options[0], uses: list[0].uses } : { options }; };
+    const hk = find(new RegExp(`(?:^|\\s)((?:(${PREP}|an der|in der)\\s+)?(${Object.keys(KIND_WORDS).join('|')}))(?=$|[\\s,.])`, 'iu'));
+    if (hk) { const key = KIND_WORDS[hk.m[3].toLowerCase()]; return out(hk, { via: 'kind', query: KIND_LABEL[key], key, label: KIND_LABEL[key], certain: !!hk.m[2], ...decided(key) }); }
+    const hn = find(new RegExp(`(?:^|\\s)((${PREP})\\s+(\\p{Lu}[\\p{L}\\d-]+))(?=$|[\\s,.])`, 'u'));
+    if (hn) { const key = `name:${hn.m[3].toLowerCase()}`; return out(hn, { via: 'name', query: cap(hn.m[3]), key, label: cap(hn.m[3]), certain: /^bei/i.test(hn.m[2]), ...decided(key) }); }
+    return null;
+  }
+  const metres = (a, b) => { const rad = Math.PI / 180; const x = (b.lon - a.lon) * rad * Math.cos(((a.lat + b.lat) / 2) * rad); const y = (b.lat - a.lat) * rad; return Math.round(Math.sqrt(x * x + y * y) * 6371000); };
+  /** POST places/search (the plugin's places.find over a fixed catalogue). */
+  function placeSearch(b) {
+    state.placeSearches.push(b);
+    const st = searchState();
+    if (st === 'off') throw fail(403, 'module_off', { reason: state.placeCfg.mode === 'off' ? 'admin' : 'self' });
+    if (st !== 'on' || state.placeCfg.down) throw fail(503, 'unavailable', { reason: 'service' });
+    let key = null;
+    let address = null;
+    if (b.key != null) { if (!validKey(b.key)) throw fail(400, 'invalid', { field: 'key' }); key = b.key; } else {
+      const q = typeof b.q === 'string' ? b.q.trim().slice(0, 80) : '';
+      if (q.length < 2) throw fail(400, 'invalid', { field: 'q' });
+      if (b.address === true || ADDRESS_RE.test(q)) address = q;
+      else key = KIND_WORDS[q.toLowerCase()] || `name:${q.toLowerCase()}`;
+    }
+    let near = b.near;
+    if (b.nearPlaceId != null) { const pl = minePlace(b.nearPlaceId); near = { lat: pl.lat, lon: pl.lon }; } else if (b.nearFamilyId != null) {
+      const f = famPlaces().find((q) => q.id === b.nearFamilyId);
+      if (!f) throw fail(404, 'not_found', { field: 'near' });
+      near = { lat: f.lat, lon: f.lon };
+    }
+    const cell = near && typeof near.lat === 'number' && typeof near.lon === 'number' ? { lat: Math.round(near.lat * 100) / 100, lon: Math.round(near.lon * 100) / 100 } : null;
+    if (!cell && !(address && near == null)) throw fail(400, 'invalid', { field: 'near' });
+    const hits = address ? ADDRESSES.filter((x) => x.address.toLowerCase().includes(address.toLowerCase().split(',')[0])) : POI[key] || [];
+    const before = key ? chosenFor(key) : [];
+    const results = hits.map((h) => {
+      const c = before.find((k) => state.places.get(k.placeId).ref === h.ref) || null;
+      const dist = cell ? metres(cell, h) : null;
+      return { ref: h.ref, name: h.name, address: h.address, lat: h.lat, lon: h.lon, distanceM: dist, minutes: dist == null ? null : Math.max(1, Math.round((dist * 1.3) / 500)), placeId: c ? c.placeId : null, fav: !!(c && c.fav), uses: c ? c.uses : 0 };
+    });
+    results.sort((x, y) => (y.fav - x.fav) || ((y.uses > 0) - (x.uses > 0)) || (x.distanceM - y.distanceM));
+    return { key, label: key ? labelOf(key, typeof b.label === 'string' ? b.label : typeof b.q === 'string' ? b.q.trim() : null) : address, kind: address ? 'address' : key.startsWith('kind:') ? 'kind' : 'name', radiusKm: 15, cell,
+      results: results.slice(0, 10), any: !!key && results.length > 0, approx: true, attribution: ATTRIBUTION };
+  }
+
   const overdueOf = (due, done) => !done && !!due && (due.time ? `${due.date} ${due.time}` < `${state.today} ${state.time}` : due.date < state.today);
   const taskView = (x, full = false) => {
     const subs = [...state.tasks.values()].filter((s) => s.parentId === x.id && !s.deleted);
@@ -341,6 +514,7 @@ async function notesServer({
       v.missedReminder = state.missed.has(x.id);
     }
     if (has('taskList')) v.attachedList = x.parentId ? null : attachedOf(x);
+    if (has('places')) v.place = taskPlaceView(x);
     if (has('taskCalendar')) {
       const c = state.calendar;
       v.calendar = c.available && c.enabled && c.mine && x.due && x.due.time && !x.doneAt ? { state: 'synced', eventId: 900 + x.id, calendarId: 7, mine: true } : null;
@@ -555,10 +729,21 @@ async function notesServer({
       attach = suggest(b.text, parsed, a);
       if (attach && attach.list) carry = attach.list.id;
     }
+    // 1.5.0: the place — named, or (place: 'auto') the one the line names when it is decided and surely meant; never by
+    // itself. With a place the words of the place leave the title. An older plugin passes the field over in silence
+    let place = null;
+    let placeArg;
+    if (has('places') && b.place !== undefined && !b.parentId) {
+      place = typeof b.text === 'string' ? placeSuggest(title) : null;
+      if (b.place === 'auto') placeArg = place && place.place && place.certain ? (place.place.familyId ? { familyId: place.place.familyId, trigger: place.trigger } : { placeId: place.place.id, key: place.key || undefined, trigger: place.trigger }) : undefined;
+      else placeArg = b.place;
+      if (placeArg !== undefined && placeArg !== null && place) title = place.title;
+    }
     const x = task({ id: id(), listId, parentId: posInt(b.parentId), title: title.slice(0, 300), note: b.note || '', ...fields, updatedAt: state.now });
+    if (placeArg !== undefined && placeArg !== null) { try { setTaskPlace(x, placeArg); } catch (err) { state.tasks.delete(x.id); throw err; } }
     if (b.myDay) state.myDay.add(x.id);
     if (carry) state.attached.set(x.id, carry);
-    return { task: taskView(x, true), ...(parsed ? { parsed } : {}), ...(attach ? { attach } : {}) };
+    return { task: taskView(x, true), ...(parsed ? { parsed } : {}), ...(attach ? { attach } : {}), ...(place ? { place } : {}) };
   }
 
   function route(method, p, q, b) {
@@ -571,6 +756,10 @@ async function notesServer({
       return { user: state.user, lang: 'de', today: state.today, time: state.time, timezone: 'Europe/Berlin', features: state.features, prefs: state.prefs, sharing: 'all', vaults: state.vaultsOn, imports: state.imports, attachMB: 25, readOnly: false,
         ...(has('taskCalendar') ? { calendar: state.calendar } : {}), ...(has('yesterdayOpen') ? { yesterday: state.yesterdayPrefs } : {}),
         ...(has('shoppingLists') ? { listIcons: LIST_ICONS, shopping: { family: has('familyShopping') ? state.shopFamily : { available: false, bound: false, parent: false } } } : {}),
+        ...(has('places') ? { places: {
+          search: { state: searchState(), enabled: state.placeCfg.mode !== 'off', mine: state.prefs.places.search !== false, service: state.placeCfg.mode, radiusKm: 15, decimals: 2, attribution: ATTRIBUTION },
+          nearby: state.prefs.places.nearby !== false, quiet: state.prefs.places.quiet || null, perTask: 5, radius: { min: 50, max: 2000, default: 150 }, family: state.familyPlaces.length > 0,
+        } } : {}),
       };
     }
     if (is('GET', 1, 'nav')) {
@@ -598,7 +787,53 @@ async function notesServer({
     if (method === 'GET' && n === 2 && a === 'views') return view(x, area(q.area));
     if (is('POST', 1, 'parse')) {
       const parsed = Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people });
-      return { parsed, ...(has('taskList') ? { attach: suggest(b.text, parsed, area(b.area)) } : {}) };
+      return { parsed, ...(has('taskList') ? { attach: suggest(b.text, parsed, area(b.area)) } : {}), ...(has('places') ? { place: placeSuggest(parsed.title) } : {}) };
+    }
+    // 1.5.0: places (an older plugin has none of these routes). What a phone watches and what fired is not here
+    if (has('places')) {
+      if (is('GET', 1, 'places')) return placesAll();
+      if (is('POST', 1, 'places')) {
+        if (typeof b.name !== 'string' || !b.name.trim()) throw fail(400, 'invalid', { field: 'name' });
+        if (b.ref != null && (typeof b.ref !== 'string' || !OSM_RE.test(b.ref))) throw fail(400, 'invalid', { field: 'ref' });
+        if (myPlaces().length >= 100) throw fail(409, 'too_many');
+        const f = { name: b.name.trim().slice(0, 80), address: b.address || '', lat: coord(b.lat, 90, 'lat'), lon: coord(b.lon, 180, 'lon'), radius: b.radius === undefined ? 150 : clampRadius(b.radius), ref: b.ref || null, named: true };
+        const r = state.places.get(upsertPlace(f));
+        Object.assign(r, { name: f.name, named: true, updatedAt: state.now });
+        return { place: placeView(r, { favFor: [] }) };
+      }
+      if (method === 'PUT' && n === 2 && a === 'places' && x === 'favs') {
+        if (!validKey(b.key)) throw fail(400, 'invalid', { field: 'key' });
+        const pl = b.placeId == null ? null : minePlace(b.placeId);
+        for (const k of state.picks.values()) if (k.key === b.key) k.fav = false;
+        if (pl) { const pk = `${b.key}|${pl.id}`; state.picks.set(pk, { ...(state.picks.get(pk) || { key: b.key, placeId: pl.id, uses: 0 }), fav: true }); }
+        return { favs: placesAll().favs };
+      }
+      if (method === 'POST' && n === 2 && a === 'places' && x === 'search' && has('placeSearch')) return placeSearch(b);
+      if (method === 'PATCH' && n === 2 && a === 'places') {
+        const r = minePlace(x);
+        if (b.name !== undefined) { if (typeof b.name !== 'string' || !b.name.trim()) throw fail(400, 'invalid', { field: 'name' }); r.name = b.name.trim().slice(0, 80); }
+        if (b.address !== undefined) r.address = String(b.address || '');
+        if (b.lat !== undefined) r.lat = coord(b.lat, 90, 'lat');
+        if (b.lon !== undefined) r.lon = coord(b.lon, 180, 'lon');
+        if (b.radius !== undefined) r.radius = clampRadius(b.radius);
+        if (b.named !== undefined) r.named = !!b.named;
+        r.updatedAt = state.now;
+        return { place: placeView(r, { favFor: placesAll().favs.filter((k) => k.placeId === r.id).map((k) => ({ key: k.key, label: k.label })) }) };
+      }
+      if (method === 'DELETE' && n === 2 && a === 'places') {
+        const r = state.places.get(posInt(x));
+        if (r && r.userId === me() && r.deleted) return { gone: true };
+        minePlace(x).deleted = true;
+        return {};
+      }
+      if (method === 'POST' && n === 4 && a === 'tasks' && y === 'place' && z === 'consent') {
+        const r = accessTask(x);
+        const j = state.taskPlace.get(r.id);
+        if (!j) throw fail(400, 'invalid', { field: 'place' });
+        if (j.who !== me()) throw fail(403, 'forbidden');
+        j.consent = b.accept === false ? 'declined' : 'accepted';
+        return { consent: j.consent };
+      }
     }
     // 1.4.0: the shopping lists (an older plugin has none of these routes)
     if (has('shoppingLists')) {
@@ -663,6 +898,11 @@ async function notesServer({
       if (b.sources) for (const [k, v] of Object.entries(b.sources)) state.prefs.sources[k] = { ...(state.prefs.sources[k] || {}), ...v };
       if (b.groups) Object.assign(state.prefs.groups, b.groups);
       if (b.times) Object.assign(state.prefs.times, b.times);
+      if (b.places && has('places')) {
+        const pl = state.prefs.places;
+        for (const k of ['search', 'nearby']) if (typeof b.places[k] === 'boolean') pl[k] = b.places[k];
+        if (b.places.quiet !== undefined) { const q = b.places.quiet; pl.quiet = q && /^\d\d:\d\d$/.test(q.from) && /^\d\d:\d\d$/.test(q.to) && q.from !== q.to ? { from: q.from, to: q.to } : null; }
+      }
       return { prefs: state.prefs };
     }
     if (is('GET', 1, 'sources')) {
@@ -712,6 +952,7 @@ async function notesServer({
       const carry = attachArg(b);
       if (carry !== undefined) { if (carry) state.attached.set(r.id, carry); else state.attached.delete(r.id); }
       if (b.listId !== undefined && shopByNum(posInt(b.listId))) throw fail(400, 'invalid', { field: 'listId', reason: 'shopping' });
+      if (b.place !== undefined && has('places') && !r.parentId) setTaskPlace(r, b.place);
       for (const k of ['title', 'note', 'important', 'due', 'remindAt', 'repeat', 'assigneeId', 'listId', 'position']) {
         if (b[k] === undefined) continue;
         if (k === 'remindAt' && b[k] && typeof b[k] === 'object') r.remindAt = `${b[k].date}T${b[k].time}:00+01:00`;
@@ -733,6 +974,7 @@ async function notesServer({
         const nd = R.next(r.repeat, { due: r.due ? r.due.date : null, done: state.today });
         next = task({ ...r, id: id(), doneAt: null, due: { date: nd, time: r.due ? r.due.time : null } });
         if (state.attached.has(r.id)) state.attached.set(next.id, state.attached.get(r.id));
+        if (state.taskPlace.has(r.id)) state.taskPlace.set(next.id, { ...state.taskPlace.get(r.id) });
         r.repeat = null;
       }
       return { task: taskView(r), ...(next ? { next: taskView(next) } : {}) };
@@ -1091,10 +1333,21 @@ async function notesServer({
       });
       return { uid, num: l.num, items: ids };
     },
+    /** One of „Meine Orte“ → its row (`fav`: remembered for that key, `uses` times chosen). */
+    addPlace: ({ name, address = '', lat, lon, radius = 150, named = true, ref = null, fav = null, uses = 1 }) => {
+      const r = { id: id(), userId: 1, name, address, lat, lon, radius, named, ref, deleted: false, updatedAt: state.now };
+      state.places.set(r.id, r);
+      if (fav) state.picks.set(`${fav}|${r.id}`, { key: fav, placeId: r.id, uses, fav: true });
+      return r;
+    },
+    /** A task's place as someone set it: { placeId | any, key?, label?, trigger?, by?, who?, consent? }. */
+    setTaskPlace: (taskId, { placeId = null, any = false, key = null, label = null, trigger = 'enter', by = 1, who = 1, consent = null }) => {
+      state.taskPlace.set(taskId, { placeId, key, label, any, trigger, by, who, consent: consent || (by === who ? 'accepted' : 'pending') });
+    },
     get down() { return state.down; },
     set down(v) { state.down = !!v; },
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, noteMeta };

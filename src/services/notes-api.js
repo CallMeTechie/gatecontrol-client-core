@@ -17,6 +17,10 @@
  *   POST   shopping/lists/<uid>/going · POST shopping/lists/<uid>/assign { userId, dueAt?, notify? }
  *   POST   lists/<n>/restore (a deleted shopping list back from the trash — its owner, 30 days)
  *          (the shopping lists of the hub, plugin 1.4.0 — an older plugin answers 404)
+ *   GET|POST places · PATCH|DELETE places/<id> · PUT places/favs { key, placeId | null }
+ *   POST   places/search { key | q, address?, nearPlaceId | nearFamilyId } · POST tasks/<id>/place/consent { accept }
+ *          (places, plugin 1.5.0 — an older plugin answers 404. A PC watches no place: places/watch and places/fired
+ *          are the phone's and are not called here; a search never carries a position, only a place to search near)
  *   GET    items/<id> · POST items/<id>/complete · POST items/<id>/carry
  *   GET|POST notebooks · PATCH|DELETE notebooks/<id> · PUT notebooks/<id>/members
  *   GET|POST notes · GET|PATCH|DELETE notes/<id> · POST notes/<id>/check · POST notes/<id>/task
@@ -43,6 +47,7 @@ const { MessengerError: NotesError } = MessengerApi;
 const MAX_FILE_BYTES = 104857600;            // plugin.json media.maxBytes (100 MB)
 const IMAGE_MAX = 16 * 1024 * 1024;          // a picture shown in a note
 const IMPORT_TIMEOUT_MS = 120 * 1000;        // a batch of an import (the server copies attachments)
+const PLACE_SEARCH_TIMEOUT_MS = 45 * 1000;   // the server asks the map service one search after the other
 const MEDIA_URL_RE = /^\/plugin-media\/[A-Za-z0-9._~-]{10,600}$/;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
@@ -106,10 +111,13 @@ class NotesApi {
     return N.normalizeParsed(r.parsed);
   }
 
-  /** POST parse → what the parser made of the line and the shopping list it names ({ via, word, list, lists } | null, plugin 1.4.0). */
+  /**
+   * POST parse → what the parser made of the line, the shopping list it names ({ via, word, list, lists } | null, plugin
+   * 1.4.0) and the place it names ({ via, word, key, label, title, certain, place, options, search } | null, plugin 1.5.0).
+   */
   async suggest(text, area) {
     const r = await this.api('POST', 'parse', { body: { text, ...(area ? { area } : {}) } });
-    return { parsed: N.normalizeParsed(r.parsed), attach: N.normalizeAttach(r.attach) };
+    return { parsed: N.normalizeParsed(r.parsed), attach: N.normalizeAttach(r.attach), place: N.normalizePlaceSuggest(r.place) };
   }
 
   async people() { return N.normalizePeople(await this.api('GET', 'people')); }
@@ -152,7 +160,7 @@ class NotesApi {
 
   async createTask(body) {
     const r = await this.api('POST', 'tasks', { body });
-    return { task: N.normalizeTask(r.task), parsed: r.parsed ? N.normalizeParsed(r.parsed) : null, attach: N.normalizeAttach(r.attach) };
+    return { task: N.normalizeTask(r.task), parsed: r.parsed ? N.normalizeParsed(r.parsed) : null, attach: N.normalizeAttach(r.attach), place: N.normalizePlaceSuggest(r.place) };
   }
 
   async task(id) { return N.normalizeTask((await this.api('GET', `tasks/${this._id(id)}`)).task); }
@@ -213,6 +221,36 @@ class NotesApi {
   async shoppingAssign(uid, body) {
     const r = await this.api('POST', `shopping/lists/${this._uid(uid)}/assign`, { body });
     return { list: N.normalizeShopList(r.list), notified: N.count(r.notified) || 0 };
+  }
+
+  // ── places (plugin 1.5.0) ────────────────────────────────
+
+  /** GET places → { places („Meine Orte“), family (Zuhause, the rule places of Familie), favs (the remembered place per kind / name) } */
+  async places() { return N.normalizePlaces(await this.api('GET', 'places')); }
+
+  async _place(p) {
+    const place = N.normalizePlace((await p).place);
+    if (!place) throw new NotesError('bad place answer', { code: 'bad_response' });
+    return place;
+  }
+
+  createPlace(body) { return this._place(this.api('POST', 'places', { body })); }
+
+  updatePlace(id, body) { return this._place(this.api('PATCH', `places/${this._id(id)}`, { body })); }
+
+  /** DELETE places/<id> — tasks that hang on the place keep it; a second call answers `gone`. */
+  async deletePlace(id) { const r = await this.api('DELETE', `places/${this._id(id)}`); return { gone: r.gone === true }; }
+
+  async setPlaceFav(body) { return N.normalizeFavs((await this.api('PUT', 'places/favs', { body })).favs); }
+
+  /** POST places/search (utils/notes.js placeSearchArg: near one of the person's places — no position leaves this PC). */
+  async searchPlaces(body) { return N.normalizePlaceSearch(await this.api('POST', 'places/search', { body, timeout: PLACE_SEARCH_TIMEOUT_MS })); }
+
+  /** POST tasks/<id>/place/consent { accept } — the person whose phone is to watch the place → 'accepted' | 'declined' */
+  async placeConsent(id, accept) {
+    const r = await this.api('POST', `tasks/${this._id(id)}/place/consent`, { body: { accept: accept === true } });
+    if (r.consent !== 'accepted' && r.consent !== 'declined') throw new NotesError('bad consent answer', { code: 'bad_response' });
+    return r.consent;
   }
 
   async item(id) {
