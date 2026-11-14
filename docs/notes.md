@@ -15,7 +15,7 @@ The page "Notizen & Aufgaben" of the Pro app is the client of the plugin `gateco
 
 `src/vendor/notizen/` holds the plugin's `ui/quickparse.js`, `ui/repeat.js` and `ui/nsx.js` unchanged (the Pro app's
 renderer loads its own copies of the first two; a Pro test checks they are the same files). Tests:
-`test/notes-shopping.test.js` (plugin 1.4.0), `test/notes.test.js` (the plugin's frozen vectors of the quick entry, the repeat rules and the Tresor format; the service
+`test/notes-places.test.js` (plugin 1.5.0), `test/notes-shopping.test.js` (plugin 1.4.0), `test/notes.test.js` (the plugin's frozen vectors of the quick entry, the repeat rules and the Tresor format; the service
 against `test/fixtures/notes-server.js`, which the Pro app's e2e runs use too).
 
 Opening an item of another plugin (contract § 5): the Pro app maps Mail `message/<id>`, Drive `node/<id>` and Schule to
@@ -85,3 +85,49 @@ message itself, the other buttons and an older plugin stay what they were (`{ ki
 The Windows apps have no shopping list of the Familie plugin (the page „Familie“ shows „Internet zu Hause“, the rules
 and the presence), so there is nothing to move over on this side; the family's lists show under „Notizen & Aufgaben“
 once the hub owns them.
+
+## Plugin 1.5.0: a task at a place
+
+Told by `me.features` only (never by a version): `places`, `placeSearch`. An older plugin sends none of the fields; the
+service refuses the new calls — and a task body with `place`, a prefs patch with `places`, which an older plugin would
+pass over in silence — with `unsupported` before the server is asked.
+
+**A Windows PC watches no place.** The phone of the person the task belongs to holds the geofences and shows the
+reminder; `POST places/watch`, `POST places/fired`, `POST tasks/<id>/place/skip` and `…/later` are the phone's and are
+not called from here (there is no method for them). A PC shows the place and the trigger and lets both be changed.
+
+| What | Where |
+|---|---|
+| A task's `place` ({ mode: `place` / `any`, id, name, address, lat, lon, radius, ref, own, trigger: `enter` / `exit`, key, label, by, consent, watch, nearby, skipped, later } or null) | `normalizeTask` (`taskPlaceOf`) |
+| Writing it: `place` of `PATCH tasks/<id>` and `POST tasks` — null (take it off), `{ placeId }`, `{ familyId }`, a search hit unchanged (`{ ref, name, address, lat, lon }`; without `ref` a point), `{ any: true, key }` („Jeder Lidl“), `{ trigger }` alone; with `trigger?`, `key?`, `label?`, `remember?`. `POST tasks` also `place: 'auto'` | `placeArg`, `taskPatch`, `taskCreate` |
+| The suggestion of the quick entry: `place` of POST parse and POST tasks ({ via: own / family / kind / address / name, word, query, key, label, title, certain, trigger, place, uses, options, search }) | `normalizePlaceSuggest`, `parse()` → `{ parsed, attach, place }`, `createTask()` → `{ task, parsed, attach, place }` |
+| „Meine Orte“: `GET places` ({ places, family, favs }), `POST places`, `PATCH` / `DELETE places/<id>`, `PUT places/favs` | `normalizePlaces`, `normalizePlace`, `placeCreate`, `placePatch`, `favArg` — `places()`, `createPlace()`, `updatePlace()`, `deletePlace()`, `setPlaceFav()`; IPC `notes:places`, `notes:place:create` / `:update` / `:delete` / `:fav` |
+| The search: `POST places/search` | `placeSearchArg`, `normalizePlaceSearch` — `searchPlaces()`; IPC `notes:place:search` |
+| The consent for a place someone else set: `POST tasks/<id>/place/consent { accept }` | `placeConsent()`; IPC `notes:task:place:consent` |
+| `me.places` ({ search: { state, enabled, mine, service, radiusKm, attribution }, nearby, quiet, perTask, radius, family }), `prefs.places` ({ search, nearby, quiet }) | `normalizeMe`, `normalizePrefs`, `placePrefsArg` (IPC `notes:prefs:set { patch: { places } }`) |
+
+The parser on the PC (`src/vendor/notizen/quickparse.js`) and its frozen vectors are **unchanged**: the place of a typed
+line comes from the server (`POST parse`), not from the parser.
+
+The search and the position. A PC has no position of its own, so — as the plugin's portal does — a search is made near
+one of the person's places: `nearPlaceId` (one of „Meine Orte“) or `nearFamilyId` („Zuhause“, a rule place of
+Familie). `placeSearchArg` lets nothing else through: `near { lat, lon }` from the renderer is dropped, a search without
+a place to search near is refused (only an address may be searched without one). So no coordinates of a position ever
+leave this PC; the server rounds the place's point as it rounds every position, and `distanceM` / `minutes` of a hit
+are counted from that place („zunächst aus der Entfernung geschätzt“ — no real travel time). The answer's `cell` (the
+rounded point) is not handed to the page. `searchPlaces()` is only ever called because the person asked for it (a
+button, Enter) — never per key stroke, never on a timer; while `me.places.search.state` is not `on` (the administrator
+or the person switched it off, an own service is not set up) the server is not asked at all (`module_off` /
+`unavailable`). The server's own answers arrive with their code: `module_off` (403, `reason: admin | self`),
+`unavailable` (503), `busy` (429, `retryAfter` seconds in the IPC's failure), `invalid`, `not_found`. No map service is
+ever asked directly. `attribution` („© OpenStreetMap“ with its link, https only) is to be shown wherever hits are shown.
+
+Consent. The place of a task is watched by the phone of the person the task belongs to (assigned, else who made it). A
+place someone else set is `consent: 'pending'` and `watch: false` until that person agrees: in the page with
+`placeConsent(id, true | false)`, or on the push „… möchte dich erinnern“ (topic `shared`,
+`data.notizen.kind === 'place_consent'`) — its buttons „Annehmen“ / „Ablehnen“ are `callback` actions the notification
+center shows on the toast and answers itself; a click on the message opens the task (`pushTarget()` →
+`{ kind: 'task', taskId }`).
+
+Live: `changed { what: [..., 'places'] }` (a task with a place made, changed or done, the consent, own places, the
+switches) — the page fetches again; there is nothing to re-register on a PC.

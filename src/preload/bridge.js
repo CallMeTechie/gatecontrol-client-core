@@ -936,6 +936,15 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       shoppingAssign: (id, input) => ipcRenderer.invoke('notes:shopping:assign', { ...(input || {}), id }),
       // a shopping list deleted by mistake, by its number (`listId`) — its owner, within 30 days
       shoppingRestore: (listId) => ipcRenderer.invoke('notes:shopping:restore', { listId }),
+      // plugin 1.5.0 (`places`, `placeSearch`): „Meine Orte“, the search near one of them (this PC sends no position),
+      // the consent for a place someone else set. The reminder itself comes on the phone
+      places:        () => ipcRenderer.invoke('notes:places'),
+      createPlace:   (place) => ipcRenderer.invoke('notes:place:create', { place: { ...(place || {}) } }),
+      updatePlace:   (id, patch) => ipcRenderer.invoke('notes:place:update', { id, patch: { ...(patch || {}) } }),
+      deletePlace:   (id) => ipcRenderer.invoke('notes:place:delete', { id }),
+      setPlaceFav:   (key, placeId) => ipcRenderer.invoke('notes:place:fav', { key, placeId: placeId || null }),
+      searchPlaces:  (input) => ipcRenderer.invoke('notes:place:search', { ...(input || {}) }),
+      placeConsent:  (id, accept) => ipcRenderer.invoke('notes:task:place:consent', { id, accept: accept === true }),
       item:          (id) => ipcRenderer.invoke('notes:item', { id }),
       completeItem:  (id, done) => ipcRenderer.invoke('notes:item:complete', { id, done: done !== false }),
       carryItem:     (id) => ipcRenderer.invoke('notes:item:carry', { id }),
