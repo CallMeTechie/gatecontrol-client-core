@@ -297,7 +297,7 @@ describe('NotesService: availability and feature flags', () => {
     pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-notizen', type: 'changed', data: { what: ['tasks'] } } });
     pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-mail', type: 'changed', data: { what: ['tasks'] } } });
     pushClient.emit('hello');
-    assert.deepEqual(changed.map((c) => c.what), [['tasks'], ['tasks', 'notes', 'items', 'lists', 'notebooks']]);
+    assert.deepEqual(changed.map((c) => c.what), [['tasks'], ['tasks', 'notes', 'items', 'lists', 'notebooks', 'shopping']]);
     const vaults = [];
     svc.on('vault', (v) => vaults.push(v));
     pushClient.emit('event', { event: 'plugin', data: { plugin: 'gatecontrol-notizen', type: 'vault', data: { vault: 'Vt9bJm0n2QwErTyUiOpAsD', event: 'request' } } });

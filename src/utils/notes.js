@@ -8,7 +8,10 @@
  * for the Tresor notebooks the device changes itself). Plugin 1.3.0 (what `me.features` names — never a version):
  * `reminderActions` (a task's pending `reminder`, `snoozed`, `missedReminder`), `yesterdayOpen` (the card „Gestern offen
  * geblieben“: `yesterday` of GET views/myday, POST tasks/<id>/move, POST yesterday) and `taskCalendar` (a task's
- * `calendar`, `me.calendar`).
+ * `calendar`, `me.calendar`). Plugin 1.4.0: `shoppingLists` (GET shopping, POST shopping/ops — the lists and their items
+ * with ids the device makes, `nav.shopping`, `me.shopping`, the event `shopping`), `taskList` (a task's `attachedList`,
+ * `attachedListId` / `attachedListUid` when writing, `attach` of POST parse and POST tasks, the button „Liste öffnen“ of
+ * a reminder) and `familyShopping` (family lists: PUT shopping/lists/<id>/family, POST …/going, …/assign).
  *
  * Every text from the server stays text: the renderer puts it into textContent only.
  */
@@ -37,6 +40,15 @@ const QUERY_MAX = 200;
 const MOVE_WORDS = Object.freeze(['today', 'tomorrow', 'weekend']);
 const YESTERDAY_ACTIONS = Object.freeze(['done', 'today', 'move']);
 const YESTERDAY_MAX = 200;
+// plugin 1.4.0: shopping lists
+const SHOP_NAME_MAX = 40;
+const SHOP_TEXT_MAX = 120;
+const SHOP_QTY_MAX = 40;
+const SHOP_OPS_MAX = 200;
+const SHOP_OPS = Object.freeze(['list_add', 'list_rename', 'list_delete', 'item_add', 'item_edit', 'item_check', 'item_delete', 'clear_checked']);
+const SHOP_REJECTS = Object.freeze(['invalid', 'not_found', 'forbidden', 'too_many']);
+const ATTACH_VIA = Object.freeze(['tag', 'name', 'word']);
+const ASSIGN_NOTIFY = Object.freeze(['direct', 'family', 'push']);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -47,6 +59,8 @@ const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
 const VAULT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 const B64U_RE = /^[A-Za-z0-9_-]+$/;
 const CODE_RE = /^[A-Za-z0-9_.-]{1,60}$/;
+const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
+const ICON_RE = /^[a-z][a-z0-9-]{0,39}$/;
 const REMINDER_TAG_RE = /^task:[1-9]\d{0,14}:[1-9]\d{0,15}$/;
 const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const CTRL_LINE_RE = /[\u0000-\u001F\u007F]/g;
@@ -87,6 +101,8 @@ const pluginOf = (v) => (typeof v === 'string' && PLUGIN_RE.test(v) && v.length 
 const vaultIdOf = (v) => (typeof v === 'string' && VAULT_ID_RE.test(v) ? v : null);
 const b64uOf = (v, max) => (typeof v === 'string' && v.length <= max && B64U_RE.test(v) ? v : null);
 const isMediaId = (v) => typeof v === 'string' && MEDIA_ID_RE.test(v);
+const shopIdOf = (v) => (typeof v === 'string' && SHOP_ID_RE.test(v) ? v : null);
+const iconOf = (v) => (typeof v === 'string' && ICON_RE.test(v) ? v : null);
 const isoOf = (v) => (typeof v === 'string' && v.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v) ? v : null);
 
 function whenOf(v) {
@@ -144,6 +160,20 @@ function calendarOf(v) {
   return { state: o.state, eventId: posId(o.eventId), calendarId: posId(o.calendarId), mine: bool(o.mine) };
 }
 
+/**
+ * The shopping list a task carries, a list of the suggestion (plugin 1.4.0) → { id (the list's number), uid (its text
+ * id), name, icon, open, total, done, family } or null.
+ */
+function attachedListOf(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const uid = o && shopIdOf(o.uid);
+  if (!id || !uid) return null;
+  const total = count(o.total) || 0;
+  const open = Math.min(count(o.open) || 0, total);
+  return { id, uid, name: line(o.name, SHOP_NAME_MAX) || '', icon: iconOf(o.icon), open, total, done: total - open, family: bool(o.family) };
+}
+
 /** `meta` of an item: flat, strings ≤ 120 / numbers / booleans (contract § 2). */
 function metaOf(v) {
   const o = obj(v);
@@ -184,6 +214,8 @@ function normalizeTask(v) {
     canEdit: o.canEdit !== false, updatedAt: msOf(o.updatedAt),
     // plugin 1.3.0 — an older plugin sends none of these
     reminder: reminderOf(o.reminder), snoozed: bool(o.snoozed), missedReminder: bool(o.missedReminder), calendar: calendarOf(o.calendar),
+    // plugin 1.4.0 — null without a list, and when the person does not see the list
+    attachedList: attachedListOf(o.attachedList),
   };
   // GET tasks/<id>: the details
   if (typeof o.note === 'string') t.note = text(o.note, NOTE_MAX);
@@ -340,6 +372,82 @@ function normalizeYesterday(v) {
   };
 }
 
+// ── shopping lists (plugin 1.4.0) ───────────────────────────
+
+/**
+ * A shopping list of GET shopping → cleaned, or null. `id` is the text id the device made (the id of the ops, the same
+ * in Familie), `listId` the list's number (lists/<listId>, a task's attachedListId). A tombstone: `deleted: true`.
+ */
+function normalizeShopList(v) {
+  const o = obj(v);
+  const id = o && shopIdOf(o.id);
+  if (!id) return null;
+  const total = count(o.total) || 0;
+  const as = obj(o.assignee);
+  return {
+    id, listId: posId(o.listId), name: line(o.name, SHOP_NAME_MAX) || '', icon: iconOf(o.icon), area: areaOf(o.area) || 'private',
+    sort: Number.isFinite(o.sort) ? o.sort : 0, updatedAt: isoOf(o.updatedAt), deleted: bool(o.deleted),
+    role: ['owner', 'write', 'read'].includes(o.role) ? o.role : null, canEdit: bool(o.canEdit), canManage: bool(o.canManage),
+    owner: personOf(o.owner), shared: bool(o.shared),
+    members: arr(o.members).slice(0, 200).map((m) => { const p = personOf(m); return p && p.id ? { ...p, role: obj(m).role === 'read' ? 'read' : 'write' } : null; }).filter(Boolean),
+    family: bool(o.family), open: Math.min(count(o.open) || 0, total), total,
+    assignee: as && posId(as.userId) ? { userId: as.userId, by: posId(as.by), at: isoOf(as.at), state: ['open', 'taken', 'declined'].includes(as.state) ? as.state : 'open' } : null,
+    dueAt: isoOf(o.dueAt),
+    going: arr(o.going).slice(0, 50).map((g) => { const x = obj(g); return x && posId(x.userId) ? { userId: x.userId, at: isoOf(x.at) } : null; }).filter(Boolean),
+    tasks: arr(o.tasks).slice(0, 5).map((x) => { const y = obj(x); return y && posId(y.id) ? { id: y.id, title: line(y.title, TITLE_MAX) || '' } : null; }).filter(Boolean),
+  };
+}
+
+/** An item of a shopping list → cleaned, or null (`listId`: the list's text id). */
+function normalizeShopItem(v) {
+  const o = obj(v);
+  const id = o && shopIdOf(o.id);
+  const listId = o && shopIdOf(o.listId);
+  if (!id || !listId) return null;
+  return {
+    id, listId, text: line(o.text, SHOP_TEXT_MAX) || '', qty: line(o.qty, SHOP_QTY_MAX), checked: bool(o.checked), checkedBy: posId(o.checkedBy),
+    updatedAt: isoOf(o.updatedAt), deleted: bool(o.deleted),
+  };
+}
+
+/** GET shopping[?since] → { lists, items, serverTime } */
+function normalizeShopping(v) {
+  const o = obj(v) || {};
+  return {
+    lists: arr(o.lists).slice(0, 700).map(normalizeShopList).filter(Boolean),
+    items: arr(o.items).slice(0, 20000).map(normalizeShopItem).filter(Boolean),
+    serverTime: isoOf(o.serverTime),
+  };
+}
+
+/** The answer of POST shopping/ops → { applied, rejected: [{ index, code }], serverTime, completed: [{ taskId, title, listId }] } */
+function normalizeOpsAnswer(v) {
+  const o = obj(v) || {};
+  return {
+    applied: count(o.applied) || 0,
+    rejected: arr(o.rejected).slice(0, SHOP_OPS_MAX).map((r) => {
+      const x = obj(r);
+      return x && count(x.index) !== null ? { index: x.index, code: SHOP_REJECTS.includes(x.code) ? x.code : 'invalid' } : null;
+    }).filter(Boolean),
+    serverTime: isoOf(o.serverTime),
+    completed: arr(o.completed).slice(0, 50).map((c) => {
+      const x = obj(c);
+      const taskId = x && posId(x.taskId);
+      return taskId ? { taskId, title: line(x.title, TITLE_MAX) || '', listId: shopIdOf(x.listId) } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** `attach` of POST parse / POST tasks → { via, word, list, lists } or null (no suggestion, an older plugin). */
+function normalizeAttach(v) {
+  const o = obj(v);
+  if (!o || !ATTACH_VIA.includes(o.via)) return null;
+  const lists = arr(o.lists).slice(0, 20).map(attachedListOf).filter(Boolean);
+  const list = attachedListOf(o.list);
+  if (!list && !lists.length) return null;
+  return { via: o.via, word: o.via === 'word' ? line(o.word, 40) : null, list, lists: lists.length ? lists : [list] };
+}
+
 /** GET views/<name> → { view, title, date?, list?, plugin?, sections: [{ id, title, count, items, collapsed }] } */
 function normalizeView(v) {
   const o = obj(v) || {};
@@ -369,6 +477,14 @@ function normalizeNav(v) {
       return plugin ? { plugin, label: line(x.label, 60) || plugin, hint: line(x.hint, 200), open: count(x.open) || 0 } : null;
     }).filter(Boolean),
     lists: arr(o.lists).slice(0, 500).map(normalizeList).filter(Boolean),
+    // plugin 1.4.0: the shopping lists of the area (not part of `lists`: they hold items, no tasks)
+    shopping: arr(o.shopping).slice(0, 500).map((s) => {
+      const x = obj(s);
+      const id = x && shopIdOf(x.id);
+      if (!id) return null;
+      const total = count(x.total) || 0;
+      return { id, listId: posId(x.listId), name: line(x.name, SHOP_NAME_MAX) || '', icon: iconOf(x.icon), open: Math.min(count(x.open) || 0, total), total, family: bool(x.family), shared: bool(x.shared), role: ['owner', 'write', 'read'].includes(x.role) ? x.role : null };
+    }).filter(Boolean),
     groups: arr(o.groups).slice(0, 200).map(normalizeGroup).filter(Boolean),
     notes: {
       total: count(notes.total) || 0,
@@ -413,6 +529,7 @@ function normalizeMe(v) {
   const im = obj(o.imports) || {};
   const cal = obj(o.calendar);
   const yd = obj(o.yesterday);
+  const fam = obj(o.shopping) && obj(o.shopping.family);
   return {
     user: { id: posId(u.id), name: line(u.name, 120) || '' }, lang: o.lang === 'en' ? 'en' : 'de', today: dateOf(o.today),
     time: timeOf(o.time), timezone: line(o.timezone, 60), features: arr(o.features).filter((f) => typeof f === 'string' && /^[A-Za-z]{1,30}$/.test(f)).slice(0, 50),
@@ -422,6 +539,9 @@ function normalizeMe(v) {
     // plugin 1.3.0: the calendar „Aufgaben“ of Mail (shown only when all three are true), the morning hint
     calendar: cal ? { available: bool(cal.available), enabled: bool(cal.enabled), mine: bool(cal.mine), name: line(cal.name, NAME_MAX) || '' } : null,
     yesterday: yd ? { push: bool(yd.push), at: timeOf(yd.at) } : null,
+    // plugin 1.4.0: the symbols a list may carry, what Familie adds to the shopping lists
+    listIcons: arr(o.listIcons).map(iconOf).filter(Boolean).slice(0, 40),
+    shopping: obj(o.shopping) ? { family: { available: bool(fam && fam.available), bound: bool(fam && fam.bound), parent: bool(fam && fam.parent) } } : null,
   };
 }
 
@@ -599,6 +719,9 @@ function taskPatch(p) {
     const x = o[k];
     if (k === 'title') { const s = line(x, TITLE_MAX); if (!s) return null; b.title = s; } else if (k === 'note') { if (typeof x !== 'string') return null; b.note = text(x, NOTE_MAX); } else if (k === 'important' || k === 'myDay') { if (typeof x !== 'boolean') return null; b[k] = x; } else if (k === 'due') { const d = dueArg(x); if (d === undefined) return null; b.due = d; } else if (k === 'remindAt') { const r = remindArg(x); if (r === undefined) return null; b.remindAt = r; } else if (k === 'repeat') { if (x === null) b.repeat = null; else { const r = repeatOf(x); if (!r) return null; b.repeat = r; } } else if (k === 'assigneeId') { if (x !== null && !posId(x)) return null; b.assigneeId = x; } else if (k === 'listId') { if (!posId(x)) return null; b.listId = x; } else if (k === 'position') { if (!Number.isFinite(x)) return null; b.position = x; }
   }
+  // plugin 1.4.0 (`taskList`): the shopping list a task carries — its number (null takes it off) or its text id
+  if (o.attachedListId !== undefined) { if (o.attachedListId !== null && !posId(o.attachedListId)) return null; b.attachedListId = o.attachedListId; }
+  else if (o.attachedListUid !== undefined) { if (o.attachedListUid === null) b.attachedListId = null; else if (!shopIdOf(o.attachedListUid)) return null; else b.attachedListUid = o.attachedListUid; }
   return b;
 }
 
@@ -614,6 +737,10 @@ function taskCreate(p) {
   if (o.createList !== undefined) b.createList = o.createList === true;
   const rest = taskPatch({ note: o.note, important: o.important, due: o.due, remindAt: o.remindAt, repeat: o.repeat, assigneeId: o.assigneeId, myDay: o.myDay });
   if (!rest) return null;
+  // plugin 1.4.0: a list to carry, or `attach: 'auto'` — the server attaches the list the line names when exactly one fits
+  if (o.attachedListId !== undefined && o.attachedListId !== null) { if (!posId(o.attachedListId)) return null; b.attachedListId = o.attachedListId; }
+  else if (o.attachedListUid !== undefined && o.attachedListUid !== null) { if (!shopIdOf(o.attachedListUid)) return null; b.attachedListUid = o.attachedListUid; }
+  else if (o.attach !== undefined && o.attach !== null) { if (o.attach !== 'auto') return null; b.attach = 'auto'; }
   return { ...b, ...rest };
 }
 
@@ -633,6 +760,70 @@ function yesterdayArg(p) {
     b.ids = [...new Set(o.ids)];
   }
   if (o.area !== undefined && o.area !== null) { if (!areaOf(o.area)) return null; b.area = o.area; }
+  return b;
+}
+
+/**
+ * One operation of POST shopping/ops as the renderer may send it → the op, or null when a part is wrong. The ids are
+ * made by the device (8–64 of [A-Za-z0-9_-]); `list_add` / `item_add` without one get it from `makeId`.
+ */
+function shopOp(v, makeId = null) {
+  const o = obj(v);
+  if (!o || !SHOP_OPS.includes(o.op)) return null;
+  const adds = o.op === 'list_add' || o.op === 'item_add';
+  const op = { op: o.op };
+  if (o.op === 'clear_checked') {
+    if (!shopIdOf(o.listId)) return null;
+    op.listId = o.listId;
+    return op;
+  }
+  const id = o.id === undefined && adds && typeof makeId === 'function' ? shopIdOf(makeId()) : shopIdOf(o.id);
+  if (!id) return null;
+  op.id = id;
+  if (o.op === 'list_add' || o.op === 'list_rename') {
+    const name = typeof o.name === 'string' && o.name.trim().length <= SHOP_NAME_MAX ? line(o.name, SHOP_NAME_MAX) : null;
+    if (!name) return null;
+    op.name = name;
+    if (o.icon !== undefined && o.icon !== null) { if (!iconOf(o.icon)) return null; op.icon = o.icon; }
+    if (o.op === 'list_add') {
+      if (o.area !== undefined && o.area !== null) { if (!areaOf(o.area)) return null; op.area = o.area; }
+      if (o.family !== undefined && o.family !== null) { if (typeof o.family !== 'boolean') return null; if (o.family) op.family = true; }
+    }
+  } else if (o.op === 'item_add' || o.op === 'item_edit') {
+    if (o.op === 'item_add') { if (!shopIdOf(o.listId)) return null; op.listId = o.listId; }
+    if (o.text !== undefined || o.op === 'item_add') {
+      const s = typeof o.text === 'string' && o.text.trim().length <= SHOP_TEXT_MAX ? line(o.text, SHOP_TEXT_MAX) : null;
+      if (!s) return null;
+      op.text = s;
+    }
+    if (o.qty !== undefined) {
+      if (o.qty === null || o.qty === '') { if (o.op === 'item_edit') op.qty = null; } else {
+        const q = typeof o.qty === 'string' && o.qty.trim().length <= SHOP_QTY_MAX ? line(o.qty, SHOP_QTY_MAX) : null;
+        if (!q) { if (typeof o.qty !== 'string' || o.qty.trim()) return null; if (o.op === 'item_edit') op.qty = null; } else op.qty = q;
+      }
+    }
+    if (o.op === 'item_edit' && op.text === undefined && op.qty === undefined) return null;
+  } else if (o.op === 'item_check') {
+    if (typeof o.checked !== 'boolean') return null;
+    op.checked = o.checked;
+  }
+  return op;
+}
+
+/** The ops of a call (1…200) → the cleaned ops, or null. */
+function shopOps(v, makeId = null) {
+  if (!Array.isArray(v) || !v.length || v.length > SHOP_OPS_MAX) return null;
+  const out = v.map((x) => shopOp(x, makeId));
+  return out.every(Boolean) ? out : null;
+}
+
+/** POST shopping/lists/<id>/assign { userId | null, dueAt?, notify? } → the body, or null. */
+function assignArg(p) {
+  const o = obj(p);
+  if (!o || (o.userId !== null && !posId(o.userId))) return null;
+  const b = { userId: o.userId };
+  if (o.dueAt !== undefined) { if (o.dueAt !== null && !isoOf(o.dueAt)) return null; b.dueAt = o.dueAt; }
+  if (o.notify !== undefined && o.notify !== null) { if (!ASSIGN_NOTIFY.includes(o.notify)) return null; b.notify = o.notify; }
   return b;
 }
 
@@ -697,7 +888,9 @@ function toggleCheck(md, lineNo, done) {
  * The plugin's pushes carry data.notizen = { task | list | notebook | vault } (README "Live updates"). The morning hint
  * (plugin 1.3.0, data.notizen.kind 'yesterday') opens „Mein Tag“ with the card; `actionId` is the button that was
  * pressed: 'done_ask' and 'move' — which GateControl sends as a portal link, the plugin has no app tab — are answered
- * by the page (`action`), every other button stays what it is (`action: null`).
+ * by the page (`action`), every other button stays what it is (`action: null`). A reminder of a task with a shopping
+ * list (plugin 1.4.0, data.notizen.attachedList): its button „Liste öffnen“ ('open_list') → { kind: 'shopping', uid,
+ * listId, taskId } — the list to tick off; a click on the message itself stays the task.
  */
 function pushTarget(topic, data, actionId = null) {
   if (typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
@@ -710,6 +903,8 @@ function pushTarget(topic, data, actionId = null) {
     };
   }
   if (n) {
+    const al = obj(n.attachedList);
+    if (actionId === 'open_list' && al && shopIdOf(al.uid)) return { kind: 'shopping', uid: al.uid, listId: posId(al.id), taskId: posId(n.task) || posId(n.taskId) };
     if (posId(n.task)) return { kind: 'task', taskId: n.task };
     if (posId(n.list)) return { kind: 'list', listId: n.list };
     if (posId(n.notebook)) return { kind: 'notebook', notebookId: n.notebook };
@@ -721,7 +916,7 @@ function pushTarget(topic, data, actionId = null) {
 /** The live event `changed` { what } → the kinds that changed. */
 function changedOf(data) {
   const d = obj(data) || {};
-  const all = ['tasks', 'notes', 'items', 'lists', 'notebooks'];
+  const all = ['tasks', 'notes', 'items', 'lists', 'notebooks', 'shopping'];
   const what = arr(d.what).filter((w) => all.includes(w));
   return { what: what.length ? [...new Set(what)] : all };
 }
@@ -734,7 +929,9 @@ function errorCode(err) {
 module.exports = {
   PLUGIN_ID, APP_ROUTE, PLUGINS_PATH, API_BASE, MEDIA_PATH, TOPIC_PREFIX, VAULT_PREFIX,
   AREAS, SMART_VIEWS, SOURCES, COLORS, ITEM_KINDS, REPEAT_TYPES, DONE_DAYS, TITLE_MAX, BODY_MAX, NOTE_MAX, NAME_MAX, QUERY_MAX,
-  line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf,
+  SHOP_OPS, SHOP_OPS_MAX, SHOP_NAME_MAX, SHOP_TEXT_MAX, SHOP_QTY_MAX,
+  line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf, shopIdOf, isoOf,
+  normalizeShopList, normalizeShopItem, normalizeShopping, normalizeOpsAnswer, normalizeAttach, shopOp, shopOps, assignArg,
   normalizeTask, normalizeItem, normalizeEntry, normalizeList, normalizeGroup, normalizeNotebook, normalizeNoteSummary, normalizeNote,
   normalizeAttachment, normalizeYesterday, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,
   normalizeParsed, normalizeJob, normalizeMsAccounts, normalizeMsPreview, normalizeConsent, normalizeMsLinks, normalizeVault,

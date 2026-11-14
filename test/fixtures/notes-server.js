@@ -11,11 +11,17 @@
 // DS Note (start, notebook, notes, finish). With the plugin's 1.3.0 words in `features` (STAGE1: reminderActions,
 // yesterdayOpen, taskCalendar — not in the default, which stays an older plugin): a task's `reminder` / `snoozed` /
 // `missedReminder` / `calendar`, `me.calendar` / `me.yesterday`, „Gestern offen geblieben“ (`yesterday` of
-// views/myday, GET yesterday, POST yesterday, POST tasks/<id>/move); without them those routes answer 404.
+// views/myday, GET yesterday, POST yesterday, POST tasks/<id>/move); without them those routes answer 404. With the
+// 1.4.0 words (STAGE2: shoppingLists, taskList, familyShopping — not in the default either): the shopping lists of the
+// hub (GET shopping[?since] with tombstones, POST shopping/ops — in order, safe to repeat, `completed` when the last
+// open item of a list is ticked —, nav.shopping, me.shopping, PUT shopping/lists/<uid>/family, POST …/going, …/assign;
+// PATCH / DELETE lists/<n> and PUT lists/<n>/members with a shopping list's number), a task's `attachedList`
+// (attachedListId / attachedListUid, `attach: 'auto'`) and `attach` of POST parse; without them: 404, fields passed over.
 //
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
-//   requests …), srv.addTask({ id, listId, title, due, … }), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
+//   requests …), srv.addTask({ id, listId, title, due, … }), srv.addShopList({ id, name, icon?, area?, family?, role?,
+//   members?, items: [{ id?, text, qty?, checked? }] }), srv.state.fail = { '<METHOD> <route>': { status, code, extra } }, srv.down = true, srv.close()
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -42,6 +48,10 @@ const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
 const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 const FEATURES = ['tasks', 'notes', 'sources', 'vault', 'mstodo', 'dsnote', 'search', 'quickparse', 'attachments', 'ocrText'];
 const STAGE1 = ['reminderActions', 'yesterdayOpen', 'taskCalendar'];
+const STAGE2 = ['shoppingLists', 'taskList', 'familyShopping'];
+const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
+const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
+const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
 const TEXTS = {
   'v.myday': 'Mein Tag', 'v.important': 'Wichtig', 'v.planned': 'Geplant', 'v.assigned': 'Mir zugewiesen', 'v.events': 'Termine heute',
   'v.overdue': 'Überfällig', 'v.today': 'Heute', 'v.upcoming': 'Demnächst', 'v.done': 'Erledigt', 'v.tomorrow': 'Morgen', 'v.week': 'Nächste 7 Tage',
@@ -99,6 +109,11 @@ async function notesServer({
     // plugin 1.3.0
     snoozed: new Set(), missed: new Set(), yesterdayDay: new Set(),   // task ids: put off with „Später“, reminder lost, in „Mein Tag“ yesterday
     calendar: { available: true, enabled: true, mine: true, name: 'Aufgaben' }, yesterdayPrefs: { push: true, at: '07:30' },
+    // plugin 1.4.0
+    shopLists: new Map(),     // uid → { uid, num, name, icon, area, ownerId, members: [{ id, role }], family, deletedAt, updatedAt, was }
+    shopItems: new Map(),     // id → { id, list (uid), text, qty, checked, checkedBy, updatedAt, deleted, seq }
+    attached: new Map(),      // task id → the number of the shopping list it carries
+    shopFamily: { available: true, bound: true, parent: true }, shopSeq: 0, going: [], assigned: [],
   };
   const has = (f) => state.features.includes(f);
   // lists, tasks
@@ -145,6 +160,168 @@ async function notesServer({
     open: [...state.tasks.values()].filter((x) => x.listId === l.id && !x.doneAt && !x.deleted && !x.parentId).length, ext: l.ext,
   });
   const myLists = (a) => [...state.lists.values()].filter((l) => l.members.includes(me()) && (!a || l.area === a));
+  // ── plugin 1.4.0: shopping lists ──
+  const isoAt = (ms) => `${new Date(Math.floor(ms / 1000) * 1000 + 3600000).toISOString().slice(0, 19)}+01:00`;
+  const shopRole = (l) => { const m = l.members.find((x) => x.id === me()); return l.ownerId === me() ? 'owner' : m ? m.role : null; };
+  const myShop = () => [...state.shopLists.values()].filter((l) => !l.deletedAt && shopRole(l));
+  const shopByNum = (num) => [...state.shopLists.values()].find((l) => l.num === num) || null;
+  const shopCounts = (l) => { const its = [...state.shopItems.values()].filter((i) => i.list === l.uid && !i.deleted); return { total: its.length, open: its.filter((i) => !i.checked).length }; };
+  const attachView = (l) => { const c = shopCounts(l); return { id: l.num, uid: l.uid, name: l.name, icon: l.icon, open: c.open, total: c.total, done: c.total - c.open, family: l.family }; };
+  const attachedOf = (x) => { const l = state.attached.has(x.id) ? shopByNum(state.attached.get(x.id)) : null; return l && !l.deletedAt && shopRole(l) ? attachView(l) : null; };
+  const shopListView = (l) => {
+    const role = shopRole(l);
+    const c = shopCounts(l);
+    return {
+      id: l.uid, listId: l.num, name: l.name, icon: l.icon, area: l.area, sort: 0, updatedAt: isoAt(l.updatedAt), deleted: false, role,
+      canEdit: role !== 'read', canManage: role === 'owner' || (l.family && state.shopFamily.parent), owner: { id: l.ownerId, name: nameOf(l.ownerId) },
+      shared: l.members.length > 0 || l.family, members: l.members.map((m) => ({ id: m.id, name: nameOf(m.id), role: m.role })), family: l.family, open: c.open, total: c.total,
+      assignee: l.assignee || null, dueAt: null, going: [],
+      tasks: [...state.tasks.values()].filter((x) => state.attached.get(x.id) === l.num && !x.doneAt && !x.deleted && !x.parentId).slice(0, 5).map((x) => ({ id: x.id, title: x.title })),
+      days: [], remind: null, mydayOff: false, dayToday: false,
+    };
+  };
+  const shopItemView = (i) => ({ id: i.id, listId: i.list, text: i.text, qty: i.qty, checked: i.checked, checkedBy: i.checkedBy, updatedAt: isoAt(i.updatedAt), deleted: i.deleted });
+  function shopGet(q) {
+    let from = null;
+    if (q.since != null && q.since !== '') {
+      from = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(String(q.since)) ? Math.floor(Date.parse(q.since) / 1000) * 1000 : NaN;
+      if (!Number.isFinite(from)) throw fail(400, 'invalid', { field: 'since' });
+    }
+    const mine = myShop();
+    const lists = mine.map(shopListView);
+    const seen = new Set(mine.map((l) => l.uid));
+    let items = [...state.shopItems.values()].filter((i) => seen.has(i.list));
+    if (from == null) items = items.filter((i) => !i.deleted);
+    else {
+      items = items.filter((i) => i.updatedAt >= from);
+      for (const l of state.shopLists.values()) if (l.deletedAt && l.deletedAt >= from && l.was.includes(me())) lists.push({ id: l.uid, listId: l.num, name: l.name, icon: l.icon, area: l.area, updatedAt: isoAt(l.deletedAt), deleted: true });
+    }
+    return { lists, items: items.sort((a, b) => a.seq - b.seq).map(shopItemView), serverTime: isoAt(state.now) };
+  }
+  function shopOp(op, ticked) {
+    const rej = (code) => { const e = new Error(code); e.rej = code; return e; };
+    const sid = (v) => { if (typeof v !== 'string' || !SHOP_ID_RE.test(v)) throw rej('invalid'); return v; };
+    const str = (v, max, required) => { if (v == null || v === '') { if (required) throw rej('invalid'); return null; } if (typeof v !== 'string' || v.trim().length > max || (required && !v.trim())) throw rej('invalid'); return v.trim() || null; };
+    const editable = (l) => { if (!l || l.deletedAt || !shopRole(l)) throw rej('not_found'); if (shopRole(l) === 'read') throw rej('forbidden'); return l; };
+    const manageable = (l) => { if (!l || l.deletedAt || !shopRole(l)) throw rej('not_found'); if (!(shopRole(l) === 'owner' || (l.family && state.shopFamily.parent))) throw rej('forbidden'); return l; };
+    const itemOf = (v) => { const i = state.shopItems.get(sid(v)); if (!i) throw rej('not_found'); editable(state.shopLists.get(i.list)); return i; };
+    const o = op && typeof op === 'object' ? op : {};
+    if (o.op === 'list_add') {
+      const uid = sid(o.id);
+      const name = str(o.name, 40, true);
+      if (o.icon != null && !LIST_ICONS.includes(o.icon)) throw rej('invalid');
+      if (o.family && !state.shopFamily.parent) throw rej('forbidden');
+      const have = state.shopLists.get(uid);
+      if (have) { if (have.ownerId !== me()) throw rej('forbidden'); return; }
+      state.shopLists.set(uid, { uid, num: id(), name, icon: o.icon || 'cart', area: area(o.area), ownerId: me(), members: [], family: !!o.family, deletedAt: null, updatedAt: state.now, was: [me()] });
+    } else if (o.op === 'list_rename') {
+      const l = manageable(state.shopLists.get(sid(o.id)));
+      l.name = str(o.name, 40, true);
+      if (o.icon != null) { if (!LIST_ICONS.includes(o.icon)) throw rej('invalid'); l.icon = o.icon; }
+      l.updatedAt = state.now;
+    } else if (o.op === 'list_delete') {
+      const l = state.shopLists.get(sid(o.id));
+      if (l && l.deletedAt) return;
+      manageable(l);
+      l.deletedAt = state.now;
+      l.was = [l.ownerId, ...l.members.map((m) => m.id)];
+    } else if (o.op === 'item_add') {
+      const iid = sid(o.id);
+      const l = state.shopLists.get(sid(o.listId));
+      const text = str(o.text, 120, true);
+      const qty = str(o.qty, 40, false);
+      if (state.shopItems.has(iid)) { if (state.shopItems.get(iid).list !== (l && l.uid)) throw rej('forbidden'); return; }
+      editable(l);
+      state.shopItems.set(iid, { id: iid, list: l.uid, text, qty, checked: false, checkedBy: null, updatedAt: state.now, deleted: false, seq: ++state.shopSeq });
+    } else if (o.op === 'item_edit') {
+      const i = itemOf(o.id);
+      if (i.deleted) throw rej('not_found');
+      if (o.text !== undefined) i.text = str(o.text, 120, true);
+      if (o.qty !== undefined) i.qty = str(o.qty, 40, false);
+      i.updatedAt = state.now;
+    } else if (o.op === 'item_check') {
+      const i = itemOf(o.id);
+      if (i.deleted) throw rej('not_found');
+      if (typeof o.checked !== 'boolean') throw rej('invalid');
+      if (i.checked === o.checked) return;
+      i.checked = o.checked;
+      i.checkedBy = o.checked ? me() : null;
+      i.updatedAt = state.now;
+      if (o.checked) ticked.add(i.list);
+    } else if (o.op === 'item_delete') {
+      const i = itemOf(o.id);
+      if (i.deleted) return;
+      i.deleted = true;
+      i.updatedAt = state.now;
+    } else if (o.op === 'clear_checked') {
+      const l = editable(state.shopLists.get(sid(o.listId)));
+      for (const i of state.shopItems.values()) if (i.list === l.uid && i.checked && !i.deleted) { i.deleted = true; i.updatedAt = state.now; }
+    } else throw rej('invalid');
+  }
+  function shopOps(b) {
+    if (!Array.isArray(b.ops) || b.ops.length > 200) throw fail(400, 'invalid', { field: 'ops' });
+    const ticked = new Set();
+    const rejected = [];
+    let applied = 0;
+    b.ops.forEach((op, index) => {
+      try { shopOp(op, ticked); applied++; } catch (e) { if (!e.rej) throw e; rejected.push({ index, code: e.rej }); }
+    });
+    // „alles abgehakt“: a tick happened and the list is ticked off completely at the end of the batch
+    const completed = [];
+    for (const uid of ticked) {
+      const l = state.shopLists.get(uid);
+      const c = shopCounts(l);
+      if (!c.total || c.open || !has('taskList')) continue;
+      for (const x of state.tasks.values()) {
+        if (state.attached.get(x.id) !== l.num || x.doneAt || x.deleted || x.parentId) continue;
+        x.doneAt = state.now;
+        x.updatedAt = state.now;
+        completed.push({ taskId: x.id, title: x.title, listId: l.uid });
+      }
+    }
+    return { applied, rejected, serverTime: isoAt(state.now), completed };
+  }
+  /** attachedListId / attachedListUid of a task's body → the list's number, null (taken off) or undefined (not named). */
+  function attachArg(b) {
+    if (!has('taskList') || (b.attachedListId === undefined && b.attachedListUid === undefined)) return undefined;
+    if (b.attachedListId === null || (b.attachedListId === undefined && b.attachedListUid === null)) return null;
+    const l = b.attachedListId !== undefined ? shopByNum(posInt(b.attachedListId)) : state.shopLists.get(b.attachedListUid);
+    if (!l || l.deletedAt || !shopRole(l)) {
+      if (b.attachedListId !== undefined && state.lists.has(posInt(b.attachedListId))) throw fail(400, 'invalid', { field: 'attachedListId', reason: 'kind' });
+      throw fail(404, 'not_found', { field: 'attachedListId' });
+    }
+    return l.num;
+  }
+  /** The shopping list a line of the quick entry names → { via, word?, list, lists } | null (the plugin's fixed table). */
+  function suggest(text, parsed, a) {
+    const rows = myShop().filter((l) => l.area === a);
+    if (!rows.length || typeof text !== 'string') return null;
+    const lower = (s) => String(s || '').normalize('NFKC').toLowerCase();
+    const tokens = (s) => lower(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    let via = null;
+    let word = null;
+    let cands = [];
+    const tag = parsed && !parsed.list && parsed.listName ? lower(parsed.listName) : null;
+    if (tag) { cands = rows.filter((l) => lower(l.name).startsWith(tag)); if (cands.length) via = 'tag'; }
+    const toks = tokens(text);
+    if (!via) {
+      const hay = ` ${toks.join(' ')} `;
+      cands = rows.filter((l) => { const nm = tokens(l.name).join(' '); return nm.length >= 3 && hay.includes(` ${nm} `); });
+      if (cands.length) via = 'name';
+    }
+    if (!via) {
+      word = SHOP_WORDS.find((w) => toks.includes(w)) || null;
+      if (word) {
+        cands = rows.filter((l) => /^(?:einkauf|lebensmittel|shopping|grocer)/.test(lower(l.name)) || l.icon === 'cart');
+        if (!cands.length) cands = rows;
+        via = 'word';
+      }
+    }
+    if (!via || !cands.length) return null;
+    const out = cands.map(attachView);
+    return { via, ...(via === 'word' ? { word } : {}), list: out.length === 1 ? out[0] : null, lists: out };
+  }
+
   const overdueOf = (due, done) => !done && !!due && (due.time ? `${due.date} ${due.time}` < `${state.today} ${state.time}` : due.date < state.today);
   const taskView = (x, full = false) => {
     const subs = [...state.tasks.values()].filter((s) => s.parentId === x.id && !s.deleted);
@@ -163,6 +340,7 @@ async function notesServer({
       v.snoozed = !!v.reminder && state.snoozed.has(x.id);
       v.missedReminder = state.missed.has(x.id);
     }
+    if (has('taskList')) v.attachedList = x.parentId ? null : attachedOf(x);
     if (has('taskCalendar')) {
       const c = state.calendar;
       v.calendar = c.available && c.enabled && c.mine && x.due && x.due.time && !x.doneAt ? { state: 'synced', eventId: 900 + x.id, calendarId: 7, mine: true } : null;
@@ -370,9 +548,17 @@ async function notesServer({
     if (b.parentId) { const p = accessTask(b.parentId); listId = p.listId; }
     if (!listId) listId = myLists(a).find((l) => l.isDefault).id;
     if (!state.lists.has(listId)) throw fail(404, 'not_found');
+    // 1.4.0: a list to carry — named, or (attach: 'auto') the one the line names when exactly one fits; never by itself
+    let attach = null;
+    let carry = b.parentId ? undefined : attachArg(b);
+    if (carry === undefined && has('taskList') && b.attach === 'auto' && typeof b.text === 'string' && !b.parentId) {
+      attach = suggest(b.text, parsed, a);
+      if (attach && attach.list) carry = attach.list.id;
+    }
     const x = task({ id: id(), listId, parentId: posInt(b.parentId), title: title.slice(0, 300), note: b.note || '', ...fields, updatedAt: state.now });
     if (b.myDay) state.myDay.add(x.id);
-    return { task: taskView(x, true), ...(parsed ? { parsed } : {}) };
+    if (carry) state.attached.set(x.id, carry);
+    return { task: taskView(x, true), ...(parsed ? { parsed } : {}), ...(attach ? { attach } : {}) };
   }
 
   function route(method, p, q, b) {
@@ -384,6 +570,7 @@ async function notesServer({
     if (is('GET', 1, 'me')) {
       return { user: state.user, lang: 'de', today: state.today, time: state.time, timezone: 'Europe/Berlin', features: state.features, prefs: state.prefs, sharing: 'all', vaults: state.vaultsOn, imports: state.imports, attachMB: 25, readOnly: false,
         ...(has('taskCalendar') ? { calendar: state.calendar } : {}), ...(has('yesterdayOpen') ? { yesterday: state.yesterdayPrefs } : {}),
+        ...(has('shoppingLists') ? { listIcons: LIST_ICONS, shopping: { family: has('familyShopping') ? state.shopFamily : { available: false, bound: false, parent: false } } } : {}),
       };
     }
     if (is('GET', 1, 'nav')) {
@@ -404,11 +591,60 @@ async function notesServer({
         },
         sources: SOURCES.filter(sourceOn).map((s) => ({ plugin: s, label: t(`src.${s}`), hint: t(`srch.${s}`), open: by[s] })),
         lists: myLists(ar).map(listView), groups: [...state.groups.values()].filter((g) => g.area === ar),
+        ...(has('shoppingLists') ? { shopping: myShop().filter((l) => l.area === ar).map((l) => { const c = shopCounts(l); return { id: l.uid, listId: l.num, name: l.name, icon: l.icon, open: c.open, total: c.total, family: l.family, shared: l.members.length > 0 || l.family, role: shopRole(l) }; }) } : {}),
         notes: notesNav(ar),
       };
     }
     if (method === 'GET' && n === 2 && a === 'views') return view(x, area(q.area));
-    if (is('POST', 1, 'parse')) return { parsed: Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people }) };
+    if (is('POST', 1, 'parse')) {
+      const parsed = Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people });
+      return { parsed, ...(has('taskList') ? { attach: suggest(b.text, parsed, area(b.area)) } : {}) };
+    }
+    // 1.4.0: the shopping lists (an older plugin has none of these routes)
+    if (has('shoppingLists')) {
+      if (is('GET', 1, 'shopping')) return shopGet(q);
+      if (method === 'POST' && n === 2 && a === 'shopping' && x === 'ops') return shopOps(b);
+      if (n === 4 && a === 'shopping' && x === 'lists' && ['family', 'going', 'assign'].includes(z)) {
+        const l = state.shopLists.get(y);
+        if (!has('familyShopping') || !state.shopFamily.available) throw fail(409, 'unavailable');
+        if (!l || l.deletedAt || !shopRole(l)) throw fail(404, 'not_found');
+        if (method === 'PUT' && z === 'family') {
+          if (b.on && !state.shopFamily.parent) throw fail(403, 'forbidden');
+          l.family = !!b.on;
+          l.updatedAt = state.now;
+          return { list: shopListView(l) };
+        }
+        if (!l.family) throw fail(400, 'invalid', { field: 'family' });
+        if (method === 'POST' && z === 'going') { state.going.push(l.uid); return { notified: 2, chat: true }; }
+        if (method === 'POST' && z === 'assign') {
+          if (b.userId !== null && !state.people.some((pp) => pp.id === b.userId)) throw fail(400, 'invalid', { field: 'userId' });
+          l.assignee = b.userId ? { userId: b.userId, by: me(), at: isoAt(state.now), state: 'open', notify: b.notify || 'direct' } : null;
+          state.assigned.push({ list: l.uid, userId: b.userId });
+          return { list: shopListView(l), notified: b.userId ? 1 : 0 };
+        }
+      }
+      // a shopping list through the list routes (its number): rename, share, delete (the owner) or leave (a member)
+      const sl = a === 'lists' && n >= 2 ? shopByNum(posInt(x)) : null;
+      if (sl && method === 'POST' && n === 3 && y === 'restore') {
+        if (!sl.deletedAt || sl.ownerId !== me()) throw fail(404, 'not_found');
+        sl.deletedAt = null;
+        sl.updatedAt = state.now;
+        return { list: { id: sl.num, name: sl.name, area: sl.area, icon: sl.icon } };
+      }
+      if (sl && !sl.deletedAt && shopRole(sl)) {
+        if (method === 'PATCH' && n === 2) { if (b.name !== undefined) sl.name = String(b.name).slice(0, 40); if (b.icon !== undefined) sl.icon = b.icon; sl.updatedAt = state.now; return { list: { id: sl.num, name: sl.name, area: sl.area, icon: sl.icon } }; }
+        if (method === 'PUT' && n === 3 && y === 'members') {
+          sl.members = (b.members || []).map((m) => (m && typeof m === 'object' ? { id: m.id, role: m.role === 'read' ? 'read' : 'write' } : { id: m, role: 'write' })).filter((m) => m.id !== sl.ownerId);
+          sl.updatedAt = state.now;
+          return { list: { id: sl.num, name: sl.name, area: sl.area, icon: sl.icon } };
+        }
+        if (method === 'DELETE' && n === 2) {
+          if (shopRole(sl) === 'owner') { sl.deletedAt = state.now; sl.was = [sl.ownerId, ...sl.members.map((m) => m.id)]; return {}; }
+          sl.members = sl.members.filter((m) => m.id !== me());
+          return { left: true };
+        }
+      }
+    }
     if (is('GET', 1, 'people')) return { people: state.people.map((pp) => ({ ...pp, avatarUrl: null, me: pp.id === me() })) };
     if (is('GET', 1, 'search')) {
       const s = String(q.q || '').toLowerCase();
@@ -473,6 +709,9 @@ async function notesServer({
     if (method === 'GET' && n === 2 && a === 'tasks') return { task: taskView(accessTask(x), true) };
     if (method === 'PATCH' && n === 2 && a === 'tasks') {
       const r = accessTask(x);
+      const carry = attachArg(b);
+      if (carry !== undefined) { if (carry) state.attached.set(r.id, carry); else state.attached.delete(r.id); }
+      if (b.listId !== undefined && shopByNum(posInt(b.listId))) throw fail(400, 'invalid', { field: 'listId', reason: 'shopping' });
       for (const k of ['title', 'note', 'important', 'due', 'remindAt', 'repeat', 'assigneeId', 'listId', 'position']) {
         if (b[k] === undefined) continue;
         if (k === 'remindAt' && b[k] && typeof b[k] === 'object') r.remindAt = `${b[k].date}T${b[k].time}:00+01:00`;
@@ -493,6 +732,7 @@ async function notesServer({
       if (done && r.repeat) {
         const nd = R.next(r.repeat, { due: r.due ? r.due.date : null, done: state.today });
         next = task({ ...r, id: id(), doneAt: null, due: { date: nd, time: r.due ? r.due.time : null } });
+        if (state.attached.has(r.id)) state.attached.set(next.id, state.attached.get(r.id));
         r.repeat = null;
       }
       return { task: taskView(r), ...(next ? { next: taskView(next) } : {}) };
@@ -840,10 +1080,21 @@ async function notesServer({
     url: `http://127.0.0.1:${server.address().port}`,
     state,
     addTask: (o) => task({ id: id(), listId: 1, ...o }),
+    /** A shopping list of the hub with its items → { uid, num, items: [ids] } (num: Task.attachedList.id). */
+    addShopList: ({ id: uid, name, icon = 'cart', area: ar = 'private', family = false, role = 'owner', members = [], items = [] }) => {
+      const l = { uid, num: id(), name, icon, area: ar, ownerId: role === 'owner' ? 1 : 12, members: role === 'owner' ? members : [{ id: 1, role }, ...members], family, deletedAt: null, updatedAt: state.now, was: [1] };
+      state.shopLists.set(uid, l);
+      const ids = items.map((it, k) => {
+        const iid = it.id || `i${String(k + 1).padStart(3, '0')}-${uid}`.slice(0, 64);
+        state.shopItems.set(iid, { id: iid, list: uid, text: it.text, qty: it.qty || null, checked: !!it.checked, checkedBy: it.checked ? 1 : null, updatedAt: state.now, deleted: false, seq: ++state.shopSeq });
+        return iid;
+      });
+      return { uid, num: l.num, items: ids };
+    },
     get down() { return state.down; },
     set down(v) { state.down = !!v; },
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, noteMeta };

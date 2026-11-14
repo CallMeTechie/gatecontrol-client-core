@@ -13,6 +13,9 @@
  *   notes:group:update ({ id, name?, position? }) · notes:group:delete ({ id })
  *   notes:task:create ({ task }) · notes:task ({ id }) · notes:task:update ({ id, patch }) · notes:task:complete ({ id, done })
  *   notes:task:move ({ id, to }) · notes:yesterday ({ area? }) · notes:yesterday:decide ({ action, to?, ids?, area? })
+ *   notes:shopping ({ full? }) · notes:shopping:ops ({ ops }) · notes:shopping:family ({ id, on })
+ *   notes:shopping:going ({ id }) · notes:shopping:assign ({ id, userId, dueAt?, notify? })
+ *   notes:shopping:restore ({ listId })  (plugin 1.4.0)
  *   notes:task:delete ({ id }) · notes:item ({ id }) · notes:item:complete ({ id, done }) · notes:item:carry ({ id })
  *   notes:notebooks ({ area }) · notes:notebook:create ({ name, area, color?, vault? }) → recoveryKey for a Tresor
  *   notes:notebook:update ({ id, patch }) · notes:notebook:delete ({ id }) · notes:notebook:members ({ id, members })
@@ -32,6 +35,7 @@
  * Events to the main window: notes:state, notes:changed, notes:vault, notes:vault-lock, notes:import.
  */
 
+const crypto = require('crypto');
 const N = require('../utils/notes');
 
 const NOTES_EVENTS = {
@@ -158,6 +162,17 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
   });
   on('notes:yesterday', async (a) => (a.area == null || N.areaOf(a.area) ? s.yesterday({ area: a.area || undefined }) : invalid('area')));
   on('notes:yesterday:decide', async (a) => { const b = N.yesterdayArg(a); return b ? s.decideYesterday(b) : invalid('action'); });
+  // shopping lists (plugin 1.4.0): the ids of new lists and items are made here, never by the server
+  on('notes:shopping', async (a) => s.shopping({ full: a.full === true }));
+  on('notes:shopping:ops', async (a) => { const ops = N.shopOps(a.ops, () => crypto.randomUUID()); return ops ? s.shoppingOps(ops) : invalid('ops'); });
+  on('notes:shopping:family', async (a) => (N.shopIdOf(a.id) && typeof a.on === 'boolean' ? s.shoppingFamily(a.id, a.on) : invalid('id')));
+  on('notes:shopping:going', async (a) => (N.shopIdOf(a.id) ? s.shoppingGoing(a.id) : invalid('id')));
+  on('notes:shopping:restore', async (a) => (id(a.listId) ? s.shoppingRestore(a.listId) : invalid('listId')));
+  on('notes:shopping:assign', async (a) => {
+    if (!N.shopIdOf(a.id)) return invalid('id');
+    const b = N.assignArg({ userId: a.userId === undefined ? null : a.userId, dueAt: a.dueAt, notify: a.notify });
+    return b ? s.shoppingAssign(a.id, b) : invalid('userId');
+  });
   on('notes:item', async (a) => (id(a.id) ? s.item(a.id) : invalid('id')));
   on('notes:item:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeItem(a.id, a.done) : invalid('id')));
   on('notes:item:carry', async (a) => (id(a.id) ? s.carryItem(a.id) : invalid('id')));
