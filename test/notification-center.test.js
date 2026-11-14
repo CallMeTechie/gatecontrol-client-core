@@ -371,6 +371,65 @@ describe('NotificationCenter actions', () => {
     assert.deepEqual(b.events.portal, [{ path: '/portal/notify' }]);
   });
 
+  it('a reminder of Notizen & Aufgaben: three callback buttons on the toast; the morning hint\'s portal buttons open the page that answers them', async () => {
+    const topic = 'plugin:gatecontrol-notizen:reminders';
+    const reminder = { notizen: { kind: 'reminder', taskId: 41, task: 41, tag: 'task:41:1794729600000' }, actions: [
+      { id: 'done', label: 'Erledigt', type: 'callback' },
+      { id: 'snooze_1h', label: 'In 1 Std.', type: 'callback' },
+      { id: 'snooze_eve', label: 'Heute Abend', type: 'callback' },
+    ] };
+    const { center, N, push, portal, events, shown } = setup();
+    center.handleNotification(note(1, { topic, title: 'Mülltonne rausstellen', body: 'Fällig heute 09:00 · Aufgaben', collapse_key: 'task:41', data: reminder }));
+    const xml = N.created[0].opts.toastXml;
+    assert.deepEqual([...xml.matchAll(/<action content="([^"]*)"/g)].map((m) => m[1]), ['Erledigt', 'In 1 Std.', 'Heute Abend']);
+    // „In 1 Std.“ on the toast: the ack carries the button, the server hands it to the plugin
+    assert.equal(center.handleProtocolUrl(buttonUrls(N.created[0])[1]), true);
+    await tick();
+    assert.deepEqual(push.acks.at(-1), { seqs: [1], state: 'read', action: 'snooze_1h' });
+    assert.equal(portal.length, 0);
+
+    // the morning hint: „Erledigt“ of several tasks and „Verschieben“ come as links to the plugin's portal tab
+    const yesterday = { notizen: { kind: 'yesterday', day: '2026-11-18', count: 2, taskIds: [41, 42] }, actions: [
+      { id: 'done_ask', label: 'Erledigt', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+      { id: 'today', label: 'Heute', type: 'callback' },
+      { id: 'move', label: 'Verschieben', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+    ] };
+    center.handleNotification(note(2, { topic, title: 'Gestern offen geblieben: 2', collapse_key: 'yesterday', data: yesterday }));
+    // no page claimed the entry: the portal, as before
+    assert.deepEqual(await center.performAction(1002, 'move'), { ok: true });
+    assert.deepEqual(portal, ['/portal#plg-gatecontrol-notizen']);
+    // the page claims it and answers 'done_ask' and 'move' itself
+    const seen = [];
+    center.addClickRoute('plg-gatecontrol-notizen', (entry, action) => {
+      seen.push(action ? action.id : null);
+      return entry.topic === topic ? { kind: 'yesterday', action: action && ['done_ask', 'move'].includes(action.id) ? action.id : null } : null;
+    });
+    const before = shown.length;
+    assert.deepEqual(await center.performAction(1002, 'done_ask'), { ok: true });
+    assert.deepEqual(events.navigate.at(-1), { route: 'plg-gatecontrol-notizen', id: 1002, context: { kind: 'yesterday', action: 'done_ask' } });
+    assert.equal(shown.length, before + 1);
+    assert.equal(portal.length, 1);
+    assert.deepEqual(push.acks.at(-1), { seqs: [2], state: 'read', action: 'done_ask' });
+    assert.deepEqual(seen, ['done_ask']);
+    // „Heute“ stays a callback: nothing opens
+    const nav = events.navigate.length;
+    assert.deepEqual(await center.performAction(1002, 'today'), { ok: true });
+    assert.equal(events.navigate.length, nav);
+    assert.deepEqual(push.acks.at(-1), { seqs: [2], state: 'read', action: 'today' });
+    // a portal button the page does not answer, and one to another portal tab, still open the portal
+    center.handleNotification(note(3, { topic, data: { notizen: { kind: 'yesterday', taskIds: [41] }, actions: [
+      { id: 'more', label: 'Mehr', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+      { id: 'move', label: 'Verschieben', type: 'open_portal', target: '/portal#plg-gatecontrol-mail' },
+    ] } }));
+    await center.performAction(1003, 'more');
+    await center.performAction(1003, 'move');
+    assert.deepEqual(portal, ['/portal#plg-gatecontrol-notizen', '/portal#plg-gatecontrol-notizen', '/portal#plg-gatecontrol-mail']);
+    // a click on the toast itself: the resolver gets no button
+    N.created.at(-1).emit('click');
+    assert.equal(seen.at(-1), null);
+    assert.deepEqual(events.navigate.at(-1), { route: 'plg-gatecontrol-notizen', id: 1003, context: { kind: 'yesterday', action: null } });
+  });
+
   it('callback buttons of a plugin push (Fahrtenbuch): offered, acked with their id and remembered', async () => {
     const data = { trip: { id: 7 }, actions: [
       { type: 'callback', id: 'private', label: 'Privat' },

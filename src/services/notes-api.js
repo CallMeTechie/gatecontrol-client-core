@@ -11,6 +11,8 @@
  *   POST   …/api/parse { text, area } · PUT prefs · POST sources/<plugin>/sync
  *   GET|POST lists · PATCH|DELETE lists/<id> · PUT lists/<id>/members · POST groups · PATCH|DELETE groups/<id>
  *   POST   tasks · GET|PATCH|DELETE tasks/<id> · POST tasks/<id>/complete
+ *   POST   tasks/<id>/move { to } · GET yesterday?area · POST yesterday { action, to?, ids?, area? }
+ *          („Gestern offen geblieben“, plugin 1.3.0 — an older plugin answers 404)
  *   GET    items/<id> · POST items/<id>/complete · POST items/<id>/carry
  *   GET|POST notebooks · PATCH|DELETE notebooks/<id> · PUT notebooks/<id>/members
  *   GET|POST notes · GET|PATCH|DELETE notes/<id> · POST notes/<id>/check · POST notes/<id>/task
@@ -153,6 +155,23 @@ class NotesApi {
   }
 
   async deleteTask(id) { await this.api('DELETE', `tasks/${this._id(id)}`); return {}; }
+
+  /** A task to another day ('today' | 'tomorrow' | 'weekend' | 'YYYY-MM-DD'); a second call with the same day changes nothing. */
+  async moveTask(id, to) { return N.normalizeTask((await this.api('POST', `tasks/${this._id(id)}/move`, { body: { to } })).task); }
+
+  // ── „Gestern offen geblieben“ ────────────────────────────
+
+  async yesterday(area) { return N.normalizeYesterday(await this.api('GET', 'yesterday', { params: area ? { area } : undefined })); }
+
+  /** Every task of the card (or `ids`) at once → { changed, failed: [{ id, code }], yesterday } */
+  async decideYesterday(body) {
+    const r = await this.api('POST', 'yesterday', { body });
+    return {
+      changed: N.count(r.changed) || 0,
+      failed: (Array.isArray(r.failed) ? r.failed : []).slice(0, 200).map((f) => (f && N.posId(f.id) ? { id: f.id, code: N.errorCode(f) } : null)).filter(Boolean),
+      yesterday: N.normalizeYesterday(r.yesterday),
+    };
+  }
 
   async item(id) {
     const r = await this.api('GET', `items/${this._id(id)}`);

@@ -25,6 +25,8 @@
  *   page opens Microsoft's page in the browser), DS Note: the .nsx export read on this PC (services/notes-import.js).
  * - Live: the plugin's realtime events `changed` { what } → 'changed', `vault` { vault, event } → 'vault'; a click on a
  *   push of the plugin (topics reminders / shared / vault, data.notizen) opens the page (NotificationCenter.addClickRoute).
+ *   The buttons of a reminder (plugin 1.3.0: Erledigt, In 1 Std., Heute Abend) are callbacks the notification center
+ *   answers itself; the morning hint's „Erledigt“ (several tasks) and „Verschieben“ open „Mein Tag“ with the card.
  *
  * Events: 'state' (status()), 'changed' ({ what }), 'vault' ({ vault, event }), 'vaultLock' ({ locked, reason }),
  * 'import' (the DS Note import: { state, done, total, notes, skipped, protectedSkipped, vault?, code? }).
@@ -162,7 +164,7 @@ class NotesService extends EventEmitter {
     }
     const nc = this.notificationCenter;
     if (nc && typeof nc.addClickRoute === 'function') {
-      this._unsub.push(nc.addClickRoute(N.APP_ROUTE, (entry) => this.clickContext(entry)));
+      this._unsub.push(nc.addClickRoute(N.APP_ROUTE, (entry, action) => this.clickContext(entry, action)));
     }
     this.check().catch(() => {});
   }
@@ -177,10 +179,14 @@ class NotesService extends EventEmitter {
     this._closeNsx();
   }
 
-  /** A click on a push of the plugin while the page exists → the target (utils/notes.js pushTarget) or null. */
-  clickContext(entry) {
+  /**
+   * A click on a push of the plugin while the page exists → the target (utils/notes.js pushTarget) or null. `action`:
+   * the button that was pressed (NotificationCenter.performAction) — „Erledigt“ of several tasks and „Verschieben“ of
+   * the morning hint open „Mein Tag“ with the card instead of the portal.
+   */
+  clickContext(entry, action = null) {
     if (!this.available() || !entry || typeof entry !== 'object') return null;
-    return N.pushTarget(entry.topic, entry.data);
+    return N.pushTarget(entry.topic, entry.data, action && typeof action === 'object' ? action.id : null);
   }
 
   /** server:setup: the old server's state, its keys and the export picked go, the new one is asked. */
@@ -401,6 +407,14 @@ class NotesService extends EventEmitter {
   async completeTask(id, done) { return this._run(async () => ({ ok: true, ...(await this.api.completeTask(id, done)) })); }
 
   async deleteTask(id) { return this._run(async () => { await this.api.deleteTask(id); return { ok: true }; }); }
+
+  // „Gestern offen geblieben“ (plugin 1.3.0, feature `yesterdayOpen`)
+
+  async moveTask(id, to) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, task: await this.api.moveTask(id, to) }; }); }
+
+  async yesterday({ area } = {}) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, yesterday: await this.api.yesterday(N.areaOf(area) || undefined) }; }); }
+
+  async decideYesterday(body) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, ...(await this.api.decideYesterday(body)) }; }); }
 
   async item(id) { return this._run(async () => ({ ok: true, ...(await this.api.item(id)) })); }
 

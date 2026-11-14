@@ -118,6 +118,15 @@ app.on('second-instance', (_e, argv) => {
 });
 ```
 
+Buttons of type `open_portal` open the portal. A page that claimed the entry
+(`addClickRoute(route, (entry, action) => …)`, `action` = the pressed button
+or null for a click on the toast) can answer such a button itself: when its
+context carries `action: '<button id>'` and the button's target is the route's
+own portal tab (`/portal#<route>`), the page opens — `navigate { route, id,
+context }` — instead of the portal (Notizen & Aufgaben, the morning hint
+„Gestern offen geblieben“: a plugin without an app tab gets its
+`open_app_route` buttons from GateControl as portal links).
+
 Without `protocol` the toasts have no buttons; a click on the toast still
 opens the entry (event `navigate`). Unknown/stale nonces only open the inbox.
 

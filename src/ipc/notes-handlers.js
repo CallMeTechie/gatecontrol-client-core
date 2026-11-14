@@ -12,6 +12,7 @@
  *   notes:list:delete ({ id }) · notes:list:members ({ id, members }) · notes:group:create ({ name, area })
  *   notes:group:update ({ id, name?, position? }) · notes:group:delete ({ id })
  *   notes:task:create ({ task }) · notes:task ({ id }) · notes:task:update ({ id, patch }) · notes:task:complete ({ id, done })
+ *   notes:task:move ({ id, to }) · notes:yesterday ({ area? }) · notes:yesterday:decide ({ action, to?, ids?, area? })
  *   notes:task:delete ({ id }) · notes:item ({ id }) · notes:item:complete ({ id, done }) · notes:item:carry ({ id })
  *   notes:notebooks ({ area }) · notes:notebook:create ({ name, area, color?, vault? }) → recoveryKey for a Tresor
  *   notes:notebook:update ({ id, patch }) · notes:notebook:delete ({ id }) · notes:notebook:members ({ id, members })
@@ -150,6 +151,13 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
   });
   on('notes:task:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeTask(a.id, a.done) : invalid('id')));
   on('notes:task:delete', async (a) => (id(a.id) ? s.deleteTask(a.id) : invalid('id')));
+  on('notes:task:move', async (a) => {
+    if (!id(a.id)) return invalid('id');
+    const to = N.moveArg(a.to);
+    return to ? s.moveTask(a.id, to) : invalid('to');
+  });
+  on('notes:yesterday', async (a) => (a.area == null || N.areaOf(a.area) ? s.yesterday({ area: a.area || undefined }) : invalid('area')));
+  on('notes:yesterday:decide', async (a) => { const b = N.yesterdayArg(a); return b ? s.decideYesterday(b) : invalid('action'); });
   on('notes:item', async (a) => (id(a.id) ? s.item(a.id) : invalid('id')));
   on('notes:item:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeItem(a.id, a.done) : invalid('id')));
   on('notes:item:carry', async (a) => (id(a.id) ? s.carryItem(a.id) : invalid('id')));

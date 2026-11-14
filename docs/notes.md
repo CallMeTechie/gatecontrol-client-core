@@ -19,3 +19,25 @@ against `test/fixtures/notes-server.js`, which the Pro app's e2e runs use too).
 
 Opening an item of another plugin (contract § 5): the Pro app maps Mail `message/<id>`, Drive `node/<id>` and Schule to
 its own pages; everything else opens the plugin's portal tab (the portal link cannot carry the route).
+
+## Plugin 1.3.0: reminders with buttons, „Gestern offen geblieben“, the calendar
+
+Told by `me.features` only (never by a version): `reminderActions`, `yesterdayOpen`, `taskCalendar`. An older plugin
+sends none of the fields, and the service refuses the new calls with `unsupported` before the server is asked.
+
+| What | Where |
+|---|---|
+| A task's `reminder` ({ tag, at, atMs, mine, snoozed }), `snoozed`, `missedReminder`, `calendar` ({ state, eventId, calendarId, mine }), `canEdit` | `normalizeTask` |
+| `me.calendar` ({ available, enabled, mine, name } — the calendar shows only when all three are true), `me.yesterday` ({ push, at }) | `normalizeMe` |
+| The card: `view.yesterday` of `views/myday` ({ day, title, count, items, moveOptions }), `GET yesterday`, `POST yesterday` | `normalizeYesterday`, `yesterday()`, `decideYesterday()` — IPC `notes:yesterday`, `notes:yesterday:decide` |
+| A row to another day: `POST tasks/<id>/move { to }` (`today`, `tomorrow`, `weekend`, a date) | `moveTask()` — IPC `notes:task:move` |
+
+Pushes (topic `reminders`): the buttons of a reminder (Erledigt, In 1 Std., Heute Abend) are `callback` actions — the
+notification center shows them on the toast and answers them with the ack, nothing of the service is needed. The
+morning hint (`data.notizen.kind === 'yesterday'`) opens „Mein Tag“ with the card: `pushTarget()` answers
+`{ kind: 'yesterday', day, taskIds, action }`; its buttons „Erledigt“ (several tasks, `done_ask`) and „Verschieben“
+(`move`) arrive as links to the plugin's portal tab (the plugin has no app tab) and open the page instead
+(`NotificationCenter.addClickRoute`: the resolver gets the pressed button, `context.action`).
+
+The Windows apps set **no alarm of their own** (`GET reminders`, `POST tasks/<id>/snooze` are not called): the app
+holds the push stream while it runs, and a closed app has no background alarm on Windows that would be worth the same.
