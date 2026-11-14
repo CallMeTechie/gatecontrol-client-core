@@ -48,7 +48,21 @@ const KNOWN_FEATURES = Object.freeze([
   'notices', 'notice_routes',
   // Messenger 1.11: the host's virus scan (`media.scan`, 422 infected / 423 scan_blocked on send, message.update { scan })
   'scan',
+  // Messenger 1.13: „Verknüpfte Dienste“ (GET bridges …); 1.14: chats over a bridge (`bridge` on conversations and
+  // messages, the mark ?bridged=1) — the second one only for people who have such a chat
+  'linked_services', 'bridge_chats',
 ]);
+// Messenger 1.13 / 1.14 `GET me` features (present only when true).
+const FEATURE_LINKED = 'linked_services';
+const FEATURE_BRIDGE_CHATS = 'bridge_chats';
+// The ways to link an account (POST bridges/:network/login { flow }).
+const BRIDGE_FLOWS = Object.freeze(['phone', 'qr']);
+// A network id as the plugin names it (today: whatsapp), a login / process / step id of the bridge.
+const BRIDGE_NET_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const BRIDGE_ID_RE = /^[A-Za-z0-9._:=+-]{1,128}$/;
+const BRIDGE_LOGIN_STATES = Object.freeze(['connected', 'connecting', 'logged_out', 'error', 'unknown']);
+// A QR code has at most 177 modules a side (version 40).
+const QR_MAX = 177;
 // Messenger 1.4.0 `GET me` features (README "Since 1.4.0").
 const FEATURES_14 = Object.freeze({
   status: 'status', stories: 'stories', polls: 'polls', events: 'events', arrival: 'arrival', actions: 'actions', tools: 'msg_tools', privacy: 'privacy2',
@@ -200,6 +214,10 @@ function messageStatus(m, conv) {
   if (!m) return null;
   if (m.pending) return m.failed ? 'failed' : 'pending';
   if (!m.mine || m.kind === 'system') return null;
+  // Messenger 1.14, a chat over a bridge: what the other messenger said about this very message
+  const b = m.bridge && typeof m.bridge === 'object' ? m.bridge.state : null;
+  if (b === 'failed' || m.status === 'failed') return 'failed';
+  if (b === 'pending' || m.status === 'sending') return 'pending';
   const read = conv && Number.isSafeInteger(conv.readUpTo) ? conv.readUpTo : null;
   const delivered = conv && Number.isSafeInteger(conv.deliveredUpTo) ? conv.deliveredUpTo : null;
   if (read != null && m.id <= read) return 'read';
@@ -600,10 +618,100 @@ function parseChatNotification(n) {
     // Messenger 1.4.0: pushes that are not "a new message" carry data.kind
     // (poll_nudge, event_reminder, event_departure, arrived, reminder,
     // action_approved, action_denied, reaction) and their own collapse_key.
+    // Messenger 1.14: a message of a chat over a bridge (`data.bridge: "whatsapp"`)
+    bridge: isBridgeNet(data.bridge) ? data.bridge : null,
     pushKind: typeof data.kind === 'string' && /^[a-z_]{1,40}$/.test(data.kind) ? data.kind : null,
     deepLink: typeof data.deepLink === 'string' && /^[a-z_]{1,40}$/.test(data.deepLink) ? data.deepLink : null,
     reminderId: posInt(data.reminderId),
   };
+}
+
+// ── Messenger 1.13 / 1.14: linked services (bridges to other messengers) ──
+
+// The services' own names (never translated); an id this version does not know shows as it is.
+const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp' });
+const bridgeLabel = (id) => BRIDGE_LABELS[id] || (typeof id === 'string' && id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
+const isBridgeNet = (v) => typeof v === 'string' && BRIDGE_NET_RE.test(v);
+const isBridgeId = (v) => typeof v === 'string' && BRIDGE_ID_RE.test(v);
+
+/**
+ * A phone number as typed → '+<6–15 digits>' (spaces, brackets, dots, dashes
+ * and slashes removed, a leading 00 becomes +), or null. It is sent once and
+ * never kept or logged.
+ */
+function bridgePhone(raw) {
+  let v = String(raw == null ? '' : raw).replace(/[\s()/.-]/g, '');
+  if (v.startsWith('00')) v = `+${v.slice(2)}`;
+  return /^\+[0-9]{6,15}$/.test(v) ? v : null;
+}
+
+/** `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, version, wantVersion, logins }] }. */
+function normalizeBridges(b) {
+  const src = b && typeof b === 'object' ? b : {};
+  const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+  const networks = (Array.isArray(src.networks) ? src.networks : []).filter((n) => n && isBridgeNet(n.id)).slice(0, 20).map((n) => ({
+    id: n.id,
+    state: s(n.state, 24) || 'unknown',
+    allowed: n.allowed !== false,
+    lock: n.lock === 'child' ? 'child' : null,
+    consent: !!n.consent,
+    outdated: n.outdated === true,
+    version: s(n.version, 40),
+    wantVersion: s(n.wantVersion, 40),
+    logins: (Array.isArray(n.logins) ? n.logins : []).filter((l) => l && isBridgeId(l.id)).slice(0, 10).map((l) => ({
+      id: l.id,
+      name: s(l.name, 80) || '',
+      state: BRIDGE_LOGIN_STATES.includes(l.state) ? l.state : 'unknown',
+      since: s(l.since, 40),
+    })),
+  }));
+  return { available: src.available === true, location: src.location === 'gateway' ? 'gateway' : 'server', networks: src.available === true ? networks : [] };
+}
+
+/** `display.matrix` of a QR step → { size, rows: ['0101…'] } (square, only 0 / 1), or null. */
+function normalizeQrMatrix(m) {
+  if (!m || typeof m !== 'object' || !Array.isArray(m.rows)) return null;
+  const size = m.rows.length;
+  if (size < 21 || size > QR_MAX) return null;
+  const re = new RegExp(`^[01]{${size}}$`);
+  if (!m.rows.every((r) => typeof r === 'string' && re.test(r))) return null;
+  return { size, rows: m.rows.slice() };
+}
+
+/**
+ * `login` of POST bridges/:network/login[/…] → what the page shows next:
+ *   { processId, waiting: true }                       the phone has not confirmed yet — ask again
+ *   { processId, step: { id, type: 'complete' } }
+ *   { processId, step: { id, type: 'phone', fieldId } } the number is asked for
+ *   { processId, step: { id, type: 'code', code } }     the pairing code, then wait
+ *   { processId, step: { id, type: 'qr', matrix } }     the QR code (drawn from its modules), then wait
+ *   { processId, step: { id, type: 'unsupported' } }    a step this version cannot show
+ * null when the answer names no process.
+ */
+function normalizeBridgeLogin(l) {
+  const src = l && typeof l === 'object' ? l : {};
+  if (!isBridgeId(src.processId)) return null;
+  if (src.waiting === true) return { processId: src.processId, waiting: true };
+  const st = src.step && typeof src.step === 'object' ? src.step : {};
+  const id = isBridgeId(st.id) ? st.id : null;
+  const none = { processId: src.processId, step: { id, type: 'unsupported' } };
+  if (st.type === 'complete') return { processId: src.processId, step: { id, type: 'complete' } };
+  if (!id) return none;
+  if (st.type === 'user_input') {
+    const f = (Array.isArray(st.fields) ? st.fields : []).find((x) => x && isBridgeId(x.id));
+    return { processId: src.processId, step: { id, type: 'phone', fieldId: f ? f.id : 'phone_number' } };
+  }
+  if (st.type === 'display_and_wait') {
+    const d = st.display && typeof st.display === 'object' ? st.display : {};
+    if (d.type === 'qr') {
+      const matrix = normalizeQrMatrix(d.matrix);
+      return matrix ? { processId: src.processId, step: { id, type: 'qr', matrix } } : none;
+    }
+    if (d.type === 'code' && typeof d.data === 'string' && /^[A-Za-z0-9 -]{4,24}$/.test(d.data)) {
+      return { processId: src.processId, step: { id, type: 'code', code: d.data } };
+    }
+  }
+  return none;
 }
 
 /** Byte length of a Buffer / typed array / ArrayBuffer (0 otherwise). */
@@ -661,6 +769,16 @@ module.exports = {
   FEATURE_VIDEO_META,
   FEATURE_FILE_THUMBS,
   KNOWN_FEATURES,
+  FEATURE_LINKED,
+  FEATURE_BRIDGE_CHATS,
+  BRIDGE_FLOWS,
+  isBridgeNet,
+  isBridgeId,
+  bridgeLabel,
+  bridgePhone,
+  normalizeBridges,
+  normalizeQrMatrix,
+  normalizeBridgeLogin,
   DELETE_SCOPES,
   EMOJI_MAX,
   TEXT_MAX,

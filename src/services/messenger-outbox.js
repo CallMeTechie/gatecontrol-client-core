@@ -21,7 +21,9 @@
  *   - Network errors, timeouts, 5xx, 429: retried with backoff (2 s → 5 min)
  *     and right away on kick() (stream reconnect, "Erneut senden").
  *     Refusals (4xx: readonly, not_found, too_large, …) mark the entry
- *     `failed`; the UI offers retry / discard.
+ *     `failed`; the UI offers retry / discard. So do the refusals of a chat
+ *     over a bridge (Messenger 1.14: bridge_unreachable, bridge_unlinked, …):
+ *     the server keeps no queue for the other messenger.
  *
  * Events: 'sent' ({ entry, message, duplicate }), 'failed' ({ entry, error }),
  * 'change' ({ conversationId }) whenever the queue changed.
@@ -226,7 +228,10 @@ class MessengerOutbox extends EventEmitter {
       this._changed(e.conversationId);
     } catch (err) {
       if (!this._items.includes(e)) return;
-      const transient = err && typeof err.transient === 'boolean' ? err.transient : true;
+      // Messenger 1.14, a chat over a bridge: there is no queue — while the bridge is away (503 bridge_unreachable)
+      // or the account is not linked nothing is taken; the message shows why and „Erneut senden“ instead of waiting
+      const bridge = !!(err && typeof err.code === 'string' && err.code.startsWith('bridge_'));
+      const transient = bridge ? false : (err && typeof err.transient === 'boolean' ? err.transient : true);
       e.error = (err && err.code) || 'failed';
       // Messenger 1.11: the host's virus scan refused the file (422 infected { finding }, 423 scan_blocked) — never
       // sent again by itself; the finding for „Nicht gesendet – Schadsoftware gefunden (<finding>)“

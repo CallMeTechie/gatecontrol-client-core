@@ -69,6 +69,7 @@ const {
   PLUGIN_ID, posInt, mergeMessages, sortConversations, buildSendBody, isMediaId, isAvatarPath, isNotifyMediaPath, baseMime, byteLength,
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
+  FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -188,6 +189,10 @@ class MessengerService extends EventEmitter {
     this._feed = { at: 0, data: null };
     this._chatLists = null;
     this._actions = { at: 0, list: null };
+    // Messenger 1.14: contacts of a chat over a bridge who are typing (id → Map(contactId → { name, until })),
+    // and whether this server showed a chat over a bridge (an event or a push named one)
+    this._typingContacts = new Map();
+    this._bridgeSeen = false;
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
@@ -200,6 +205,7 @@ class MessengerService extends EventEmitter {
     });
 
     this._loadCache();
+    this._syncBridged();
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -236,7 +242,10 @@ class MessengerService extends EventEmitter {
     this._feed = { at: 0, data: null };
     this._chatLists = null;
     this._actions = { at: 0, list: null };
+    this._typingContacts.clear();
+    this._bridgeSeen = false;
     this._me = null;
+    this._syncBridged();
     this._lastSync = null;
     this._open = { id: null, visible: false };
     this._avail = { state: 'unknown', reason: null, version: null, label: null, checkedAt: null, stale: false };
@@ -298,6 +307,7 @@ class MessengerService extends EventEmitter {
       }
       const me = await this.api.me();
       this._me = this._normalizeMe(me);
+      this._syncBridged();
       this._errorAttempt = 0;
       this._setAvail({ state: 'available', reason: null, version: a.version, label: a.tab && a.tab.label, stale: false });
       this._scheduleCheck(this.timing.recheckMs);
@@ -417,13 +427,14 @@ class MessengerService extends EventEmitter {
     return sortConversations([...this._convs.values()]).map((c) => ({
       ...c,
       typing: this._typingIds(c.id, now),
+      ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, now) } : {}),
       outbox: this.outbox.list(c.id).length,
     }));
   }
 
   getCachedConversation(id) {
     const c = this._convs.get(posInt(id));
-    return c ? { ...c, typing: this._typingIds(c.id, this.now()) } : null;
+    return c ? { ...c, typing: this._typingIds(c.id, this.now()), ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, this.now()) } : {}) } : null;
   }
 
   /** Sum of unread messages of the chats that are neither muted nor archived (1.4.0). */
@@ -525,6 +536,7 @@ class MessengerService extends EventEmitter {
     const had = this._convs.delete(id);
     this._msgs.delete(id);
     this._typing.delete(id);
+    this._typingContacts.delete(id);
     if (this._open.id === id) this._open = { id: null, visible: false };
     if (emit && had) {
       this.emit('conversations', { ids: [], removed: [id] });
@@ -836,6 +848,8 @@ class MessengerService extends EventEmitter {
     if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
     const limits = (this._me && this._me.limits) || {};
     const body = buildSendBody(req, { textMax: limits.textMax || 4000 });
+    // Messenger 1.14: only a text (maybe as an answer) crosses a bridge — refused here like the server would (409)
+    if (c && c.bridge && (body.kind !== 'text' || req.file || body.replyStory || body.location || body.meta)) throw new MessengerError('text only', { code: 'bridge_text_only' });
     // 1.4.0 kinds only to a server that offers them.
     if (KIND_FEATURE[body.kind] && !this.supports(KIND_FEATURE[body.kind])) throw new MessengerError('not supported by the server', { code: 'unsupported' });
     if (body.replyStory && !this.supports(FEATURES_14.stories)) delete body.replyStory;
@@ -1205,6 +1219,135 @@ class MessengerService extends EventEmitter {
 
   _need(feature) {
     if (!this.supports(feature)) throw new MessengerError('not supported by the server', { code: 'unsupported' });
+  }
+
+  // ── Messenger 1.13 / 1.14: linked services and chats over a bridge ──
+
+  /**
+   * Chats over a bridge exist only for a client that says it knows them (?bridged=1 on its calls): said once the
+   * server names `linked_services` or `bridge_chats`, or an event / a push named such a chat — never to an older
+   * plugin. → true when the mark was just switched on (the chat list has to be read in full then).
+   */
+  _syncBridged() {
+    const on = this._bridgeSeen || this.supports(FEATURE_LINKED) || this.supports(FEATURE_BRIDGE_CHATS);
+    const turnedOn = on && !this.api.bridged;
+    this.api.bridged = on;
+    return turnedOn;
+  }
+
+  /**
+   * An event or a push of a chat over a bridge arrived. `features.bridge_chats` appears with a person's first such
+   * chat, so `GET me` is read again when it is not known yet (the page hides its "nur auf deinem Server" then).
+   */
+  noteBridge() {
+    this._bridgeSeen = true;
+    const turnedOn = this._syncBridged();
+    if (turnedOn && this.available()) this.refreshConversations({ full: true }).catch(() => {});
+    if (!this.supports(FEATURE_BRIDGE_CHATS) && this.available() && !this._meRefresh) {
+      this._meRefresh = this.api.me().then((me) => {
+        this._me = this._normalizeMe(me);
+        this._syncBridged();
+        this._emitState();
+        this._persist();
+      }).catch(() => {}).finally(() => { this._meRefresh = null; });
+    }
+  }
+
+  /** GET bridges → { available, location, networks } (the own links; README "Linked services"). */
+  async bridges() {
+    this._need(FEATURE_LINKED);
+    const r = await this.api.bridges();
+    return normalizeBridges(r.bridges);
+  }
+
+  /** The notes before the first link of a service were read and confirmed. */
+  async bridgeConsent(network) {
+    this._need(FEATURE_LINKED);
+    if (!isBridgeNet(network)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.bridgeConsent(network);
+    return { consent: !!r.consent };
+  }
+
+  /** Start linking ('phone': a pairing code, 'qr': a QR code) → normalizeBridgeLogin. */
+  async bridgeLogin(network, flow) {
+    this._need(FEATURE_LINKED);
+    if (!isBridgeNet(network) || !BRIDGE_FLOWS.includes(flow)) throw new MessengerError('invalid', { code: 'invalid' });
+    return this._bridgeLoginOf(network, await this.api.bridgeLogin(network, flow));
+  }
+
+  /**
+   * The next step. `phone` (as typed) answers the step that asks for the number — checked here, sent once, never
+   * kept or logged; without it the server waits for the phone (up to 15 s) → normalizeBridgeLogin.
+   */
+  async bridgeStep(network, processId, stepId, { phone = null, fieldId = null } = {}) {
+    this._need(FEATURE_LINKED);
+    if (!isBridgeNet(network) || !isBridgeId(processId) || !isBridgeId(stepId)) throw new MessengerError('invalid', { code: 'invalid' });
+    let input = null;
+    if (phone != null) {
+      const number = bridgePhone(phone);
+      if (!number) throw new MessengerError('invalid number', { code: 'phone_invalid' });
+      input = { [isBridgeId(fieldId) ? fieldId : 'phone_number']: number };
+    }
+    return this._bridgeLoginOf(network, await this.api.bridgeStep(network, processId, stepId, input));
+  }
+
+  _bridgeLoginOf(network, r) {
+    const login = normalizeBridgeLogin(r && r.login);
+    if (!login) throw new MessengerError('bad login answer', { code: 'bad_response' });
+    // linked: the chats of this service can arrive from now on, and the state of the ones there changed
+    if (login.step && login.step.type === 'complete') this._afterLinkChange();
+    return login;
+  }
+
+  /** Drop a login that was not finished (the page was left, another way chosen). Never throws. */
+  async bridgeCancel(network, processId) {
+    if (!isBridgeNet(network) || !isBridgeId(processId)) return false;
+    try { await this.api.bridgeCancel(network, processId); return true; } catch { return false; }
+  }
+
+  /** Unlink the own account at a service (always allowed for one's own account). */
+  async bridgeUnlink(network, loginId) {
+    this._need(FEATURE_LINKED);
+    if (!isBridgeNet(network) || !isBridgeId(loginId)) throw new MessengerError('invalid', { code: 'invalid' });
+    await this.api.bridgeUnlink(network, loginId);
+    this._afterLinkChange();
+    return true;
+  }
+
+  /** The chats over a bridge carry the link's state (`bridge.state`, `can.send`): read them again. */
+  _afterLinkChange() {
+    if (!this.available()) return;
+    this.refreshConversations({ full: true }).catch(() => {});
+  }
+
+  /** Messenger 1.14: an own message the bridge did not take („Nicht gesendet“), once more → the message. */
+  async resend(messageId) {
+    const id = posInt(messageId);
+    if (!id) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.resend(id);
+    this._replaceMessage(r.message);
+    return r.message || null;
+  }
+
+  _typingContactsOf(cid, now) {
+    const map = this._typingContacts.get(cid);
+    if (!map) return [];
+    return [...map.entries()].filter(([, v]) => v.until > now).map(([contactId, v]) => ({ contactId, name: v.name }));
+  }
+
+  /** `typing` of contacts of a chat over a bridge: { contacts: [{ contactId, name }], until } (until null: stopped). */
+  _setContactTyping(cid, contacts, until) {
+    const had = this._typingContacts.has(cid);
+    const list = (Array.isArray(contacts) ? contacts : []).filter((x) => x && posInt(x.contactId)).slice(0, 20);
+    if (until && until > this.now() && list.length) {
+      const map = new Map();
+      for (const x of list) map.set(x.contactId, { name: typeof x.name === 'string' ? x.name.slice(0, 120) : null, until });
+      this._typingContacts.set(cid, map);
+    } else {
+      this._typingContacts.delete(cid);
+    }
+    if (had || this._typingContacts.has(cid)) this.emit('typing', { conversationId: cid, userIds: this._typingIds(cid, this.now()), contacts: this._typingContactsOf(cid, this.now()) });
+    this._scheduleTypingExpiry();
   }
 
   /**
@@ -1609,6 +1752,11 @@ class MessengerService extends EventEmitter {
     switch (type) {
       case 'message.new': {
         if (!cid) return;
+        // Messenger 1.14: a message of a chat over a bridge (`bridge: "whatsapp"`)
+        if (isBridgeNet(d.bridge)) {
+          this.noteBridge();
+          this._setContactTyping(cid, [], null);
+        }
         const sender = posInt(d.senderId);
         if (sender) this._setTyping(cid, sender, null);
         this._refreshConvSoon(cid);
@@ -1697,6 +1845,12 @@ class MessengerService extends EventEmitter {
       }
       case 'typing': {
         const uid = posInt(d.userId);
+        // Messenger 1.14: contacts of a chat over a bridge (`userId: null`, `contacts`)
+        if (cid && !uid && d.userId === null && Array.isArray(d.contacts)) {
+          const tc = Date.parse(d.until);
+          this._setContactTyping(cid, d.contacts, d.until && Number.isFinite(tc) ? Math.min(tc, this.now() + this.timing.typingValidMs + 2000) : null);
+          return;
+        }
         if (!cid || !uid) return;
         const t = Date.parse(d.until);
         this._setTyping(cid, uid, d.until && Number.isFinite(t) ? Math.min(t, this.now() + this.timing.typingValidMs + 2000) : null);
@@ -1808,10 +1962,17 @@ class MessengerService extends EventEmitter {
     this._clear('typing');
     let next = Infinity;
     for (const map of this._typing.values()) for (const u of map.values()) next = Math.min(next, u);
+    for (const map of this._typingContacts.values()) for (const v of map.values()) next = Math.min(next, v.until);
     if (!Number.isFinite(next)) return;
     this._timers.typing = this._timer(() => {
       this._timers.typing = null;
       const now = this.now();
+      for (const [cid, map] of [...this._typingContacts]) {
+        let changed = false;
+        for (const [k, v] of [...map]) if (v.until <= now) { map.delete(k); changed = true; }
+        if (!map.size) this._typingContacts.delete(cid);
+        if (changed) this.emit('typing', { conversationId: cid, userIds: this._typingIds(cid, now), contacts: this._typingContactsOf(cid, now) });
+      }
       for (const [cid, map] of [...this._typing]) {
         let changed = false;
         for (const [uid, u] of [...map]) if (u <= now) { map.delete(uid); changed = true; }
@@ -1866,6 +2027,8 @@ class MessengerService extends EventEmitter {
       this._convs.clear();
       this._msgs.clear();
       this._me = null;
+      this._bridgeSeen = false;
+      this._syncBridged();
       this._lastSync = null;
       this.emit('conversations', { ids: null, removed: [] });
     }

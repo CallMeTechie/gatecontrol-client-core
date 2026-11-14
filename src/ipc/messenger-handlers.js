@@ -74,6 +74,17 @@
  *   chat:storage         () → { ok, mediaCacheBytes, avatarCacheBytes, cachedChats, cachedMessages, outbox, server }
  *   chat:cache:clear     () → { ok, … storage }
  *
+ * Messenger 1.13 („Verknüpfte Dienste“, code 'unsupported' without feature `linked_services`) and 1.14 (chats over a
+ * bridge). The number and the pairing code pass through and are never logged or stored:
+ *   chat:bridges         () → { ok, bridges: { available, location, networks: [{ id, state, allowed, lock, consent, outdated, logins }] } }
+ *   chat:bridge:consent  ({ network }) → { ok, consent }
+ *   chat:bridge:login    ({ network, flow: 'phone'|'qr' }) → { ok, login }
+ *   chat:bridge:step     ({ network, processId, stepId, phone?, fieldId? }) → { ok, login }   without phone: waits for the phone (≤ 15 s);
+ *                        login: { processId, waiting } | { processId, step: { id, type: 'complete'|'phone'|'code'|'qr'|'unsupported', fieldId?, code?, matrix? } }
+ *   chat:bridge:cancel   ({ network, processId }) → { ok }
+ *   chat:bridge:unlink   ({ network, loginId }) → { ok }
+ *   chat:resend          ({ id }) → { ok, message }   an own message with bridge.state 'failed', once more
+ *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate, chat:feed, chat:lists,
  * chat:reminders.
@@ -104,7 +115,9 @@ const MAX_IPC_FILE = 64 * 1024 * 1024;
 function fail(err) {
   // Messenger 1.11: the virus scan's refusal (423 quarantined | scan_pending | scan_blocked, 422 infected) → scan,
   // finding, retryAfter
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...SC.refusalFields(err) };
+  // Messenger 1.13 / 1.14: a bridge's refusal names why (`reason`: timeout, not_running, logged_out, …)
+  const reason = err && err.body && typeof err.body.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(err.body.reason) ? err.body.reason : null;
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -203,6 +216,22 @@ function registerMessengerHandlers(handle, {
   }));
   handle('chat:outbox:retry', wrap(async (a) => (isClientId(a.clientId) ? { ok: m.retrySend(a.clientId) } : invalid())));
   handle('chat:outbox:discard', wrap(async (a) => (isClientId(a.clientId) ? { ok: await m.discardSend(a.clientId) } : invalid())));
+  // Messenger 1.13 / 1.14: linked services, chats over a bridge
+  const text = (v, max) => (typeof v === 'string' && v.length <= max ? v : '');
+  handle('chat:bridges', wrap(async () => ({ ok: true, bridges: await m.bridges() })));
+  handle('chat:bridge:consent', wrap(async (a) => ({ ok: true, ...(await m.bridgeConsent(text(a.network, 32))) })));
+  handle('chat:bridge:login', wrap(async (a) => ({ ok: true, login: await m.bridgeLogin(text(a.network, 32), text(a.flow, 8)) })));
+  handle('chat:bridge:step', wrap(async (a) => ({
+    ok: true,
+    login: await m.bridgeStep(text(a.network, 32), text(a.processId, 128), text(a.stepId, 128), typeof a.phone === 'string' ? { phone: a.phone.slice(0, 40), fieldId: text(a.fieldId, 128) } : {}),
+  })));
+  handle('chat:bridge:cancel', wrap(async (a) => ({ ok: await m.bridgeCancel(text(a.network, 32), text(a.processId, 128)) })));
+  handle('chat:bridge:unlink', wrap(async (a) => ({ ok: await m.bridgeUnlink(text(a.network, 32), text(a.loginId, 128)) })));
+  handle('chat:resend', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id) return invalid();
+    return { ok: true, message: await m.resend(id) };
+  }));
   handle('chat:edit', wrap(async (a) => {
     if (!posInt(a.id) || typeof a.text !== 'string') return invalid();
     return { ok: true, message: await m.edit(posInt(a.id), a.text) };

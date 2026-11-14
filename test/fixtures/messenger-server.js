@@ -72,6 +72,19 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     actionRuns: [],
     cardImages: new Map(),     // messageId → { mime, data: Buffer }
     exportCalls: [],
+    // 1.13 / 1.14: linked services and chats over a bridge (routes only with features.linked_services)
+    bridge: {
+      available: true,
+      location: 'server',
+      networks: [{ id: 'whatsapp', state: 'running', allowed: true, lock: null, consent: null, outdated: false, version: '0.12.1', wantVersion: '0.12.1', logins: [] }],
+      process: null,            // { id, flow, step, polls } of the login in progress
+      confirmAfter: 2,          // so many waiting calls before the phone "confirmed"
+      qrRenewAt: null,          // a waiting call number at which the QR code is renewed (a new step)
+      loginFails: null,         // { status, code, reason } for the next waiting call
+      phoneRefused: false,
+      sendFails: null,          // a reason: the bridge does not take the next message (stored as failed)
+      calls: [],                // what was asked of the bridge (never a number: only that one came)
+    },
   };
   const streams = new Set();
   const person = (id) => {
@@ -86,6 +99,91 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     state.convs.set(id, c);
     state.msgs.set(id, []);
     return id;
+  }
+
+  /** A chat over a bridge: one member (the linked person), no peer; `state` as GET conversations says it. */
+  function addBridgeConv({ kind = 'direct', title = 'Kim Muster', network = 'whatsapp', bridgeState = 'ok', closed = false } = {}) {
+    const id = addConv({ kind, members: [me], title });
+    Object.assign(state.convs.get(id), { bridge: { network, state: bridgeState, closed } });
+    return id;
+  }
+
+  /** A message of a contact (`contact`: { contactId, name }) or of the person's phone (`remote`), a placeholder, a notice. */
+  function addBridgeMsg(convId, { contact = { contactId: 12, name: 'Kim Muster' }, text = 'Hallo', remote = false, placeholder = null, notice = false, state: st = null, reason = null } = {}) {
+    const mine = remote || st != null;
+    const m = addMsg(convId, { senderId: mine ? me : null, text, kind: notice ? 'system' : 'text' });
+    m.bridge = { sender: mine || notice ? null : contact, remote, state: mine ? (st || 'sent') : null, reason, placeholder };
+    if (notice) m.system = { event: 'bridge_notice', network: state.convs.get(convId).bridge.network };
+    return m;
+  }
+
+  const QR_ROWS = (seed) => Array.from({ length: 25 }, (_, y) => Array.from({ length: 25 }, (_, x) => (((x * 7 + y * 13 + seed) % 3 === 0 || x === 0 || y === 0) ? '1' : '0')).join(''));
+  const waitStep = (pr) => (pr.flow === 'qr'
+    ? { id: `qr${pr.n}`, type: 'display_and_wait', display: { type: 'qr', data: `2@fixture${pr.n}`, matrix: { size: 25, rows: QR_ROWS(pr.n) } } }
+    : { id: 'code1', type: 'display_and_wait', display: { type: 'code', data: 'K7P2-M4X9' } });
+
+  /** bridges/* (bridges.js of the plugin) → the answer, or undefined when the path is not ours. */
+  function bridgeRoute(res, seg, m, body) {
+    const B = state.bridge;
+    if (seg[0] !== 'bridges') return undefined;
+    if (!(features && features.linked_services === true)) return err(res, 404, 'not_found');
+    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks } : { available: false, networks: [] } });
+    const net = B.networks.find((n) => n.id === seg[1]);
+    if (!net || seg.length < 3) return err(res, 404, 'not_found');
+    if (!B.available) return err(res, 409, 'bridge_off', { reason: 'no_host' });
+    const gate = (consent = true) => (!net.allowed ? [403, 'bridge_locked'] : (consent && !net.consent ? [409, 'consent_required'] : null));
+    if (seg.length === 3 && seg[2] === 'consent' && m === 'POST') {
+      if (!body || body.accept !== true) return err(res, 400, 'invalid');
+      const g = gate(false);
+      if (g) return err(res, g[0], g[1]);
+      net.consent = net.consent || iso(now());
+      return json(res, 200, { ok: true, consent: net.consent });
+    }
+    if (seg.length === 3 && seg[2] === 'login' && m === 'POST') {
+      const g = gate();
+      if (g) return err(res, g[0], g[1]);
+      if (net.state !== 'running') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
+      if (!['phone', 'qr'].includes(body && body.flow)) return err(res, 400, 'invalid');
+      const pr = { id: `proc${(B.calls.length + 1)}`, flow: body.flow, n: 1, polls: 0, asked: body.flow === 'phone' };
+      B.process = pr;
+      B.calls.push({ op: 'start', flow: pr.flow });
+      return json(res, 200, { ok: true, login: { processId: pr.id, step: pr.flow === 'phone' ? { id: 'phone1', type: 'user_input', fields: [{ id: 'phone_number', type: 'phone_number', optional: false }] } : waitStep(pr) } });
+    }
+    if (seg.length === 5 && seg[2] === 'login' && m === 'POST') {
+      const g = gate();
+      if (g) return err(res, g[0], g[1]);
+      const pr = B.process;
+      if (!pr || pr.id !== seg[3]) return err(res, 404, 'not_found');
+      if (body && body.input) {
+        const v = body.input.phone_number;
+        B.calls.push({ op: 'input', step: seg[4], ok: /^\+[0-9]{6,15}$/.test(String(v || '')) });
+        if (B.phoneRefused) return err(res, 502, 'bridge_failed', { reason: 'bad_number' });
+        pr.asked = false;
+        return json(res, 200, { ok: true, login: { processId: pr.id, step: waitStep(pr) } });
+      }
+      pr.polls += 1;
+      B.calls.push({ op: 'wait', step: seg[4] });
+      if (B.loginFails) { const f = B.loginFails; B.loginFails = null; if (f.status === 0) { res.socket.destroy(); return true; } B.process = null; return err(res, f.status, f.code, f.reason ? { reason: f.reason } : null); }
+      if (pr.flow === 'qr' && B.qrRenewAt === pr.polls) { pr.n += 1; return json(res, 200, { ok: true, login: { processId: pr.id, step: waitStep(pr) } }); }
+      if (pr.polls < B.confirmAfter) return json(res, 200, { ok: true, login: { processId: pr.id, waiting: true } });
+      B.process = null;
+      net.logins = [{ id: 'login1', name: '+49 1512 0000000', state: 'connected', since: iso(now()) }];
+      for (const c of state.convs.values()) if (c.bridge && c.bridge.network === net.id) c.bridge.state = 'ok';
+      return json(res, 200, { ok: true, login: { processId: pr.id, step: { id: 'done', type: 'complete', loginId: 'login1' } } });
+    }
+    if (seg.length === 4 && seg[2] === 'login' && m === 'DELETE') {
+      B.calls.push({ op: 'cancel', process: seg[3] });
+      if (B.process && B.process.id === seg[3]) B.process = null;
+      return json(res, 200, { ok: true, cancelled: true });
+    }
+    if (seg.length === 4 && seg[2] === 'logins' && m === 'DELETE') {
+      if (!net.logins.some((l) => l.id === seg[3])) return err(res, 404, 'not_found');
+      B.calls.push({ op: 'unlink', login: seg[3] });
+      net.logins = net.logins.filter((l) => l.id !== seg[3]);
+      for (const c of state.convs.values()) if (c.bridge && c.bridge.network === net.id) c.bridge.state = 'unlinked';
+      return json(res, 200, { ok: true, unlinked: true });
+    }
+    return err(res, 404, 'not_found');
   }
 
   function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null, thumbMediaId = null, video = null, poll = null, event = null, action = null, arrival = null, card = null, replyStory = null } = {}) {
@@ -112,6 +210,12 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       ...(m.poll ? { poll: m.poll } : {}), ...(m.event ? { event: m.event } : {}), ...(m.action ? { action: m.action } : {}),
       ...(m.arrival ? { arrival: m.arrival } : {}), ...(m.card ? { card: m.card } : {}), ...(m.replyStory ? { replyStory: m.replyStory } : {}),
       status: m.senderId === viewer ? (m.id <= readUpTo ? 'read' : m.id <= deliveredUpTo ? 'delivered' : 'sent') : null,
+      ...(c.bridge ? {
+        via: `bridge:${c.bridge.network}`,
+        system: m.system || null,
+        bridge: m.bridge || { sender: null, remote: false, state: m.senderId === viewer ? 'sent' : null, reason: null, placeholder: null },
+        ...(m.senderId === viewer && m.bridge && m.bridge.state ? { status: { pending: 'sending' }[m.bridge.state] || m.bridge.state } : {}),
+      } : {}),
     };
   }
 
@@ -138,6 +242,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       archived: !!c.archived,
       pinned: c.pinned || [],
       nextEvent: null,
+      // 1.14: `bridge` on every conversation (null inside GateControl); a chat over a bridge has no peer
+      ...(features && (features.linked_services === true || features.bridge_chats === true) ? { bridge: null } : {}),
+      ...(c.bridge ? {
+        title: c.title, peer: null, avatarUrl: null,
+        bridge: { network: c.bridge.network, label: 'WhatsApp', state: c.bridge.state, closed: !!c.bridge.closed, supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing'] },
+        readUpTo: c.bridge.readUpTo || null, deliveredUpTo: c.bridge.deliveredUpTo || null, receipts: [],
+        can: { send: c.bridge.state === 'ok' && !c.bridge.closed, pin: true, editInfo: false, manageMembers: false, leave: false, setDisappearing: false },
+      } : {}),
     };
   }
 
@@ -395,12 +507,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       for (const [k, v] of Object.entries(body || {})) state.prefs[k] = v && typeof v === 'object' ? { ...(state.prefs[k] || {}), ...v } : v;
       return json(res, 200, { ok: true, prefs: state.prefs });
     }
+    const rb = bridgeRoute(res, seg, m, body);
+    if (rb !== undefined) return rb;
+    // 1.14: a chat over a bridge exists only for a client that says it knows them
+    const bridged = q.bridged === '1' || !!(body && typeof body === 'object' && body.bridged === true);
     const r14 = await route14(req, res, seg, q, body);
     if (r14 !== undefined) return r14;
     if (a === 'people') return json(res, 200, { ok: true, people: users.filter((x) => x.id !== me).map((x) => ({ id: x.id, name: x.name, avatarUrl: x.avatarUrl, initials: x.initials, colorHex: x.colorHex, color: 'green' })) });
     if (a === 'conversations' && !b && m === 'GET') {
       const since = q.since ? Date.parse(q.since) : null;
-      const list = [...state.convs.values()].filter((x) => !since || x.updatedAt > since).map((x) => convView(x));
+      const list = [...state.convs.values()].filter((x) => (!since || x.updatedAt > since) && (!x.bridge || (bridged && state.msgs.get(x.id).length))).map((x) => convView(x));
       return json(res, 200, { ok: true, conversations: list, removed: [], serverTime: iso(now()) });
     }
     if (a === 'conversations' && !b && m === 'POST') {
@@ -413,7 +529,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     }
     if (a === 'conversations' && b) {
       const conv = state.convs.get(Number(b));
-      if (!conv) return err(res, 404, 'not_found');
+      if (!conv || (conv.bridge && !bridged)) return err(res, 404, 'not_found');
       const list = state.msgs.get(conv.id);
       if (!c && m === 'GET') return json(res, 200, { ok: true, conversation: convView(conv) });
       if (!c && m === 'PATCH') {
@@ -447,6 +563,19 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (c === 'messages' && m === 'POST') {
         const dup = list.find((x) => x.clientId === body.clientId && x.senderId === me);
         if (dup) return json(res, 200, { ok: true, message: msgView(dup), duplicate: true });
+        if (conv.bridge) {
+          if ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'location', 'poll', 'event', 'arrival', 'action', 'replyStory', 'meta'].some((k) => body[k] != null)) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          const st = conv.bridge.state;
+          if (st === 'locked') return err(res, 403, 'bridge_locked');
+          if (st === 'off') return err(res, 409, 'bridge_off', { reason: 'off' });
+          if (st === 'unreachable') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
+          if (st === 'logged_out' || st === 'unlinked') return err(res, 409, 'bridge_unlinked', { reason: st });
+          if (conv.bridge.closed) return err(res, 502, 'bridge_failed', { reason: 'chat_closed' });
+          const bm = addMsg(conv.id, { senderId: me, text: body.text, clientId: body.clientId });
+          bm.bridge = { sender: null, remote: false, state: state.bridge.sendFails ? 'failed' : 'sent', reason: state.bridge.sendFails || null, placeholder: null };
+          state.lastSendBody = body;
+          return json(res, 200, { ok: true, message: msgView(bm), duplicate: false });
+        }
         if (body.mediaId && !state.media.has(body.mediaId)) return err(res, 409, 'media_invalid');
         if (body.thumbMediaId && !state.media.has(body.thumbMediaId)) return err(res, 409, 'media_invalid');
         const rich = {};
@@ -487,7 +616,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     if (a === 'messages' && b) {
       let msg = null;
       for (const l of state.msgs.values()) { msg = l.find((x) => x.id === Number(b)) || msg; }
-      if (!msg) return err(res, 404, 'not_found');
+      if (!msg || (state.convs.get(msg.conversationId).bridge && !bridged)) return err(res, 404, 'not_found');
+      if (c === 'resend' && m === 'POST') {
+        if (!state.convs.get(msg.conversationId).bridge) return err(res, 404, 'not_found');
+        if (!msg.bridge || msg.bridge.state !== 'failed') return err(res, 400, 'invalid');
+        msg.bridge = { ...msg.bridge, state: state.bridge.sendFails ? 'failed' : 'sent', reason: state.bridge.sendFails || null };
+        msg.changedAt = now();
+        return json(res, 200, { ok: true, message: msgView(msg) });
+      }
       if (!c && m === 'PATCH') {
         if (msg.senderId !== me) return err(res, 403, 'not_sender');
         msg.text = body.text; msg.editedAt = now(); msg.changedAt = now();
@@ -519,6 +655,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     users,
     addConv,
     addMsg,
+    addBridgeConv,
+    addBridgeMsg,
     convView,
     msgView,
     streams,

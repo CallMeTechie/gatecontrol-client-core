@@ -257,6 +257,16 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       cardImage:     (id) => ipcRenderer.invoke('chat:card:image', { id }),
       // Messenger 1.6 notice cards: the notification's picture (/notify-media/… of the own server)
       noticeImage:   (path) => ipcRenderer.invoke('chat:notice:image', { path }),
+      // Messenger 1.13 „Verknüpfte Dienste“ (status().me.features.linked_services): the own account at another
+      // messenger. step() without `phone` waits for the phone (≤ 15 s); number and code are never stored
+      bridges:       () => ipcRenderer.invoke('chat:bridges'),
+      bridgeConsent: (network) => ipcRenderer.invoke('chat:bridge:consent', { network }),
+      bridgeLogin:   (network, flow) => ipcRenderer.invoke('chat:bridge:login', { network, flow }),
+      bridgeStep:    (network, processId, stepId, input) => ipcRenderer.invoke('chat:bridge:step', { ...(input || {}), network, processId, stepId }),
+      bridgeCancel:  (network, processId) => ipcRenderer.invoke('chat:bridge:cancel', { network, processId }),
+      bridgeUnlink:  (network, loginId) => ipcRenderer.invoke('chat:bridge:unlink', { network, loginId }),
+      // Messenger 1.14: an own message of a chat over a bridge that was not sent, once more
+      resend:        (id) => ipcRenderer.invoke('chat:resend', { id }),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),
