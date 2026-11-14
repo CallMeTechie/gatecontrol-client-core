@@ -67,6 +67,9 @@ const ACTED_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
 // the Windows settings, or the app runs as another Windows user than the one signed in. For this long toasts are not
 // tried again (the app shows them itself), then once more.
 const TOAST_BLOCK_MS = 15 * 60 * 1000;
+// A local message the app shows itself (Windows refused the toast) is not shown a second time while the first one is
+// still on the screen: as a toast the same collapse key would have replaced it.
+const FALLBACK_REPEAT_MS = 10 * 1000;
 const DENIED_RE = /-2147024891|0x80070005|E_ACCESSDENIED|access is denied|zugriff verweigert/i;
 
 /** Is this 'failed' error of a toast Windows' refusal (E_ACCESSDENIED)? */
@@ -211,6 +214,7 @@ class NotificationCenter extends EventEmitter {
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
     this._toastBlock = null;      // { at, error } while Windows refuses the toasts (isToastDenied)
+    this._fallbackSeen = new Map(); // collapse_key of a local message → { text, at } (shown by the app, _fallbackToast)
     this._byCollapse = new Map(); // collapse_key → notification id
     this._nonces = new Map();     // nonce → { id, actionId }
     this._recentToasts = [];
@@ -990,12 +994,29 @@ class NotificationCenter extends EventEmitter {
     });
   }
 
+  /**
+   * The app shows a toast Windows refused. A local message with a collapse key (notify(), e.g. „Update bereit“) that
+   * comes again with the same text within FALLBACK_REPEAT_MS is not shown twice: as a toast it would have replaced the
+   * first one, in the app it would stand next to it (the updater tells a waiting update again 10 s after the start).
+   */
+  _fallbackToast(entry) {
+    const key = entry.id > 0 ? null : entry.collapse_key;
+    if (key) {
+      const text = `${entry.title}\n${entry.body}`;
+      const last = this._fallbackSeen.get(key);
+      const at = this.now();
+      if (last && last.text === text && at - last.at >= 0 && at - last.at < FALLBACK_REPEAT_MS) return;
+      this._fallbackSeen.set(key, { text, at });
+    }
+    this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
+  }
+
   _showToast(entry, decision, onClick = null, localActions = [], inlineImage = null) {
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
     // Windows refuses them for now: the app shows it (the inbox has the entry anyway)
     if (this.toastBlocked()) {
-      this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
+      this._fallbackToast(entry);
       return null;
     }
 
@@ -1065,7 +1086,7 @@ class NotificationCenter extends EventEmitter {
     n.on('failed', (_e, error) => {
       this.log.warn(`Toast failed: ${error}`);
       this._forgetToast(id, n);
-      if (this.reportToastFailure(error)) this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
+      if (this.reportToastFailure(error)) this._fallbackToast(entry);
     });
     n.on('show', () => this.reportToastShown());
     try { n.show(); } catch (err) { this.log.warn(`Notification could not be shown: ${err.message}`); }
@@ -1265,5 +1286,6 @@ NotificationCenter.entryActions = entryActions;
 
 NotificationCenter.isToastDenied = isToastDenied;
 NotificationCenter.TOAST_BLOCK_MS = TOAST_BLOCK_MS;
+NotificationCenter.FALLBACK_REPEAT_MS = FALLBACK_REPEAT_MS;
 
 module.exports = NotificationCenter;

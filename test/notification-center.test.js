@@ -103,6 +103,36 @@ describe('NotificationCenter toasts', () => {
     assert.equal(center.list().items[0].actions.length, 2);
   });
 
+  it('Windows refuses the toasts: the same local message is not shown twice next to itself in the app', () => {
+    const { center, N, setNow } = setup();
+    const fallback = [];
+    center.on('fallback', (x) => fallback.push(x.title + (x.body ? ` – ${x.body}` : '')));
+    const update = () => center.notify({ title: 'Update bereit', body: 'Version 1.89.0 kann installiert werden', collapseKey: 'update', force: true });
+    // the updater finds the update, Windows refuses its toast: the app shows it
+    update();
+    N.created[0].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2147024891)');
+    assert.deepEqual(fallback, ['Update bereit – Version 1.89.0 kann installiert werden']);
+    // 10 s after the start the updater tells the waiting update again: as a toast it would have replaced the first one
+    setNow(T0 + 4000);
+    assert.equal(update(), null);
+    assert.equal(fallback.length, 1);
+    // another text under the same key (a newer version), another key and a message without a key are shown
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'update', force: true });
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'other', force: true });
+    center.notify({ title: 'VPN getrennt', force: true });
+    center.notify({ title: 'VPN getrennt', force: true });
+    assert.deepEqual(fallback.slice(1), ['Update bereit – Version 1.90.0 kann installiert werden', 'Update bereit – Version 1.90.0 kann installiert werden', 'VPN getrennt', 'VPN getrennt']);
+    // a push of the inbox is never dropped (its entry is another one each time)
+    center.handleNotification(note(1, { title: 'Gateway offline', collapse_key: 'gw' }));
+    center.handleNotification(note(2, { title: 'Gateway offline', collapse_key: 'gw' }));
+    assert.equal(fallback.filter((x) => x.startsWith('Gateway offline')).length, 2);
+    // once the first one has left the screen the same message is told again (the periodic check, „Nach Updates suchen“)
+    setNow(T0 + 4000 + NotificationCenter.FALLBACK_REPEAT_MS);
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'update', force: true });
+    assert.equal(fallback.at(-1), 'Update bereit – Version 1.90.0 kann installiert werden');
+    assert.equal(fallback.length, 8);
+  });
+
   it('Windows refuses the toasts (E_ACCESSDENIED): shown in the app instead, the status says so, tried again later', () => {
     const { center, N, events, setNow } = setup();
     const fallback = [];

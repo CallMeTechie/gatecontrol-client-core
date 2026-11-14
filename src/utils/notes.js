@@ -16,7 +16,12 @@
  * parse and POST tasks, GET / POST / PATCH / DELETE places, PUT places/favs, POST tasks/<id>/place/consent, `me.places`,
  * `prefs.places`, the event `places`) and `placeSearch` (POST places/search — a Windows PC has no position of its own:
  * it searches near one of the person's places, never with coordinates). The phone watches the places; a PC shows and
- * changes them only (no places/watch, no places/fired).
+ * changes them only (no places/watch, no places/fired). Plugin 1.6.0: `taskTurns` (whose turn — a task's `turn`: 'rotate'
+ * „reihum“ | 'first' „wer zuerst“ | null, and `people`; `turn` / `people` when writing, `people` / `turn` of POST parse),
+ * `taskStars` (a task's `stars`, `stars` when writing and of POST parse), `familyTasks` (the family's list: `List.family`,
+ * `Task.family`, `Task.doneBy`, `me.familyTasks`, POST tasks/<id>/complete { userId }, POST family/seen),
+ * `doneFeedback` (`prefs.feedback`, the push kind done_feedback with „Noch nicht fertig“) and `placeMine` (a place's
+ * `mine` / `canConsent`: who may accept or decline it).
  *
  * Every text from the server stays text: the renderer puts it into textContent only.
  */
@@ -64,6 +69,11 @@ const PLACE_TRIGGERS = Object.freeze(['enter', 'exit']);
 const PLACE_VIA = Object.freeze(['own', 'family', 'kind', 'address', 'name']);
 const PLACE_CONSENT = Object.freeze(['accepted', 'pending', 'declined']);
 const SEARCH_STATES = Object.freeze(['on', 'off', 'unavailable']);
+// plugin 1.6.0: whose turn, stars, the family's list
+const TURNS = Object.freeze(['rotate', 'first']);
+const STARS_MAX = 10;
+const PEOPLE_MAX = 50;
+const FEEDBACK = Object.freeze(['all', 'stars', 'off']);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -149,6 +159,15 @@ function personList(v, max = 50) {
   return arr(v).slice(0, max).map(personOf).filter((p) => p && p.id);
 }
 
+const turnOf = (v) => (TURNS.includes(v) ? v : null);
+const starsOf = (v) => (Number.isSafeInteger(v) && v >= 1 && v <= STARS_MAX ? v : 0);
+
+/** A person with a number ({ id, name }) or null — who a task was ticked off for, who takes part. */
+function memberOf(v) {
+  const p = personOf(v);
+  return p && p.id ? { id: p.id, name: p.name || '' } : null;
+}
+
 /** A repeat rule (the plugin's ui/repeat.js) → the rule or null. */
 function repeatOf(v) {
   const o = obj(v);
@@ -220,6 +239,8 @@ function quietOf(v) {
 /**
  * A task's `place` (plugin 1.5.0) → { mode: 'place' | 'any', id, name, address, lat, lon, radius, ref, own, trigger, key,
  * label, by, consent, watch, nearby, skipped, later } or null (no place, an older plugin, a place without a point).
+ * Plugin 1.6.0 (`placeMine`) adds `mine` (this person's phone is to watch the place) and `canConsent` (they may accept
+ * or decline it) — only when the server sends them: without them the page decides as before.
  */
 function taskPlaceOf(v) {
   const o = obj(v);
@@ -230,13 +251,16 @@ function taskPlaceOf(v) {
   const name = line(o.name, 120);
   const key = placeKeyOf(o.key);
   if (!name || (any ? !key : lat === null || lon === null)) return null;
-  return {
+  const p = {
     mode: any ? 'any' : 'place', id: any ? null : posId(o.id), name, address: line(o.address, PLACE_ADDRESS_MAX) || '', lat, lon,
     radius: any ? null : radiusOf(o.radius), ref: any ? null : placeRefOf(o.ref), own: bool(o.own),
     trigger: o.trigger === 'exit' ? 'exit' : 'enter', key, label: line(o.label, PLACE_LABEL_MAX), by: posId(o.by),
     consent: PLACE_CONSENT.includes(o.consent) ? o.consent : 'accepted', watch: bool(o.watch), nearby: bool(o.nearby),
     skipped: count(o.skipped) || 0, later: isoOf(o.later),
   };
+  if (typeof o.mine === 'boolean') p.mine = o.mine;
+  if (typeof o.canConsent === 'boolean') p.canConsent = o.canConsent;
+  return p;
 }
 
 /** One of „Meine Orte“ (GET places, POST / PATCH places, a suggestion's place) → cleaned, or null. */
@@ -387,7 +411,12 @@ function normalizeTask(v) {
     attachedList: attachedListOf(o.attachedList),
     // plugin 1.5.0 — null without a place; the phone of the person the task belongs to watches it, never this PC
     place: taskPlaceOf(o.place),
+    // plugin 1.6.0 — whose turn ('rotate': `assignee` is who is on now; 'first': nobody is assigned, the task is for
+    // everybody in `people`), the stars (0: none), who it was ticked off for, a task of the family's list
+    turn: turnOf(o.turn), people: arr(o.people).slice(0, PEOPLE_MAX).map(memberOf).filter(Boolean), stars: starsOf(o.stars),
+    doneBy: memberOf(o.doneBy), family: bool(o.family),
   };
+  if (!t.turn || t.people.length < 2) { t.turn = null; t.people = []; }
   // GET tasks/<id>: the details
   if (typeof o.note === 'string') t.note = text(o.note, NOTE_MAX);
   if (Array.isArray(o.subtasks)) {
@@ -440,6 +469,8 @@ function normalizeList(v) {
     isDefault: bool(o.isDefault), owner: personOf(o.owner), role: o.role === 'owner' || o.role === 'member' ? o.role : null,
     groupId: posId(o.groupId), position: Number.isFinite(o.position) ? o.position : 0, shared: bool(o.shared),
     members: personList(o.members), open: count(o.open), ext: obj(o.ext) && typeof o.ext.kind === 'string' ? { kind: o.ext.kind.slice(0, 20) } : null,
+    // plugin 1.6.0: the family's list (at most one) — who belongs to it is decided by the Familie plugin
+    family: bool(o.family),
   };
 }
 
@@ -694,7 +725,25 @@ function normalizePrefs(v) {
   // plugin 1.5.0: the person's switches of places (an older plugin has none)
   const pl = obj(o.places);
   if (pl) out.places = { search: pl.search !== false, nearby: pl.nearby !== false, quiet: quietOf(pl.quiet) };
+  // plugin 1.6.0: the message to a parent when a child ticks off (an older plugin has none)
+  if (FEEDBACK.includes(o.feedback)) out.feedback = o.feedback;
   return out;
+}
+
+/**
+ * `me.familyTasks` (plugin 1.6.0) → { available, bound, listId, parent, stars, starsMax, moved: { at, tasks, places, seen }
+ * | null } or null (an older plugin). The family's list exists only with `bound`.
+ */
+function familyTasksOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const bound = bool(o.bound) && !!posId(o.listId);
+  const m = obj(o.moved);
+  return {
+    available: bool(o.available), bound, listId: bound ? o.listId : null, parent: bool(o.parent), stars: bool(o.stars),
+    starsMax: Number.isSafeInteger(o.starsMax) && o.starsMax >= 1 ? Math.min(o.starsMax, STARS_MAX) : STARS_MAX,
+    moved: m ? { at: isoOf(m.at), tasks: count(m.tasks) || 0, places: count(m.places) || 0, seen: bool(m.seen) } : null,
+  };
 }
 
 /** GET me */
@@ -719,6 +768,8 @@ function normalizeMe(v) {
     shopping: obj(o.shopping) ? { family: { available: bool(fam && fam.available), bound: bool(fam && fam.bound), parent: bool(fam && fam.parent) } } : null,
     // plugin 1.5.0: is the place search on (the one field to ask: places.search.state), the hints on the way, the radius
     places: mePlacesOf(o.places),
+    // plugin 1.6.0: the family's list, may this person give stars, was the move told already
+    familyTasks: familyTasksOf(o.familyTasks),
   };
 }
 
@@ -762,7 +813,10 @@ function normalizeSearch(v) {
   };
 }
 
-/** POST parse → the quick entry as the server reads it (ui/quickparse.js). */
+/**
+ * POST parse → the quick entry as the server reads it (ui/quickparse.js; plugin 1.6.0 adds what ui/turnwords.js reads
+ * after it: `people`, `turn`, `stars` — [] / null / null from an older plugin).
+ */
 function normalizeParsed(v) {
   const o = obj(v) || {};
   const list = obj(o.list);
@@ -774,6 +828,7 @@ function normalizeParsed(v) {
     list: list && posId(list.id) ? { id: list.id, name: line(list.name, NAME_MAX) || '' } : null, listName: line(o.listName, NAME_MAX),
     assignee: as && posId(as.id) ? { id: as.id, name: line(as.name, 120) || '' } : null, assigneeName: line(o.assigneeName, 120),
     repeat: repeatOf(o.repeat),
+    people: arr(o.people).slice(0, PEOPLE_MAX).map(memberOf).filter(Boolean), turn: turnOf(o.turn), stars: starsOf(o.stars) || null,
   };
 }
 
@@ -901,7 +956,18 @@ function taskPatch(p) {
   else if (o.attachedListUid !== undefined) { if (o.attachedListUid === null) b.attachedListId = null; else if (!shopIdOf(o.attachedListUid)) return null; else b.attachedListUid = o.attachedListUid; }
   // plugin 1.5.0 (`places`): the place a task hangs on (null takes it off)
   if (o.place !== undefined) { const pl = placeArg(o.place); if (pl === undefined) return null; b.place = pl; }
+  // plugin 1.6.0 (`taskTurns`): whose turn — null (one person), 'rotate', 'first' — and who takes part (ids, in order)
+  if (o.turn !== undefined) { if (o.turn !== null && !TURNS.includes(o.turn)) return null; b.turn = o.turn; }
+  if (o.people !== undefined) { const pp = peopleArg(o.people); if (!pp) return null; b.people = pp; }
+  // … and (`taskStars`) the stars of a task of the family's list, 0 takes them off
+  if (o.stars !== undefined) { if (!Number.isSafeInteger(o.stars) || o.stars < 0 || o.stars > STARS_MAX) return null; b.stars = o.stars; }
   return b;
+}
+
+/** `people` of POST / PATCH tasks: the ids of who takes part, in order, nobody twice → ids, or null when one is wrong. */
+function peopleArg(v) {
+  if (!Array.isArray(v) || v.length > PEOPLE_MAX || !v.every((x) => posId(x))) return null;
+  return [...new Set(v)];
 }
 
 /**
@@ -948,7 +1014,10 @@ function placeArg(v) {
   return b;
 }
 
-/** POST tasks: { title | text, listId?, area?, note?, important?, due?, remindAt?, repeat?, assigneeId?, myDay?, parentId?, createList? } */
+/**
+ * POST tasks: { title | text, listId?, area?, note?, important?, due?, remindAt?, repeat?, assigneeId?, myDay?, parentId?,
+ * createList?, turn?, people?, stars? }
+ */
 function taskCreate(p) {
   const o = obj(p);
   if (!o) return null;
@@ -958,7 +1027,7 @@ function taskCreate(p) {
   if (o.parentId !== undefined && o.parentId !== null) { if (!posId(o.parentId)) return null; b.parentId = o.parentId; }
   if (o.area !== undefined) { if (!areaOf(o.area)) return null; b.area = o.area; }
   if (o.createList !== undefined) b.createList = o.createList === true;
-  const rest = taskPatch({ note: o.note, important: o.important, due: o.due, remindAt: o.remindAt, repeat: o.repeat, assigneeId: o.assigneeId, myDay: o.myDay });
+  const rest = taskPatch({ note: o.note, important: o.important, due: o.due, remindAt: o.remindAt, repeat: o.repeat, assigneeId: o.assigneeId, myDay: o.myDay, turn: o.turn, people: o.people, stars: o.stars });
   if (!rest) return null;
   // plugin 1.4.0: a list to carry, or `attach: 'auto'` — the server attaches the list the line names when exactly one fits
   if (o.attachedListId !== undefined && o.attachedListId !== null) { if (!posId(o.attachedListId)) return null; b.attachedListId = o.attachedListId; }
@@ -1190,7 +1259,10 @@ function toggleCheck(md, lineNo, done) {
  * list (plugin 1.4.0, data.notizen.attachedList): its button „Liste öffnen“ ('open_list') → { kind: 'shopping', uid,
  * listId, taskId } — the list to tick off; a click on the message itself stays the task. „… möchte dich erinnern“
  * (plugin 1.5.0, data.notizen.kind 'place_consent') opens the task, where the place is accepted or declined; its
- * buttons are callbacks the notification center answers itself.
+ * buttons are callbacks the notification center answers itself. Plugin 1.6.0: „… hat ‚…‘ erledigt“ (kind
+ * 'done_feedback': „Ansehen“ and a click open the task, „Noch nicht fertig“ is such a callback) and „Erledigt von …“
+ * (kind 'reminder_done', it takes the place of the reminder of a task „wer zuerst“) open the task — the latter names it
+ * as `taskId` only.
  */
 function pushTarget(topic, data, actionId = null) {
   if (typeof topic !== 'string' || !topic.startsWith(TOPIC_PREFIX)) return null;
@@ -1206,6 +1278,7 @@ function pushTarget(topic, data, actionId = null) {
     const al = obj(n.attachedList);
     if (actionId === 'open_list' && al && shopIdOf(al.uid)) return { kind: 'shopping', uid: al.uid, listId: posId(al.id), taskId: posId(n.task) || posId(n.taskId) };
     if (posId(n.task)) return { kind: 'task', taskId: n.task };
+    if ((n.kind === 'done_feedback' || n.kind === 'reminder_done') && posId(n.taskId)) return { kind: 'task', taskId: n.taskId };
     if (posId(n.list)) return { kind: 'list', listId: n.list };
     if (posId(n.notebook)) return { kind: 'notebook', notebookId: n.notebook };
     if (vaultIdOf(n.vault)) return { kind: 'vault', vaultId: n.vault, event: n.event === 'request' || n.event === 'approved' ? n.event : null };
@@ -1232,6 +1305,7 @@ module.exports = {
   SHOP_OPS, SHOP_OPS_MAX, SHOP_NAME_MAX, SHOP_TEXT_MAX, SHOP_QTY_MAX,
   line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf, shopIdOf, isoOf,
   normalizeShopList, normalizeShopItem, normalizeShopping, normalizeOpsAnswer, normalizeAttach, shopOp, shopOps, assignArg,
+  TURNS, STARS_MAX, FEEDBACK, peopleArg,
   PLACE_RADIUS, PLACE_TRIGGERS, placeKeyOf, familyIdOf, normalizePlace, normalizeFamilyPlace, normalizePlaces, normalizeFavs, normalizePlaceSuggest,
   normalizePlaceSearch, placeArg, placeCreate, placePatch, favArg, placeSearchArg, placePrefsArg,
   normalizeTask, normalizeItem, normalizeEntry, normalizeList, normalizeGroup, normalizeNotebook, normalizeNoteSummary, normalizeNote,

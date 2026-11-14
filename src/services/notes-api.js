@@ -21,6 +21,9 @@
  *   POST   places/search { key | q, address?, nearPlaceId | nearFamilyId } · POST tasks/<id>/place/consent { accept }
  *          (places, plugin 1.5.0 — an older plugin answers 404. A PC watches no place: places/watch and places/fired
  *          are the phone's and are not called here; a search never carries a position, only a place to search near)
+ *   POST   tasks/<id>/complete { done, userId? } · POST family/seen · POST parse { text, area, listId? } · PUT prefs { feedback }
+ *          (whose turn, stars, the family's list — plugin 1.6.0: `turn`, `people`, `stars` of POST / PATCH tasks; a parent
+ *          ticks off for a member of the family with `userId`; an older plugin passes the new fields over in silence)
  *   GET    items/<id> · POST items/<id>/complete · POST items/<id>/carry
  *   GET|POST notebooks · PATCH|DELETE notebooks/<id> · PUT notebooks/<id>/members
  *   GET|POST notes · GET|PATCH|DELETE notes/<id> · POST notes/<id>/check · POST notes/<id>/task
@@ -115,8 +118,9 @@ class NotesApi {
    * POST parse → what the parser made of the line, the shopping list it names ({ via, word, list, lists } | null, plugin
    * 1.4.0) and the place it names ({ via, word, key, label, title, certain, place, options, search } | null, plugin 1.5.0).
    */
-  async suggest(text, area) {
-    const r = await this.api('POST', 'parse', { body: { text, ...(area ? { area } : {}) } });
+  async suggest(text, area, listId = null) {
+    // `listId` (plugin 1.6.0): the list the line is typed in — only there the server reads stars
+    const r = await this.api('POST', 'parse', { body: { text, ...(area ? { area } : {}), ...(listId ? { listId } : {}) } });
     return { parsed: N.normalizeParsed(r.parsed), attach: N.normalizeAttach(r.attach), place: N.normalizePlaceSuggest(r.place) };
   }
 
@@ -167,10 +171,14 @@ class NotesApi {
 
   async updateTask(id, body) { return N.normalizeTask((await this.api('PATCH', `tasks/${this._id(id)}`, { body })).task); }
 
-  async completeTask(id, done) {
-    const r = await this.api('POST', `tasks/${this._id(id)}/complete`, { body: { done } });
+  /** `userId` (plugin 1.6.0, the family's list, parents): ticked off for this member of the family — the stars are theirs. */
+  async completeTask(id, done, userId = null) {
+    const r = await this.api('POST', `tasks/${this._id(id)}/complete`, { body: { done, ...(userId ? { userId: this._id(userId) } : {}) } });
     return { task: N.normalizeTask(r.task), next: r.next ? N.normalizeTask(r.next) : null };
   }
+
+  /** POST family/seen: the note „Umzug abgeschlossen“ was read (plugin 1.6.0) — once per person. */
+  async familySeen() { await this.api('POST', 'family/seen', { body: {} }); return {}; }
 
   async deleteTask(id) { await this.api('DELETE', `tasks/${this._id(id)}`); return {}; }
 

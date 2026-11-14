@@ -19,6 +19,8 @@
  *   notes:places · notes:place:create ({ place }) · notes:place:update ({ id, patch }) · notes:place:delete ({ id })
  *   notes:place:fav ({ key, placeId | null }) · notes:place:search ({ key | q, address?, nearPlaceId | nearFamilyId })
  *   notes:task:place:consent ({ id, accept })  (plugin 1.5.0)
+ *   notes:task:complete ({ id, done, userId? }) · notes:family:seen · notes:parse ({ text, area, listId? })
+ *   notes:prefs:set ({ patch: { feedback } }) · turn / people / stars of notes:task:create and :update  (plugin 1.6.0)
  *   notes:task:delete ({ id }) · notes:item ({ id }) · notes:item:complete ({ id, done }) · notes:item:carry ({ id })
  *   notes:notebooks ({ area }) · notes:notebook:create ({ name, area, color?, vault? }) → recoveryKey for a Tresor
  *   notes:notebook:update ({ id, patch }) · notes:notebook:delete ({ id }) · notes:notebook:members ({ id, members })
@@ -89,7 +91,11 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
   on('notes:me', async (a) => s.me({ refresh: a.refresh === true }));
   on('notes:nav', async (a) => s.nav({ area: area(a.area) }));
   on('notes:view', async (a) => (N.viewName(a.name) ? s.view({ name: a.name, area: area(a.area) }) : invalid('name')));
-  on('notes:parse', async (a) => (typeof a.text === 'string' && a.text.length <= 1000 ? s.parse({ text: a.text, area: area(a.area) }) : invalid('text')));
+  on('notes:parse', async (a) => {
+    if (typeof a.text !== 'string' || a.text.length > 1000) return invalid('text');
+    if (a.listId != null && !id(a.listId)) return invalid('listId');
+    return s.parse({ text: a.text, area: area(a.area), listId: a.listId || null });
+  });
   on('notes:people', async () => s.people());
   on('notes:search', async (a) => {
     const q = typeof a.q === 'string' ? a.q.trim() : '';
@@ -113,6 +119,7 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
     }
     if (p.times !== undefined) body.times = N.normalizePrefs({ times: p.times }).times;
     if (p.places !== undefined) { const pl = N.placePrefsArg(p.places); if (!pl) return invalid('places'); body.places = pl; }
+    if (p.feedback !== undefined) { if (!N.FEEDBACK.includes(p.feedback)) return invalid('feedback'); body.feedback = p.feedback; }
     return Object.keys(body).length ? s.setPrefs(body) : invalid('patch');
   });
   on('notes:sources', async () => s.sources());
@@ -159,7 +166,13 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
     const b = N.taskPatch(a.patch);
     return id(a.id) && b && Object.keys(b).length ? s.updateTask(a.id, b) : invalid('patch');
   });
-  on('notes:task:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeTask(a.id, a.done) : invalid('id')));
+  // `userId` (plugin 1.6.0): a parent ticks a task of the family's list off for this member of the family
+  on('notes:task:complete', async (a) => {
+    if (!id(a.id) || typeof a.done !== 'boolean') return invalid('id');
+    if (a.userId != null && !id(a.userId)) return invalid('userId');
+    return s.completeTask(a.id, a.done, a.userId || null);
+  });
+  on('notes:family:seen', async () => s.familySeen());
   on('notes:task:delete', async (a) => (id(a.id) ? s.deleteTask(a.id) : invalid('id')));
   on('notes:task:move', async (a) => {
     if (!id(a.id)) return invalid('id');

@@ -25,6 +25,11 @@
 // POST tasks/<id>/place/consent, me.places, prefs.places. POST places/watch and POST places/fired are the phone's:
 // the fake has neither, and state.requests shows that a Windows app never asks for them.
 //
+// With the 1.6.0 words (STAGE4: taskTurns, taskStars, familyTasks, doneFeedback, placeMine — not in the default either):
+// whose turn (`turn`, `people` of a task, when writing and from the typed line — the plugin's own ui/turnwords.js after
+// the parser), stars, the family's list (srv.addFamily(): `List.family`, `Task.family`, `Task.doneBy`, `me.familyTasks`,
+// what a child may, POST tasks/<id>/complete { userId }, POST family/seen), `prefs.feedback` and a place's `mine` /
+// `canConsent`. state.user decides who asks (a parent or a child of the family).
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
 //   requests …), srv.addTask({ id, listId, title, due, … }), srv.addShopList({ id, name, icon?, area?, family?, role?,
@@ -50,6 +55,7 @@ function vendor(file, deps) {
 }
 const R = vendor('repeat.js', {});
 const Q = vendor('quickparse.js', { './repeat': R });
+const TW = vendor('turnwords.js', {});
 
 const PLUGIN = 'gatecontrol-notizen';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
@@ -58,6 +64,7 @@ const FEATURES = ['tasks', 'notes', 'sources', 'vault', 'mstodo', 'dsnote', 'sea
 const STAGE1 = ['reminderActions', 'yesterdayOpen', 'taskCalendar'];
 const STAGE2 = ['shoppingLists', 'taskList', 'familyShopping'];
 const STAGE3 = ['places', 'placeSearch'];
+const STAGE4 = ['taskTurns', 'taskStars', 'familyTasks', 'doneFeedback', 'placeMine'];
 const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
@@ -71,6 +78,7 @@ const TEXTS = {
 };
 const SOURCES = ['gatecontrol-familie', 'gatecontrol-mail', 'gatecontrol-drive', 'gatecontrol-schule', 'gatecontrol-alltag'];
 const t = (k) => TEXTS[k] || k;
+const STAGE4_TURNS = ['rotate', 'first'];
 const VID_RE = /^[A-Za-z0-9_-]{22}$/;
 const B64U_RE = /^[A-Za-z0-9_-]+$/;
 const TAG_RE = /(^|[\s(,;])#([\p{L}\p{N}][\p{L}\p{N}_-]{0,40})/gu;
@@ -130,7 +138,11 @@ async function notesServer({
     familyPlaces: [{ id: 'home', name: 'Zuhause', lat: 52.5203, lon: 13.4051, radius: 150 }, { id: 'place:3', name: 'Schule', lat: 52.5301, lon: 13.4101, radius: 300 }],
     placeCfg: { mode: 'osm', down: false },   // the administrator's choice (off | osm | own); down: the map service does not answer
     placeSearches: [],        // the bodies of POST places/search
+    // plugin 1.6.0
+    family: { available: true, listId: null, parents: [], kids: [], stars: true, starsMax: 10, moved: null },   // srv.addFamily()
+    feedback: [],             // what the parents were told: { taskId, userId, stars } (the push kind done_feedback)
   };
+  if (features.includes('doneFeedback')) state.prefs.feedback = 'all';
   if (features.includes('places')) state.prefs.places = { search: true, nearby: true, quiet: { from: '21:00', to: '07:00' } };
   const has = (f) => state.features.includes(f);
   // lists, tasks
@@ -175,7 +187,55 @@ async function notesServer({
     role: l.ownerId === me() ? 'owner' : 'member', groupId: l.groupId, position: l.position, shared: l.members.length > 1,
     members: l.members.filter((m) => m !== l.ownerId).map((m) => ({ id: m, name: nameOf(m) })),
     open: [...state.tasks.values()].filter((x) => x.listId === l.id && !x.doneAt && !x.deleted && !x.parentId).length, ext: l.ext,
+    ...(has('familyTasks') ? { family: isFamilyList(l.id) } : {}),
   });
+  // ── plugin 1.6.0: whose turn, stars, the family's list ──
+  const isFamilyList = (lid) => has('familyTasks') && !!state.family.listId && state.family.listId === lid;
+  const famMember = (uid) => state.family.parents.includes(uid) || state.family.kids.includes(uid);
+  const isParent = (uid = me()) => state.family.parents.includes(uid);
+  const isKid = (uid = me()) => state.family.kids.includes(uid);
+  const person = (uid) => ({ id: uid, name: nameOf(uid) });
+  /** Who takes part in a task: only who is (still) a member of its list; fewer than two → an ordinary task. */
+  const turnOf = (x) => {
+    const l = state.lists.get(x.listId);
+    const people = x.turn && l ? (x.people || []).filter((u) => l.members.includes(u)) : [];
+    return people.length >= 2 ? { turn: x.turn, people } : { turn: null, people: [] };
+  };
+  /** What a child may in the family's list (the contract § 5): change what no parent made, tick off what is theirs. */
+  const mayEdit = (x) => !(isFamilyList(x.listId) && isKid() && isParent(x.by || 1));
+  const mayComplete = (x) => {
+    if (!isFamilyList(x.listId) || !isKid()) return true;
+    const tn = turnOf(x);
+    if (tn.turn === 'first') return tn.people.includes(me());
+    return !x.assigneeId || x.assigneeId === me();
+  };
+  /** turn / people / stars of POST / PATCH tasks for task `x` (an older plugin passes them over in silence). */
+  function setTurnAndStars(x, b, soft = false) {
+    const l = state.lists.get(x.listId);
+    if (has('taskTurns') && (b.turn !== undefined || b.people !== undefined)) {
+      const turn = b.turn !== undefined ? b.turn : x.turn || null;
+      const people = b.people !== undefined ? b.people : x.people || [];
+      if (turn !== null && !STAGE4_TURNS.includes(turn)) throw fail(400, 'invalid', { field: 'turn' });
+      if (turn) {
+        if (!Array.isArray(people) || new Set(people).size < 2) { if (!soft) throw fail(400, 'invalid', { field: 'people' }); } else if (!people.every((u) => l.members.includes(u))) { if (!soft) throw fail(409, 'not_member', { field: 'people' }); } else {
+          x.turn = turn;
+          x.people = [...new Set(people)];
+          if (turn === 'first') x.assigneeId = null;
+          else x.assigneeId = x.people.includes(b.assigneeId) ? b.assigneeId : x.people.includes(x.assigneeId) ? x.assigneeId : x.people[0];
+        }
+      } else { x.turn = null; x.people = []; }
+    }
+    if (has('taskStars') && b.stars !== undefined) {
+      if (!Number.isSafeInteger(b.stars) || b.stars < 0 || b.stars > 10) throw fail(400, 'invalid', { field: 'stars' });
+      if (b.stars > 0 && !isFamilyList(x.listId)) { if (!soft) throw fail(400, 'invalid', { field: 'stars', reason: 'family' }); } else if (b.stars > 0 && !isParent()) { if (!soft) throw fail(403, 'forbidden', { reason: 'parents_only' }); } else x.stars = b.stars;
+    }
+  }
+  /** `me.familyTasks` for who asks. */
+  const familyTasksView = () => {
+    const f = state.family;
+    const bound = !!f.listId && famMember(me());
+    return { available: f.available, bound, listId: bound ? f.listId : null, parent: isParent(), stars: f.stars, starsMax: f.starsMax, moved: bound && f.moved ? { ...f.moved, seen: !!(f.moved.seenBy || []).includes(me()) } : null };
+  };
   const myLists = (a) => [...state.lists.values()].filter((l) => l.members.includes(me()) && (!a || l.area === a));
   // ── plugin 1.4.0: shopping lists ──
   const isoAt = (ms) => `${new Date(Math.floor(ms / 1000) * 1000 + 3600000).toISOString().slice(0, 19)}+01:00`;
@@ -394,6 +454,8 @@ async function notesServer({
       mode: j.any ? 'any' : 'place', id: r ? r.id : null, name: r ? r.name : `Jeder ${label}`, address: r ? r.address || '' : '', lat: r ? r.lat : null, lon: r ? r.lon : null, radius: r ? r.radius : null,
       ref: r ? r.ref || null : null, own: !!(r && r.named && r.userId === me()), trigger: j.trigger === 'exit' ? 'exit' : 'enter', key: j.key || null, label, by: j.by || null,
       consent: j.consent || 'accepted', watch: j.who === me() && (j.consent || 'accepted') === 'accepted', nearby: !!j.key && j.trigger !== 'exit' && !j.any, skipped: 0, later: null,
+      // 1.6.0: whose phone is to watch the place, and who may accept or decline it (everybody else gets 403)
+      ...(has('placeMine') ? { mine: j.who === me(), canConsent: j.who === me() } : {}),
     };
   }
   /** `place` of POST / PATCH tasks for task `x` (the plugin's places.argFor): written into state.taskPlace. */
@@ -515,6 +577,19 @@ async function notesServer({
     }
     if (has('taskList')) v.attachedList = x.parentId ? null : attachedOf(x);
     if (has('places')) v.place = taskPlaceView(x);
+    if (has('taskTurns')) {
+      const tn = turnOf(x);
+      v.turn = tn.turn;
+      v.people = tn.people.map(person);
+      if (tn.turn === 'first') v.assignee = null;
+    }
+    if (has('taskStars')) v.stars = isFamilyList(x.listId) && state.family.stars ? x.stars || 0 : 0;
+    if (has('familyTasks')) {
+      v.family = isFamilyList(x.listId);
+      v.doneBy = x.doneAt && x.doneBy ? person(x.doneBy) : null;
+      v.canEdit = mayEdit(x);
+      v.canComplete = mayComplete(x);
+    }
     if (has('taskCalendar')) {
       const c = state.calendar;
       v.calendar = c.available && c.enabled && c.mine && x.due && x.due.time && !x.doneAt ? { state: 'synced', eventId: 900 + x.id, calendarId: 7, mine: true } : null;
@@ -701,6 +776,12 @@ async function notesServer({
   const reachVault = (vid) => { if (!VID_RE.test(String(vid)) || !state.vaults.has(vid)) throw fail(404, 'not_found'); return state.vaults.get(vid); };
   const wrapsOf = (vid, did) => [...state.keys].filter(([k]) => k.startsWith(`${vid}|${did}|`)).map(([k, w]) => ({ keyVersion: Number(k.split('|')[2]), wrap: w })).sort((a, b) => a.keyVersion - b.keyVersion);
 
+  /** ui/turnwords.js on what the parser read, for a line typed in list `listId` (stars only in the family's list, by a parent). */
+  function turnWords(parsed, listId) {
+    const w = TW.apply(parsed, { people: state.people.map((q) => ({ id: q.id, name: q.name })), stars: has('taskStars') && isFamilyList(listId) && isParent() && state.family.stars });
+    return { title: w.title, people: has('taskTurns') ? w.people : [], turn: has('taskTurns') ? w.turn : null, stars: w.stars };
+  }
+
   function createTask(b) {
     let title = b.title;
     let parsed = null;
@@ -717,6 +798,13 @@ async function notesServer({
       if (parsed.assignee) fields.assigneeId = parsed.assignee.id;
       if (parsed.list) listId = parsed.list.id;
       else if (parsed.listName && b.createList) { const l = list({ id: id(), name: parsed.listName, area: a }); listId = l.id; }
+    }
+    // 1.6.0: several people, „reihum“ / „wer zuerst“ and stars of the typed line (ui/turnwords.js, after the parser)
+    let words = null;
+    if (parsed && (has('taskTurns') || has('taskStars'))) {
+      words = turnWords(parsed, listId || (myLists(a).find((l) => l.isDefault) || {}).id);
+      title = words.title || title;
+      parsed = { ...parsed, title: words.title, people: words.people, turn: words.turn, stars: words.stars };
     }
     if (!title || typeof title !== 'string') throw fail(400, 'invalid', { field: 'title' });
     if (b.parentId) { const p = accessTask(b.parentId); listId = p.listId; }
@@ -739,7 +827,14 @@ async function notesServer({
       else placeArg = b.place;
       if (placeArg !== undefined && placeArg !== null && place) title = place.title;
     }
-    const x = task({ id: id(), listId, parentId: posInt(b.parentId), title: title.slice(0, 300), note: b.note || '', ...fields, updatedAt: state.now });
+    if (b.parentId && !mayEdit(accessTask(b.parentId))) throw fail(403, 'forbidden', { reason: 'parents_only' });
+    const x = task({ id: id(), listId, parentId: posInt(b.parentId), title: title.slice(0, 300), note: b.note || '', ...fields, by: me(), updatedAt: state.now });
+    try {
+      // what the line says and does not fit (somebody is no member of the list, stars without the right) is dropped in
+      // silence; what the body names itself is refused
+      if (words && !b.parentId) setTurnAndStars(x, { ...(words.turn ? { turn: words.turn, people: words.people.map((q) => q.id) } : {}), ...(words.stars ? { stars: words.stars } : {}) }, true);
+      if (!b.parentId) setTurnAndStars(x, { turn: b.turn, people: b.people, stars: b.stars, assigneeId: b.assigneeId });
+    } catch (err) { state.tasks.delete(x.id); throw err; }
     if (placeArg !== undefined && placeArg !== null) { try { setTaskPlace(x, placeArg); } catch (err) { state.tasks.delete(x.id); throw err; } }
     if (b.myDay) state.myDay.add(x.id);
     if (carry) state.attached.set(x.id, carry);
@@ -760,6 +855,7 @@ async function notesServer({
           search: { state: searchState(), enabled: state.placeCfg.mode !== 'off', mine: state.prefs.places.search !== false, service: state.placeCfg.mode, radiusKm: 15, decimals: 2, attribution: ATTRIBUTION },
           nearby: state.prefs.places.nearby !== false, quiet: state.prefs.places.quiet || null, perTask: 5, radius: { min: 50, max: 2000, default: 150 }, family: state.familyPlaces.length > 0,
         } } : {}),
+        ...(has('familyTasks') ? { familyTasks: familyTasksView() } : {}),
       };
     }
     if (is('GET', 1, 'nav')) {
@@ -786,7 +882,9 @@ async function notesServer({
     }
     if (method === 'GET' && n === 2 && a === 'views') return view(x, area(q.area));
     if (is('POST', 1, 'parse')) {
-      const parsed = Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people });
+      let parsed = Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people });
+      // 1.6.0: `listId` — the list the line is typed in (or the one it names with #): only there stars are read
+      if (has('taskTurns') || has('taskStars')) { const w = turnWords(parsed, parsed.list ? parsed.list.id : posInt(b.listId)); parsed = { ...parsed, title: w.title, people: w.people, turn: w.turn, stars: w.stars }; }
       return { parsed, ...(has('taskList') ? { attach: suggest(b.text, parsed, area(b.area)) } : {}), ...(has('places') ? { place: placeSuggest(parsed.title) } : {}) };
     }
     // 1.5.0: places (an older plugin has none of these routes). What a phone watches and what fired is not here
@@ -903,6 +1001,7 @@ async function notesServer({
         for (const k of ['search', 'nearby']) if (typeof b.places[k] === 'boolean') pl[k] = b.places[k];
         if (b.places.quiet !== undefined) { const q = b.places.quiet; pl.quiet = q && /^\d\d:\d\d$/.test(q.from) && /^\d\d:\d\d$/.test(q.to) && q.from !== q.to ? { from: q.from, to: q.to } : null; }
       }
+      if (b.feedback !== undefined && has('doneFeedback')) { if (!['all', 'stars', 'off'].includes(b.feedback)) throw fail(400, 'invalid', { field: 'feedback' }); state.prefs.feedback = b.feedback; }
       return { prefs: state.prefs };
     }
     if (is('GET', 1, 'sources')) {
@@ -931,12 +1030,14 @@ async function notesServer({
       const l = state.lists.get(posInt(x));
       if (!l) throw fail(404, 'not_found');
       if (l.isDefault) throw fail(409, 'conflict', { reason: 'default' });
+      if (isFamilyList(l.id)) throw fail(403, 'forbidden', { reason: 'family' });
       state.lists.delete(l.id);
       return {};
     }
     if (method === 'PUT' && n === 3 && a === 'lists' && y === 'members') {
       const l = state.lists.get(posInt(x));
       if (!l) throw fail(404, 'not_found');
+      if (isFamilyList(l.id)) throw fail(403, 'forbidden', { reason: 'family' });
       l.members = [l.ownerId, ...(b.members || []).filter((m) => m !== l.ownerId)];
       return { list: listView(l) };
     }
@@ -952,7 +1053,13 @@ async function notesServer({
       const carry = attachArg(b);
       if (carry !== undefined) { if (carry) state.attached.set(r.id, carry); else state.attached.delete(r.id); }
       if (b.listId !== undefined && shopByNum(posInt(b.listId))) throw fail(400, 'invalid', { field: 'listId', reason: 'shopping' });
+      // 1.6.0: a child changes only „Mein Tag“ at a task a parent made
+      if (!mayEdit(r) && Object.keys(b).some((k) => k !== 'myDay' && k !== 'base')) throw fail(403, 'forbidden', { reason: 'parents_only' });
       if (b.place !== undefined && has('places') && !r.parentId) setTaskPlace(r, b.place);
+      if (!r.parentId) setTurnAndStars(r, b);
+      // „wer zuerst“ has nobody assigned; „reihum“ only somebody who takes part
+      const tn0 = turnOf(r);
+      if (b.assigneeId !== undefined && tn0.turn && (tn0.turn === 'first' || !tn0.people.includes(b.assigneeId))) delete b.assigneeId;
       for (const k of ['title', 'note', 'important', 'due', 'remindAt', 'repeat', 'assigneeId', 'listId', 'position']) {
         if (b[k] === undefined) continue;
         if (k === 'remindAt' && b[k] && typeof b[k] === 'object') r.remindAt = `${b[k].date}T${b[k].time}:00+01:00`;
@@ -963,16 +1070,42 @@ async function notesServer({
       r.updatedAt = state.now;
       return { task: taskView(r, true) };
     }
-    if (method === 'DELETE' && n === 2 && a === 'tasks') { accessTask(x).deleted = true; return {}; }
+    if (method === 'DELETE' && n === 2 && a === 'tasks') {
+      const r = accessTask(x);
+      if (!mayEdit(r)) throw fail(403, 'forbidden', { reason: 'parents_only' });
+      r.deleted = true;
+      return {};
+    }
+    // 1.6.0: the note „Umzug abgeschlossen“ was read (an older plugin has no such route)
+    if (method === 'POST' && n === 2 && a === 'family' && x === 'seen' && has('familyTasks')) {
+      const f = state.family;
+      if (f.moved) f.moved.seenBy = [...new Set([...(f.moved.seenBy || []), me()])];
+      return {};
+    }
     if (method === 'POST' && n === 3 && a === 'tasks' && y === 'complete') {
       const r = accessTask(x);
       const done = b.done !== false;
+      // 1.6.0: who it is ticked off for — a parent for a member of the family (`userId`, or the child it is assigned to)
+      const fam = isFamilyList(r.listId);
+      if (fam && !mayComplete(r)) throw fail(403, 'forbidden');
+      let doneBy = me();
+      if (has('familyTasks') && b.userId !== undefined && b.userId !== null) {
+        if (!fam) throw fail(400, 'invalid', { field: 'userId' });
+        if (!isParent() && b.userId !== me()) throw fail(403, 'forbidden', { reason: 'parents_only' });
+        if (!famMember(b.userId)) throw fail(400, 'invalid', { field: 'userId' });
+        doneBy = b.userId;
+      } else if (fam && isParent() && r.assigneeId && isKid(r.assigneeId)) doneBy = r.assigneeId;
       r.doneAt = done ? state.now : null;
+      r.doneBy = done ? doneBy : null;
       r.updatedAt = state.now;
+      if (fam && done && isKid(doneBy) && has('doneFeedback')) state.feedback.push({ taskId: r.id, userId: doneBy, stars: r.stars || 0 });
       let next = null;
+      const tn = turnOf(r);
       if (done && r.repeat) {
         const nd = R.next(r.repeat, { due: r.due ? r.due.date : null, done: state.today });
-        next = task({ ...r, id: id(), doneAt: null, due: { date: nd, time: r.due ? r.due.time : null } });
+        next = task({ ...r, id: id(), doneAt: null, doneBy: null, due: { date: nd, time: r.due ? r.due.time : null } });
+        // „reihum“: the next one of `people` is on
+        if (tn.turn === 'rotate') next.assigneeId = tn.people[(tn.people.indexOf(r.assigneeId) + 1) % tn.people.length];
         if (state.attached.has(r.id)) state.attached.set(next.id, state.attached.get(r.id));
         if (state.taskPlace.has(r.id)) state.taskPlace.set(next.id, { ...state.taskPlace.get(r.id) });
         r.repeat = null;
@@ -1322,6 +1455,17 @@ async function notesServer({
     url: `http://127.0.0.1:${server.address().port}`,
     state,
     addTask: (o) => task({ id: id(), listId: 1, ...o }),
+    /**
+     * The family's list of the hub (plugin 1.6.0, after the move): parents and children are its members → the list.
+     * `moved`: { tasks, places } — the note „Umzug abgeschlossen“ is still to be shown to everybody.
+     */
+    addFamily: ({ parents = [1, 12], kids = [15, 16], name = 'Familie', moved = null, stars = true } = {}) => {
+      const names = { 16: ['Mia Muster', 'MM', '#DB2777'], 17: ['Jonas Muster', 'JM', '#0891B2'] };
+      for (const u of [...parents, ...kids]) if (!state.people.some((q) => q.id === u)) { const nm = names[u] || [`Person ${u}`, 'P', '#64748B']; state.people.push({ id: u, name: nm[0], initials: nm[1], colorHex: nm[2] }); }
+      const l = list({ id: id(), name, area: 'private', icon: 'home', ownerId: parents[0], members: [...parents, ...kids] });
+      Object.assign(state.family, { listId: l.id, parents: [...parents], kids: [...kids], stars, moved: moved ? { at: '2026-11-08T07:00:00Z', tasks: moved.tasks || 0, places: moved.places || 0, seenBy: [] } : null });
+      return l;
+    },
     /** A shopping list of the hub with its items → { uid, num, items: [ids] } (num: Task.attachedList.id). */
     addShopList: ({ id: uid, name, icon = 'cart', area: ar = 'private', family = false, role = 'owner', members = [], items = [] }) => {
       const l = { uid, num: id(), name, icon, area: ar, ownerId: role === 'owner' ? 1 : 12, members: role === 'owner' ? members : [{ id: 1, role }, ...members], family, deletedAt: null, updatedAt: state.now, was: [1] };
@@ -1350,4 +1494,4 @@ async function notesServer({
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, noteMeta };
