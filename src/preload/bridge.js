@@ -270,6 +270,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Messenger 1.15 (status().me.features.bridge_new_chat): a new chat by phone number — checked on request only
       bridgeResolve: (network, number, cc) => ipcRenderer.invoke('chat:bridge:resolve', { network, number, cc }),
       bridgeNewChat: (network, number, cc) => ipcRenderer.invoke('chat:bridge:chat', { network, number, cc }),
+      // Messenger 1.17 (status().me.features.bridge_history): „Älteren Verlauf laden“, a file of the older history now
+      bridgeHistory: (days) => ipcRenderer.invoke('chat:bridge:history', { days }),
+      fetchFile:     (id) => ipcRenderer.invoke('chat:fetch', { id }),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),

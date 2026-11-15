@@ -352,6 +352,40 @@ Again only feature words, set by the server together with `bridge_chats`:
   `bridge_locked`, `child_new_chat_off`, `bridge_unreachable`, `bridge_off`,
   `not_found` (`reason: not_on_network`).
 
+### Messenger 1.17: older history, the phone, „Brücke veraltet“
+
+One feature word, `bridge_history` — set only for people who linked a
+service, and only when the server can take older messages over (`gc.bridges`
+version 5):
+
+* `GET bridges` → `history` `{ available, days, default, options, pending }`
+  (`normalizeBridgeHistory`; `null` = the server has none: the row is left
+  out). `setBridgeHistory(days)` — `0` (off), `30` (days), `-1` (everything),
+  checked before anything is asked — → `PUT bridges/history { days }` → the
+  new `history`. The choice holds at the next link (WhatsApp sends the
+  history only then); fewer days drop at once what still waits.
+* Older messages come at night, without push and without `message.new`, as
+  read: per chat and portion one `conversation.update { reason: history }`.
+  The chat that is open (`setOpen`) loads its newest messages again
+  (`messages` with `reason: 'history'`; the view stays where it is), any other
+  chat's cached messages are dropped and loaded when it opens. No toast, no
+  sound.
+* Files of the history wait for a click: `bridge.placeholder.state` is
+  `on_request`; `fetchBridgeFile(id)` → `POST messages/:id/fetch?bridged=1`
+  (empty body) → the message, its placeholder then `loading`; the file follows
+  like any other (`message.update { media: true }`). `400 invalid` when there
+  is nothing to fetch; very old files end as `failed` / `gone`.
+* Per service `phone` `{ offline, days, leftDays }` (`normalizePhone`; the
+  bridge warns after 12 days, WhatsApp ends the link after about 14) and
+  `clientOutdated` (WhatsApp refuses the bridge's version — shown like
+  `outdated`). The push of the new topic `bridge`
+  (`plugin:gatecontrol-messenger:bridge`, „WhatsApp: Handy seit N Tagen nicht
+  gesehen“, data
+  `{ deepLink: 'bridges', bridge }`) is an ordinary inbox entry with its toast;
+  `ChatNotifier` claims a click on it for the chats' app route
+  (`bridgePushContext` → navigate `{ route: 'plg-gatecontrol-messenger',
+  context: { type: 'bridges', bridge } }`): the app opens „Verknüpfte Dienste“.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -482,7 +516,7 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 (`{ mime, data: Uint8Array }`), 1.13 / 1.14: `bridges`, `bridgeConsent`,
 `bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`, 1.15:
 `bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
-`storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+1.17: `bridgeHistory(days)`, `fetchFile(id)`, `storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
@@ -501,8 +535,8 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
   every Windows toast; the portable build shows no toasts.
 * End-to-end encryption is not part of V1. Chats over a bridge carry text
   only with Messenger 1.14; files, voice messages, pictures of contacts and
-  "new chat with a number" come with 1.15 (`bridge_media`, `bridge_new_chat`).
-  Older history follows with a later plugin version.
+  "new chat with a number" come with 1.15 (`bridge_media`, `bridge_new_chat`),
+  older history with 1.17 (`bridge_history`).
 * Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
   departure hint push of an event opens the chat.
 * Server storage: the server reports only whether the chat file quota is

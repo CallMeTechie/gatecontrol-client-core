@@ -54,6 +54,9 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.15: files and pictures over a bridge; a new chat by phone number (POST bridges/:network/resolve, …/chats)
   // — set only together with bridge_chats (1.16: bridge_new_chat as soon as a service is linked)
   'bridge_media', 'bridge_new_chat',
+  // Messenger 1.17: older history at a new link (GET/PUT bridges/history), its files on request
+  // (POST messages/:id/fetch), the phone warning — only for people who linked a service
+  'bridge_history',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -61,6 +64,12 @@ const FEATURE_BRIDGE_CHATS = 'bridge_chats';
 // Messenger 1.15 `GET me` features.
 const FEATURE_BRIDGE_MEDIA = 'bridge_media';
 const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
+// Messenger 1.17 `GET me` feature.
+const FEATURE_BRIDGE_HISTORY = 'bridge_history';
+// What of the older messages comes over at a new link (PUT bridges/history { days }): nothing, 30 days, everything.
+const HISTORY_DAYS = Object.freeze([0, 30, -1]);
+// The push of „Verknüpfte Dienste“ (Messenger 1.17: the phone was not seen for days).
+const BRIDGE_TOPIC = `plugin:${PLUGIN_ID}:bridge`;
 // Why a new chat by number is not possible right now (GET bridges → networks[].newChat.reason, Messenger 1.16).
 const NEW_CHAT_REASONS = Object.freeze(['unlinked', 'logged_out', 'unreachable', 'child_locked', 'child_new_chat_off', 'off']);
 // The country code a number without one gets (the dialog's default).
@@ -638,6 +647,20 @@ function parseChatNotification(n) {
 
 // ── Messenger 1.13 / 1.14: linked services (bridges to other messengers) ──
 
+/**
+ * A push of „Verknüpfte Dienste“ (Messenger 1.17, topic `bridge`: „WhatsApp: Handy seit N Tagen nicht gesehen“,
+ * data { deepLink: 'bridges', bridge }) → { type: 'bridges', bridge } — a click opens „Verknüpfte Dienste“ —
+ * or null when the entry is none.
+ */
+function bridgePushContext(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {};
+  const topic = typeof entry.topic === 'string' ? entry.topic : '';
+  const ours = topic === BRIDGE_TOPIC || (topic.startsWith(`plugin:${PLUGIN_ID}:`) && data.deepLink === 'bridges');
+  if (!ours) return null;
+  return { type: 'bridges', bridge: typeof data.bridge === 'string' && BRIDGE_NET_RE.test(data.bridge) ? data.bridge : null };
+}
+
 // The services' own names (never translated); an id this version does not know shows as it is.
 const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp' });
 const bridgeLabel = (id) => BRIDGE_LABELS[id] || (typeof id === 'string' && id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
@@ -725,7 +748,37 @@ function bridgeMediaRefusal(bridge, kind, mime) {
   return types.includes(baseMime(mime)) ? null : k;
 }
 
-/** `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, version, wantVersion, logins, newChat }] }. */
+/**
+ * `history` of GET bridges (Messenger 1.17) → { available, days, default, options, pending }, or null (a server
+ * without older history: the row is left out). `days` / `options` only from 0, 30 and -1 (everything).
+ */
+function normalizeBridgeHistory(h) {
+  if (!h || typeof h !== 'object' || Array.isArray(h)) return null;
+  const day = (v) => (HISTORY_DAYS.includes(v) ? v : null);
+  const options = (Array.isArray(h.options) ? h.options : HISTORY_DAYS).filter((v) => HISTORY_DAYS.includes(v));
+  const uniq = [...new Set(options.length ? options : HISTORY_DAYS)];
+  const days = day(h.days);
+  return {
+    available: h.available === true,
+    days: days === null ? (day(h.default) === null ? 30 : day(h.default)) : days,
+    default: day(h.default) === null ? 30 : day(h.default),
+    options: uniq,
+    pending: Number.isSafeInteger(h.pending) && h.pending > 0 ? h.pending : 0,
+  };
+}
+
+/** `phone` of a service in GET bridges (Messenger 1.17) → { offline, days, leftDays } (days null when not offline). */
+function normalizePhone(p) {
+  const v = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+  if (v.offline !== true) return { offline: false, days: null, leftDays: null };
+  const int = (x) => (Number.isSafeInteger(x) && x >= 0 && x <= 100000 ? x : null);
+  return { offline: true, days: int(v.days), leftDays: int(v.leftDays) };
+}
+
+/**
+ * `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, clientOutdated,
+ * version, wantVersion, logins, newChat, phone }], history }.
+ */
 function normalizeBridges(b) {
   const src = b && typeof b === 'object' ? b : {};
   const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
@@ -736,6 +789,8 @@ function normalizeBridges(b) {
     lock: n.lock === 'child' ? 'child' : null,
     consent: !!n.consent,
     outdated: n.outdated === true,
+    // Messenger 1.17: WhatsApp turned the bridge's version away — shown like `outdated`
+    clientOutdated: n.clientOutdated === true,
     version: s(n.version, 40),
     wantVersion: s(n.wantVersion, 40),
     logins: (Array.isArray(n.logins) ? n.logins : []).filter((l) => l && isBridgeId(l.id)).slice(0, 10).map((l) => ({
@@ -746,8 +801,16 @@ function normalizeBridges(b) {
     })),
     // Messenger 1.16: may the person start a chat by number here (only with the feature bridge_new_chat)
     newChat: normalizeNewChat(n.newChat),
+    // Messenger 1.17: the bridge's warning — the phone was not seen for `days` (≥ 12) days
+    phone: normalizePhone(n.phone),
   }));
-  return { available: src.available === true, location: src.location === 'gateway' ? 'gateway' : 'server', networks: src.available === true ? networks : [] };
+  return {
+    available: src.available === true,
+    location: src.location === 'gateway' ? 'gateway' : 'server',
+    networks: src.available === true ? networks : [],
+    // Messenger 1.17: older messages at a new link (null: the server has none)
+    history: src.available === true ? normalizeBridgeHistory(src.history) : null,
+  };
 }
 
 /** `display.matrix` of a QR step → { size, rows: ['0101…'] } (square, only 0 / 1), or null. */
@@ -868,6 +931,12 @@ module.exports = {
   bridgeLabel,
   bridgePhone,
   normalizeBridges,
+  normalizeBridgeHistory,
+  normalizePhone,
+  bridgePushContext,
+  FEATURE_BRIDGE_HISTORY,
+  HISTORY_DAYS,
+  BRIDGE_TOPIC,
   normalizeQrMatrix,
   normalizeBridgeLogin,
   DELETE_SCOPES,

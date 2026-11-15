@@ -90,6 +90,9 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       numbers: new Map(),       // '+49…' → name of the numbers "at WhatsApp"
       lookups: 0,
       lookupMax: 10,
+      // 1.17: older history at a new link (features.bridge_history; null = the server has none)
+      history: { available: true, days: 30, default: 30, options: [0, 30, -1], pending: 0 },
+      fetches: [],              // ids of messages whose file of the history was asked for
     },
   };
   const streams = new Set();
@@ -133,7 +136,15 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     const B = state.bridge;
     if (seg[0] !== 'bridges') return undefined;
     if (!(features && features.linked_services === true)) return err(res, 404, 'not_found');
-    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks } : { available: false, networks: [] } });
+    const hist = features && features.bridge_history === true;
+    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks, ...(hist ? { history: B.history } : {}) } : { available: false, networks: [] } });
+    // 1.17: what of the older messages comes over
+    if (seg.length === 2 && seg[1] === 'history' && m === 'PUT') {
+      if (!hist || !B.history) return err(res, 403, 'feature_off');
+      if (![0, 30, -1].includes(body && body.days)) return err(res, 400, 'invalid');
+      B.history = { ...B.history, days: body.days, pending: body.days === 0 ? 0 : B.history.pending };
+      return json(res, 200, { ok: true, history: B.history });
+    }
     const net = B.networks.find((n) => n.id === seg[1]);
     if (!net || seg.length < 3) return err(res, 404, 'not_found');
     if (!B.available) return err(res, 409, 'bridge_off', { reason: 'no_host' });
@@ -657,6 +668,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       let msg = null;
       for (const l of state.msgs.values()) { msg = l.find((x) => x.id === Number(b)) || msg; }
       if (!msg || (state.convs.get(msg.conversationId).bridge && !bridged)) return err(res, 404, 'not_found');
+      // 1.17: a file of the older history, fetched now
+      if (c === 'fetch' && m === 'POST') {
+        if (!(features && features.bridge_history === true) || !state.convs.get(msg.conversationId).bridge) return err(res, 404, 'not_found');
+        const ph = msg.bridge && msg.bridge.placeholder;
+        if (!ph || ph.state !== 'on_request') return err(res, 400, 'invalid');
+        state.bridge.fetches.push(msg.id);
+        msg.bridge = { ...msg.bridge, placeholder: { ...ph, state: 'loading' } };
+        msg.changedAt = now();
+        return json(res, 200, { ok: true, message: msgView(msg) });
+      }
       if (c === 'resend' && m === 'POST') {
         if (!state.convs.get(msg.conversationId).bridge) return err(res, 404, 'not_found');
         if (!msg.bridge || msg.bridge.state !== 'failed') return err(res, 400, 'invalid');
