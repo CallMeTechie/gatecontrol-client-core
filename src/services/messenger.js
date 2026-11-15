@@ -71,6 +71,7 @@ const {
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
   FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
+  FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -1362,7 +1363,11 @@ class MessengerService extends EventEmitter {
    */
   async bridgeStartChat(network, number, cc) {
     const n = this._newChatNumber(network, number, cc);
-    const r = await this.api.bridgeChat(network, n);
+    return this._startedBridgeChat(await this.api.bridgeChat(network, n));
+  }
+
+  /** A chat over a bridge just made or found (POST bridges/:network/chats) → { conversation, created }, kept in the list. */
+  _startedBridgeChat(r) {
     const conv = r && r.conversation && typeof r.conversation === 'object' && posInt(r.conversation.id) ? r.conversation : null;
     if (!conv) throw new MessengerError('bad answer', { code: 'bad_response' });
     this._removedAt.delete(conv.id);
@@ -1370,6 +1375,32 @@ class MessengerService extends EventEmitter {
     this._upsert(conv);
     this.noteBridge();
     return { conversation: this.getCachedConversation(conv.id), created: r.created === true };
+  }
+
+  /**
+   * Messenger 1.18 (`bridge_contacts`): the people for „Neuer Chat“ — GateControl, the WhatsApp contacts and the
+   * address book (GET contacts/new-chat) → normalizeNewChatContacts. `q` is the search as typed (≤ 100 characters);
+   * listing and searching ask the service nothing. Neither the search nor a name or number is logged or kept.
+   */
+  async newChatContacts(network, q) {
+    this._need(FEATURE_BRIDGE_CONTACTS);
+    if (!isBridgeNet(network)) throw new MessengerError('invalid', { code: 'invalid' });
+    const query = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, CONTACTS_QUERY_MAX) : '';
+    return normalizeNewChatContacts(await this.api.newChatContacts(network, query));
+  }
+
+  /**
+   * Messenger 1.18: the direct chat with a contact of „Neuer Chat“ → { conversation, created }. `contact`:
+   * { ref } — a WhatsApp contact, started at once (nothing checked, nothing counted); { contactId, phoneKind } — a number
+   * of the address book, checked at the service now (counted in the brake; 404 not_found with reason not_on_network,
+   * maybe remembered). 409 contact_expired: the reference ran out — load the list again.
+   */
+  async bridgeContactChat(network, contact) {
+    this._need(FEATURE_BRIDGE_CONTACTS);
+    if (!isBridgeNet(network)) throw new MessengerError('invalid', { code: 'invalid' });
+    const body = contactChatBody(contact);
+    if (!body) throw new MessengerError('invalid', { code: 'invalid' });
+    return this._startedBridgeChat(await this.api.bridgeContactChat(network, body));
   }
 
   _newChatNumber(network, number, cc) {

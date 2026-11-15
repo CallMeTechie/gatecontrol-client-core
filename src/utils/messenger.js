@@ -57,6 +57,9 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.17: older history at a new link (GET/PUT bridges/history), its files on request
   // (POST messages/:id/fetch), the phone warning — only for people who linked a service
   'bridge_history',
+  // Messenger 1.18: „Neuer Chat“ with contacts — GateControl, WhatsApp, the address book (GET contacts/new-chat,
+  // POST bridges/:network/chats { ref } | { contactId, phoneKind }) — only for people who linked a service
+  'bridge_contacts',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -64,6 +67,15 @@ const FEATURE_BRIDGE_CHATS = 'bridge_chats';
 // Messenger 1.15 `GET me` features.
 const FEATURE_BRIDGE_MEDIA = 'bridge_media';
 const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
+// Messenger 1.18 `GET me` feature: „Neuer Chat“ with contacts.
+const FEATURE_BRIDGE_CONTACTS = 'bridge_contacts';
+// GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
+// address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
+const CONTACTS_QUERY_MAX = 100;
+const CONTACT_REF_RE = /^k[A-Za-z0-9_-]{40,1400}$/;
+const PHONE_KEY_RE = /^(mobile|work|home|other)(-[2-9])?$/;
+const PHONE_KINDS = Object.freeze(['mobile', 'work', 'home', 'other']);
+const CONTACT_LIST_STATES = Object.freeze(['ok', 'unreachable', 'logged_out']);
 // Messenger 1.17 `GET me` feature.
 const FEATURE_BRIDGE_HISTORY = 'bridge_history';
 // What of the older messages comes over at a new link (PUT bridges/history { days }): nothing, 30 days, everything.
@@ -728,6 +740,92 @@ function normalizeResolve(r) {
   return { found, name, avatarMediaId: found && isMediaId(src.avatarMediaId) ? src.avatarMediaId : null, existing: found && ex ? { conversationId: ex } : null };
 }
 
+/**
+ * Messenger 1.18: GET contacts/new-chat → { network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+ * number, numberEntry, limit } — the three sections of „Neuer Chat“ (GateControl → WhatsApp → address book, each
+ * null / empty when the server leaves it out). WhatsApp contacts carry a sealed `ref`, never a number; the numbers
+ * of the address book are the person's own (sorted mobile, work, home, other). Nothing of it is kept or logged.
+ */
+function normalizeNewChatContacts(r) {
+  const src = r && typeof r === 'object' ? r : {};
+  const name = (v) => (typeof v === 'string' ? v.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 120) : '');
+  const int = (x, max) => (Number.isSafeInteger(x) && x >= 0 && x <= max ? x : null);
+  // a picture's address as GET people gives it (absolute http(s) or a path of the server), nothing else
+  const url = (v) => (typeof v === 'string' && v.length <= 2048 && (/^https?:\/\//i.test(v) || !/^[a-z][a-z0-9+.-]*:/i.test(v)) ? v : null);
+  const state = (v) => (CONTACT_LIST_STATES.includes(v) ? v : 'unreachable');
+  const gatecontrol = (Array.isArray(src.gatecontrol) ? src.gatecontrol : []).filter((p) => p && posInt(p.userId)).slice(0, 2000).map((p) => ({
+    id: p.userId,
+    userId: p.userId,
+    name: name(p.name) || null,
+    avatarUrl: url(p.avatarUrl),
+    initials: typeof p.initials === 'string' ? p.initials.slice(0, 4) : null,
+    colorHex: typeof p.colorHex === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.colorHex) ? p.colorHex : null,
+    conversationId: posInt(p.conversationId),
+  }));
+  let whatsapp = null;
+  const wa = src.whatsapp && typeof src.whatsapp === 'object' ? src.whatsapp : null;
+  if (wa) {
+    const items = (Array.isArray(wa.items) ? wa.items : []).filter((c) => c && typeof c.ref === 'string' && CONTACT_REF_RE.test(c.ref)).slice(0, 5000).map((c) => ({
+      ref: c.ref,
+      name: name(c.name) || null,
+      avatarMediaId: isMediaId(c.avatarMediaId) ? c.avatarMediaId : null,
+      avatarUrl: url(c.avatarUrl),
+      conversationId: posInt(c.conversationId),
+      alsoInAddressBook: c.alsoInAddressBook === true,
+      addressBookId: posInt(c.addressBookId),
+    }));
+    const st = state(wa.state);
+    whatsapp = { state: st, total: int(wa.total, 100000) != null ? wa.total : items.length, items: st === 'ok' ? items : [] };
+  }
+  let addressBook = null;
+  const ab = whatsapp && src.addressBook && typeof src.addressBook === 'object' ? src.addressBook : null;
+  if (ab) {
+    const items = [];
+    for (const x of (Array.isArray(ab.items) ? ab.items : []).slice(0, 5000)) {
+      if (!x || !posInt(x.contactId)) continue;
+      const phones = (Array.isArray(x.phones) ? x.phones : []).filter((p) => p && typeof p.key === 'string' && PHONE_KEY_RE.test(p.key) && typeof p.number === 'string' && p.number.trim()).slice(0, 20).map((p) => ({
+        key: p.key,
+        kind: PHONE_KINDS.includes(p.kind) ? p.kind : p.key.replace(/-.*/, ''),
+        number: p.number.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 40),
+        e164: typeof p.e164 === 'string' && /^\+[1-9][0-9]{5,15}$/.test(p.e164) ? p.e164 : null,
+        landline: p.landline === true,
+        notOnNetwork: p.notOnNetwork === true,
+      }));
+      if (!phones.length) continue;
+      phones.sort((a, b) => PHONE_KINDS.indexOf(a.kind) - PHONE_KINDS.indexOf(b.kind));
+      items.push({ contactId: x.contactId, name: name(x.name) || null, conversationId: posInt(x.conversationId), phones });
+    }
+    addressBook = { state: whatsapp.state, total: int(ab.total, 100000) != null ? ab.total : items.length, items };
+  }
+  const n = src.number && typeof src.number === 'object' ? src.number : null;
+  const number = n && typeof n.e164 === 'string' && /^\+[1-9][0-9]{5,15}$/.test(n.e164)
+    ? { e164: n.e164, show: typeof n.show === 'string' && n.show.trim() ? n.show.trim().slice(0, 40) : n.e164, conversationId: posInt(n.conversationId) }
+    : null;
+  const l = src.limit && typeof src.limit === 'object' ? src.limit : null;
+  return {
+    network: isBridgeNet(src.network) ? src.network : null,
+    query: typeof src.query === 'string' ? src.query.slice(0, CONTACTS_QUERY_MAX) : '',
+    gatecontrol,
+    whatsapp,
+    addressBook,
+    addressBookReason: typeof src.addressBookReason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(src.addressBookReason) ? src.addressBookReason : null,
+    number: whatsapp ? number : null,
+    numberEntry: !!whatsapp && src.numberEntry === true,
+    limit: l ? { perHour: int(l.perHour, 1000), left: int(l.left, 1000), retryAfterS: int(l.retryAfterS, 86400) || 0 } : null,
+  };
+}
+
+/**
+ * Messenger 1.18: what POST bridges/:network/chats gets for a contact of GET contacts/new-chat → { ref } (a WhatsApp
+ * contact) or { contactId, phoneKind } (a number of the address book), or null.
+ */
+function contactChatBody(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  if (typeof o.ref === 'string') return CONTACT_REF_RE.test(o.ref) ? { ref: o.ref } : null;
+  const id = posInt(o.contactId);
+  return id && typeof o.phoneKind === 'string' && PHONE_KEY_RE.test(o.phoneKind) ? { contactId: id, phoneKind: o.phoneKind } : null;
+}
+
 /** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
 function bridgeOutKind(kind, mime) {
   if (kind === 'image' || kind === 'voice') return kind;
@@ -918,6 +1016,10 @@ module.exports = {
   FEATURE_BRIDGE_CHATS,
   FEATURE_BRIDGE_MEDIA,
   FEATURE_BRIDGE_NEW_CHAT,
+  FEATURE_BRIDGE_CONTACTS,
+  CONTACTS_QUERY_MAX,
+  normalizeNewChatContacts,
+  contactChatBody,
   NEW_CHAT_REASONS,
   DEFAULT_CC,
   bridgeNumber,

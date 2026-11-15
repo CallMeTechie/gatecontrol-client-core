@@ -402,6 +402,23 @@ class MessengerApi {
   /** Messenger 1.17: fetch a file of the older history now (placeholder state on_request) → { message }. */
   async fetchFile(messageId) { return this.api('POST', `messages/${this._id(messageId)}/fetch`, { body: {} }); }
 
+  /**
+   * Messenger 1.18: the people for „Neuer Chat“ — GateControl, the WhatsApp contacts (sealed `ref`, no number) and the
+   * address book of Mail → see utils normalizeNewChatContacts. `q` (≤ 100 characters) goes as a query parameter.
+   */
+  async newChatContacts(network, q) {
+    const params = { network: this._net(network), ...(q ? { q } : {}) };
+    return this.api('GET', 'contacts/new-chat', { params, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /**
+   * Messenger 1.18: the direct chat with a contact of contacts/new-chat → { conversation, created }: { ref } (a WhatsApp
+   * contact, nothing checked) or { contactId, phoneKind } (an address book number, checked at the service — up to 15 s).
+   */
+  async bridgeContactChat(network, body) {
+    return this.api('POST', `bridges/${this._net(network)}/chats`, { body, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
   /** Messenger 1.14: an own message the bridge did not take, once more → { message }. */
   async resend(messageId) { return this.api('POST', `messages/${this._id(messageId)}/resend`, { body: {}, timeout: BRIDGE_WAIT_TIMEOUT_MS }); }
 

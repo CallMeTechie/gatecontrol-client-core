@@ -260,6 +260,30 @@ describe('messenger IPC', () => {
     assert.deepEqual(calls, [['resolve', 'whatsapp', '0151 23456789', '+49'], ['resolve', 'whatsapp', 'many', ''], ['chat', 'whatsapp', '+49 151 23456789', '']]);
   });
 
+  it('Messenger 1.18: „Neuer Chat“ with contacts passes through; not_found keeps reason and remembered', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    const REF = `k${'a'.repeat(48)}`;
+    messenger.newChatContacts = async (n, q) => { calls.push(['list', n, q]); return { network: n, query: q, gatecontrol: [], whatsapp: null, addressBook: null, number: null, numberEntry: false, limit: null }; };
+    messenger.bridgeContactChat = async (n, c) => {
+      calls.push(['chat', n, c]);
+      if (c.contactId === 13) throw Object.assign(new Error('not_found'), { code: 'not_found', status: 404, body: { reason: 'not_on_network', remembered: true } });
+      if (c.ref === 'old') throw Object.assign(new Error('contact_expired'), { code: 'contact_expired', status: 409, body: {} });
+      return { conversation: { id: 78 }, created: true };
+    };
+    assert.equal((await call('chat:bridge:contacts', { network: 'whatsapp', q: 'ber' })).query, 'ber');
+    await call('chat:bridge:contacts', { network: 'whatsapp', q: 5 });
+    assert.deepEqual(await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { ref: REF } }), { ok: true, conversation: { id: 78 }, created: true });
+    const none = await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { contactId: 13, phoneKind: 'mobile' } });
+    assert.deepEqual([none.ok, none.code, none.reason, none.remembered, none.status], [false, 'not_found', 'not_on_network', true, 404]);
+    const old = await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { ref: 'old' } });
+    assert.deepEqual([old.ok, old.code, old.remembered], [false, 'contact_expired', undefined]);
+    assert.deepEqual(calls, [
+      ['list', 'whatsapp', 'ber'], ['list', 'whatsapp', ''],
+      ['chat', 'whatsapp', { ref: REF }], ['chat', 'whatsapp', { contactId: 13, phoneKind: 'mobile' }], ['chat', 'whatsapp', { ref: 'old' }],
+    ]);
+  });
+
   it('Messenger 1.17: „Älteren Verlauf laden“ and a file of the history pass through; a refusal keeps its code', async () => {
     const { call, messenger } = setup();
     const calls = [];

@@ -90,6 +90,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       numbers: new Map(),       // '+49…' → name of the numbers "at WhatsApp"
       lookups: 0,
       lookupMax: 10,
+      // 1.18: „Neuer Chat“ with contacts (features.bridge_contacts): the WhatsApp contacts of the bridge (ref → name,
+      // conversationId) and the address book of Mail (contactId → name, phones); listState 'ok' | 'unreachable' |
+      // 'logged_out'; book null = no Mail; refs that ran out; numbers remembered as „nicht bei WhatsApp“
+      contacts: [],
+      book: null,
+      listState: 'ok',
+      expired: new Set(),
+      notOn: new Set(),
       // 1.17: older history at a new link (features.bridge_history; null = the server has none)
       history: { available: true, days: 30, default: 30, options: [0, 30, -1], pending: 0 },
       fetches: [],              // ids of messages whose file of the history was asked for
@@ -124,6 +132,31 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     m.bridge = { sender: mine || notice ? null : contact, remote, state: mine ? (st || 'sent') : null, reason, placeholder };
     if (notice) m.system = { event: 'bridge_notice', network: state.convs.get(convId).bridge.network };
     return m;
+  }
+
+  /** GET contacts/new-chat (contactchat.js of the plugin, 1.18) → the three sections, filtered by q. */
+  function contactsRoute(res, q) {
+    if (!(features && features.bridge_contacts === true)) return err(res, 404, 'not_found');
+    const B = state.bridge;
+    const net = B.networks[0];
+    const query = String(q.q || '').trim().slice(0, 100);
+    const has = (n) => !query || String(n || '').toLowerCase().includes(query.toLowerCase());
+    const gatecontrol = users.filter((x) => x.id !== me && has(x.name)).map((x) => {
+      const c = [...state.convs.values()].find((y) => y.kind === 'direct' && !y.bridge && y.members.some((mb) => mb.id === x.id));
+      return { userId: x.id, name: x.name, avatarUrl: x.avatarUrl, initials: x.initials, colorHex: x.colorHex, conversationId: c ? c.id : null };
+    });
+    const linked = net.logins.length > 0 && net.allowed;
+    const st = !linked ? null : (net.logins.every((l) => l.state === 'logged_out') ? 'logged_out' : (net.state !== 'running' || B.listState === 'unreachable' ? 'unreachable' : B.listState));
+    const items = B.contacts.filter((c) => has(c.name)).sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    const whatsapp = st ? { state: st, total: B.contacts.length, items: st === 'ok' ? items.map((c) => ({ ref: c.ref, name: c.name, avatarMediaId: c.avatarMediaId || null, avatarUrl: null, conversationId: c.conversationId || null, alsoInAddressBook: !!c.alsoInAddressBook, addressBookId: c.addressBookId || null })) : [] } : null;
+    const bookItems = whatsapp && B.book ? B.book.filter((x) => has(x.name)).map((x) => ({ contactId: x.contactId, name: x.name, conversationId: null,
+      phones: x.phones.map((p) => ({ ...p, notOnNetwork: B.notOn.has(`${x.contactId}|${p.key}`) })) })) : [];
+    const addressBook = whatsapp && B.book && B.book.length ? { state: st, total: B.book.length, items: bookItems } : null;
+    const digits = /^[+0-9\s\-./()]{6,40}$/.test(query) ? query.replace(/[\s\-./()]/g, '').replace(/^0(?=[1-9])/, '+49') : '';
+    const number = whatsapp && /^\+[1-9][0-9]{6,14}$/.test(digits) ? { e164: digits, show: digits, conversationId: null } : null;
+    B.calls.push({ op: 'contacts' });
+    return json(res, 200, { ok: true, network: 'whatsapp', query, gatecontrol, whatsapp, addressBook, addressBookReason: whatsapp && !B.book ? 'no_mail' : null,
+      number, numberEntry: !!whatsapp, limit: { perHour: B.lookupMax, left: Math.max(0, B.lookupMax - B.lookups), retryAfterS: 0 } });
   }
 
   const QR_ROWS = (seed) => Array.from({ length: 25 }, (_, y) => Array.from({ length: 25 }, (_, x) => (((x * 7 + y * 13 + seed) % 3 === 0 || x === 0 || y === 0) ? '1' : '0')).join(''));
@@ -192,6 +225,36 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       B.calls.push({ op: 'cancel', process: seg[3] });
       if (B.process && B.process.id === seg[3]) B.process = null;
       return json(res, 200, { ok: true, cancelled: true });
+    }
+    if (seg.length === 3 && seg[2] === 'chats' && m === 'POST' && body && (body.ref != null || body.contactId != null)) {
+      // 1.18: a WhatsApp contact ({ ref }: nothing checked or counted) or an address book number ({ contactId, phoneKind })
+      if (!(features && features.bridge_contacts === true)) return err(res, 400, 'invalid_number');
+      if (!net.allowed) return err(res, 403, 'bridge_locked');
+      if (net.logins.every((l) => l.state === 'logged_out')) return err(res, 409, 'bridge_logged_out', { reason: 'logged_out' });
+      if (net.state !== 'running') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
+      if (body.ref != null) {
+        if (B.expired.has(body.ref)) return err(res, 409, 'contact_expired');
+        const c = B.contacts.find((x) => x.ref === body.ref);
+        if (!c) return err(res, 400, 'invalid');
+        B.calls.push({ op: 'chat_ref' });
+        const existing = c.conversationId && state.convs.get(c.conversationId);
+        const id = existing ? existing.id : addBridgeConv({ title: c.name });
+        c.conversationId = id;
+        return json(res, 200, { ok: true, conversation: convView(state.convs.get(id)), created: !existing });
+      }
+      if (!B.book) return err(res, 409, 'mail_missing');
+      const x = B.book.find((y) => y.contactId === body.contactId);
+      const ph = x && x.phones.find((p) => p.key === body.phoneKind);
+      if (!ph) return err(res, 404, 'not_found', { reason: 'contact_gone' });
+      if (B.notOn.has(`${x.contactId}|${ph.key}`)) return err(res, 404, 'not_found', { reason: 'not_on_network', remembered: true });
+      if (B.lookups >= B.lookupMax) return err(res, 429, 'rate_limited', { retryAfterS: 840, perHour: B.lookupMax });
+      B.lookups += 1;
+      B.calls.push({ op: 'chat_book' });
+      if (!B.numbers.has(ph.e164)) { B.notOn.add(`${x.contactId}|${ph.key}`); return err(res, 404, 'not_found', { reason: 'not_on_network' }); }
+      const existing = [...state.convs.values()].find((c) => c.bridge && c.bridge.number === ph.e164);
+      const id = existing ? existing.id : addBridgeConv({ title: x.name });
+      state.convs.get(id).bridge.number = ph.e164;
+      return json(res, 200, { ok: true, conversation: convView(state.convs.get(id)), created: !existing });
     }
     if (seg.length === 3 && (seg[2] === 'resolve' || seg[2] === 'chats') && m === 'POST') {
       if (!(features && features.bridge_new_chat === true)) return err(res, 404, 'not_found');
@@ -548,6 +611,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       for (const [k, v] of Object.entries(body || {})) state.prefs[k] = v && typeof v === 'object' ? { ...(state.prefs[k] || {}), ...v } : v;
       return json(res, 200, { ok: true, prefs: state.prefs });
     }
+    if (a === 'contacts' && b === 'new-chat' && !c && m === 'GET') return contactsRoute(res, q);
     const rb = bridgeRoute(res, seg, m, body);
     if (rb !== undefined) return rb;
     // 1.14: a chat over a bridge exists only for a client that says it knows them
