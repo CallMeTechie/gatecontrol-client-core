@@ -29,8 +29,9 @@ const scan = require('../utils/scan');
 const JSON_TIMEOUT_MS = 15000;
 // POST bridges/:network/login/:process/:step waits at the server for the phone (up to 15 s per call).
 const BRIDGE_WAIT_TIMEOUT_MS = 30000;
-// Routes that know chats over a bridge (Messenger 1.14): they carry ?bridged=1 while `bridged` is set.
-const BRIDGED_ROUTE_RE = /^(?:conversations|messages)(?:\/|$)/;
+// Routes that know chats over a bridge (Messenger 1.14): they carry ?bridged=1 while `bridged` is set — and (1.20, while
+// `channels` is set as well) ?channels=1: GET conversations leaves the channels out, GET channels lists them.
+const BRIDGED_ROUTE_RE = /^(?:conversations|messages|channels)(?:\/|$)/;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DOWNLOAD = 64 * 1024 * 1024;
@@ -117,6 +118,8 @@ class MessengerApi {
     // Messenger 1.14: this app shows chats over a bridge — set by the service once the server names the feature
     // (`linked_services` / `bridge_chats`). Without the mark such a chat does not exist for a client (404).
     this.bridged = false;
+    // Messenger 1.20: … and knows channels (`bridge_channels`): they leave GET conversations for GET channels
+    this.channels = false;
   }
 
   _client() {
@@ -149,7 +152,7 @@ class MessengerApi {
   api(method, path, opts) {
     if (this.bridged && BRIDGED_ROUTE_RE.test(path)) {
       const o = opts || {};
-      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1 } });
+      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1, ...(this.channels ? { channels: 1 } : {}) } });
     }
     return this._call(method, API_BASE + path, opts);
   }
@@ -189,6 +192,12 @@ class MessengerApi {
 
   async conversations({ since } = {}) {
     return this.api('GET', 'conversations', { params: since ? { since } : undefined });
+  }
+
+  /** Messenger 1.20: the page „Kanäle“ → { channels: [conversation], removed, unread, serverTime } (only with ?channels=1). */
+  async channelList({ since } = {}) {
+    if (!this.bridged || !this.channels) throw new MessengerError('not supported', { code: 'unsupported' });
+    return this.api('GET', 'channels', { params: since ? { since } : undefined });
   }
 
   async createConversation(body) { return this.api('POST', 'conversations', { body }); }
@@ -351,7 +360,9 @@ class MessengerApi {
   async postPath(path, body = {}) {
     const p = String(path || '').replace(/^\/+/, '');
     if (!isApiPath(p)) throw new MessengerError('invalid path', { code: 'invalid' });
-    return this.api('POST', p, { body: body && typeof body === 'object' ? body : {} });
+    const b = body && typeof body === 'object' ? body : {};
+    // Messenger 1.20: a button of a bridged push (`bridged: true`) says that this app knows channels as well
+    return this.api('POST', p, { body: b.bridged === true && this.channels ? { ...b, channels: true } : b });
   }
 
   // ── Messenger 1.13 / 1.14: linked services and chats over a bridge ──

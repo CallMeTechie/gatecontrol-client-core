@@ -195,6 +195,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       status:        () => ipcRenderer.invoke('chat:status'),
       check:         () => ipcRenderer.invoke('chat:check'),
       conversations: (opts) => ipcRenderer.invoke('chat:conversations', opts),
+      // Messenger 1.20 (status().me.features.bridge_channels): the page „Kanäle“ → { ok, channels, summary }
+      channels:      (opts) => ipcRenderer.invoke('chat:channels', opts),
       conversation:  (id, opts) => ipcRenderer.invoke('chat:conversation', { ...(opts || {}), id }),
       messages:      (id, opts) => ipcRenderer.invoke('chat:messages', { ...(opts || {}), id }),
       send:          (msg) => ipcRenderer.invoke('chat:send', msg),

@@ -36,6 +36,10 @@ function fakeMessenger() {
   m.refreshConversations = async (o) => { m.calls.push(['refresh', o]); };
   m.listConversations = () => [{ id: 12 }];
   m.unreadTotal = () => 3;
+  // Messenger 1.20: the page „Kanäle“
+  m.channelSummary = () => ({ count: 1, unread: 4 });
+  m.listChannels = () => [{ id: 14, bridge: { network: 'whatsapp', channel: true } }];
+  m.refreshChannels = async () => { m.calls.push(['channels']); return m.listChannels(); };
   m.getConversation = async (id) => ({ id });
   m.getMessages = async (id, o) => { m.calls.push(['messages', id, o]); return { conversationId: id, messages: [], pending: [], hasMore: false, offline: false }; };
   m.messagesView = (id) => ({ conversationId: id, messages: [], pending: [], hasMore: true, offline: false });
@@ -95,8 +99,13 @@ describe('messenger IPC', () => {
 
   it('answers and validates arguments', async () => {
     const { call, messenger } = setup();
-    assert.deepEqual(await call('chat:conversations', { refresh: true }), { ok: true, conversations: [{ id: 12 }], unread: 3 });
-    assert.deepEqual(messenger.calls.at(-1), ['refresh', { full: false }]);
+    assert.deepEqual(await call('chat:conversations', { refresh: true }), { ok: true, conversations: [{ id: 12 }], unread: 3, channels: { count: 1, unread: 4 } });
+    // Messenger 1.20: the channels, read again on request
+    assert.deepEqual(await call('chat:channels', {}), { ok: true, channels: [{ id: 14, bridge: { network: 'whatsapp', channel: true } }], summary: { count: 1, unread: 4 } });
+    assert.equal(messenger.calls.filter((c) => c[0] === 'channels').length, 0);
+    await call('chat:channels', { refresh: true });
+    assert.equal(messenger.calls.filter((c) => c[0] === 'channels').length, 1);
+    assert.deepEqual(messenger.calls.filter((c) => c[0] === 'refresh'), [['refresh', { full: false }]]);
     assert.equal((await call('chat:messages', { id: 'x' })).code, 'invalid');
     assert.equal((await call('chat:messages', { id: 12, cached: true })).hasMore, true);
     await call('chat:messages', { id: 12, before: 400 });

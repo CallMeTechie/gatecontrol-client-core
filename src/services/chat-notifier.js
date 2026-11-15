@@ -32,7 +32,9 @@
  *   - Messenger 1.14: the push of a chat over a bridge (`data.bridge`) reads
  *     „Kim Muster · WhatsApp“ (without preview „Neue Nachricht über
  *     WhatsApp“ and no text); its actions carry `bridged: true` in their
- *     body, sent on unchanged.
+ *     body, sent on unchanged (1.20: with `channels: true` added — this app knows channels).
+ *   - Messenger 1.20: the push of a channel's post (`data.channel`, only while its bell is on) shows the server's
+ *     title „<Kanal> · Kanal über WhatsApp“ and the post; it has only „Als gelesen“ (no reply).
  *   - The rules of the other toasts apply (on/off, "Windows-Benachrichtigung
  *     anzeigen", topic muted, "Nicht stören", quiet hours = silent → no
  *     toast, replay/burst caps); no toast for the chat that is open and
@@ -215,7 +217,11 @@ class ChatNotifier extends EventEmitter {
     const kind = p.pushKind;
     let title = p.title || sender || 'GateControl';
     let body = p.body || '';
-    if (p.isGroup && !kind) {
+    // Messenger 1.20: a channel's post (only with its bell on) keeps the server's „<Kanal> · Kanal über WhatsApp“ and text
+    if (p.channel && !kind) {
+      title = p.title || p.conversationTitle || title;
+      body = p.body || '';
+    } else if (p.isGroup && !kind) {
       title = p.conversationTitle || title;
       body = p.body ? (sender ? `${sender}: ${p.body}` : p.body) : p.title;
       // Messenger 1.14: a group of another messenger keeps the service in its title („Grillen · WhatsApp“)

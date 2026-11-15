@@ -7,7 +7,9 @@
  *
  *   chat:status          () → MessengerService.status()
  *   chat:check           () → status after asking the server again
- *   chat:conversations   ({ refresh? }) → { ok, conversations, unread }
+ *   chat:conversations   ({ refresh? }) → { ok, conversations, unread, channels: { count, unread } | null }
+ *   chat:channels        ({ refresh? }) → { ok, channels, summary: { count, unread } | null }   Messenger 1.20 (bridge_channels):
+ *                        the page „Kanäle“ — channels are not in chat:conversations then, nor in its unread
  *   chat:conversation    ({ id, refresh? }) → { ok, conversation }
  *   chat:messages        ({ id, before?, after?, around?, cached? }) → { ok, conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }
  *                        around: the page around a message (Messenger ≥ 1.1.0, else code 'unsupported'); after: newer page of that window
@@ -205,7 +207,12 @@ function registerMessengerHandlers(handle, {
   handle('chat:update-hint:dismiss', wrap(async () => ({ ok: m.dismissUpdateHint() })));
   handle('chat:conversations', wrap(async (a) => {
     if (a.refresh === true && m.available()) await m.refreshConversations({ full: false }).catch(() => null);
-    return { ok: true, conversations: m.listConversations(), unread: m.unreadTotal() };
+    return { ok: true, conversations: m.listConversations(), unread: m.unreadTotal(), channels: m.channelSummary() };
+  }));
+  // Messenger 1.20 (feature `bridge_channels`): the page „Kanäle“ — [] / summary null without it
+  handle('chat:channels', wrap(async (a) => {
+    if (a.refresh === true && m.available() && m.channelSummary()) await m.refreshChannels().catch(() => null);
+    return { ok: true, channels: m.listChannels(), summary: m.channelSummary() };
   }));
   handle('chat:conversation', wrap(async (a) => {
     const id = posInt(a.id);

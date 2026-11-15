@@ -72,6 +72,7 @@ const {
   FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
+  FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -198,6 +199,11 @@ class MessengerService extends EventEmitter {
     // Messenger 1.15: chats over a bridge just started by number — GET conversations lists them only once something
     // was said in them, so a full read of the list keeps them (id → since)
     this._freshBridge = new Map();
+    // Messenger 1.20 (bridge_channels): the channels live in _convs as well, but on a page of their own — `channels`
+    // { count, unread } of the last GET conversations, and whether GET channels was read since
+    this._chanSum = null;
+    this._chansLoaded = false;
+    this._chanRefresh = null;
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
@@ -250,6 +256,8 @@ class MessengerService extends EventEmitter {
     this._typingContacts.clear();
     this._freshBridge.clear();
     this._bridgeSeen = false;
+    this._chanSum = null;
+    this._chansLoaded = false;
     this._me = null;
     this._syncBridged();
     this._lastSync = null;
@@ -387,6 +395,8 @@ class MessengerService extends EventEmitter {
       checkedAt: this._avail.checkedAt,
       me: this._me ? JSON.parse(JSON.stringify(this._me)) : null,
       unread: this.unreadTotal(),
+      // Messenger 1.20: the entry „Kanäle“ ({ count, unread }), null without bridge_channels
+      channels: this.channelSummary(),
       live: this._pushLive(),
       outbox: this.outbox.size(),
       updateHint: this._avail.state === 'available' ? this.updateHint() : null,
@@ -427,10 +437,37 @@ class MessengerService extends EventEmitter {
 
   // ── Conversations ────────────────────────────────────────
 
-  /** Cached conversations, newest activity first, with live typing ids. */
+  /** Messenger 1.20: are channels on a page of their own (the server names bridge_channels, ?channels=1 is sent)? */
+  _channelsApart() {
+    return !!this.api.channels;
+  }
+
+  /** Cached conversations, newest activity first, with live typing ids (Messenger 1.20: without the channels). */
   listConversations() {
+    const apart = this._channelsApart();
+    return this._view([...this._convs.values()].filter((c) => !apart || !isChannel(c)));
+  }
+
+  /** Messenger 1.20: the page „Kanäle“ — the cached channels with a post, the newest post first ([] without bridge_channels). */
+  listChannels() {
+    if (!this._channelsApart()) return [];
+    return this._view([...this._convs.values()].filter((c) => isChannel(c) && (c.lastMessage || c.lastMessageId)));
+  }
+
+  /**
+   * Messenger 1.20: the entry „Kanäle“ → { count, unread } — channels with a post and their new posts together; from the
+   * channels themselves once GET channels was read, else as GET conversations named it. null without bridge_channels.
+   */
+  channelSummary() {
+    if (!this._channelsApart()) return null;
+    const list = this.listChannels();
+    if (!this._chansLoaded && this._chanSum && !list.length) return { ...this._chanSum };
+    return { count: list.length, unread: list.reduce((n, c) => n + (Number.isFinite(c.unread) ? c.unread : 0), 0) };
+  }
+
+  _view(list) {
     const now = this.now();
-    return sortConversations([...this._convs.values()]).map((c) => ({
+    return sortConversations(list).map((c) => ({
       ...c,
       typing: this._typingIds(c.id, now),
       ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, now) } : {}),
@@ -443,10 +480,11 @@ class MessengerService extends EventEmitter {
     return c ? { ...c, typing: this._typingIds(c.id, this.now()), ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, this.now()) } : {}) } : null;
   }
 
-  /** Sum of unread messages of the chats that are neither muted nor archived (1.4.0). */
+  /** Sum of unread messages of the chats that are neither muted nor archived (1.4.0); 1.20: never of a channel. */
   unreadTotal() {
     let n = 0;
-    for (const c of this._convs.values()) if (!c.muted && !c.archived && Number.isFinite(c.unread)) n += c.unread;
+    const apart = this._channelsApart();
+    for (const c of this._convs.values()) if (!c.muted && !c.archived && Number.isFinite(c.unread) && !(apart && isChannel(c))) n += c.unread;
     return n;
   }
 
@@ -481,11 +519,16 @@ class MessengerService extends EventEmitter {
     // Messenger 1.15: a chat started by number stays until the list names it (or it is removed)
     const keep = [];
     for (const c of list) this._freshBridge.delete(c.id);
+    // Messenger 1.20: with ?channels=1 the list has no channels — GET channels keeps them (the summary says when to read it)
+    const apart = this._channelsApart();
+    const sum = apart ? normalizeChannelSummary(r.channels) : null;
     if (!since) {
       const ids = new Set(list.map((c) => c.id));
       for (const id of [...this._convs.keys()]) {
         if (ids.has(id)) continue;
-        if (this._freshBridge.has(id) && !removed.includes(id)) keep.push(this._convs.get(id));
+        const old = this._convs.get(id);
+        if (apart && isChannel(old) && !removed.includes(id) && (!sum || sum.count > 0)) keep.push(old);
+        else if (this._freshBridge.has(id) && !removed.includes(id)) keep.push(old);
         else removed.push(id);
       }
       this._convs.clear();
@@ -494,6 +537,18 @@ class MessengerService extends EventEmitter {
     for (const c of list) this._convs.set(c.id, c);
     for (const id of new Set(removed)) this._drop(id, { emit: false });
     if (typeof r.serverTime === 'string') this._lastSync = r.serverTime;
+    if (sum) {
+      this._chanSum = sum;
+      const have = this.channelSummary();
+      if (sum.count === 0) {
+        // no channel (any more): the cached ones go
+        const gone = [...this._convs.values()].filter((c) => isChannel(c) && !this._freshBridge.has(c.id)).map((c) => c.id);
+        for (const id of gone) { this._drop(id, { emit: false }); if (!removed.includes(id)) removed.push(id); }
+        this._chansLoaded = true;
+      } else if (!this._chansLoaded || !have || have.count !== sum.count || have.unread !== sum.unread) {
+        this.refreshChannels().catch((err) => this.log.debug(`Channels not loaded: ${err.message}`));
+      }
+    }
     this.emit('conversations', { ids: list.map((c) => c.id), removed });
     this._emitUnread();
     this._persist();
@@ -504,6 +559,45 @@ class MessengerService extends EventEmitter {
         this._loadNewer(c.id).then(() => this._maybeRead(c.id)).catch(() => {});
       }
     }
+  }
+
+  /**
+   * Messenger 1.20: GET channels — the page „Kanäle“ (only with bridge_channels; coalesced). Channels it does not list any
+   * more are dropped. → listChannels()
+   */
+  refreshChannels() {
+    if (!this._channelsApart()) return Promise.resolve([]);
+    if (this._chanRefresh) { this._chanAgain = true; return this._chanRefresh; }
+    const run = (async () => {
+      do {
+        this._chanAgain = false;
+        const started = this.now();
+        const r = await this.api.channelList();
+        const list = (Array.isArray(r.channels) ? r.channels : []).filter((c) => c && posInt(c.id));
+        const ids = new Set(list.map((c) => c.id));
+        const removed = (Array.isArray(r.removed) ? r.removed : []).map(posInt).filter(Boolean);
+        for (const c of this._convs.values()) if (isChannel(c) && !ids.has(c.id) && !this._freshBridge.has(c.id)) removed.push(c.id);
+        for (const c of list) {
+          // removed while the answer was on its way (conversation.remove)
+          if ((this._removedAt.get(c.id) || 0) >= started) continue;
+          this._convs.set(c.id, c);
+        }
+        for (const id of new Set(removed)) if (!ids.has(id)) this._drop(id, { emit: false });
+        this._chansLoaded = true;
+        this._chanSum = { count: list.length, unread: Number.isSafeInteger(r.unread) ? r.unread : list.reduce((n, c) => n + (c.unread || 0), 0) };
+        this.emit('conversations', { ids: list.map((c) => c.id), removed: [...new Set(removed)].filter((id) => !ids.has(id)), channels: true });
+        this._emitUnread();
+        this._persist();
+        // the open channel may have new posts (without the push stream nothing else says so)
+        for (const c of list) {
+          const st = this._msgs.get(c.id);
+          if (st && st.loaded && c.lastMessageId && c.lastMessageId > this._newestId(st)) this._loadNewer(c.id).then(() => this._maybeRead(c.id)).catch(() => {});
+        }
+      } while (this._chanAgain);
+      return this.listChannels();
+    })().finally(() => { this._chanRefresh = null; });
+    this._chanRefresh = run;
+    return run;
   }
 
   /** GET conversations/:id → cached + returned (404 → dropped, null). */
@@ -1259,7 +1353,12 @@ class MessengerService extends EventEmitter {
     const on = this._bridgeSeen || this.supports(FEATURE_LINKED) || this.supports(FEATURE_BRIDGE_CHATS);
     const turnedOn = on && !this.api.bridged;
     this.api.bridged = on;
-    return turnedOn;
+    // Messenger 1.20: channels on their own page (?channels=1) — the list is read in full again when this changes
+    const chans = on && this.supports(FEATURE_BRIDGE_CHANNELS);
+    const chansChanged = chans !== !!this.api.channels;
+    this.api.channels = chans;
+    if (chansChanged && !chans) { this._chansLoaded = false; this._chanSum = null; }
+    return turnedOn || chansChanged;
   }
 
   /**
@@ -1273,7 +1372,7 @@ class MessengerService extends EventEmitter {
     if (!this.supports(FEATURE_BRIDGE_CHATS) && this.available() && !this._meRefresh) {
       this._meRefresh = this.api.me().then((me) => {
         this._me = this._normalizeMe(me);
-        this._syncBridged();
+        if (this._syncBridged() && this.available()) this.refreshConversations({ full: true }).catch(() => {});
         this._emitState();
         this._persist();
       }).catch(() => {}).finally(() => { this._meRefresh = null; });
@@ -1429,12 +1528,26 @@ class MessengerService extends EventEmitter {
    * the message (its placeholder then `loading`; the file follows with message.update { media: true }).
    */
   async fetchBridgeFile(messageId) {
-    this._need(FEATURE_BRIDGE_HISTORY);
+    // 1.17: a file of the history (bridge_history); 1.19: once more, a file that failed (`placeholder.retry`) — every
+    // client that shows chats over a bridge
     const id = posInt(messageId);
+    if (!this.supports(FEATURE_BRIDGE_HISTORY) && !(id && this.api.bridged && this._retryable(id))) this._need(FEATURE_BRIDGE_HISTORY);
     if (!id) throw new MessengerError('invalid', { code: 'invalid' });
     const r = await this.api.fetchFile(id);
     this._replaceMessage(r && r.message);
     return (r && r.message) || null;
+  }
+
+  /** Messenger 1.19: a cached message whose bridged file failed and may be asked for again (`placeholder.retry`). */
+  _retryable(id) {
+    for (const st of this._msgs.values()) {
+      for (const l of this._lists(st)) {
+        const m = l.find((x) => x && x.id === id);
+        const ph = m && m.bridge && m.bridge.placeholder;
+        if (m) return !!(ph && ph.state === 'failed' && ph.retry === true);
+      }
+    }
+    return false;
   }
 
   /**
@@ -2164,6 +2277,8 @@ class MessengerService extends EventEmitter {
       this._me = null;
       this._bridgeSeen = false;
       this._freshBridge.clear();
+      this._chanSum = null;
+      this._chansLoaded = false;
       this._syncBridged();
       this._lastSync = null;
       this.emit('conversations', { ids: null, removed: [] });
@@ -2184,6 +2299,7 @@ class MessengerService extends EventEmitter {
         this._msgs.set(cid, { list: st.list.filter((m) => m && posInt(m.id)), hasMore: true, loaded: true, syncedAt: st.syncedAt || null });
       }
       if (raw.me) this._me = raw.me;
+      this._chanSum = normalizeChannelSummary(raw.chanSum);
       if (this._convs.size || this._me) {
         this._avail = { ...this._avail, state: 'available', stale: true };
       }
@@ -2208,7 +2324,7 @@ class MessengerService extends EventEmitter {
         const st = this._msgs.get(c.id);
         if (st && st.loaded && st.list.length) msgs[c.id] = { list: st.list.slice(-CACHE_MSGS), syncedAt: st.syncedAt || null };
       }
-      this.store.set(CACHE_KEY, { v: 1, scope: this._scope, me: this._me, convs, msgs });
+      this.store.set(CACHE_KEY, { v: 1, scope: this._scope, me: this._me, convs, msgs, ...(this._chanSum ? { chanSum: this._chanSum } : {}) });
     } catch (err) {
       this.log.warn(`Chat cache could not be saved: ${err.message}`);
     }

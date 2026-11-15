@@ -23,7 +23,8 @@ function isOpenablePortalUrl(url) {
 // portalNext): '/portal', '/portal#<tab>' or '/#<tab>' with a known tab or a
 // plugin tab plg-<id>, at most 100 characters. Anything else → null.
 const NEXT_MAX = 100;
-const PORTAL_TABS = Object.freeze(['start', 'dienste', 'zuhause', 'fahrzeug', 'netzwerk', 'geraete', 'mitteilungen', 'benachrichtigungen']);
+// 'profil' (GateControl with the user profile): „Mein Profil“
+const PORTAL_TABS = Object.freeze(['start', 'dienste', 'zuhause', 'fahrzeug', 'netzwerk', 'geraete', 'mitteilungen', 'benachrichtigungen', 'profil']);
 const PLUGIN_TAB_RE = /^plg-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NEXT_RE = /^\/(?:portal\/?)?(?:#([a-z0-9-]{1,60}))?$/;
 

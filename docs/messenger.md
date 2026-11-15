@@ -419,6 +419,30 @@ new chat by number of 1.15 / 1.16 stays as it was.
 * Neither the search nor a name or number is logged or kept in the main
   process.
 
+### Messenger 1.20: channels, read-only groups, format, link previews
+
+One feature word, `bridge_channels` — for the same people as `bridge_chats`, on a server with `gc.bridges` version 7.
+Without it everything stays as it was (a channel is then a read-only chat in the list, as in older apps).
+
+* With the word the calls carry `?channels=1` next to `?bridged=1` (and a push button with `bridged: true` in its body
+  gets `channels: true`). `GET conversations` has **no channels** then — they are not in `listConversations()`, not in
+  `unreadTotal()` (nav badge, tray) — but `channels: { count, unread }` (`normalizeChannelSummary`).
+* `refreshChannels()` → `GET channels` (`{ channels, removed, unread }`), read whenever that summary differs from the
+  cached channels; `listChannels()` (channels with a post, the newest first), `channelSummary()` → `{ count, unread }` or
+  `null` without the word; `status().channels` the same. A live event of a conversation not cached yet fetches it
+  (`GET conversations/:id`) — a channel (`isChannel`: `bridge.channel`) goes to the channels. IPC `chat:channels`
+  (`{ refresh }` → `{ ok, channels, summary }`), `chat:conversations` also answers `channels`.
+* Conversations: `bridge.channel`, `bridge.readOnly`, `bridge.reactions` (`own` | `off`), `can.sendReason`
+  (`channel` | `admins_only` | `null`), `can.react`. Sending into one → `409 bridge_read_only` with `reason`; reacting in
+  a channel while off → the same with `reason: reactions_off`. The bell is `updateConversation(id, { notify })`.
+* Messages: `marks` (bold, italic, strike, code, link — UTF-16 offsets into `text`) and `preview` (`url`, `title`,
+  `description`, `site`, `image: { mediaId, mime, w, h, state }`) are passed through as the server sends them; the
+  apps draw them (never as HTML). `bridge.channel: true` — a post of the channel (no sender name).
+* The push of a channel's post (`data.channel`, only while its bell is on): the server's title „<Kanal> · Kanal über
+  WhatsApp“ and the post, only „Als gelesen“ (`parseChatNotification` → `channel`).
+* Independent of the word (since 1.19): `fetchBridgeFile(id)` (`POST messages/:id/fetch`) also fetches a file whose
+  placeholder `failed` with `retry: true` once more — for every app that shows chats over a bridge.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -510,6 +534,7 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | `start()` / `stop()` | check + live / timers off, cache saved |
 | `check({ force })` / `status()` / `available()` | availability (above); status: `{ state, reason, stale, version, label, me: { user, prefs, features, limits, license }, unread, live, outbox }` |
 | `listConversations()` / `getConversation(id)` / `refreshConversations({ full })` | conversations with `typing` (user ids) and `outbox` (pending count) |
+| `listChannels()` / `channelSummary()` / `refreshChannels()` | Messenger 1.20 (`bridge_channels`): the page „Kanäle“ — channels with a post, `{ count, unread }` (null without the word), `GET channels` |
 | `getMessages(id, { before, after, around })` / `messagesView(id)` | `{ conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }` |
 | `supports(feature)` | `GET me` `features[feature] === true`, e.g. `video_meta`, `file_thumbs` |
 | `updateHint()` / `dismissUpdateHint()` | unknown features switched on → `{ features, key }` / hide the banner for that set |
