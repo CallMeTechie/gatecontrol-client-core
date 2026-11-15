@@ -386,6 +386,39 @@ version 5):
   (`bridgePushContext` → navigate `{ route: 'plg-gatecontrol-messenger',
   context: { type: 'bridges', bridge } }`): the app opens „Verknüpfte Dienste“.
 
+### Messenger 1.18: „Neuer Chat“ with contacts
+
+One feature word, `bridge_contacts` — set only for people who linked a
+service, and only when the server has `gc.bridges` version 6. Without it the
+new chat by number of 1.15 / 1.16 stays as it was.
+
+* `newChatContacts(network, q)` → `GET contacts/new-chat?network=&q=`
+  (`q` ≤ 100 characters, the search as typed) → `normalizeNewChatContacts`:
+  `{ network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+  number, numberEntry, limit }`. `gatecontrol` are the accounts as in
+  `GET people` (+ `conversationId`), `whatsapp` `null` (left out) or
+  `{ state: ok | unreachable | logged_out, total, items }` — the contacts of
+  the bridge, by name, with a sealed `ref` and never a number
+  (`alsoInAddressBook`, `avatarMediaId`, `conversationId`). `addressBook`
+  (`null` without WhatsApp, Mail or numbers) follows the WhatsApp `state`;
+  its `phones` are sorted mobile, work, home, other (`key`, `kind`, `number`,
+  `e164`, `landline`, `notOnNetwork`). `number` `{ e164, show,
+  conversationId }` when the search looks like a number, `numberEntry` =
+  offer „Nicht dabei? Nummer eingeben“. Listing and searching ask the
+  service nothing.
+* `bridgeContactChat(network, contact)` → `POST bridges/:network/chats` with
+  `{ ref }` (a WhatsApp contact: started at once, nothing checked or counted)
+  or `{ contactId, phoneKind }` (an address book number: checked now, counted
+  in the brake of „Nummer eingeben“) → `{ conversation, created }`, kept in
+  the list like a chat by number. Refusals: `contact_expired` (the reference
+  ran out — load the list again), `not_found` with `reason` `not_on_network`
+  (`remembered: true` = from the server's 30-day memory, nothing asked) or
+  `contact_gone`, `rate_limited` (`retryAfterS`, `perHour`),
+  `bridge_unreachable` / `bridge_off`, `bridge_logged_out`, `mail_missing`,
+  and those of 1.15.
+* Neither the search nor a name or number is logged or kept in the main
+  process.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -516,7 +549,8 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 (`{ mime, data: Uint8Array }`), 1.13 / 1.14: `bridges`, `bridgeConsent`,
 `bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`, 1.15:
 `bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
-1.17: `bridgeHistory(days)`, `fetchFile(id)`, `storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+1.17: `bridgeHistory(days)`, `fetchFile(id)`, 1.18: `newChatContacts(network, q)`,
+`bridgeContactChat(network, contact)`, `storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
@@ -536,7 +570,8 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 * End-to-end encryption is not part of V1. Chats over a bridge carry text
   only with Messenger 1.14; files, voice messages, pictures of contacts and
   "new chat with a number" come with 1.15 (`bridge_media`, `bridge_new_chat`),
-  older history with 1.17 (`bridge_history`).
+  older history with 1.17 (`bridge_history`), „Neuer Chat“ with contacts with
+  1.18 (`bridge_contacts`).
 * Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
   departure hint push of an event opens the chat.
 * Server storage: the server reports only whether the chat file quota is

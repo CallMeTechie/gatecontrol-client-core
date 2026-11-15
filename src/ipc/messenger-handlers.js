@@ -92,6 +92,12 @@
  * Refusals: invalid_number, rate_limited (+ retryAfterS, perHour), bridge_unlinked (reason), bridge_logged_out (1.16),
  * bridge_locked, child_new_chat_off,
  * bridge_unreachable, bridge_off, feature_off, not_found (reason not_on_network).
+ * Messenger 1.18 (feature `bridge_contacts`; code 'unsupported' without it) — „Neuer Chat“ with contacts:
+ *   chat:bridge:contacts     ({ network, q? }) → { ok, network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+ *                            number, numberEntry, limit }   (utils normalizeNewChatContacts; q never logged)
+ *   chat:bridge:contact-chat ({ network, contact: { ref } | { contactId, phoneKind } }) → { ok, conversation, created }
+ * Refusals as above, and: contact_expired (load the list again), not_found (reason not_on_network, remembered |
+ * contact_gone), mail_missing.
  * chat:send in a chat over a bridge also takes image / voice / file of a kind and type in `bridge.supports` /
  * `bridge.mediaTypes` (else bridge_text_only / bridge_media_type with reason image | voice | video); 423 scan_pending
  * is sent again by the queue.
@@ -139,7 +145,9 @@ function fail(err) {
   // Messenger 1.16: … and the brake per hour (`perHour`)
   const ph = err && err.body ? err.body.perHour : null;
   const perHour = retryAfterS && Number.isSafeInteger(ph) && ph > 0 && ph <= 1000 ? ph : null;
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...(retryAfterS ? { retryAfterS } : {}), ...(perHour ? { perHour } : {}), ...SC.refusalFields(err) };
+  // Messenger 1.18: a „nicht bei WhatsApp“ of an address book number came from the server's 30-day memory
+  const remembered = !!(err && err.body && err.body.remembered === true);
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...(retryAfterS ? { retryAfterS } : {}), ...(perHour ? { perHour } : {}), ...(remembered ? { remembered } : {}), ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -259,6 +267,13 @@ function registerMessengerHandlers(handle, {
     const id = posInt(a.id);
     if (!id) return invalid();
     return { ok: true, message: await m.fetchBridgeFile(id) };
+  }));
+  // Messenger 1.18: „Neuer Chat“ with contacts — the search passes through once and is never logged or stored
+  handle('chat:bridge:contacts', wrap(async (a) => ({ ok: true, ...(await m.newChatContacts(text(a.network, 32), typeof a.q === 'string' ? a.q.slice(0, 200) : '')) })));
+  handle('chat:bridge:contact-chat', wrap(async (a) => {
+    const c = obj(a.contact);
+    const contact = typeof c.ref === 'string' ? { ref: c.ref.slice(0, 1500) } : { contactId: c.contactId, phoneKind: text(c.phoneKind, 16) };
+    return { ok: true, ...(await m.bridgeContactChat(text(a.network, 32), contact)) };
   }));
   handle('chat:resend', wrap(async (a) => {
     const id = posInt(a.id);

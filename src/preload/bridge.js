@@ -273,6 +273,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Messenger 1.17 (status().me.features.bridge_history): „Älteren Verlauf laden“, a file of the older history now
       bridgeHistory: (days) => ipcRenderer.invoke('chat:bridge:history', { days }),
       fetchFile:     (id) => ipcRenderer.invoke('chat:fetch', { id }),
+      // Messenger 1.18 (status().me.features.bridge_contacts): „Neuer Chat“ with contacts; a contact's chat
+      // ({ ref } | { contactId, phoneKind }) — an address book number is checked only here, on tap
+      newChatContacts:   (network, q) => ipcRenderer.invoke('chat:bridge:contacts', { network, q }),
+      bridgeContactChat: (network, contact) => ipcRenderer.invoke('chat:bridge:contact-chat', { network, contact }),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),
