@@ -89,7 +89,8 @@
  * code for a number without one (default +49); normalized in main, sent once, never logged or stored:
  *   chat:bridge:resolve  ({ network, number, cc? }) → { ok, found, name, avatarMediaId, existing: { conversationId } | null }
  *   chat:bridge:chat     ({ network, number, cc? }) → { ok, conversation, created }   kept in the list until it is listed
- * Refusals: invalid_number, rate_limited (+ retryAfterS), bridge_unlinked (reason), bridge_locked, child_new_chat_off,
+ * Refusals: invalid_number, rate_limited (+ retryAfterS, perHour), bridge_unlinked (reason), bridge_logged_out (1.16),
+ * bridge_locked, child_new_chat_off,
  * bridge_unreachable, bridge_off, feature_off, not_found (reason not_on_network).
  * chat:send in a chat over a bridge also takes image / voice / file of a kind and type in `bridge.supports` /
  * `bridge.mediaTypes` (else bridge_text_only / bridge_media_type with reason image | voice | video); 423 scan_pending
@@ -130,7 +131,10 @@ function fail(err) {
   // Messenger 1.15: 429 rate_limited of a new chat by number says when the next try goes (`retryAfterS`)
   const ra = err && err.body ? err.body.retryAfterS : null;
   const retryAfterS = Number.isSafeInteger(ra) && ra > 0 && ra <= 86400 ? ra : null;
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...(retryAfterS ? { retryAfterS } : {}), ...SC.refusalFields(err) };
+  // Messenger 1.16: … and the brake per hour (`perHour`)
+  const ph = err && err.body ? err.body.perHour : null;
+  const perHour = retryAfterS && Number.isSafeInteger(ph) && ph > 0 && ph <= 1000 ? ph : null;
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...(retryAfterS ? { retryAfterS } : {}), ...(perHour ? { perHour } : {}), ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});

@@ -249,13 +249,13 @@ describe('messenger IPC', () => {
     const calls = [];
     messenger.bridgeResolve = async (n, num, cc) => {
       calls.push(['resolve', n, num, cc]);
-      if (num === 'many') throw Object.assign(new Error('rate_limited'), { code: 'rate_limited', status: 429, body: { retryAfterS: 840 } });
+      if (num === 'many') throw Object.assign(new Error('rate_limited'), { code: 'rate_limited', status: 429, body: { retryAfterS: 840, perHour: 10 } });
       return { found: true, name: 'Lena Berger', avatarMediaId: null, existing: null };
     };
     messenger.bridgeStartChat = async (n, num, cc) => { calls.push(['chat', n, num, cc]); return { conversation: { id: 77 }, created: true }; };
     assert.deepEqual(await call('chat:bridge:resolve', { network: 'whatsapp', number: '0151 23456789', cc: '+49' }), { ok: true, found: true, name: 'Lena Berger', avatarMediaId: null, existing: null });
     const many = await call('chat:bridge:resolve', { network: 'whatsapp', number: 'many' });
-    assert.deepEqual([many.ok, many.code, many.retryAfterS, many.status], [false, 'rate_limited', 840, 429]);
+    assert.deepEqual([many.ok, many.code, many.retryAfterS, many.perHour, many.status], [false, 'rate_limited', 840, 10, 429]);
     assert.deepEqual(await call('chat:bridge:chat', { network: 'whatsapp', number: '+49 151 23456789', cc: 49 }), { ok: true, conversation: { id: 77 }, created: true });
     assert.deepEqual(calls, [['resolve', 'whatsapp', '0151 23456789', '+49'], ['resolve', 'whatsapp', 'many', ''], ['chat', 'whatsapp', '+49 151 23456789', '']]);
   });

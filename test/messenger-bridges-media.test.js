@@ -197,7 +197,7 @@ describe('bridges stage 4 – MessengerService', () => {
     await waitFor(() => m.status().state === 'available');
     await assert.rejects(m.bridgeResolve('whatsapp', '0151 23456789'), (e) => e.code === 'bridge_unlinked' && e.body.reason === 'unlinked');
     net.logins = [{ id: 'l1', name: 'x', state: 'logged_out', since: null }];
-    await assert.rejects(m.bridgeResolve('whatsapp', '0151 23456789'), (e) => e.code === 'bridge_unlinked' && e.body.reason === 'logged_out');
+    await assert.rejects(m.bridgeResolve('whatsapp', '0151 23456789'), (e) => e.code === 'bridge_logged_out' && e.body.reason === 'logged_out');
     net.logins = [{ id: 'l1', name: 'x', state: 'connected', since: null }];
     net.state = 'unreachable';
     await assert.rejects(m.bridgeResolve('whatsapp', '0151 23456789'), (e) => e.code === 'bridge_unreachable');

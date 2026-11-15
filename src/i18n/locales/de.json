@@ -1352,7 +1352,8 @@
       "off_text": "Die Brücke zu {{network}} ist auf diesem Server gerade ausgeschaltet.",
       "close": "Schließen",
       "failed": "Das hat nicht geklappt – bitte noch einmal versuchen.",
-      "privacy": "Zum Prüfen geht die Nummer über deine Brücke an {{network}}. GateControl schreibt sie nicht ins Protokoll; gespeichert wird sie nur, wenn du den Chat startest."
+      "privacy": "Zum Prüfen geht die Nummer über deine Brücke an {{network}}. GateControl schreibt sie nicht ins Protokoll; gespeichert wird sie nur, wenn du den Chat startest.",
+      "first_line": "Neuer Chat über {{network}} mit {{number}}. {{name}} sieht deine Nachrichten in der gewohnten {{network}}-App."
     }
   },
   "school": {

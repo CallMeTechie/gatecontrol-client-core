@@ -346,7 +346,9 @@ Again only feature words, set by the server together with `bridge_chats`:
   read of the list keeps it. `GET bridges` names per service `newChat`
   (`available`, `reason`, `limit`; Messenger 1.16) — `null` from a plugin
   without it. Refusals: `invalid_number`, `rate_limited` (with `retryAfterS`
-  in the IPC answer), `bridge_unlinked` (`reason` unlinked / logged_out),
+  and, 1.16, `perHour` in the IPC answer), `bridge_unlinked` (`reason`
+  unlinked), `bridge_logged_out` (1.16; 1.15: `bridge_unlinked` with `reason`
+  logged_out),
   `bridge_locked`, `child_new_chat_off`, `bridge_unreachable`, `bridge_off`,
   `not_found` (`reason: not_on_network`).
 

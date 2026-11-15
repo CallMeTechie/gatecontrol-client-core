@@ -186,11 +186,11 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (!(features && features.bridge_new_chat === true)) return err(res, 404, 'not_found');
       if (!net.allowed) return err(res, 403, 'bridge_locked');
       if (!net.logins.length) return err(res, 409, 'bridge_unlinked', { reason: 'unlinked' });
-      if (net.logins.every((l) => l.state === 'logged_out')) return err(res, 409, 'bridge_unlinked', { reason: 'logged_out' });
+      if (net.logins.every((l) => l.state === 'logged_out')) return err(res, 409, 'bridge_logged_out', { reason: 'logged_out' });
       if (net.state !== 'running') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
       const num = String((body && body.number) || '').replace(/[\s()-]/g, '');
       if (!/^\+[1-9][0-9]{6,14}$/.test(num)) return err(res, 400, 'invalid_number');
-      if (B.lookups >= B.lookupMax) return err(res, 429, 'rate_limited', { retryAfterS: 840 });
+      if (B.lookups >= B.lookupMax) return err(res, 429, 'rate_limited', { retryAfterS: 840, perHour: B.lookupMax });
       B.lookups += 1;
       B.calls.push({ op: seg[2] });
       const name = B.numbers.get(num);

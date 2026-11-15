@@ -1352,7 +1352,8 @@
       "off_text": "The bridge to {{network}} is switched off on this server right now.",
       "close": "Close",
       "failed": "That did not work – please try again.",
-      "privacy": "To check it, the number goes over your bridge to {{network}}. GateControl does not write it to the log; it is stored only when you start the chat."
+      "privacy": "To check it, the number goes over your bridge to {{network}}. GateControl does not write it to the log; it is stored only when you start the chat.",
+      "first_line": "New chat over {{network}} with {{number}}. {{name}} sees your messages in their usual {{network}} app."
     }
   },
   "school": {
