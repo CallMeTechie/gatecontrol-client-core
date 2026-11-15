@@ -87,6 +87,9 @@ describe('bridges stage 4c – helpers', () => {
     const none = U.normalizeNewChatContacts({ gatecontrol: [], whatsapp: null, addressBook: { state: 'ok', items: [] }, number: { e164: '+4917155501230' }, numberEntry: true });
     assert.deepEqual([none.whatsapp, none.addressBook, none.number, none.numberEntry], [null, null, null, false]);
     assert.equal(U.normalizeNewChatContacts({ whatsapp: { state: 'weird', items: [{ ref: REF('a') }] } }).whatsapp.state, 'unreachable');
+    // the server's initials: whole characters, never half an emoji
+    assert.equal(U.normalizeNewChatContacts({ gatecontrol: [{ userId: 4, name: 'Mama', initials: 'MAM💕' }] }).gatecontrol[0].initials, 'MAM💕');
+    assert.equal(U.normalizeNewChatContacts({ gatecontrol: [{ userId: 4, name: 'Mama', initials: 'M💕💕💕' }] }).gatecontrol[0].initials, 'M💕💕💕');
     assert.deepEqual(U.normalizeNewChatContacts({ whatsapp: { state: 'logged_out', total: 3, items: [{ ref: REF('a') }] } }).whatsapp, { state: 'logged_out', total: 3, items: [] });
   });
 
