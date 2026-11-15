@@ -64,6 +64,9 @@ const KNOWN_FEATURES = Object.freeze([
   // groups where only admins write, format (`marks`), link previews, the own reaction in a channel — for the same
   // people as bridge_chats
   'bridge_channels',
+  // Messenger 1.21: persons — the chat with a GateControl account and the WhatsApp chat of the same human as one entry
+  // (?people=1: `person`, `folded`, persons/… routes, suggestions, „Trennen“) — for the same people as bridge_chats
+  'chat_people',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -75,6 +78,11 @@ const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
 const FEATURE_BRIDGE_CONTACTS = 'bridge_contacts';
 // Messenger 1.20 `GET me` feature: channels, read-only groups, format, link previews.
 const FEATURE_BRIDGE_CHANNELS = 'bridge_channels';
+// Messenger 1.21 `GET me` feature: persons (one entry per human over several ways).
+const FEATURE_CHAT_PEOPLE = 'chat_people';
+// The way of a message / a conversation of a person: GateControl or the network of a bridge.
+const GC_WAY = 'gatecontrol';
+const WAY_RE = /^[a-z]{2,20}$/;
 // GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
 // address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
 const CONTACTS_QUERY_MAX = 100;
@@ -267,11 +275,21 @@ function messageStatus(m, conv) {
  * Merge server messages into a cached list: unique by id (incoming wins),
  * ascending by id.
  */
-function mergeMessages(list, incoming) {
+function mergeMessages(list, incoming, { byTime = false } = {}) {
   const map = new Map();
   for (const m of Array.isArray(list) ? list : []) if (m && Number.isSafeInteger(m.id)) map.set(m.id, m);
   for (const m of Array.isArray(incoming) ? incoming : []) if (m && Number.isSafeInteger(m.id)) map.set(m.id, m);
+  // Messenger 1.21: a person's shared history mixes its ways — by time (createdAt, a tie by id), as the server pages it
+  if (byTime) return [...map.values()].sort(byTimeOrder);
   return [...map.values()].sort((a, b) => a.id - b.id);
+}
+
+/** Messages by `createdAt`, a tie (or a missing time) by id. */
+function byTimeOrder(a, b) {
+  const ta = typeof a.createdAt === 'string' ? a.createdAt : '';
+  const tb = typeof b.createdAt === 'string' ? b.createdAt : '';
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  return a.id - b.id;
 }
 
 /** Time of the newest activity of a conversation (ISO) for sorting. */
@@ -659,6 +677,9 @@ function parseChatNotification(n) {
     bridge: isBridgeNet(data.bridge) ? data.bridge : null,
     // Messenger 1.20: a post of a channel („<Kanal> · Kanal über WhatsApp“, only „Als gelesen“)
     channel: isBridgeNet(data.bridge) && data.channel === true,
+    // Messenger 1.21: a message of a way of a person („Jenny Backes · über WhatsApp“) — a click opens the person's entry
+    person: data.person && typeof data.person === 'object' && posInt(data.person.id) && posInt(data.person.conversationId)
+      ? { id: posInt(data.person.id), conversationId: posInt(data.person.conversationId) } : null,
     pushKind: typeof data.kind === 'string' && /^[a-z_]{1,40}$/.test(data.kind) ? data.kind : null,
     deepLink: typeof data.deepLink === 'string' && /^[a-z_]{1,40}$/.test(data.deepLink) ? data.deepLink : null,
     reminderId: posInt(data.reminderId),
@@ -850,6 +871,64 @@ function normalizeChannelSummary(v) {
   return { count: int(v.count), unread: int(v.unread) };
 }
 
+/**
+ * Messenger 1.21 (chat_people): is this list entry a person — one entry for several ways (`person` { id, ways, reply, … };
+ * its id is the lead conversation's)? Its routes are persons/:id/….
+ */
+function isPerson(c) {
+  const p = c && c.person;
+  return !!(p && typeof p === 'object' && posInt(p.id) && Array.isArray(p.ways) && p.ways.length);
+}
+
+/** The conversation ids of a person's ways (the entry itself when it is none). */
+function personWayIds(c) {
+  if (!isPerson(c)) return c && posInt(c.id) ? [c.id] : [];
+  return [...new Set(c.person.ways.map((w) => posInt(w && w.conversationId)).filter(Boolean))];
+}
+
+/** The way an answer to the person takes (`person.reply`, the server's pick) → that entry of `person.ways`, or null. */
+function personReplyWay(c) {
+  if (!isPerson(c) || !c.person.reply) return null;
+  const id = posInt(c.person.reply.conversationId);
+  return c.person.ways.find((w) => w && posInt(w.conversationId) === id) || null;
+}
+
+/** The way of a message (`way`, sent with ?people=1) — 'gatecontrol' or a bridge's network, else null. */
+function wayOf(m) {
+  return m && typeof m.way === 'string' && WAY_RE.test(m.way) ? m.way : null;
+}
+
+/** POST persons { conversationIds, userId?, name? } from a client request, or null (merge by hand / a suggestion). */
+function mergeBody(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const ids = [...new Set((Array.isArray(o.conversationIds) ? o.conversationIds : []).map(posInt).filter(Boolean))];
+  if (!ids.length || ids.length > 6) return null;
+  const body = { conversationIds: ids };
+  if (o.userId != null) {
+    const uid = posInt(o.userId);
+    if (!uid) return null;
+    body.userId = uid;
+  }
+  if (o.name === 'account') body.name = 'account';
+  else if (o.name != null) {
+    const nid = posInt(o.name);
+    if (!nid) return null;
+    body.name = nid;
+  }
+  return body;
+}
+
+/** A suggestion id of GET persons/suggestions („<conversationId>-<userId>“). */
+function isSuggestionId(v) {
+  return typeof v === 'string' && /^\d{1,15}-\d{1,15}$/.test(v);
+}
+
+/** GET bridges → recognition { available, network, asked, allowed } (gc.bridges version 9), else null. */
+function normalizeRecognition(r) {
+  if (!r || typeof r !== 'object' || r.available !== true) return null;
+  return { available: true, network: isBridgeNet(r.network) ? r.network : 'whatsapp', asked: r.asked === true, allowed: r.allowed === true };
+}
+
 /** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
 function bridgeOutKind(kind, mime) {
   if (kind === 'image' || kind === 'voice') return kind;
@@ -926,12 +1005,15 @@ function normalizeBridges(b) {
     // Messenger 1.17: the bridge's warning — the phone was not seen for `days` (≥ 12) days
     phone: normalizePhone(n.phone),
   }));
+  // Messenger 1.21: „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ (only when GateControl has the call)
+  const recognition = src.available === true ? normalizeRecognition(src.recognition) : null;
   return {
     available: src.available === true,
     location: src.location === 'gateway' ? 'gateway' : 'server',
     networks: src.available === true ? networks : [],
     // Messenger 1.17: older messages at a new link (null: the server has none)
     history: src.available === true ? normalizeBridgeHistory(src.history) : null,
+    ...(recognition ? { recognition } : {}),
   };
 }
 
@@ -1044,6 +1126,16 @@ module.exports = {
   FEATURE_BRIDGE_CHANNELS,
   isChannel,
   normalizeChannelSummary,
+  FEATURE_CHAT_PEOPLE,
+  GC_WAY,
+  byTimeOrder,
+  isPerson,
+  personWayIds,
+  personReplyWay,
+  wayOf,
+  mergeBody,
+  isSuggestionId,
+  normalizeRecognition,
   CONTACTS_QUERY_MAX,
   normalizeNewChatContacts,
   contactChatBody,

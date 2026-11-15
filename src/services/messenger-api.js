@@ -31,7 +31,8 @@ const JSON_TIMEOUT_MS = 15000;
 const BRIDGE_WAIT_TIMEOUT_MS = 30000;
 // Routes that know chats over a bridge (Messenger 1.14): they carry ?bridged=1 while `bridged` is set — and (1.20, while
 // `channels` is set as well) ?channels=1: GET conversations leaves the channels out, GET channels lists them.
-const BRIDGED_ROUTE_RE = /^(?:conversations|messages|channels)(?:\/|$)/;
+// Messenger 1.21: … and (while `persons` is set) ?people=1 — one entry per person, `way` on every message, persons/….
+const BRIDGED_ROUTE_RE = /^(?:conversations|messages|channels|persons)(?:\/|$)/;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DOWNLOAD = 64 * 1024 * 1024;
@@ -120,6 +121,8 @@ class MessengerApi {
     this.bridged = false;
     // Messenger 1.20: … and knows channels (`bridge_channels`): they leave GET conversations for GET channels
     this.channels = false;
+    // Messenger 1.21: … and knows persons (`chat_people`): one entry per human over several ways
+    this.persons = false;
   }
 
   _client() {
@@ -152,7 +155,7 @@ class MessengerApi {
   api(method, path, opts) {
     if (this.bridged && BRIDGED_ROUTE_RE.test(path)) {
       const o = opts || {};
-      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1, ...(this.channels ? { channels: 1 } : {}) } });
+      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1, ...(this.channels ? { channels: 1 } : {}), ...(this.persons ? { people: 1 } : {}) } });
     }
     return this._call(method, API_BASE + path, opts);
   }
@@ -222,6 +225,66 @@ class MessengerApi {
   }
 
   async send(id, body) { return this.api('POST', `conversations/${this._id(id)}/messages`, { body }); }
+
+  // ── Messenger 1.21: persons (only with ?people=1) ──
+
+  _needPersons() {
+    if (!this.bridged || !this.persons) throw new MessengerError('not supported', { code: 'unsupported' });
+  }
+
+  /** GET persons/:id → { conversation (the list entry), person } */
+  async person(id) { this._needPersons(); return this.api('GET', `persons/${this._id(id)}`); }
+
+  /**
+   * GET persons/:id/messages { limit, before | after | around | changedSince, way } → { messages (by time), hasMore,
+   * [hasMoreBefore, hasMoreAfter], ways: [{ conversationId, way, lastReadId, readUpTo, deliveredUpTo }], serverTime }
+   */
+  async personMessages(id, { limit, before, after, changedSince, around, way } = {}) {
+    this._needPersons();
+    const params = {};
+    if (Number.isSafeInteger(limit) && limit > 0) params.limit = Math.min(100, limit);
+    if (posInt(before)) params.before = posInt(before);
+    else if (posInt(after)) params.after = posInt(after);
+    else if (posInt(around)) params.around = posInt(around);
+    else if (typeof changedSince === 'string' && changedSince) params.changedSince = changedSince;
+    if (typeof way === 'string' && /^[a-z]{2,20}$/.test(way)) params.way = way;
+    return this.api('GET', `persons/${this._id(id)}/messages`, { params });
+  }
+
+  /** POST persons/:id/messages — the server picks the way → { message, duplicate, way, conversationId } */
+  async personSend(id, body) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/messages`, { body }); }
+
+  /** POST persons/:id/read { upTo? } → { unread, ways: [{ conversationId, way, lastReadId, unread }] } */
+  async personRead(id, upTo = null) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/read`, { body: posInt(upTo) ? { upTo: posInt(upTo) } : {} }); }
+
+  async personSearch(id, q, way = null) {
+    this._needPersons();
+    return this.api('GET', `persons/${this._id(id)}/search`, { params: { q, ...(typeof way === 'string' && /^[a-z]{2,20}$/.test(way) ? { way } : {}) } });
+  }
+
+  /** PATCH persons/:id { name?, notify?, mutedUntil? } → { conversation, person } */
+  async patchPerson(id, body) { this._needPersons(); return this.api('PATCH', `persons/${this._id(id)}`, { body }); }
+
+  async archivePerson(id, archived) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/archive`, { body: { archived: archived === true } }); }
+
+  /** POST persons { conversationIds, userId?, name? } → { conversation, person } */
+  async mergePersons(body) { this._needPersons(); return this.api('POST', 'persons', { body }); }
+
+  /** DELETE persons/:id/ways/:conversationId („Trennen“) — without a way: every way → { person | null, conversations } */
+  async splitPerson(id, conversationId = null) {
+    this._needPersons();
+    return this.api('DELETE', conversationId ? `persons/${this._id(id)}/ways/${this._id(conversationId)}` : `persons/${this._id(id)}`);
+  }
+
+  async personSuggestions() { this._needPersons(); return this.api('GET', 'persons/suggestions'); }
+
+  async answerSuggestion(id, action) {
+    this._needPersons();
+    if (typeof id !== 'string' || !/^\d{1,15}-\d{1,15}$/.test(id)) throw new MessengerError('invalid id', { code: 'invalid' });
+    return this.api('POST', `persons/suggestions/${id}`, { body: { action } });
+  }
+
+  async personCandidates(conversationId) { this._needPersons(); return this.api('GET', 'persons/candidates', { params: { conversationId: this._id(conversationId) } }); }
 
   async edit(messageId, text) { return this.api('PATCH', `messages/${this._id(messageId)}`, { body: { text } }); }
 
@@ -362,7 +425,8 @@ class MessengerApi {
     if (!isApiPath(p)) throw new MessengerError('invalid path', { code: 'invalid' });
     const b = body && typeof body === 'object' ? body : {};
     // Messenger 1.20: a button of a bridged push (`bridged: true`) says that this app knows channels as well
-    return this.api('POST', p, { body: b.bridged === true && this.channels ? { ...b, channels: true } : b });
+    // Messenger 1.21: … and persons
+    return this.api('POST', p, { body: b.bridged === true && (this.channels || this.persons) ? { ...b, ...(this.channels ? { channels: true } : {}), ...(this.persons ? { people: true } : {}) } : b });
   }
 
   // ── Messenger 1.13 / 1.14: linked services and chats over a bridge ──
@@ -409,6 +473,9 @@ class MessengerApi {
 
   /** Messenger 1.17: what of the older messages comes over at a new link (0, 30 or -1 = everything) → { history }. */
   async bridgeHistory(days) { return this.api('PUT', 'bridges/history', { body: { days } }); }
+
+  /** Messenger 1.21 (GateControl with gc.bridges version 9): PUT bridges/recognition { allowed } → { recognition } */
+  async bridgeRecognition(allowed) { return this.api('PUT', 'bridges/recognition', { body: { allowed: allowed === true } }); }
 
   /** Messenger 1.17: fetch a file of the older history now (placeholder state on_request) → { message }. */
   async fetchFile(messageId) { return this.api('POST', `messages/${this._id(messageId)}/fetch`, { body: {} }); }

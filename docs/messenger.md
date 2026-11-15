@@ -443,6 +443,40 @@ Without it everything stays as it was (a channel is then a read-only chat in the
 * Independent of the word (since 1.19): `fetchBridgeFile(id)` (`POST messages/:id/fetch`) also fetches a file whose
   placeholder `failed` with `retry: true` once more — for every app that shows chats over a bridge.
 
+### Messenger 1.21: persons („Personen zusammenführen“)
+
+One feature word, `chat_people` — for the same people as `bridge_chats`. Without it everything stays as it was: the
+ways of a person are separate chats in the list (as for older apps, and as the other person always sees them).
+
+* With the word every call carries `?people=1` next to `?bridged=1` (a push button with `bridged: true` in its body
+  gets `people: true`). `GET conversations` has **one entry per person**: the view of its lead conversation (the
+  GateControl chat, else the oldest way) with `person` { id, name, nameFrom, userId, conversationId, names, ways, reply }
+  — its `id` is the lead's; the other ways come as `folded` and leave the cache (`isPerson`, `personWayIds`).
+* `GET conversations/:id` of a way names `person` → the service reads `GET persons/:id` and keeps the entry (a plain
+  view never replaces a person's entry); `entryIdOf(id)` maps a way to its entry.
+* Messages of an entry: `GET persons/:id/messages` — all ways mixed by time (`createdAt`, a tie by id; `mergeMessages(…,
+  { byTime: true })`), `way` on each message, cursors of any way. `setWay(id, way)` (IPC `chat:person:way`) — the
+  source chips: a filter loads its own page (`?way=`), is not stored and is never read there; `messagesView().way`.
+  The ticks of GateControl messages come from `ways[gatecontrol].readUpTo / deliveredUpTo`.
+* `send()` to an entry → the outbox posts `POST persons/:id/messages` (`personId`): the server picks the way (the way of
+  the newest incoming message, a tie or none: GateControl; an answer the way of its message). The checks of the
+  composer use that way (`replyWay(id)` → { way, label, conversationId, bridge, can }). After sending the entry is read
+  again (`person.reply` may change).
+* `markRead(entry)` → `POST persons/:id/read { upTo: newest shown }` (only in „Alle“); a way's id (a push's „Gelesen“)
+  reads only that way. `setOpen()` pings `active` on every way; `typing()` goes to the way of the answer.
+* `updateConversation(entry, { notify, mutedUntil })` → `PATCH persons/:id`; `archive()` → `POST persons/:id/archive`;
+  `search()` → `GET persons/:id/search`; `pin()` pins in the message's way.
+* Live events come per way → applied to the entry (a message, typing, read marks of the GateControl way);
+  `conversation.update { reason: person }` (merged, renamed, split) → the list in full again and the suggestions.
+* `suggestions({ refresh })` (`GET persons/suggestions`, at most every 15 min; event `suggestions`),
+  `answerSuggestion(id, 'later' | 'never')`, `mergePersons({ conversationIds, userId?, name })` (`POST persons`; 409
+  `cannot_merge` with `reason`), `splitPerson(entry, conversationId?)` („Trennen“, `DELETE persons/:id/ways/:cid`, the
+  list again), `renamePerson(entry, 'account' | conversationId)`, `personCandidates(id)` (`GET persons/candidates`).
+* `bridges()` carries `recognition` { available, network, asked, allowed } when GateControl has the call
+  (`gc.bridges` version 9); `setRecognition(allowed)` → `PUT bridges/recognition` — asked once after WhatsApp was linked.
+* The push of a way (`data.person` { id, conversationId }): the server's title „Jenny Backes · über WhatsApp“; a click
+  opens the entry, the buttons stay on the message's way. A push of the open person shows no toast.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,

@@ -92,9 +92,10 @@ class MessengerOutbox extends EventEmitter {
   /**
    * Queue a message. `files.main` / `files.thumb`: { data, mime, name } —
    * kept until sent. Returns the entry (pending message view: toPending()).
-   * @param {object} req - { conversationId, clientId?, body (buildSendBody result), files? }
+   * @param {object} req - { conversationId, clientId?, body (buildSendBody result), files?, personId? }
+   *   personId (Messenger 1.21): a person's entry — sent through POST persons/:id/messages, the server picks the way
    */
-  async add({ conversationId, clientId, body, files = {} } = {}) {
+  async add({ conversationId, clientId, body, files = {}, personId = null } = {}) {
     const convId = posInt(conversationId);
     if (!convId || !body || typeof body !== 'object') throw new MessengerError('invalid message', { code: 'invalid' });
     const id = isClientId(clientId) ? clientId : crypto.randomUUID();
@@ -105,6 +106,7 @@ class MessengerOutbox extends EventEmitter {
     const entry = {
       clientId: id,
       conversationId: convId,
+      ...(posInt(personId) ? { personId: posInt(personId) } : {}),
       body: { ...body },
       files: {},
       mediaId: null,
@@ -213,7 +215,7 @@ class MessengerOutbox extends EventEmitter {
       await this._uploadFiles(e);
       let res;
       try {
-        res = await this.api.send(e.conversationId, this._body(e));
+        res = await this._post(e);
       } catch (err) {
         if (err && err.code === 'media_invalid' && Object.keys(e.files).length && !e.reuploaded) {
           // The upload expired or got lost: upload again once.
@@ -221,7 +223,7 @@ class MessengerOutbox extends EventEmitter {
           e.mediaId = null;
           e.thumbMediaId = null;
           await this._uploadFiles(e);
-          res = await this.api.send(e.conversationId, this._body(e));
+          res = await this._post(e);
         } else {
           throw err;
         }
@@ -289,6 +291,11 @@ class MessengerOutbox extends EventEmitter {
       }
       this._save();
     }
+  }
+
+  /** POST …/messages: the conversation's, or (Messenger 1.21) the person's — its server picks the way. */
+  _post(e) {
+    return e.personId ? this.api.personSend(e.personId, this._body(e)) : this.api.send(e.conversationId, this._body(e));
   }
 
   _body(e) {

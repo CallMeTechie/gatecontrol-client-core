@@ -279,6 +279,17 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // ({ ref } | { contactId, phoneKind }) — an address book number is checked only here, on tap
       newChatContacts:   (network, q) => ipcRenderer.invoke('chat:bridge:contacts', { network, q }),
       bridgeContactChat: (network, contact) => ipcRenderer.invoke('chat:bridge:contact-chat', { network, contact }),
+      // Messenger 1.21 (status().me.features.chat_people): persons — the source chips (way null: all), the suggestions,
+      // merging („Zusammenführen“, a suggestion or by hand), „Trennen“, the name; the question after linking WhatsApp
+      personWay:      (id, way) => ipcRenderer.invoke('chat:person:way', { id, way: way || null }),
+      suggestions:    (opts) => ipcRenderer.invoke('chat:suggestions', opts),
+      answerSuggestion: (id, action) => ipcRenderer.invoke('chat:suggestion:answer', { id, action }),
+      mergePersons:   (req) => ipcRenderer.invoke('chat:person:merge', req),
+      splitPerson:    (id, conversationId) => ipcRenderer.invoke('chat:person:split', { id, conversationId: conversationId == null ? null : conversationId }),
+      renamePerson:   (id, name) => ipcRenderer.invoke('chat:person:name', { id, name }),
+      personCandidates: (id) => ipcRenderer.invoke('chat:person:candidates', { id }),
+      bridgeRecognition: (allowed) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true }),
+      onSuggestions:  (cb) => subscribe('chat:suggestions', cb),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),

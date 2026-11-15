@@ -10,6 +10,8 @@
 //   messengerServer({ features: FEATURES_14, familie: true })     // 1.4.0: status, stories, polls, events,
 //                                                                 // arrival, actions, msg_tools, privacy2 (+ Familie)
 //   messengerServer({ features: { ...FEATURES_14, story_duration: true } })  // 1.4.1: story durationH
+//   features.chat_people (1.21): persons — srv.addPerson({ convIds, userId, nameFrom }), ?people=1 folds the ways
+//   (`person`, `folded`), persons/… routes, state.suggestions, state.recognition (GET bridges › recognition)
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code, times?, extra?) (extra: more fields of the refusal, e.g. { finding }),
@@ -102,6 +104,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       history: { available: true, days: 30, default: 30, options: [0, 30, -1], pending: 0 },
       fetches: [],              // ids of messages whose file of the history was asked for
     },
+    // 1.21 (features.chat_people): persons of the viewer (id → { id, ways: [convId], userId, nameFrom }), the open
+    // suggestions (GET persons/suggestions), their answers, the consent „an meinem WhatsApp erkennen“ (null: no call)
+    persons: new Map(),
+    nextPerson: 1,
+    suggestions: [],
+    answers: [],
+    recognition: null,
+    personReads: [],
   };
   const streams = new Set();
   const person = (id) => {
@@ -174,7 +184,14 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     if (seg[0] !== 'bridges') return undefined;
     if (!(features && features.linked_services === true)) return err(res, 404, 'not_found');
     const hist = features && features.bridge_history === true;
-    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks, ...(hist ? { history: B.history } : {}) } : { available: false, networks: [] } });
+    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks, ...(hist ? { history: B.history } : {}), ...(state.recognition ? { recognition: { available: true, network: 'whatsapp', ...state.recognition } } : {}) } : { available: false, networks: [] } });
+    // 1.21 (gc.bridges version 9): „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“
+    if (seg.length === 2 && seg[1] === 'recognition' && m === 'PUT') {
+      if (!state.recognition) return err(res, 403, 'feature_off');
+      if (typeof (body && body.allowed) !== 'boolean') return err(res, 400, 'invalid');
+      state.recognition = { asked: true, allowed: body.allowed };
+      return json(res, 200, { ok: true, recognition: { available: true, network: 'whatsapp', ...state.recognition } });
+    }
     // 1.17: what of the older messages comes over
     if (seg.length === 2 && seg[1] === 'history' && m === 'PUT') {
       if (!hist || !B.history) return err(res, 403, 'feature_off');
@@ -289,6 +306,175 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     return err(res, 404, 'not_found');
   }
 
+  // ── 1.21: persons ──
+  /** A person of the viewer over the given chats (`nameFrom`: 'account' or a conversation id). → its id */
+  function addPerson({ convIds, userId = null, nameFrom = null }) {
+    const id = state.nextPerson++;
+    state.persons.set(id, { id, ways: convIds.slice(), userId, nameFrom: nameFrom || (userId ? 'account' : Math.min(...convIds)), createdAt: now() });
+    return id;
+  }
+  const personOf = (cid) => [...state.persons.values()].find((p) => p.ways.includes(cid)) || null;
+  const wayName = (c) => (c.bridge ? c.bridge.network : 'gatecontrol');
+  const keyLess = (x, y) => x.createdAt < y.createdAt || (x.createdAt === y.createdAt && x.id < y.id);
+  const byKey = (x, y) => (keyLess(x, y) ? -1 : keyLess(y, x) ? 1 : 0);
+  function personEntry(p) {
+    const convs = p.ways.map((id) => state.convs.get(id)).filter(Boolean);
+    const views = convs.map((c) => convView(c));
+    const gc = convs.find((c) => !c.bridge);
+    const lead = gc || convs.slice().sort((x, y) => x.id - y.id)[0];
+    const leadView = views.find((v) => v.id === lead.id);
+    const acc = p.userId ? users.find((u) => u.id === p.userId) : null;
+    const src = p.nameFrom !== 'account' ? views.find((v) => v.id === p.nameFrom) : null;
+    const name = src ? src.title : (acc ? acc.name : leadView.title);
+    // the way of the newest incoming message (a tie, none: GateControl); a bridged way that cannot send gives way
+    let best = null;
+    for (const c of convs) {
+      const inc = state.msgs.get(c.id).filter((m) => !m.hidden && m.senderId !== me);
+      const li = inc[inc.length - 1];
+      if (li && (!best || li.createdAt > best.li.createdAt || (li.createdAt === best.li.createdAt && !c.bridge))) best = { c, li };
+    }
+    let pick = best ? best.c : lead;
+    if (pick.bridge && gc && !(pick.bridge.state === 'ok' && !pick.bridge.closed)) pick = gc;
+    const ways = views.slice().sort((x, y) => (x.bridge ? 1 : 0) - (y.bridge ? 1 : 0) || x.id - y.id).map((v) => ({
+      way: v.bridge ? v.bridge.network : 'gatecontrol', label: v.bridge ? v.bridge.label : 'GateControl', conversationId: v.id, title: v.title,
+      avatarUrl: v.avatarUrl || null, avatarMediaId: v.avatarMediaId || null, unread: v.unread, muted: v.muted, archived: v.archived,
+      lastMessageAt: v.lastMessage ? v.lastMessage.createdAt : null, bridge: v.bridge || null,
+      can: { send: !!v.can.send, sendReason: v.can.sendReason || null, react: v.can.react !== false },
+    }));
+    let last = null;
+    for (const v of views) if (v.lastMessage && (!last || v.lastMessage.createdAt > last.createdAt || (v.lastMessage.createdAt === last.createdAt && v.lastMessage.id > last.id))) last = v.lastMessage;
+    const names = [];
+    for (const n of [name, acc && acc.name, ...views.map((v) => v.title)]) if (n && !names.includes(n)) names.push(n);
+    return {
+      ...leadView,
+      title: name,
+      unread: views.reduce((s, v) => s + v.unread, 0),
+      lastMessage: last,
+      archived: views.every((v) => v.archived),
+      person: {
+        id: p.id, name, nameFrom: src ? src.id : (acc ? 'account' : null), userId: p.userId, conversationId: lead.id, names, ways,
+        reply: { way: wayName(pick), label: pick.bridge ? 'WhatsApp' : 'GateControl', conversationId: pick.id },
+        createdAt: iso(p.createdAt),
+      },
+    };
+  }
+  /** persons/* (persons.js of the plugin) → the answer, a rewrite of POST …/messages, or undefined when not ours. */
+  function personRoute(res, seg, m, q, body) {
+    if (seg[0] !== 'persons') return undefined;
+    const [, b, c, d] = seg;
+    if (seg.length === 2 && b === 'suggestions' && m === 'GET') return json(res, 200, { ok: true, suggestions: state.suggestions });
+    if (seg.length === 3 && b === 'suggestions' && m === 'POST') {
+      const s = state.suggestions.find((x) => x.id === c);
+      if (!s) return err(res, 404, 'not_found');
+      if (!['later', 'never'].includes(body && body.action)) return err(res, 400, 'invalid');
+      state.answers.push({ id: c, action: body.action });
+      state.suggestions = state.suggestions.filter((x) => x.id !== c);
+      return json(res, 200, { ok: true, suggestion: { id: c, state: body.action, until: null } });
+    }
+    if (seg.length === 2 && b === 'candidates' && m === 'GET') {
+      const cid = Number(q.conversationId);
+      const own = personOf(cid);
+      const conv = state.convs.get(cid);
+      if (!conv) return err(res, 404, 'not_found');
+      const hasAccount = (!conv.bridge && conv.kind === 'direct') || !!(own && own.userId);
+      const accounts = hasAccount ? [] : users.filter((u) => u.id !== me).map((u) => ({ userId: u.id, name: u.name, avatarUrl: u.avatarUrl, initials: u.initials, colorHex: u.colorHex, personId: null }));
+      const chats = [...state.convs.values()].filter((x) => x.bridge && x.kind === 'direct' && !x.bridge.channel && x.id !== cid && !(own && own.ways.includes(x.id)))
+        .map((x) => ({ conversationId: x.id, title: x.title, network: x.bridge.network, label: 'WhatsApp', avatarUrl: null, avatarMediaId: null, personId: (personOf(x.id) || {}).id || null }));
+      return json(res, 200, { ok: true, accounts, chats });
+    }
+    if (seg.length === 1 && m === 'POST') {
+      const ids = (body && body.conversationIds) || [];
+      for (const id of ids) {
+        const x = state.convs.get(id);
+        if (!x) return err(res, 404, 'not_found');
+        if (x.kind !== 'direct' || (x.bridge && x.bridge.channel)) return err(res, 409, 'cannot_merge', { reason: x.bridge && x.bridge.channel ? 'channel' : 'group' });
+      }
+      let userId = body.userId || null;
+      const all = new Set(ids);
+      for (const id of ids) { const x = state.convs.get(id); if (!x.bridge) userId = x.members.find((y) => y.id !== me).id; const pp = personOf(id); if (pp) { pp.ways.forEach((w) => all.add(w)); if (pp.userId) userId = pp.userId; state.persons.delete(pp.id); } }
+      if (userId && ![...all].some((id) => !state.convs.get(id).bridge)) {
+        const ex = [...state.convs.values()].find((x) => x.kind === 'direct' && !x.bridge && x.members.some((y) => y.id === userId));
+        all.add(ex ? ex.id : addConv({ kind: 'direct', members: [me, userId] }));
+      }
+      if (all.size < 2) return err(res, 409, 'cannot_merge', { reason: 'one_way' });
+      const pid = addPerson({ convIds: [...all], userId, nameFrom: body.name || (userId ? 'account' : null) });
+      state.suggestions = state.suggestions.filter((s) => !all.has(s.conversationId));
+      const e = personEntry(state.persons.get(pid));
+      return json(res, 200, { ok: true, conversation: e, person: e.person });
+    }
+    const p = state.persons.get(Number(b));
+    if (!p) return err(res, 404, 'not_found');
+    if (seg.length === 2 && m === 'GET') { const e = personEntry(p); return json(res, 200, { ok: true, conversation: e, person: e.person }); }
+    if (seg.length === 2 && m === 'PATCH') {
+      if (body.name !== undefined) p.nameFrom = body.name;
+      for (const id of p.ways) { const x = state.convs.get(id); if (body.notify) x.notify = body.notify; x.updatedAt = now(); }
+      const e = personEntry(p);
+      return json(res, 200, { ok: true, conversation: e, person: e.person });
+    }
+    if (seg.length === 3 && c === 'archive' && m === 'POST') {
+      for (const id of p.ways) state.convs.get(id).archived = body.archived === true;
+      const e = personEntry(p);
+      return json(res, 200, { ok: true, conversation: e, person: e.person });
+    }
+    if ((seg.length === 4 && c === 'ways' && m === 'DELETE') || (seg.length === 2 && m === 'DELETE')) {
+      const leave = d ? [Number(d)] : p.ways.slice();
+      if (d && !p.ways.includes(Number(d))) return err(res, 404, 'not_found');
+      p.ways = p.ways.filter((id) => !leave.includes(id));
+      let person = null;
+      const out = [];
+      if (p.ways.length < 2) { leave.push(...p.ways); state.persons.delete(p.id); } else { if (leave.includes(p.nameFrom)) p.nameFrom = p.userId ? 'account' : Math.min(...p.ways); const e = personEntry(p); person = e.person; out.push(e); }
+      for (const id of new Set(leave)) out.push(convView(state.convs.get(id)));
+      return json(res, 200, { ok: true, person, conversations: out });
+    }
+    const all = p.ways.map((id) => state.convs.get(id));
+    const ways = q.way ? all.filter((x) => wayName(x) === q.way) : all;
+    const rows = () => ways.flatMap((x) => state.msgs.get(x.id).filter((mm) => !mm.hidden)).sort(byKey);
+    if (seg.length === 3 && c === 'messages' && m === 'GET') {
+      const limit = Number(q.limit) || 50;
+      const list = rows();
+      const cur = (id) => { for (const x of all) { const f = state.msgs.get(x.id).find((mm) => mm.id === Number(id)); if (f) return f; } return null; };
+      let out;
+      let hasMore = false;
+      const extra = {};
+      if (q.before) { const k = cur(q.before); const older = list.filter((x) => keyLess(x, k)); out = older.slice(-limit); hasMore = older.length > limit; } else if (q.after) { const k = cur(q.after); const newer = list.filter((x) => keyLess(k, x)); out = newer.slice(0, limit); hasMore = newer.length > limit; } else if (q.around) {
+        const k = cur(q.around);
+        const half = Math.floor(limit / 2);
+        const older = list.filter((x) => keyLess(x, k));
+        const rest = list.filter((x) => !keyLess(x, k));
+        out = older.slice(-half).concat(rest.slice(0, limit - Math.min(half, older.length)));
+        extra.hasMoreBefore = older.length > half;
+        extra.hasMoreAfter = rest.length > limit - Math.min(half, older.length);
+        hasMore = extra.hasMoreBefore || extra.hasMoreAfter;
+      } else if (q.changedSince) { out = list.filter((x) => x.changedAt > Date.parse(q.changedSince)); } else { out = list.slice(-limit); hasMore = list.length > limit; }
+      const marks = all.map((x) => { const v = convView(x); return { conversationId: x.id, way: wayName(x), lastReadId: v.me.lastReadId, readUpTo: v.readUpTo, deliveredUpTo: v.deliveredUpTo }; });
+      return json(res, 200, { ok: true, messages: out.map((x) => msgView(x)), hasMore, ...extra, ways: marks, serverTime: iso(now()) });
+    }
+    if (seg.length === 3 && c === 'read' && m === 'POST') {
+      state.personReads.push({ personId: p.id, upTo: body && body.upTo != null ? body.upTo : null });
+      const k = body && body.upTo != null ? all.flatMap((x) => state.msgs.get(x.id)).find((mm) => mm.id === body.upTo) : null;
+      const out = all.map((x) => {
+        const mb = x.members.find((y) => y.id === me);
+        const msgs = state.msgs.get(x.id).filter((mm) => !k || !keyLess(k, mm));
+        const top = msgs.length ? msgs[msgs.length - 1].id : 0;
+        mb.lastRead = Math.max(mb.lastRead, top);
+        return { conversationId: x.id, way: wayName(x), lastReadId: mb.lastRead, unread: convView(x).unread };
+      });
+      return json(res, 200, { ok: true, unread: out.reduce((s, x) => s + x.unread, 0), ways: out });
+    }
+    if (seg.length === 3 && c === 'search' && m === 'GET') {
+      return json(res, 200, { ok: true, results: rows().filter((x) => (x.text || '').includes(q.q)).reverse().map((x) => msgView(x)), scanned: rows().length, truncated: false });
+    }
+    if (seg.length === 3 && c === 'messages' && m === 'POST') {
+      const e = personEntry(p);
+      let w = e.person.reply;
+      const rq = body && body.replyTo ? all.find((x) => state.msgs.get(x.id).some((mm) => mm.id === body.replyTo)) : null;
+      const rw = rq && e.person.ways.find((x) => x.conversationId === rq.id && x.can.send);
+      if (rw) w = rw;
+      return { rewrite: ['conversations', String(w.conversationId), 'messages'], extra: { way: w.way, conversationId: w.conversationId } };
+    }
+    return err(res, 404, 'not_found');
+  }
+
   function addMsg(convId, { senderId = 8, text = 'Hallo', kind = 'text', clientId = null, mediaId = null, meta = null, thumbMediaId = null, video = null, poll = null, event = null, action = null, arrival = null, card = null, replyStory = null } = {}) {
     const m = { id: state.nextMsg++, conversationId: convId, senderId, clientId, kind, text, mediaId, meta, thumbMediaId, video, poll, event, action, arrival, card, replyStory, createdAt: now(), changedAt: now(), editedAt: null, deleted: false, reactions: [] };
     state.msgs.get(convId).push(m);
@@ -313,6 +499,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       ...(m.poll ? { poll: m.poll } : {}), ...(m.event ? { event: m.event } : {}), ...(m.action ? { action: m.action } : {}),
       ...(m.arrival ? { arrival: m.arrival } : {}), ...(m.card ? { card: m.card } : {}), ...(m.replyStory ? { replyStory: m.replyStory } : {}),
       status: m.senderId === viewer ? (m.id <= readUpTo ? 'read' : m.id <= deliveredUpTo ? 'delivered' : 'sent') : null,
+      // 1.21: the way of every message (a client with ?people=1)
+      ...(features && features.chat_people === true ? { way: c.bridge ? c.bridge.network : 'gatecontrol' } : {}),
       ...(c.bridge ? {
         via: `bridge:${c.bridge.network}`,
         system: m.system || null,
@@ -388,7 +576,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
 
   const json = (res, status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(body));
+    // 1.21: POST persons/:id/messages answers like the way's POST, plus its way
+    res.end(JSON.stringify(res.extra && status === 200 ? { ...body, ...res.extra } : body));
   };
   const err = (res, status, code, extra = null) => json(res, status, { ok: false, code, error: code, ...(extra || {}) });
 
@@ -605,9 +794,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       return res.end(f.data);
     }
     if (!p.startsWith(API)) return err(res, 404, 'not_found');
-    const seg = p.slice(API.length).split('/').filter(Boolean);
-    const [a, b, c] = seg;
+    let seg = p.slice(API.length).split('/').filter(Boolean);
     const m = req.method;
+    // 1.21: persons — only for a client that knows them (?people=1 with ?bridged=1)
+    const peopleOn = !!(features && features.chat_people === true) && (q.people === '1' || !!(body && body.people === true)) && (q.bridged === '1' || !!(body && body.bridged === true));
+    if (seg[0] === 'persons') {
+      if (!peopleOn) return err(res, 404, 'not_found');
+      const pr = personRoute(res, seg, m, q, body);
+      if (pr && pr.rewrite) { seg = pr.rewrite; res.extra = pr.extra; } else return pr;
+    }
+    const [a, b, c] = seg;
 
     if (a === 'me' && m === 'GET') {
       return json(res, 200, { ok: true, user: { id: me, name: 'Marc', avatarUrl: null, initials: 'MA', colorHex: '#2FBF71' }, prefs: state.prefs,
@@ -634,9 +830,25 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     const isChan = (x) => !!(x.bridge && x.bridge.channel);
     if (a === 'conversations' && !b && m === 'GET') {
       const since = q.since ? Date.parse(q.since) : null;
-      const list = [...state.convs.values()].filter((x) => (!since || x.updatedAt > since) && (!x.bridge || (bridged && state.msgs.get(x.id).length)) && !(chans && isChan(x))).map((x) => convView(x));
+      let list = [...state.convs.values()].filter((x) => (!since || x.updatedAt > since) && (!x.bridge || (bridged && state.msgs.get(x.id).length)) && !(chans && isChan(x))).map((x) => convView(x));
       const cl = chans && bridged ? [...state.convs.values()].filter((x) => isChan(x) && state.msgs.get(x.id).length).map((x) => convView(x)) : null;
-      return json(res, 200, { ok: true, conversations: list, removed: [], ...(cl ? { channels: { count: cl.length, unread: cl.reduce((n, x) => n + x.unread, 0) } } : {}), serverTime: iso(now()) });
+      // 1.21: one entry per person (the lead's id), the other ways `folded`
+      let folded = null;
+      if (peopleOn) {
+        folded = [];
+        const seen = new Set();
+        list = list.flatMap((v) => {
+          const pp = personOf(v.id);
+          if (!pp) return [v];
+          if (seen.has(pp.id)) { folded.push(v.id); return []; }
+          seen.add(pp.id);
+          const e = personEntry(pp);
+          if (e.id !== v.id) folded.push(v.id);
+          return [e];
+        });
+        for (const pp of state.persons.values()) for (const id of pp.ways) if (id !== personEntry(pp).id && !folded.includes(id)) folded.push(id);
+      }
+      return json(res, 200, { ok: true, conversations: list, removed: [], ...(folded ? { folded } : {}), ...(cl ? { channels: { count: cl.length, unread: cl.reduce((n, x) => n + x.unread, 0) } } : {}), serverTime: iso(now()) });
     }
     if (a === 'channels' && !b && m === 'GET') {
       if (!bridged || !(features && features.bridge_channels === true)) return err(res, 404, 'not_found');
@@ -655,7 +867,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       const conv = state.convs.get(Number(b));
       if (!conv || (conv.bridge && !bridged)) return err(res, 404, 'not_found');
       const list = state.msgs.get(conv.id);
-      if (!c && m === 'GET') return json(res, 200, { ok: true, conversation: convView(conv) });
+      // 1.21: a way of a person names it (the app opens the person)
+      if (!c && m === 'GET') return json(res, 200, { ok: true, conversation: { ...convView(conv), ...(peopleOn && personOf(conv.id) ? { person: personEntry(personOf(conv.id)).person } : {}) } });
       if (!c && m === 'PATCH') {
         if (body.title) conv.title = body.title;
         if (body.notify === 'all' || body.notify === 'none') conv.notify = body.notify;
@@ -806,6 +1019,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     addMsg,
     addBridgeConv,
     addBridgeMsg,
+    addPerson,
+    personEntry,
     convView,
     msgView,
     streams,

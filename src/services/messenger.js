@@ -50,6 +50,14 @@
  *     stop an own one.
  *   - Messenger 1.4.1: a story's duration (`durationH`, feature
  *     `story_duration`); without the key it is left out (24 h).
+ *   - Messenger 1.21 (feature `chat_people`, ?people=1): persons — one
+ *     entry per human over several ways (`person`; its id is the lead
+ *     conversation's, the other ways are `folded` out of the list). Their
+ *     messages, read marks, search, mute and archive go through persons/:id/…
+ *     (the shared history by time, `way` on each message, a source filter),
+ *     sending through POST persons/:id/messages (the server picks the way).
+ *     Live events of a way belong to its entry; suggestions, merging and
+ *     „Trennen“ pass through. Without the word everything stays as it was.
  *
  * Events: 'state' (status()), 'conversations' ({ ids, removed }),
  * 'messages' ({ conversationId, reason }), 'typing' ({ conversationId,
@@ -58,7 +66,8 @@
  * 'read-self' ({ conversationId, lastReadId }) read on another device,
  * 'send-failed' ({ conversationId, clientId, error, source }),
  * 'feed' (status feed of 1.4.0), 'lists' (custom chat filters),
- * 'reminders' (own "remind me" list changed).
+ * 'reminders' (own "remind me" list changed),
+ * 'suggestions' (1.21: the open suggestions „… ist vielleicht …“ changed).
  */
 
 const EventEmitter = require('events');
@@ -73,6 +82,7 @@ const {
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary,
+  FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -98,6 +108,7 @@ const DEFAULT_TIMING = Object.freeze({
   feedTtlMs: 60 * 1000,           // status feed (1.4.0) without events
   feedDebounceMs: 300,            // status.update / story.* → GET status/feed
   actionsTtlMs: 60 * 1000,        // GET actions (attach menu)
+  suggestTtlMs: 15 * 60 * 1000,   // 1.21: GET persons/suggestions at most every 15 min
   mediaCacheBytes: 48 * 1024 * 1024,
   avatarCacheBytes: 8 * 1024 * 1024,
 });
@@ -204,6 +215,8 @@ class MessengerService extends EventEmitter {
     this._chanSum = null;
     this._chansLoaded = false;
     this._chanRefresh = null;
+    // Messenger 1.21 (chat_people): the open suggestions of GET persons/suggestions
+    this._sugg = { at: 0, list: null };
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
@@ -217,6 +230,7 @@ class MessengerService extends EventEmitter {
 
     this._loadCache();
     this._syncBridged();
+    this._checkPersonStates({ emit: false });
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -236,7 +250,7 @@ class MessengerService extends EventEmitter {
     if (this._feedTimer) { clearTimeout(this._feedTimer); this._feedTimer = null; }
     for (const t of this._convTimers.values()) clearTimeout(t);
     this._convTimers.clear();
-    if (this._open.id && this._open.visible && this._avail.state === 'available') this.api.active(this._open.id, false).catch(() => {});
+    if (this._open.id && this._open.visible && this._avail.state === 'available') for (const w of this._open.ways || [this._open.id]) this.api.active(w, false).catch(() => {});
     this.outbox.stop();
     this._persistNow();
   }
@@ -470,14 +484,106 @@ class MessengerService extends EventEmitter {
     return sortConversations(list).map((c) => ({
       ...c,
       typing: this._typingIds(c.id, now),
-      ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, now) } : {}),
+      ...(c.bridge || isPerson(c) ? { typingContacts: this._typingContactsOf(c.id, now) } : {}),
       outbox: this.outbox.list(c.id).length,
     }));
   }
 
   getCachedConversation(id) {
     const c = this._convs.get(posInt(id));
-    return c ? { ...c, typing: this._typingIds(c.id, this.now()), ...(c.bridge ? { typingContacts: this._typingContactsOf(c.id, this.now()) } : {}) } : null;
+    return c ? { ...c, typing: this._typingIds(c.id, this.now()), ...(c.bridge || isPerson(c) ? { typingContacts: this._typingContactsOf(c.id, this.now()) } : {}) } : null;
+  }
+
+  // ── Messenger 1.21: persons ──────────────────────────────
+
+  /** Does this app show persons (the server names chat_people, ?people=1 is sent)? */
+  _peopleOn() {
+    return !!this.api.persons;
+  }
+
+  /** The person id of an entry (null: none, or persons are off). */
+  _pidOf(cid) {
+    const c = this._convs.get(cid);
+    return this._peopleOn() && isPerson(c) ? c.person.id : null;
+  }
+
+  /** The list entry a conversation belongs to: itself, or the entry of the person it is a way of. */
+  _leadOf(id) {
+    const cid = posInt(id);
+    if (!cid || this._convs.has(cid) || !this._peopleOn()) return cid;
+    for (const c of this._convs.values()) if (isPerson(c) && c.person.ways.some((w) => w && w.conversationId === cid)) return c.id;
+    return cid;
+  }
+
+  /** Public: the entry (a person's lead id) a conversation id is shown as. */
+  entryIdOf(id) {
+    return this._leadOf(id);
+  }
+
+  /** Messages of a state sorted as shown: by time for a person (its ways are mixed), else by id. */
+  _merge(st, list, incoming) {
+    return mergeMessages(list, incoming, { byTime: !!(st && st.pid) });
+  }
+
+  /** The newest shown message of a state: the last by time for a person, else the highest id. */
+  _newestOf(st) {
+    if (st && st.pid) return st.list.length ? st.list[st.list.length - 1] : null;
+    let top = null;
+    for (const m of (st ? st.list : [])) if (!top || m.id > top.id) top = m;
+    return top;
+  }
+
+  /** The entry has a newer message than the loaded state (the list or a live event says so). */
+  _hasNewer(c, st) {
+    if (!c || !st || !st.loaded) return false;
+    if (st.pid) {
+      const last = c.lastMessage && posInt(c.lastMessage.id);
+      return !!last && !st.list.some((m) => m.id === last) && (!st.way || wayOf(c.lastMessage) === st.way);
+    }
+    return !!(c.lastMessageId && c.lastMessageId > this._newestId(st));
+  }
+
+  /**
+   * The cached messages belong to what an entry is now: a chat that became a person (or a person split) loads anew —
+   * its routes and order changed. → the ids that were reset.
+   */
+  _checkPersonStates({ emit = true } = {}) {
+    const reset = [];
+    for (const [cid, st] of [...this._msgs]) {
+      if ((st.pid || null) === this._pidOf(cid)) continue;
+      this._msgs.delete(cid);
+      reset.push(cid);
+    }
+    if (emit) for (const cid of reset) this.emit('messages', { conversationId: cid, reason: 'person' });
+    return reset;
+  }
+
+  /** A person's entry (of persons/… answers): its ways leave the list. */
+  _putPerson(e) {
+    if (!e || !posInt(e.id)) return;
+    const removed = [];
+    for (const id of personWayIds(e)) if (id !== e.id && this._convs.has(id)) { this._drop(id, { emit: false }); removed.push(id); }
+    this._convs.set(e.id, e);
+    if (this._open.id === e.id) this._open = { ...this._open, ways: personWayIds(e) };
+    this._checkPersonStates();
+    this.emit('conversations', { ids: [e.id], removed });
+    this._emitUnread();
+    this._persist();
+    // a way had a message the open entry does not show yet (an event of a way the list did not know)
+    if (this._hasNewer(e, this._msgs.get(e.id))) this._loadNewer(e.id).then(() => this._maybeRead(e.id)).catch(() => {});
+  }
+
+  /** GET persons/:id → the entry (cached); 404 (dissolved meanwhile) → the list again, null. */
+  async _refreshPerson(pid) {
+    try {
+      const r = await this.api.person(pid);
+      if (!r.conversation || !isPerson(r.conversation)) return null;
+      this._putPerson(r.conversation);
+      return this.getCachedConversation(r.conversation.id);
+    } catch (err) {
+      if (err.status === 404) { this.refreshConversations({ full: true }).catch(() => {}); return null; }
+      throw err;
+    }
   }
 
   /** Sum of unread messages of the chats that are neither muted nor archived (1.4.0); 1.20: never of a channel. */
@@ -535,7 +641,14 @@ class MessengerService extends EventEmitter {
     }
     for (const c of keep) this._convs.set(c.id, c);
     for (const c of list) this._convs.set(c.id, c);
+    // Messenger 1.21: the other ways of a person are no entries of their own (`folded`, and the ways of every entry)
+    if (this._peopleOn()) {
+      const entries = new Set(list.map((c) => c.id));
+      for (const id of (Array.isArray(r.folded) ? r.folded : []).map(posInt).filter(Boolean)) if (!entries.has(id)) removed.push(id);
+      for (const c of [...this._convs.values()]) if (isPerson(c)) for (const id of personWayIds(c)) if (id !== c.id && !entries.has(id)) removed.push(id);
+    }
     for (const id of new Set(removed)) this._drop(id, { emit: false });
+    this._checkPersonStates();
     if (typeof r.serverTime === 'string') this._lastSync = r.serverTime;
     if (sum) {
       this._chanSum = sum;
@@ -554,10 +667,7 @@ class MessengerService extends EventEmitter {
     this._persist();
     // The open conversation (and other loaded ones) may have new messages.
     for (const c of list) {
-      const st = this._msgs.get(c.id);
-      if (st && st.loaded && c.lastMessageId && c.lastMessageId > this._newestId(st)) {
-        this._loadNewer(c.id).then(() => this._maybeRead(c.id)).catch(() => {});
-      }
+      if (this._hasNewer(c, this._msgs.get(c.id))) this._loadNewer(c.id).then(() => this._maybeRead(c.id)).catch(() => {});
     }
   }
 
@@ -602,14 +712,20 @@ class MessengerService extends EventEmitter {
 
   /** GET conversations/:id → cached + returned (404 → dropped, null). */
   async getConversation(id, { refresh = true } = {}) {
-    const cid = posInt(id);
-    if (!cid) throw new MessengerError('invalid id', { code: 'invalid' });
+    const asked = posInt(id);
+    if (!asked) throw new MessengerError('invalid id', { code: 'invalid' });
+    // Messenger 1.21: a way of a person stands for its entry
+    const cid = this._leadOf(asked);
     if (!refresh && this._convs.has(cid)) return this.getCachedConversation(cid);
+    const pid = this._pidOf(cid);
+    if (pid) return this._refreshPerson(pid);
     const started = this.now();
     try {
       const r = await this.api.conversation(cid);
       // Removed while the answer was on its way (conversation.remove).
       if ((this._removedAt.get(cid) || 0) >= started) return null;
+      // Messenger 1.21: a way of a person (`person`) — the app shows the person's entry (GET persons/:id)
+      if (r.conversation && this._peopleOn() && isPerson(r.conversation)) return this._refreshPerson(r.conversation.person.id);
       if (r.conversation) this._upsert(r.conversation);
       return this.getCachedConversation(cid);
     } catch (err) {
@@ -631,6 +747,16 @@ class MessengerService extends EventEmitter {
 
   _upsert(c) {
     if (!c || !posInt(c.id)) return;
+    // Messenger 1.21: the plain view of a conversation never replaces a person's entry (the answer of a change on its
+    // lead or a way) — the entry is read again instead
+    if (this._peopleOn()) {
+      const had = this._convs.get(this._leadOf(c.id));
+      if (isPerson(c) || isPerson(had)) {
+        if (isPerson(c)) this._refreshPerson(c.person.id).catch(() => {});
+        else this._refreshConvSoon(had.id);
+        return;
+      }
+    }
     this._convs.set(c.id, c);
     this.emit('conversations', { ids: [c.id], removed: [] });
     this._emitUnread();
@@ -646,7 +772,7 @@ class MessengerService extends EventEmitter {
     this._typing.delete(id);
     this._typingContacts.delete(id);
     this._freshBridge.delete(id);
-    if (this._open.id === id) this._open = { id: null, visible: false };
+    if (this._open.id === id) this._open = { id: null, visible: false, ways: [] };
     if (emit && had) {
       this.emit('conversations', { ids: [], removed: [id] });
       this._emitUnread();
@@ -668,25 +794,24 @@ class MessengerService extends EventEmitter {
   async getMessages(id, { before = null, after = null, around = null } = {}) {
     const cid = posInt(id);
     if (!cid) throw new MessengerError('invalid id', { code: 'invalid' });
-    let st = this._msgs.get(cid);
-    if (!st) { st = { list: [], hasMore: true, loaded: false, syncedAt: null, window: null }; this._msgs.set(cid, st); }
+    const st = this._state(cid);
     let offline = false;
     try {
       if (posInt(around)) {
         await this._loadAround(cid, posInt(around));
       } else if (posInt(before)) {
-        const r = await this.api.messages(cid, { before: posInt(before), limit: PAGE });
+        const r = await this._fetch(cid, { before: posInt(before), limit: PAGE });
         if (st.window) {
-          st.window.list = mergeMessages(st.window.list, r.messages);
+          st.window.list = this._merge(st, st.window.list, r.messages);
           st.window.hasMoreBefore = r.hasMore === true;
         } else {
-          st.list = mergeMessages(st.list, r.messages);
+          st.list = this._merge(st, st.list, r.messages);
           st.hasMore = r.hasMore === true;
         }
         this._receipts(cid, r);
       } else if (posInt(after) && st.window) {
-        const r = await this.api.messages(cid, { after: posInt(after), limit: PAGE });
-        st.window.list = mergeMessages(st.window.list, r.messages);
+        const r = await this._fetch(cid, { after: posInt(after), limit: PAGE });
+        st.window.list = this._merge(st, st.window.list, r.messages);
         st.window.hasMoreAfter = r.hasMore === true;
         this._receipts(cid, r);
         this._joinWindow(cid);
@@ -706,30 +831,69 @@ class MessengerService extends EventEmitter {
     return this.messagesView(cid, { offline });
   }
 
+  /** The message state of a conversation (made when there is none; 1.21: a person's knows its id and source filter). */
+  _state(cid, way = null) {
+    let st = this._msgs.get(cid);
+    if (!st) {
+      st = { list: [], hasMore: true, loaded: false, syncedAt: null, window: null, pid: this._pidOf(cid), way: way || null };
+      this._msgs.set(cid, st);
+    }
+    return st;
+  }
+
+  /** GET …/messages of a conversation, or (1.21) of a person — with its source filter (?way=). */
+  _fetch(cid, opts) {
+    const st = this._msgs.get(cid);
+    const pid = this._pidOf(cid);
+    if (pid) return this.api.personMessages(pid, { ...opts, ...(st && st.way ? { way: st.way } : {}) });
+    return this.api.messages(cid, opts);
+  }
+
+  /**
+   * Messenger 1.21: the source chips of a person's shared history (Alle · GateControl · WhatsApp) — `way` null for all,
+   * else one way of `person.ways`. A filter loads its own newest page (not kept in the store, nothing read there).
+   * → messagesView
+   */
+  async setWay(id, way = null) {
+    const cid = posInt(id);
+    const pid = cid ? this._pidOf(cid) : null;
+    if (!pid) throw new MessengerError('invalid', { code: 'invalid' });
+    const c = this._convs.get(cid);
+    const w = way == null || way === '' ? null : String(way);
+    if (w && !c.person.ways.some((x) => x && x.way === w)) throw new MessengerError('invalid', { code: 'invalid' });
+    const st = this._msgs.get(cid);
+    if (st && (st.way || null) === w && st.loaded) return this.messagesView(cid);
+    this._msgs.delete(cid);
+    this._state(cid, w);
+    return this.getMessages(cid);
+  }
+
   /** Cached view without asking the server (the jump window while one is open). */
   messagesView(id, { offline = false } = {}) {
     const cid = posInt(id);
     const st = this._msgs.get(cid) || { list: [], hasMore: true, window: null };
+    // Messenger 1.21: the source filter of a person's shared history (null: all ways)
+    const way = st.way || null;
     if (st.window) {
       return {
-        conversationId: cid, messages: st.window.list.slice(), pending: [], hasMore: st.window.hasMoreBefore, hasMoreAfter: st.window.hasMoreAfter, detached: true, offline,
+        conversationId: cid, messages: st.window.list.slice(), pending: [], hasMore: st.window.hasMoreBefore, hasMoreAfter: st.window.hasMoreAfter, detached: true, offline, way,
       };
     }
     const ids = new Set(st.list.map((m) => m.clientId).filter(Boolean));
-    const pending = this.outbox.list(cid).filter((e) => !ids.has(e.clientId)).map((e) => this._pendingView(e));
-    return { conversationId: cid, messages: st.list.slice(), pending, hasMore: st.hasMore !== false, hasMoreAfter: false, detached: false, offline };
+    const pending = way ? [] : this.outbox.list(cid).filter((e) => !ids.has(e.clientId)).map((e) => this._pendingView(e));
+    return { conversationId: cid, messages: st.list.slice(), pending, hasMore: st.hasMore !== false, hasMoreAfter: false, detached: false, offline, way };
   }
 
   /** GET messages?around= → the jump window (joined with the cache when they meet). */
   async _loadAround(cid, messageId) {
     const st = this._msgs.get(cid);
-    const r = await this.api.messages(cid, { around: messageId, limit: PAGE });
+    const r = await this._fetch(cid, { around: messageId, limit: PAGE });
     if (typeof r.hasMoreBefore !== 'boolean' && typeof r.hasMoreAfter !== 'boolean') {
       // Messenger 1.0.x ignores `around` and answers the newest page.
       throw new MessengerError('around not supported', { code: 'unsupported' });
     }
     this._receipts(cid, r);
-    st.window = { list: mergeMessages([], r.messages), hasMoreBefore: r.hasMoreBefore === true, hasMoreAfter: r.hasMoreAfter === true };
+    st.window = { list: this._merge(st, [], r.messages), hasMoreBefore: r.hasMoreBefore === true, hasMoreAfter: r.hasMoreAfter === true };
     if (!this._joinWindow(cid)) this.emit('messages', { conversationId: cid, reason: 'around' });
   }
 
@@ -741,12 +905,14 @@ class MessengerService extends EventEmitter {
     const st = this._msgs.get(cid);
     const w = st && st.window;
     if (!w || !st.loaded) return false;
-    const oldest = st.list.length ? st.list[0].id : null;
-    const newest = w.list.length ? w.list[w.list.length - 1].id : 0;
-    if (w.hasMoreAfter && (oldest === null || newest < oldest)) return false;
-    const first = w.list.length ? w.list[0].id : null;
-    if (first !== null && (oldest === null || first < oldest)) st.hasMore = w.hasMoreBefore;
-    st.list = mergeMessages(st.list, w.list);
+    // ids for a chat, the time for a person (1.21: its ways are mixed)
+    const cmp = st.pid ? byTimeOrder : (a, b) => a.id - b.id;
+    const oldest = st.list.length ? st.list[0] : null;
+    const newest = w.list.length ? w.list[w.list.length - 1] : null;
+    if (w.hasMoreAfter && (oldest === null || (newest ? cmp(newest, oldest) < 0 : true))) return false;
+    const first = w.list.length ? w.list[0] : null;
+    if (first !== null && (oldest === null || cmp(first, oldest) < 0)) st.hasMore = w.hasMoreBefore;
+    st.list = this._merge(st, st.list, w.list);
     st.window = null;
     this.emit('messages', { conversationId: cid, reason: 'around' });
     this._persist();
@@ -766,8 +932,8 @@ class MessengerService extends EventEmitter {
 
   async _loadNewest(cid, reason = 'load') {
     const st = this._msgs.get(cid);
-    const r = await this.api.messages(cid, { limit: PAGE });
-    st.list = Array.isArray(r.messages) ? r.messages.slice() : [];
+    const r = await this._fetch(cid, { limit: PAGE });
+    st.list = this._merge(st, [], Array.isArray(r.messages) ? r.messages : []);
     st.hasMore = r.hasMore === true;
     st.loaded = true;
     st.syncedAt = this._syncTime(r);
@@ -787,9 +953,9 @@ class MessengerService extends EventEmitter {
       if (!after) { await this._loadNewest(cid); return; }
       let got = 0;
       for (let page = 0; page < 5; page++) {
-        const r = await this.api.messages(cid, { after, limit: 100 });
+        const r = await this._fetch(cid, { after, limit: 100 });
         const msgs = Array.isArray(r.messages) ? r.messages : [];
-        st.list = mergeMessages(st.list, msgs);
+        st.list = this._merge(st, st.list, msgs);
         got += msgs.length;
         this._receipts(cid, r);
         if (!r.hasMore || !msgs.length) {
@@ -821,7 +987,7 @@ class MessengerService extends EventEmitter {
     if (!st || !st.loaded || !st.syncedAt) return;
     const since = st.syncedAt;
     const fallback = this._lastSync || new Date(this.now() - 5000).toISOString();
-    const r = await this.api.messages(cid, { changedSince: since, limit: 100 });
+    const r = await this._fetch(cid, { changedSince: since, limit: 100 });
     if (r.hasMore === true) {
       // More changes than one page: the newest page is cheaper than paging.
       await this._loadNewest(cid);
@@ -840,7 +1006,7 @@ class MessengerService extends EventEmitter {
     if (!msgs.length) return;
     this._mapLists(st, (list) => {
       const known = new Set(list.map((m) => m.id));
-      return mergeMessages(list, msgs.filter((m) => known.has(m.id)));
+      return this._merge(st, list, msgs.filter((m) => known.has(m.id)));
     });
   }
 
@@ -848,6 +1014,13 @@ class MessengerService extends EventEmitter {
     const c = this._convs.get(cid);
     if (!c || !r) return;
     let changed = false;
+    // Messenger 1.21: a person — the ticks of the messages inside GateControl come from that way's marks
+    if (Array.isArray(r.ways)) {
+      const gw = r.ways.find((w) => w && w.way === GC_WAY);
+      if (gw) for (const k of ['readUpTo', 'deliveredUpTo']) if (k in gw && gw[k] !== c[k]) { c[k] = gw[k]; changed = true; }
+      if (changed) this.emit('conversations', { ids: [cid], removed: [] });
+      return;
+    }
     for (const k of ['readUpTo', 'deliveredUpTo']) {
       if (k in r && r[k] !== c[k]) { c[k] = r[k]; changed = true; }
     }
@@ -856,6 +1029,8 @@ class MessengerService extends EventEmitter {
   }
 
   _newestId(st) {
+    // Messenger 1.21: a person's history is ordered by time — the newest message shown is the cursor
+    if (st.pid) return st.list.length ? st.list[st.list.length - 1].id : 0;
     let n = 0;
     for (const m of st.list) if (m.id > n) n = m.id;
     return n;
@@ -936,10 +1111,11 @@ class MessengerService extends EventEmitter {
 
   _replaceMessage(msg) {
     if (!msg || !posInt(msg.id)) return;
-    const cid = posInt(msg.conversationId);
+    // Messenger 1.21: a message of a way is shown in its person's entry
+    const cid = this._leadOf(posInt(msg.conversationId));
     const st = this._msgs.get(cid);
-    if (st && st.loaded) st.list = mergeMessages(st.list, [msg]);
-    if (st && st.window && st.window.list.some((m) => m.id === msg.id)) st.window.list = mergeMessages(st.window.list, [msg]);
+    if (st && st.loaded) st.list = this._merge(st, st.list, [msg]);
+    if (st && st.window && st.window.list.some((m) => m.id === msg.id)) st.window.list = this._merge(st, st.window.list, [msg]);
     const c = this._convs.get(cid);
     if (c && c.lastMessage && c.lastMessage.id === msg.id) c.lastMessage = msg;
     this.emit('messages', { conversationId: cid, reason: 'update' });
@@ -956,10 +1132,14 @@ class MessengerService extends EventEmitter {
   async send(req = {}) {
     const cid = posInt(req.conversationId);
     if (!cid) throw new MessengerError('invalid conversation', { code: 'invalid' });
-    const c = this._convs.get(cid);
-    if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
+    const entry = this._convs.get(cid);
     const limits = (this._me && this._me.limits) || {};
     const body = buildSendBody(req, { textMax: limits.textMax || 4000 });
+    // Messenger 1.21: a person — the server picks the way (an answer goes back its message's way); what the composer
+    // may send is that way's (its bridge, its can)
+    const pid = this._pidOf(cid);
+    const c = pid ? this._sendWayOf(entry, body.replyTo) : entry;
+    if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
     // Messenger 1.14: only a text (maybe as an answer) crosses a bridge — refused here like the server would (409);
     // 1.15: and a picture, voice message or file of a kind and type the chat names (`bridge.supports`, `mediaTypes`)
     if (c && c.bridge) {
@@ -994,8 +1174,34 @@ class MessengerService extends EventEmitter {
       throw new MessengerError('file not allowed', { code: 'invalid' });
     }
     this._typingSent.delete(cid);
-    const entry = await this.outbox.add({ conversationId: cid, clientId: req.clientId, body, files });
-    return this._pendingView(entry);
+    const queued = await this.outbox.add({ conversationId: cid, clientId: req.clientId, body, files, ...(pid ? { personId: pid } : {}) });
+    return this._pendingView(queued);
+  }
+
+  /**
+   * Messenger 1.21: the way a message to a person goes — the way of the message it answers (while that way can send),
+   * else `person.reply` → { bridge, can, readonly } as the composer checks it.
+   */
+  _sendWayOf(c, replyTo = null) {
+    let w = null;
+    const rid = posInt(replyTo);
+    if (rid) {
+      const st = this._msgs.get(c.id);
+      const q = st && this._lists(st).flat().find((m) => m && m.id === rid);
+      const qw = q ? c.person.ways.find((x) => x && x.conversationId === posInt(q.conversationId)) : null;
+      if (qw && qw.can && qw.can.send) w = qw;
+    }
+    w = w || personReplyWay(c);
+    if (!w) return { bridge: null, can: { send: true }, readonly: false };
+    return { bridge: w.bridge || null, can: w.can || { send: true }, readonly: false };
+  }
+
+  /** Messenger 1.21: the way an answer to a person takes now (`person.reply` → its way), null for any other chat. */
+  replyWay(id) {
+    const c = this._convs.get(posInt(id));
+    if (!this._peopleOn() || !isPerson(c)) return null;
+    const w = personReplyWay(c);
+    return w ? { way: w.way, label: w.label, conversationId: w.conversationId, bridge: w.bridge || null, can: w.can || null } : null;
   }
 
   _checkFile(f, limits) {
@@ -1027,9 +1233,15 @@ class MessengerService extends EventEmitter {
     const cid = entry.conversationId;
     if (message && posInt(message.id)) {
       const st = this._msgs.get(cid);
-      if (st && st.loaded) st.list = mergeMessages(st.list, [message]);
+      if (st && st.loaded && (!st.way || wayOf(message) === st.way)) st.list = this._merge(st, st.list, [message]);
       const c = this._convs.get(cid);
-      if (c) {
+      if (c && entry.personId) {
+        // Messenger 1.21: the person's newest message; the way of the next answer may change — the entry again
+        c.lastMessage = message;
+        c.updatedAt = message.createdAt || c.updatedAt;
+        this.emit('conversations', { ids: [cid], removed: [] });
+        this._refreshConvSoon(cid);
+      } else if (c) {
         if (!c.lastMessageId || message.id >= c.lastMessageId) {
           c.lastMessageId = message.id;
           c.lastMessage = message;
@@ -1105,7 +1317,17 @@ class MessengerService extends EventEmitter {
    * → { lastReadId, unread } | null
    */
   async markRead(id, upTo = null) {
-    const cid = posInt(id);
+    const asked = posInt(id);
+    // Messenger 1.21: a person — every way up to the time of the newest message shown; a way (a push's „Gelesen“) alone
+    const cid = this._leadOf(asked);
+    const pc = this._pidOf(cid) ? this._convs.get(cid) : null;
+    if (pc && asked !== cid) {
+      if (!posInt(upTo)) return this._readPerson(pc, null);
+      this.emit('read-local', { conversationId: asked, upTo: posInt(upTo) });
+      return this.api.read(asked, upTo).then((r) => { this._refreshConvSoon(cid); return { lastReadId: r.lastReadId, unread: r.unread }; })
+        .catch((err) => { this.log.debug(`Chat read mark not sent: ${err.message}`); return null; });
+    }
+    if (pc) return this._readPerson(pc, upTo);
     const c = this._convs.get(cid);
     if (!cid || !c) return null;
     const st = this._msgs.get(cid);
@@ -1132,23 +1354,59 @@ class MessengerService extends EventEmitter {
     return run;
   }
 
+  /**
+   * Messenger 1.21: POST persons/:id/read { upTo } — up to the newest message shown of „Alle“ (not while a source
+   * filter is on, unless `upTo` is given). → { lastReadId: null, unread } | null
+   */
+  _readPerson(c, upTo) {
+    const st = this._msgs.get(c.id);
+    if (st && st.way && !posInt(upTo)) return Promise.resolve(null);
+    const newest = st && !st.way && !st.window ? this._newestOf(st) : null;
+    // not loaded yet: the entry's newest message (of any way)
+    const to = posInt(upTo) || (newest ? newest.id : null) || posInt(c.lastMessage && c.lastMessage.id);
+    for (const w of personWayIds(c)) this.emit('read-local', { conversationId: w, upTo: to });
+    if (!c.unread) return Promise.resolve({ lastReadId: null, unread: 0 });
+    const key = `p${c.person.id}:${to || 'all'}`;
+    if (this._reading.has(key)) return this._reading.get(key);
+    const run = this.api.personRead(c.person.id, to).then((r) => {
+      const cc = this._convs.get(c.id);
+      if (cc && isPerson(cc)) {
+        if (Number.isFinite(r.unread)) cc.unread = r.unread;
+        for (const w of Array.isArray(r.ways) ? r.ways : []) {
+          const way = w && cc.person.ways.find((x) => x.conversationId === w.conversationId);
+          if (way && Number.isFinite(w.unread)) way.unread = w.unread;
+        }
+        this.emit('conversations', { ids: [c.id], removed: [] });
+        this._emitUnread();
+        this._persist();
+      }
+      return { lastReadId: null, unread: Number.isFinite(r.unread) ? r.unread : 0 };
+    }).catch((err) => { this.log.debug(`Chat read mark not sent: ${err.message}`); return null; })
+      .finally(() => this._reading.delete(key));
+    this._reading.set(key, run);
+    return run;
+  }
+
   /** "schreibt …" while typing (≤ every 3 s), or stop. */
   async typing(id, { stop = false } = {}) {
     const cid = posInt(id);
     if (!cid || !this.available()) return false;
     if (this._me && this._me.prefs && this._me.prefs.typing === false) return false;
+    // Messenger 1.21: „schreibt …“ of a person goes to the way the answer takes
+    const rw = this.replyWay(cid);
+    const target = rw ? rw.conversationId : cid;
     const now = this.now();
     const last = this._typingSent.get(cid) || 0;
     if (stop) {
       if (!last || now - last > this.timing.typingValidMs) return false;
       this._typingSent.delete(cid);
-      await this.api.typing(cid, true).catch(() => {});
+      await this.api.typing(target, true).catch(() => {});
       return true;
     }
     const every = ((this._me && this._me.limits && this._me.limits.typingEveryS) || this.timing.typingEveryMs / 1000) * 1000;
     if (now - last < every) return false;
     this._typingSent.set(cid, now);
-    await this.api.typing(cid, false).catch(() => {});
+    await this.api.typing(target, false).catch(() => {});
     return true;
   }
 
@@ -1163,12 +1421,16 @@ class MessengerService extends EventEmitter {
     const cid = posInt(id);
     const vis = !!cid && visible === true && this._safe(() => this.isWindowVisible(), true) !== false;
     const prev = this._open;
-    this._open = { id: cid, visible: vis };
-    if (prev.id && prev.visible && (prev.id !== cid || !vis) && this.available()) this.api.active(prev.id, false).catch(() => {});
+    // Messenger 1.21: a person is active on every way (else its pushes come although it is open)
+    this._open = { id: cid, visible: vis, ways: cid ? personWayIds(this._convs.get(cid) || { id: cid }) : [] };
+    if (prev.id && prev.visible && (prev.id !== cid || !vis) && this.available()) for (const w of prev.ways || [prev.id]) this.api.active(w, false).catch(() => {});
     this._clear('active');
     if (cid && vis && this.available()) {
       // Only while the window is really shown (tray / minimized → no ping, the push comes).
-      const ping = () => { if (this._safe(() => this.isWindowVisible(), true) !== false) this.api.active(cid).catch(() => {}); };
+      const ping = () => {
+        if (this._safe(() => this.isWindowVisible(), true) === false) return;
+        for (const w of this._open.id === cid && this._open.ways.length ? this._open.ways : [cid]) this.api.active(w).catch(() => {});
+      };
       ping();
       this._timers.active = setInterval(ping, this.timing.activeEveryMs);
       if (this._timers.active.unref) this._timers.active.unref();
@@ -1179,7 +1441,8 @@ class MessengerService extends EventEmitter {
 
   /** Is this conversation open and visible right now? */
   isOpenAndVisible(id) {
-    return !!this._open.id && this._open.id === posInt(id) && this._open.visible && this._safe(() => this.isWindowVisible(), true) !== false;
+    // Messenger 1.21: a way of the open person counts as open
+    return !!this._open.id && this._open.id === this._leadOf(posInt(id)) && this._open.visible && this._safe(() => this.isWindowVisible(), true) !== false;
   }
 
   /** The chat page is shown (polling cadence without push). */
@@ -1244,6 +1507,13 @@ class MessengerService extends EventEmitter {
     if (patch.role && posInt(patch.role.userId) && ['admin', 'member'].includes(patch.role.role)) body.role = { userId: posInt(patch.role.userId), role: patch.role.role };
     if (avatar) body.avatarMediaId = await this._uploadAvatar(avatar);
     if (!Object.keys(body).length) throw new MessengerError('invalid', { code: 'invalid' });
+    // Messenger 1.21: mute and notifications of a person hold for every way (PATCH persons/:id)
+    const pid = this._pidOf(cid);
+    if (pid && Object.keys(body).every((k) => k === 'notify' || k === 'mutedUntil')) {
+      const rp = await this.api.patchPerson(pid, body);
+      if (rp.conversation) this._putPerson(rp.conversation);
+      return { conversation: this.getCachedConversation(cid) || this.getCachedConversation(rp.conversation && rp.conversation.id), left: false };
+    }
     const r = await this.api.patchConversation(cid, body);
     if (r.left || !r.conversation) {
       this._drop(cid);
@@ -1276,7 +1546,10 @@ class MessengerService extends EventEmitter {
     const cid = posInt(id);
     const text = typeof q === 'string' ? q.trim() : '';
     if (!cid || text.length < 2 || text.length > 100) throw new MessengerError('invalid', { code: 'invalid' });
-    const r = await this.api.search(cid, text);
+    // Messenger 1.21: a person's ways together (with its source filter)
+    const pid = this._pidOf(cid);
+    const st = this._msgs.get(cid);
+    const r = pid ? await this.api.personSearch(pid, text, st && st.way) : await this.api.search(cid, text);
     return { results: Array.isArray(r.results) ? r.results : [], truncated: !!r.truncated, scanned: r.scanned || 0 };
   }
 
@@ -1358,7 +1631,16 @@ class MessengerService extends EventEmitter {
     const chansChanged = chans !== !!this.api.channels;
     this.api.channels = chans;
     if (chansChanged && !chans) { this._chansLoaded = false; this._chanSum = null; }
-    return turnedOn || chansChanged;
+    // Messenger 1.21: persons (?people=1) — the list is read in full again when this changes, the cached messages of
+    // entries that are (no longer) persons are loaded anew
+    const people = on && this.supports(FEATURE_CHAT_PEOPLE);
+    const peopleChanged = people !== !!this.api.persons;
+    this.api.persons = people;
+    if (peopleChanged) {
+      if (!people) this._sugg = { at: 0, list: null };
+      this._checkPersonStates();
+    }
+    return turnedOn || chansChanged || peopleChanged;
   }
 
   /**
@@ -1527,6 +1809,137 @@ class MessengerService extends EventEmitter {
    * A file of the older history (placeholder state on_request), fetched now because the person asks for it →
    * the message (its placeholder then `loading`; the file follows with message.update { media: true }).
    */
+  // ── Messenger 1.21: persons — suggestions, merging, „Trennen“, the name ──
+
+  _needPeople() {
+    if (!this._peopleOn()) throw new MessengerError('not supported by the server', { code: 'unsupported' });
+  }
+
+  /**
+   * GET persons/suggestions — the open suggestions („„Schatzimausi 💕“ bei WhatsApp ist vielleicht Jenny Backes.“),
+   * strong first; asked when „Chats“ opens and then at most every 15 minutes (`refresh`: now). → [suggestion]
+   */
+  async suggestions({ refresh = false } = {}) {
+    if (!this._peopleOn()) return [];
+    if (!refresh && this._sugg.list && this.now() - this._sugg.at < this.timing.suggestTtlMs) return this._copy(this._sugg.list);
+    const key = 'suggestions';
+    if (this._inflight.has(key)) return this._copy(await this._inflight.get(key));
+    const run = this.api.personSuggestions().then((r) => {
+      const list = (Array.isArray(r.suggestions) ? r.suggestions : []).filter((s) => s && isSuggestionId(s.id) && posInt(s.conversationId) && posInt(s.userId)
+        && s.contact && typeof s.contact === 'object' && s.account && typeof s.account === 'object');
+      const before = JSON.stringify(this._sugg.list);
+      this._sugg = { at: this.now(), list };
+      if (before !== JSON.stringify(list)) this.emit('suggestions', this._copy(list));
+      return list;
+    }).finally(() => this._inflight.delete(key));
+    this._inflight.set(key, run);
+    return this._copy(await run);
+  }
+
+  /** A merge or a split happened: the suggestions are asked again (a pair may be answered). */
+  _suggestionsSoon() {
+    if (!this._peopleOn()) return;
+    this._sugg.at = 0;
+    this.suggestions({ refresh: true }).catch(() => {});
+  }
+
+  _dropSuggestions(fn) {
+    if (!this._sugg.list) return;
+    const list = this._sugg.list.filter((s) => !fn(s));
+    if (list.length === this._sugg.list.length) return;
+    this._sugg = { ...this._sugg, list };
+    this.emit('suggestions', this._copy(list));
+  }
+
+  /** „Nicht jetzt“ (later: 7 days) / „Nicht mehr vorschlagen“ (never) → { id, state, until } */
+  async answerSuggestion(id, action) {
+    this._needPeople();
+    if (!isSuggestionId(id) || !['later', 'never'].includes(action)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.answerSuggestion(id, action);
+    this._dropSuggestions((s) => s.id === id);
+    return r.suggestion || { id, state: action, until: null };
+  }
+
+  /**
+   * „Zusammenführen“: POST persons { conversationIds, userId?, name: 'account' | conversationId } → the person's entry
+   * (cached, its ways leave the list). 409 cannot_merge (reason group | channel | not_direct | two_accounts | one_way).
+   */
+  async mergePersons(req = {}) {
+    this._needPeople();
+    const body = mergeBody(req);
+    if (!body) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.mergePersons(body);
+    const e = r.conversation;
+    if (!e || !isPerson(e)) { this.refreshConversations({ full: true }).catch(() => {}); return null; }
+    this._putPerson(e);
+    const ways = new Set(personWayIds(e));
+    this._dropSuggestions((s) => ways.has(s.conversationId) || (e.person.userId && s.userId === e.person.userId));
+    return this.getCachedConversation(e.id);
+  }
+
+  /**
+   * „Trennen“: DELETE persons/:id/ways/:conversationId (without a way: every way) — nothing is lost; the list is read
+   * again (the way is its own chat once more). → { person: object | null, conversationIds }
+   */
+  async splitPerson(id, conversationId = null) {
+    this._needPeople();
+    const cid = posInt(id);
+    const pid = cid ? this._pidOf(cid) : null;
+    const way = conversationId == null ? null : posInt(conversationId);
+    if (!pid || (conversationId != null && !way)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.splitPerson(pid, way);
+    const ids = (Array.isArray(r.conversations) ? r.conversations : []).map((c) => c && posInt(c.id)).filter(Boolean);
+    await this.refreshConversations({ full: true }).catch(() => {});
+    this._suggestionsSoon();
+    return { person: r.person && typeof r.person === 'object' ? r.person : null, conversationIds: ids };
+  }
+
+  /** „Name in deiner Liste“: 'account' or the conversation id of a way → the entry. */
+  async renamePerson(id, name) {
+    this._needPeople();
+    const cid = posInt(id);
+    const pid = cid ? this._pidOf(cid) : null;
+    const n = name === 'account' ? 'account' : posInt(name);
+    if (!pid || !n) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.patchPerson(pid, { name: n });
+    if (r.conversation) this._putPerson(r.conversation);
+    return r.conversation ? this.getCachedConversation(r.conversation.id) : null;
+  }
+
+  /**
+   * „Mit Person zusammenführen …“ of a chat with one person (or of a person's entry): the accounts (when it has none
+   * yet) and the other chats with one person. → { accounts, chats }
+   */
+  async personCandidates(id) {
+    this._needPeople();
+    const cid = posInt(id);
+    if (!cid) throw new MessengerError('invalid', { code: 'invalid' });
+    const c = this._convs.get(cid);
+    const of = isPerson(c) ? posInt(c.person.conversationId) || cid : cid;
+    const r = await this.api.personCandidates(of);
+    const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+    return {
+      accounts: (Array.isArray(r.accounts) ? r.accounts : []).filter((a) => a && posInt(a.userId)).slice(0, 500).map((a) => ({
+        userId: posInt(a.userId), name: s(a.name, 120) || '', avatarUrl: isAvatarPath(a.avatarUrl) ? a.avatarUrl : null, initials: s(a.initials, 4), colorHex: s(a.colorHex, 9), personId: posInt(a.personId),
+      })),
+      chats: (Array.isArray(r.chats) ? r.chats : []).filter((x) => x && posInt(x.conversationId)).slice(0, 200).map((x) => ({
+        conversationId: posInt(x.conversationId), title: s(x.title, 120) || '', network: isBridgeNet(x.network) ? x.network : null, label: s(x.label, 40) || '',
+        avatarUrl: isAvatarPath(x.avatarUrl) ? x.avatarUrl : null, avatarMediaId: isMediaId(x.avatarMediaId) ? x.avatarMediaId : null, personId: posInt(x.personId),
+      })),
+    };
+  }
+
+  /**
+   * „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ — PUT bridges/recognition { allowed } (GateControl
+   * with gc.bridges version 9; 403 feature_off else) → recognition | null
+   */
+  async setRecognition(allowed) {
+    this._need(FEATURE_LINKED);
+    if (typeof allowed !== 'boolean') throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.bridgeRecognition(allowed);
+    return normalizeRecognition(r.recognition);
+  }
+
   async fetchBridgeFile(messageId) {
     // 1.17: a file of the history (bridge_history); 1.19: once more, a file that failed (`placeholder.retry`) — every
     // client that shows chats over a bridge
@@ -1729,6 +2142,13 @@ class MessengerService extends EventEmitter {
 
   async archive(id, archived) {
     this._need(FEATURES_14.tools);
+    // Messenger 1.21: a person — every way
+    const pid = this._pidOf(posInt(id));
+    if (pid) {
+      const rp = await this.api.archivePerson(pid, archived === true);
+      if (rp.conversation) this._putPerson(rp.conversation);
+      return rp.conversation ? this.getCachedConversation(rp.conversation.id) : null;
+    }
     const r = await this.api.archive(id, archived === true);
     if (r.conversation) this._upsert(r.conversation);
     return r.conversation ? this.getCachedConversation(r.conversation.id) : null;
@@ -1737,9 +2157,13 @@ class MessengerService extends EventEmitter {
   /** Pin (true) / unpin (false) a message in its chat → the conversation (pinned ids). */
   async pin(id, messageId, pinned) {
     this._need(FEATURES_14.tools);
-    const r = pinned ? await this.api.pin(id, messageId) : await this.api.unpin(id, messageId);
+    // Messenger 1.21: a message of a person is pinned in its way's conversation
+    const st = this._pidOf(posInt(id)) ? this._msgs.get(posInt(id)) : null;
+    const m = st ? this._lists(st).flat().find((x) => x && x.id === posInt(messageId)) : null;
+    const target = m && posInt(m.conversationId) ? posInt(m.conversationId) : id;
+    const r = pinned ? await this.api.pin(target, messageId) : await this.api.unpin(target, messageId);
     if (r.conversation) this._upsert(r.conversation);
-    return r.conversation ? this.getCachedConversation(r.conversation.id) : null;
+    return r.conversation ? this.getCachedConversation(this._leadOf(r.conversation.id)) : null;
   }
 
   /** Custom chat filters (cached until lists.update). */
@@ -1994,7 +2418,15 @@ class MessengerService extends EventEmitter {
       if (this._avail.state !== 'checking') this.check().catch(() => {});
       return;
     }
-    const cid = posInt(d.conversationId);
+    // Messenger 1.21: events come per way — a way of a person belongs to its entry
+    const raw = posInt(d.conversationId);
+    const cid = this._leadOf(raw);
+    if (type === 'conversation.update' && String(d.reason || '').split(',').includes('person')) {
+      // merged, renamed or split: the list again (and the suggestions, a merged pair is answered)
+      this.refreshConversations({ full: true }).catch(() => {});
+      this._suggestionsSoon();
+      return;
+    }
     switch (type) {
       case 'message.new': {
         if (!cid) return;
@@ -2066,6 +2498,19 @@ class MessengerService extends EventEmitter {
       case 'read': {
         if (!cid) return;
         const c = this._convs.get(cid);
+        // Messenger 1.21: a way of a person — the ticks of the GateControl way, the unread count of the whole entry
+        if (this._pidOf(cid)) {
+          const way = c.person.ways.find((w) => w && w.conversationId === raw);
+          const direct = !!way && way.way === GC_WAY && this._applyReadEvent(c, d);
+          if (d.self === true) {
+            this._refreshConvSoon(cid);
+            for (const id of new Set([raw, cid])) this.emit('read-self', { conversationId: id, lastReadId: posInt(d.lastReadId) });
+          } else if (direct) {
+            this.emit('conversations', { ids: [cid], removed: [] });
+            this._persist();
+          }
+          break;
+        }
         // Messenger ≥ 1.1.0: readUpTo / deliveredUpTo as GET conversations/:id
         // would give them to this device's account → the ticks without a GET.
         const direct = !!c && this._applyReadEvent(c, d);
@@ -2116,7 +2561,9 @@ class MessengerService extends EventEmitter {
         }
         break;
       case 'conversation.remove':
-        if (cid) this._drop(cid);
+        // Messenger 1.21: a way of a person went — the entry is built again from the list
+        if (cid && this._pidOf(cid)) this.refreshConversations({ full: true }).catch(() => {});
+        else if (cid) this._drop(cid);
         break;
       default:
         break;
@@ -2132,7 +2579,7 @@ class MessengerService extends EventEmitter {
     if (!st || !st.loaded || !mid || !this._lists(st).some((l) => l.some((m) => m.id === mid))) return;
     const t = Date.parse(at);
     const since = Number.isFinite(t) ? new Date(t - backMs).toISOString() : (st.syncedAt || new Date(this.now() - 60000).toISOString());
-    this.api.messages(cid, { changedSince: since, limit: 100 }).then((r) => {
+    this._fetch(cid, { changedSince: since, limit: 100 }).then((r) => {
       this._mergeKnown(st, r.messages);
       const c = this._convs.get(cid);
       const fresh = Array.isArray(r.messages) && c && c.lastMessage ? r.messages.find((m) => m && m.id === c.lastMessage.id) : null;
@@ -2279,6 +2726,7 @@ class MessengerService extends EventEmitter {
       this._freshBridge.clear();
       this._chanSum = null;
       this._chansLoaded = false;
+      this._sugg = { at: 0, list: null };
       this._syncBridged();
       this._lastSync = null;
       this.emit('conversations', { ids: null, removed: [] });
@@ -2296,7 +2744,9 @@ class MessengerService extends EventEmitter {
       for (const [id, st] of Object.entries(raw.msgs || {})) {
         const cid = posInt(id);
         if (!cid || !this._convs.has(cid) || !st || !Array.isArray(st.list)) continue;
-        this._msgs.set(cid, { list: st.list.filter((m) => m && posInt(m.id)), hasMore: true, loaded: true, syncedAt: st.syncedAt || null });
+        // Messenger 1.21: a person's messages (its id; checked against the feature once GET me is known)
+        const conv = this._convs.get(cid);
+        this._msgs.set(cid, { list: st.list.filter((m) => m && posInt(m.id)), hasMore: true, loaded: true, syncedAt: st.syncedAt || null, pid: isPerson(conv) ? conv.person.id : null, way: null });
       }
       if (raw.me) this._me = raw.me;
       this._chanSum = normalizeChannelSummary(raw.chanSum);
@@ -2322,7 +2772,8 @@ class MessengerService extends EventEmitter {
       const msgs = {};
       for (const c of convs) {
         const st = this._msgs.get(c.id);
-        if (st && st.loaded && st.list.length) msgs[c.id] = { list: st.list.slice(-CACHE_MSGS), syncedAt: st.syncedAt || null };
+        // Messenger 1.21: a source filter's page is not kept
+        if (st && st.loaded && st.list.length && !st.way) msgs[c.id] = { list: st.list.slice(-CACHE_MSGS), syncedAt: st.syncedAt || null };
       }
       this.store.set(CACHE_KEY, { v: 1, scope: this._scope, me: this._me, convs, msgs, ...(this._chanSum ? { chanSum: this._chanSum } : {}) });
     } catch (err) {
