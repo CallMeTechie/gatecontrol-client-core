@@ -109,9 +109,22 @@
  *   chat:fetch           ({ id }) → { ok, message }   a file of the older history (placeholder on_request), now
  * Refusals: invalid (nothing to fetch / days), feature_off, not_found.
  *
+ * Messenger 1.21 (feature `chat_people`; code 'unsupported' without it) — persons, one entry per human over several
+ * ways (`person` on the entry; chat:messages / chat:send / chat:read / chat:search / chat:update / chat:archive of
+ * that entry go through persons/:id/…):
+ *   chat:person:way        ({ id, way: 'gatecontrol'|'whatsapp'|…|null }) → { ok, …chat:messages }   the source chips
+ *   chat:suggestions       ({ refresh? }) → { ok, suggestions }        „… ist vielleicht …“ (asked ≤ every 15 min)
+ *   chat:suggestion:answer ({ id, action: 'later'|'never' }) → { ok, suggestion }
+ *   chat:person:merge      ({ conversationIds, userId?, name?: 'account'|conversationId }) → { ok, conversation }
+ *   chat:person:split      ({ id, conversationId? }) → { ok, person, conversationIds }   „Trennen“, nothing is lost
+ *   chat:person:name       ({ id, name: 'account'|conversationId }) → { ok, conversation }
+ *   chat:person:candidates ({ id }) → { ok, accounts, chats }          „Mit Person zusammenführen …“
+ *   chat:bridge:recognition ({ allowed }) → { ok, recognition }        asked once after WhatsApp was linked
+ * Refusals: cannot_merge (reason group | channel | not_direct | two_accounts | one_way), not_found, feature_off.
+ *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate, chat:feed, chat:lists,
- * chat:reminders.
+ * chat:reminders, chat:suggestions (1.21).
  */
 
 const fs = require('fs');
@@ -133,6 +146,7 @@ const CHAT_EVENTS = {
   feed: 'chat:feed',
   lists: 'chat:lists',
   reminders: 'chat:reminders',
+  suggestions: 'chat:suggestions',
 };
 const MAX_IPC_FILE = 64 * 1024 * 1024;
 
@@ -270,6 +284,29 @@ function registerMessengerHandlers(handle, {
   handle('chat:bridge:chat', wrap(async (a) => ({ ok: true, ...(await m.bridgeStartChat(text(a.network, 32), num(a.number), text(a.cc, 5))) })));
   // Messenger 1.17 (feature `bridge_history`; code 'unsupported' without it): older history at a new link, its files
   handle('chat:bridge:history', wrap(async (a) => ({ ok: true, history: await m.setBridgeHistory(a.days) })));
+  // Messenger 1.21: persons (feature `chat_people`)
+  handle('chat:person:way', wrap(async (a) => {
+    const id = posInt(a.id);
+    const way = a.way == null ? null : text(a.way, 20);
+    if (!id || (way != null && !/^[a-z]{2,20}$/.test(way))) return invalid();
+    return { ok: true, ...(await m.setWay(id, way)) };
+  }));
+  handle('chat:suggestions', wrap(async (a) => ({ ok: true, suggestions: await m.suggestions({ refresh: a.refresh === true }) })));
+  handle('chat:suggestion:answer', wrap(async (a) => ({ ok: true, suggestion: await m.answerSuggestion(text(a.id, 40), text(a.action, 10)) })));
+  handle('chat:person:merge', wrap(async (a) => ({ ok: true, conversation: await m.mergePersons({ conversationIds: a.conversationIds, userId: a.userId, name: a.name }) })));
+  handle('chat:person:split', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id || (a.conversationId != null && !posInt(a.conversationId))) return invalid();
+    return { ok: true, ...(await m.splitPerson(id, a.conversationId == null ? null : posInt(a.conversationId))) };
+  }));
+  handle('chat:person:name', wrap(async (a) => {
+    const id = posInt(a.id);
+    const name = a.name === 'account' ? 'account' : posInt(a.name);
+    if (!id || !name) return invalid();
+    return { ok: true, conversation: await m.renamePerson(id, name) };
+  }));
+  handle('chat:person:candidates', wrap(async (a) => (posInt(a.id) ? { ok: true, ...(await m.personCandidates(posInt(a.id))) } : invalid())));
+  handle('chat:bridge:recognition', wrap(async (a) => (typeof a.allowed === 'boolean' ? { ok: true, recognition: await m.setRecognition(a.allowed) } : invalid())));
   handle('chat:fetch', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();
