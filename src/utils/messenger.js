@@ -758,7 +758,8 @@ function normalizeNewChatContacts(r) {
     userId: p.userId,
     name: name(p.name) || null,
     avatarUrl: url(p.avatarUrl),
-    initials: typeof p.initials === 'string' ? p.initials.slice(0, 4) : null,
+    // whole characters (never half an emoji: a slice of UTF-16 units cut „M💕“ in the middle of the heart)
+    initials: typeof p.initials === 'string' ? Array.from(p.initials).slice(0, 4).join('') || null : null,
     colorHex: typeof p.colorHex === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.colorHex) ? p.colorHex : null,
     conversationId: posInt(p.conversationId),
   }));
