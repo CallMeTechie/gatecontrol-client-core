@@ -40,6 +40,9 @@ const SC = require('../utils/scan');
 const STORE_KEY = 'messengerOutbox';
 const MAX_ENTRIES = 200;
 const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000, 120000, 300000];
+// 423 scan_pending: asked again after Retry-After (default 5 s), this many times (~ 5 minutes), then „Nicht gesendet“.
+const SCAN_WAITS = 60;
+const SCAN_WAIT_S = 5;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -147,6 +150,7 @@ class MessengerOutbox extends EventEmitter {
     e.state = 'queued';
     e.error = null;
     e.nextAt = 0;
+    e.scanWaits = 0;
     this._save();
     this._changed(e.conversationId);
     this.kick();
@@ -238,7 +242,20 @@ class MessengerOutbox extends EventEmitter {
       const finding = SC.refusalFields(err).finding;
       if (finding) e.finding = finding;
       else delete e.finding;
-      if (transient) {
+      const reason = err && err.body && typeof err.body.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(err.body.reason) ? err.body.reason : null;
+      if (reason && e.error.startsWith('bridge_')) e.reason = reason;
+      else delete e.reason;
+      // Messenger 1.15: 423 scan_pending — the virus scan of the uploaded file is not finished (a chat over a bridge
+      // takes only checked files): the same entry (same clientId, no new upload) again after Retry-After, a while
+      const scanWait = !!(err && err.code === 'scan_pending') && (e.scanWaits || 0) < SCAN_WAITS;
+      if (scanWait) {
+        e.scanWaits = (e.scanWaits || 0) + 1;
+        e.attempts = Math.max(0, e.attempts - 1);
+        e.state = 'queued';
+        const ra = Number.isSafeInteger(err.retryAfter) && err.retryAfter > 0 ? Math.min(err.retryAfter, 60) : SCAN_WAIT_S;
+        e.nextAt = this.now() + ra * 1000;
+        this.log.debug(`Chat outbox: file still being checked, next attempt in ${ra} s`);
+      } else if (transient) {
         e.state = 'queued';
         const ms = this.backoffMs[Math.min(e.attempts - 1, this.backoffMs.length - 1)];
         e.nextAt = this.now() + ms;

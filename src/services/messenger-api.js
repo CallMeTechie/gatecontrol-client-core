@@ -383,6 +383,19 @@ class MessengerApi {
   /** Unlink the own account. */
   async bridgeUnlink(network, loginId) { return this.api('DELETE', `bridges/${this._net(network)}/logins/${this._bid(loginId)}`); }
 
+  /**
+   * Messenger 1.15: is this number at the service, under which name → { found, name, … }. The number goes in the
+   * body only (never into the path or a log); the bridge asks the service, so the call may take up to 15 s.
+   */
+  async bridgeResolve(network, number) {
+    return this.api('POST', `bridges/${this._net(network)}/resolve`, { body: { number }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Messenger 1.15: the direct chat with this number, made or found → { conversation, created }. */
+  async bridgeChat(network, number) {
+    return this.api('POST', `bridges/${this._net(network)}/chats`, { body: { number }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
   /** Messenger 1.14: an own message the bridge did not take, once more → { message }. */
   async resend(messageId) { return this.api('POST', `messages/${this._id(messageId)}/resend`, { body: {}, timeout: BRIDGE_WAIT_TIMEOUT_MS }); }
 

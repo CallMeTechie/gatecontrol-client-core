@@ -316,6 +316,40 @@ The push of such a chat reads „Kim Muster · WhatsApp“ (without preview „N
 Nachricht über WhatsApp“ and no text); a group keeps the service in its title.
 Its actions carry `bridged: true` in their body and are sent on unchanged.
 
+### Messenger 1.15: files, pictures and a new chat by number
+
+Again only feature words, set by the server together with `bridge_chats`:
+
+* `bridge_media` — files cross the bridge. Per chat only `conversation.bridge`
+  decides: `supports` adds `image`, `video`, `voice`, `file`, `mediaTypes`
+  names the types per kind (`null` = any; WhatsApp: no `audio/webm`).
+  `send()` lets a picture, voice message or file through when its kind and
+  type are named (`bridgeMediaRefusal`: a file of `video/*` is a video) and
+  refuses the rest before it is queued — `bridge_text_only`, or
+  `bridge_media_type` with `reason` image / voice / video. Should the server
+  still refuse the type, the pending message keeps `reason`. A `423
+  scan_pending` (the virus scan of the upload is not finished) is not a
+  failure: the outbox sends the same entry (same `clientId`, no new upload)
+  again after `Retry-After`, for up to about five minutes; this holds for
+  every chat. Files coming in arrive as `bridge.placeholder` (`state`
+  loading / failed + `reason` / null + `geo`) and, once fetched, as
+  `message.update { media: true }` — read like any edit. The chat's picture is
+  `conversation.avatarMediaId`, a contact's `message.bridge.sender.avatarMediaId`
+  (`media(id)` like a group picture).
+* `bridge_new_chat` — a chat by phone number: `bridgeResolve(network, number,
+  cc)` → `{ found, name, avatarMediaId, existing: { conversationId } | null }`
+  and `bridgeStartChat(network, number, cc)` → `{ conversation, created }`.
+  The number is normalized in the main process (`bridgeNumber`: `cc`, default
+  +49, for a number without one; a leading 0 goes; 00 and + keep their
+  country), sent once per call and never stored or logged. The new chat is
+  not in `GET conversations` until something was written in it, so a full
+  read of the list keeps it. `GET bridges` names per service `newChat`
+  (`available`, `reason`, `limit`; Messenger 1.16) — `null` from a plugin
+  without it. Refusals: `invalid_number`, `rate_limited` (with `retryAfterS`
+  in the IPC answer), `bridge_unlinked` (`reason` unlinked / logged_out),
+  `bridge_locked`, `child_new_chat_off`, `bridge_unreachable`, `bridge_off`,
+  `not_found` (`reason: not_on_network`).
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -444,7 +478,8 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 args)`, `event(id, op, args)`, `stopArrival`, `actions`, `action(id, op,
 args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 (`{ mime, data: Uint8Array }`), 1.13 / 1.14: `bridges`, `bridgeConsent`,
-`bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`,
+`bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`, 1.15:
+`bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
 `storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`. Arguments and answers:
@@ -462,9 +497,10 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 * The toast reply field needs Electron's `Notification.handleActivation`
   (Electron 44 in both apps) and the app's start-menu shortcut (AUMID), like
   every Windows toast; the portable build shows no toasts.
-* End-to-end encryption is not part of V1. Chats over a bridge (Messenger
-  1.14) carry text only: files, voice messages, pictures of contacts, older
-  history and "new chat with a number" follow with a later plugin version.
+* End-to-end encryption is not part of V1. Chats over a bridge carry text
+  only with Messenger 1.14; files, voice messages, pictures of contacts and
+  "new chat with a number" come with 1.15 (`bridge_media`, `bridge_new_chat`).
+  Older history follows with a later plugin version.
 * Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
   departure hint push of an event opens the chat.
 * Server storage: the server reports only whether the chat file quota is

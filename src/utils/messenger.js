@@ -51,10 +51,20 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.13: „Verknüpfte Dienste“ (GET bridges …); 1.14: chats over a bridge (`bridge` on conversations and
   // messages, the mark ?bridged=1) — the second one only for people who have such a chat
   'linked_services', 'bridge_chats',
+  // Messenger 1.15: files and pictures over a bridge; a new chat by phone number (POST bridges/:network/resolve, …/chats)
+  // — set only together with bridge_chats (1.16: bridge_new_chat as soon as a service is linked)
+  'bridge_media', 'bridge_new_chat',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
 const FEATURE_BRIDGE_CHATS = 'bridge_chats';
+// Messenger 1.15 `GET me` features.
+const FEATURE_BRIDGE_MEDIA = 'bridge_media';
+const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
+// Why a new chat by number is not possible right now (GET bridges → networks[].newChat.reason, Messenger 1.16).
+const NEW_CHAT_REASONS = Object.freeze(['unlinked', 'logged_out', 'unreachable', 'child_locked', 'child_new_chat_off', 'off']);
+// The country code a number without one gets (the dialog's default).
+const DEFAULT_CC = '+49';
 // The ways to link an account (POST bridges/:network/login { flow }).
 const BRIDGE_FLOWS = Object.freeze(['phone', 'qr']);
 // A network id as the plugin names it (today: whatsapp), a login / process / step id of the bridge.
@@ -645,7 +655,77 @@ function bridgePhone(raw) {
   return /^\+[0-9]{6,15}$/.test(v) ? v : null;
 }
 
-/** `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, version, wantVersion, logins }] }. */
+/**
+ * A phone number for a new chat over a bridge, as typed in the dialog → '+<country code><number>' or null:
+ * spaces, brackets, dots, dashes and slashes go, a leading 00 becomes +, a number with + keeps its own country
+ * code, any other gets `cc` (default +49) and loses its leading 0. 8–15 digits in all, the first one not 0
+ * (+49: a mobile number has at least 10 after the country code).
+ * The server checks it again; it is sent only on „Prüfen“ / „Chat starten“ and never kept or logged.
+ */
+function bridgeNumber(raw, cc = DEFAULT_CC) {
+  const code = typeof cc === 'string' && /^\+[1-9][0-9]{0,3}$/.test(cc) ? cc : DEFAULT_CC;
+  let v = String(raw == null ? '' : raw).trim().replace(/[\s()/.\u2010-\u2015-]/g, '');
+  if (!v || v.length > 24) return null;
+  if (v.startsWith('00')) v = `+${v.slice(2)}`;
+  else if (!v.startsWith('+')) v = code + v.replace(/^0+/, '');
+  if (!/^\+[1-9][0-9]{7,14}$/.test(v)) return null;
+  // Germany: at least 6 digits after +49, a mobile number (015x, 016x, 017x) at least 10
+  if (v.startsWith('+49')) {
+    const nat = v.slice(3);
+    if (nat.length < 6 || (/^1[5-7]/.test(nat) && nat.length < 10)) return null;
+  }
+  return v;
+}
+
+/**
+ * `newChat` of a service in GET bridges (Messenger 1.16) → { available, reason, limit: { perHour, left, retryAfterS } | null },
+ * or null when the server does not say (then the person's links decide alone).
+ */
+function normalizeNewChat(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const int = (x, max) => (Number.isSafeInteger(x) && x >= 0 && x <= max ? x : null);
+  const l = v.limit && typeof v.limit === 'object' ? v.limit : null;
+  const reason = typeof v.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(v.reason) ? v.reason : null;
+  return {
+    available: v.available === true,
+    reason: v.available === true ? null : reason,
+    limit: l ? { perHour: int(l.perHour, 1000), left: int(l.left, 1000), retryAfterS: int(l.retryAfterS, 86400) || 0 } : null,
+  };
+}
+
+/**
+ * POST bridges/:network/resolve → { found, name, avatarMediaId, existing: { conversationId } | null }: is the number
+ * at the service and under which name; `existing` (Messenger 1.16) = there is a chat with it already.
+ */
+function normalizeResolve(r) {
+  const src = r && typeof r === 'object' ? r : {};
+  const found = src.found === true;
+  const name = found && typeof src.name === 'string' ? src.name.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 120) || null : null;
+  const ex = src.existing && typeof src.existing === 'object' ? posInt(src.existing.conversationId) : null;
+  return { found, name, avatarMediaId: found && isMediaId(src.avatarMediaId) ? src.avatarMediaId : null, existing: found && ex ? { conversationId: ex } : null };
+}
+
+/** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
+function bridgeOutKind(kind, mime) {
+  if (kind === 'image' || kind === 'voice') return kind;
+  return /^video\//.test(baseMime(mime) || '') ? 'video' : 'file';
+}
+
+/**
+ * May a file go into a chat over a bridge (Messenger 1.15: `bridge.supports`, `bridge.mediaTypes`)?
+ * → null (yes), 'text_only' (the chat takes no files of this kind) or the kind whose types it misses
+ * ('image' | 'voice' | 'video' — 409 bridge_media_type at the server).
+ */
+function bridgeMediaRefusal(bridge, kind, mime) {
+  const b = bridge && typeof bridge === 'object' ? bridge : {};
+  const k = bridgeOutKind(kind, mime);
+  if (!Array.isArray(b.supports) || !b.supports.includes(k)) return 'text_only';
+  const types = b.mediaTypes && typeof b.mediaTypes === 'object' ? b.mediaTypes[k] : null;
+  if (!Array.isArray(types)) return null;
+  return types.includes(baseMime(mime)) ? null : k;
+}
+
+/** `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, version, wantVersion, logins, newChat }] }. */
 function normalizeBridges(b) {
   const src = b && typeof b === 'object' ? b : {};
   const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
@@ -664,6 +744,8 @@ function normalizeBridges(b) {
       state: BRIDGE_LOGIN_STATES.includes(l.state) ? l.state : 'unknown',
       since: s(l.since, 40),
     })),
+    // Messenger 1.16: may the person start a chat by number here (only with the feature bridge_new_chat)
+    newChat: normalizeNewChat(n.newChat),
   }));
   return { available: src.available === true, location: src.location === 'gateway' ? 'gateway' : 'server', networks: src.available === true ? networks : [] };
 }
@@ -771,6 +853,15 @@ module.exports = {
   KNOWN_FEATURES,
   FEATURE_LINKED,
   FEATURE_BRIDGE_CHATS,
+  FEATURE_BRIDGE_MEDIA,
+  FEATURE_BRIDGE_NEW_CHAT,
+  NEW_CHAT_REASONS,
+  DEFAULT_CC,
+  bridgeNumber,
+  normalizeNewChat,
+  normalizeResolve,
+  bridgeOutKind,
+  bridgeMediaRefusal,
   BRIDGE_FLOWS,
   isBridgeNet,
   isBridgeId,

@@ -267,6 +267,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       bridgeUnlink:  (network, loginId) => ipcRenderer.invoke('chat:bridge:unlink', { network, loginId }),
       // Messenger 1.14: an own message of a chat over a bridge that was not sent, once more
       resend:        (id) => ipcRenderer.invoke('chat:resend', { id }),
+      // Messenger 1.15 (status().me.features.bridge_new_chat): a new chat by phone number — checked on request only
+      bridgeResolve: (network, number, cc) => ipcRenderer.invoke('chat:bridge:resolve', { network, number, cc }),
+      bridgeNewChat: (network, number, cc) => ipcRenderer.invoke('chat:bridge:chat', { network, number, cc }),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),

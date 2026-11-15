@@ -84,6 +84,12 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       phoneRefused: false,
       sendFails: null,          // a reason: the bridge does not take the next message (stored as failed)
       calls: [],                // what was asked of the bridge (never a number: only that one came)
+      // 1.15: files over the bridge (supports + mediaTypes), the new chat by number (features.bridge_new_chat)
+      media: false,
+      scanPending: 0,           // so many sends of a file are refused with 423 scan_pending first
+      numbers: new Map(),       // '+49…' → name of the numbers "at WhatsApp"
+      lookups: 0,
+      lookupMax: 10,
     },
   };
   const streams = new Set();
@@ -176,6 +182,25 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (B.process && B.process.id === seg[3]) B.process = null;
       return json(res, 200, { ok: true, cancelled: true });
     }
+    if (seg.length === 3 && (seg[2] === 'resolve' || seg[2] === 'chats') && m === 'POST') {
+      if (!(features && features.bridge_new_chat === true)) return err(res, 404, 'not_found');
+      if (!net.allowed) return err(res, 403, 'bridge_locked');
+      if (!net.logins.length) return err(res, 409, 'bridge_unlinked', { reason: 'unlinked' });
+      if (net.logins.every((l) => l.state === 'logged_out')) return err(res, 409, 'bridge_unlinked', { reason: 'logged_out' });
+      if (net.state !== 'running') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
+      const num = String((body && body.number) || '').replace(/[\s()-]/g, '');
+      if (!/^\+[1-9][0-9]{6,14}$/.test(num)) return err(res, 400, 'invalid_number');
+      if (B.lookups >= B.lookupMax) return err(res, 429, 'rate_limited', { retryAfterS: 840 });
+      B.lookups += 1;
+      B.calls.push({ op: seg[2] });
+      const name = B.numbers.get(num);
+      const existing = [...state.convs.values()].find((c) => c.bridge && c.bridge.number === num);
+      if (seg[2] === 'resolve') return json(res, 200, { ok: true, found: name != null, name: name || null, avatarUrl: null, existing: existing ? { conversationId: existing.id } : null });
+      if (name == null) return err(res, 404, 'not_found', { reason: 'not_on_network' });
+      const id = existing ? existing.id : addBridgeConv({ title: name });
+      state.convs.get(id).bridge.number = num;
+      return json(res, 200, { ok: true, conversation: convView(state.convs.get(id)), created: !existing });
+    }
     if (seg.length === 4 && seg[2] === 'logins' && m === 'DELETE') {
       if (!net.logins.some((l) => l.id === seg[3])) return err(res, 404, 'not_found');
       B.calls.push({ op: 'unlink', login: seg[3] });
@@ -246,7 +271,12 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       ...(features && (features.linked_services === true || features.bridge_chats === true) ? { bridge: null } : {}),
       ...(c.bridge ? {
         title: c.title, peer: null, avatarUrl: null,
-        bridge: { network: c.bridge.network, label: 'WhatsApp', state: c.bridge.state, closed: !!c.bridge.closed, supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing'] },
+        bridge: {
+          network: c.bridge.network, label: 'WhatsApp', state: c.bridge.state, closed: !!c.bridge.closed,
+          supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing', ...(state.bridge.media ? ['image', 'video', 'voice', 'file'] : [])],
+          ...(state.bridge.media ? { mediaTypes: { image: ['image/jpeg', 'image/png', 'image/webp'], video: ['video/mp4'], voice: ['audio/ogg', 'audio/mp4', 'audio/aac', 'audio/mpeg'], file: null } } : {}),
+        },
+        avatarMediaId: c.avatarMediaId || null,
         readUpTo: c.bridge.readUpTo || null, deliveredUpTo: c.bridge.deliveredUpTo || null, receipts: [],
         can: { send: c.bridge.state === 'ok' && !c.bridge.closed, pin: true, editInfo: false, manageMembers: false, leave: false, setDisappearing: false },
       } : {}),
@@ -564,14 +594,24 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         const dup = list.find((x) => x.clientId === body.clientId && x.senderId === me);
         if (dup) return json(res, 200, { ok: true, message: msgView(dup), duplicate: true });
         if (conv.bridge) {
-          if ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'location', 'poll', 'event', 'arrival', 'action', 'replyStory', 'meta'].some((k) => body[k] != null)) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          const fileKind = state.bridge.media && ['image', 'voice', 'file'].includes(body.kind) && body.mediaId;
+          if (!fileKind && ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'meta'].some((k) => body[k] != null))) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          if (['location', 'poll', 'event', 'arrival', 'action', 'replyStory'].some((k) => body[k] != null)) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          if (fileKind) {
+            const fm = state.media.get(body.mediaId);
+            if (!fm) return err(res, 409, 'media_invalid');
+            if (state.bridge.scanPending > 0) { state.bridge.scanPending -= 1; res.setHeader('Retry-After', '1'); return err(res, 423, 'scan_pending'); }
+            const k = body.kind === 'file' ? (/^video\//.test(fm.mime) ? 'video' : 'file') : body.kind;
+            const types = { image: ['image/jpeg', 'image/png', 'image/webp'], video: ['video/mp4'], voice: ['audio/ogg', 'audio/mp4', 'audio/aac', 'audio/mpeg'] }[k];
+            if (types && !types.includes(fm.mime)) return err(res, 409, 'bridge_media_type', { reason: k });
+          }
           const st = conv.bridge.state;
           if (st === 'locked') return err(res, 403, 'bridge_locked');
           if (st === 'off') return err(res, 409, 'bridge_off', { reason: 'off' });
           if (st === 'unreachable') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
           if (st === 'logged_out' || st === 'unlinked') return err(res, 409, 'bridge_unlinked', { reason: st });
           if (conv.bridge.closed) return err(res, 502, 'bridge_failed', { reason: 'chat_closed' });
-          const bm = addMsg(conv.id, { senderId: me, text: body.text, clientId: body.clientId });
+          const bm = addMsg(conv.id, { senderId: me, text: body.text || null, clientId: body.clientId, kind: fileKind ? body.kind : 'text', mediaId: fileKind ? body.mediaId : null, meta: fileKind ? body.meta || null : null });
           bm.bridge = { sender: null, remote: false, state: state.bridge.sendFails ? 'failed' : 'sent', reason: state.bridge.sendFails || null, placeholder: null };
           state.lastSendBody = body;
           return json(res, 200, { ok: true, message: msgView(bm), duplicate: false });

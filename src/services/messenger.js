@@ -70,6 +70,7 @@ const {
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
   FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
+  FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -193,6 +194,9 @@ class MessengerService extends EventEmitter {
     // and whether this server showed a chat over a bridge (an event or a push named one)
     this._typingContacts = new Map();
     this._bridgeSeen = false;
+    // Messenger 1.15: chats over a bridge just started by number — GET conversations lists them only once something
+    // was said in them, so a full read of the list keeps them (id → since)
+    this._freshBridge = new Map();
 
     this.outbox.on('sent', (e) => this._onSent(e));
     this.outbox.on('failed', ({ entry, error }) => {
@@ -243,6 +247,7 @@ class MessengerService extends EventEmitter {
     this._chatLists = null;
     this._actions = { at: 0, list: null };
     this._typingContacts.clear();
+    this._freshBridge.clear();
     this._bridgeSeen = false;
     this._me = null;
     this._syncBridged();
@@ -472,11 +477,19 @@ class MessengerService extends EventEmitter {
     const r = await this.api.conversations({ since });
     const list = Array.isArray(r.conversations) ? r.conversations.filter((c) => c && posInt(c.id)) : [];
     const removed = (Array.isArray(r.removed) ? r.removed : []).map(posInt).filter(Boolean);
+    // Messenger 1.15: a chat started by number stays until the list names it (or it is removed)
+    const keep = [];
+    for (const c of list) this._freshBridge.delete(c.id);
     if (!since) {
       const ids = new Set(list.map((c) => c.id));
-      for (const id of [...this._convs.keys()]) if (!ids.has(id)) removed.push(id);
+      for (const id of [...this._convs.keys()]) {
+        if (ids.has(id)) continue;
+        if (this._freshBridge.has(id) && !removed.includes(id)) keep.push(this._convs.get(id));
+        else removed.push(id);
+      }
       this._convs.clear();
     }
+    for (const c of keep) this._convs.set(c.id, c);
     for (const c of list) this._convs.set(c.id, c);
     for (const id of new Set(removed)) this._drop(id, { emit: false });
     if (typeof r.serverTime === 'string') this._lastSync = r.serverTime;
@@ -537,6 +550,7 @@ class MessengerService extends EventEmitter {
     this._msgs.delete(id);
     this._typing.delete(id);
     this._typingContacts.delete(id);
+    this._freshBridge.delete(id);
     if (this._open.id === id) this._open = { id: null, visible: false };
     if (emit && had) {
       this.emit('conversations', { ids: [], removed: [id] });
@@ -774,6 +788,9 @@ class MessengerService extends EventEmitter {
       sending: e.state === 'sending',
       error: e.error || null,
       ...(e.finding ? { finding: e.finding } : {}),
+      // Messenger 1.15: why a bridge refused it (bridge_media_type: image | voice | video); still being checked (423)
+      ...(e.reason ? { reason: e.reason } : {}),
+      ...(e.scanWaits && e.state !== 'failed' ? { scanWait: true } : {}),
       kind: e.body.kind || 'text',
       text: e.body.text || null,
       replyTo,
@@ -848,8 +865,17 @@ class MessengerService extends EventEmitter {
     if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
     const limits = (this._me && this._me.limits) || {};
     const body = buildSendBody(req, { textMax: limits.textMax || 4000 });
-    // Messenger 1.14: only a text (maybe as an answer) crosses a bridge — refused here like the server would (409)
-    if (c && c.bridge && (body.kind !== 'text' || req.file || body.replyStory || body.location || body.meta)) throw new MessengerError('text only', { code: 'bridge_text_only' });
+    // Messenger 1.14: only a text (maybe as an answer) crosses a bridge — refused here like the server would (409);
+    // 1.15: and a picture, voice message or file of a kind and type the chat names (`bridge.supports`, `mediaTypes`)
+    if (c && c.bridge) {
+      const media = ['image', 'voice', 'file'].includes(body.kind) && req.file;
+      if (body.replyStory || body.location || (!media && (body.kind !== 'text' || req.file || body.meta))) throw new MessengerError('text only', { code: 'bridge_text_only' });
+      if (media) {
+        const no = bridgeMediaRefusal(c.bridge, body.kind, req.file && req.file.mime);
+        if (no === 'text_only') throw new MessengerError('text only', { code: 'bridge_text_only' });
+        if (no) throw new MessengerError('type not taken by the bridge', { code: 'bridge_media_type', body: { reason: no } });
+      }
+    }
     // 1.4.0 kinds only to a server that offers them.
     if (KIND_FEATURE[body.kind] && !this.supports(KIND_FEATURE[body.kind])) throw new MessengerError('not supported by the server', { code: 'unsupported' });
     if (body.replyStory && !this.supports(FEATURES_14.stories)) delete body.replyStory;
@@ -1318,6 +1344,40 @@ class MessengerService extends EventEmitter {
   _afterLinkChange() {
     if (!this.available()) return;
     this.refreshConversations({ full: true }).catch(() => {});
+  }
+
+  /**
+   * Messenger 1.15 (`bridge_new_chat`): is this number at the service? `number` as typed, `cc` the country code of
+   * the dialog (+49) — normalized here (bridgeNumber), sent once, never kept or logged
+   * → { found, name, avatarMediaId, existing: { conversationId } | null }.
+   */
+  async bridgeResolve(network, number, cc) {
+    const n = this._newChatNumber(network, number, cc);
+    return normalizeResolve(await this.api.bridgeResolve(network, n));
+  }
+
+  /**
+   * Messenger 1.15: the direct chat with this number, made or found → { conversation, created }. It is not in
+   * GET conversations until something was said in it, so it is kept in the list from here on (opened directly).
+   */
+  async bridgeStartChat(network, number, cc) {
+    const n = this._newChatNumber(network, number, cc);
+    const r = await this.api.bridgeChat(network, n);
+    const conv = r && r.conversation && typeof r.conversation === 'object' && posInt(r.conversation.id) ? r.conversation : null;
+    if (!conv) throw new MessengerError('bad answer', { code: 'bad_response' });
+    this._removedAt.delete(conv.id);
+    this._freshBridge.set(conv.id, this.now());
+    this._upsert(conv);
+    this.noteBridge();
+    return { conversation: this.getCachedConversation(conv.id), created: r.created === true };
+  }
+
+  _newChatNumber(network, number, cc) {
+    this._need(FEATURE_BRIDGE_NEW_CHAT);
+    if (!isBridgeNet(network)) throw new MessengerError('invalid', { code: 'invalid' });
+    const n = bridgeNumber(number, cc);
+    if (!n) throw new MessengerError('invalid number', { code: 'invalid_number' });
+    return n;
   }
 
   /** Messenger 1.14: an own message the bridge did not take („Nicht gesendet“), once more → the message. */
@@ -2028,6 +2088,7 @@ class MessengerService extends EventEmitter {
       this._msgs.clear();
       this._me = null;
       this._bridgeSeen = false;
+      this._freshBridge.clear();
       this._syncBridged();
       this._lastSync = null;
       this.emit('conversations', { ids: null, removed: [] });
