@@ -396,6 +396,12 @@ class MessengerApi {
     return this.api('POST', `bridges/${this._net(network)}/chats`, { body: { number }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
   }
 
+  /** Messenger 1.17: what of the older messages comes over at a new link (0, 30 or -1 = everything) → { history }. */
+  async bridgeHistory(days) { return this.api('PUT', 'bridges/history', { body: { days } }); }
+
+  /** Messenger 1.17: fetch a file of the older history now (placeholder state on_request) → { message }. */
+  async fetchFile(messageId) { return this.api('POST', `messages/${this._id(messageId)}/fetch`, { body: {} }); }
+
   /** Messenger 1.14: an own message the bridge did not take, once more → { message }. */
   async resend(messageId) { return this.api('POST', `messages/${this._id(messageId)}/resend`, { body: {}, timeout: BRIDGE_WAIT_TIMEOUT_MS }); }
 

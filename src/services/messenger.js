@@ -70,7 +70,7 @@ const {
   KINDS, normalizeFeatures, hasFeature, unknownFeatures, isVideoMime, FEATURE_VIDEO_META, FEATURE_FILE_THUMBS,
   KIND_FEATURE, FEATURES_14, prefsBody, statusBody, storyBody, storyDurationsOf, listsBody, familieOf, normalizeEvent, safeFileName,
   FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
-  FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal,
+  FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -669,7 +669,7 @@ class MessengerService extends EventEmitter {
     if (st.window) st.window.list = fn(st.window.list);
   }
 
-  async _loadNewest(cid) {
+  async _loadNewest(cid, reason = 'load') {
     const st = this._msgs.get(cid);
     const r = await this.api.messages(cid, { limit: PAGE });
     st.list = Array.isArray(r.messages) ? r.messages.slice() : [];
@@ -677,7 +677,7 @@ class MessengerService extends EventEmitter {
     st.loaded = true;
     st.syncedAt = this._syncTime(r);
     this._receipts(cid, r);
-    this.emit('messages', { conversationId: cid, reason: 'load' });
+    this.emit('messages', { conversationId: cid, reason });
     this._persist();
   }
 
@@ -1380,6 +1380,48 @@ class MessengerService extends EventEmitter {
     return n;
   }
 
+  // ── Messenger 1.17: older history of chats over a bridge ──
+
+  /**
+   * „Älteren Verlauf laden“: what of the older messages comes over at the next link — 0 (nothing), 30 (days) or
+   * -1 (everything) → normalizeBridgeHistory. Fewer days drop at once what still waits and is no longer wanted.
+   */
+  async setBridgeHistory(days) {
+    this._need(FEATURE_BRIDGE_HISTORY);
+    if (!HISTORY_DAYS.includes(days)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.bridgeHistory(days);
+    return normalizeBridgeHistory(r && r.history);
+  }
+
+  /**
+   * A file of the older history (placeholder state on_request), fetched now because the person asks for it →
+   * the message (its placeholder then `loading`; the file follows with message.update { media: true }).
+   */
+  async fetchBridgeFile(messageId) {
+    this._need(FEATURE_BRIDGE_HISTORY);
+    const id = posInt(messageId);
+    if (!id) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.fetchFile(id);
+    this._replaceMessage(r && r.message);
+    return (r && r.message) || null;
+  }
+
+  /**
+   * conversation.update { reason: history }: older messages came into the chat (at night, without push and without
+   * message.new). The open chat loads its newest messages again (the view stays where it is); any other chat's
+   * cached messages are dropped and loaded when it opens.
+   */
+  _historyArrived(cid) {
+    const st = this._msgs.get(cid);
+    if (!st) return;
+    if (this._open.id === cid && st.loaded) {
+      this._loadNewest(cid, 'history').catch(() => {});
+      return;
+    }
+    this._msgs.delete(cid);
+    this._persist();
+  }
+
   /** Messenger 1.14: an own message the bridge did not take („Nicht gesendet“), once more → the message. */
   async resend(messageId) {
     const id = posInt(messageId);
@@ -1922,6 +1964,8 @@ class MessengerService extends EventEmitter {
         // and the info pane change; the system message comes as message.new.
         // 1.4.0: archive, pins, blocks (blocks: people and the feed as well).
         this._refreshConvSoon(cid);
+        // Messenger 1.17: older messages of a chat over a bridge came in (no toast, no sound)
+        if (cid && String(d.reason || '').split(',').includes('history')) this._historyArrived(cid);
         if (String(d.reason || '').split(',').includes('blocks')) {
           this._people = { at: 0, list: null };
           this._refreshFeedSoon();

@@ -37,6 +37,9 @@
  *     anzeigen", topic muted, "Nicht stören", quiet hours = silent → no
  *     toast, replay/burst caps); no toast for the chat that is open and
  *     visible (its seqs are acked as read right away).
+ *   - Messenger 1.17: the push of „Verknüpfte Dienste“ (topic `bridge`, „WhatsApp: Handy seit N Tagen nicht
+ *     gesehen“) is no chat message: an inbox entry with its own toast (NotificationCenter); a click on it opens
+ *     „Verknüpfte Dienste“ — claimed here for the app route of the chats, context { type: 'bridges', bridge }.
  *
  * Events: 'navigate' ({ conversationId }) — show the chat in the app.
  */
@@ -46,7 +49,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { t } = require('../i18n');
-const { parseChatNotification, posInt, isAvatarPath, bridgeLabel } = require('../utils/messenger');
+const { parseChatNotification, posInt, isAvatarPath, bridgeLabel, bridgePushContext, APP_ROUTE } = require('../utils/messenger');
 const { buildChatToastXml, parseChatArgs } = require('../utils/toast-xml');
 
 const AVATAR_TIMEOUT_MS = 1500;
@@ -110,6 +113,13 @@ class ChatNotifier extends EventEmitter {
         notification: (n) => this.handle(n),
         protocol: (nonce) => this.handleProtocol(nonce),
       });
+    }
+    if (this.nc && typeof this.nc.addClickRoute === 'function') {
+      try {
+        this._unsub.push(this.nc.addClickRoute(APP_ROUTE, (entry) => bridgePushContext(entry)));
+      } catch (err) {
+        this.log.warn(`Chat click route unavailable: ${err.message}`);
+      }
     }
     const on = (emitter, ev, fn) => {
       if (!emitter || typeof emitter.on !== 'function') return;

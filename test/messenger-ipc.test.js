@@ -259,4 +259,26 @@ describe('messenger IPC', () => {
     assert.deepEqual(await call('chat:bridge:chat', { network: 'whatsapp', number: '+49 151 23456789', cc: 49 }), { ok: true, conversation: { id: 77 }, created: true });
     assert.deepEqual(calls, [['resolve', 'whatsapp', '0151 23456789', '+49'], ['resolve', 'whatsapp', 'many', ''], ['chat', 'whatsapp', '+49 151 23456789', '']]);
   });
+
+  it('Messenger 1.17: „Älteren Verlauf laden“ and a file of the history pass through; a refusal keeps its code', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    messenger.setBridgeHistory = async (d) => {
+      calls.push(['history', d]);
+      if (d === 7) throw Object.assign(new Error('invalid'), { code: 'invalid', status: 400 });
+      return { available: true, days: d, default: 30, options: [0, 30, -1], pending: 0 };
+    };
+    messenger.fetchBridgeFile = async (id) => {
+      calls.push(['fetch', id]);
+      if (id === 5) throw Object.assign(new Error('invalid'), { code: 'invalid', status: 400 });
+      return { id, bridge: { placeholder: { kind: 'image', state: 'loading' } } };
+    };
+    assert.deepEqual(await call('chat:bridge:history', { days: -1 }), { ok: true, history: { available: true, days: -1, default: 30, options: [0, 30, -1], pending: 0 } });
+    const bad = await call('chat:bridge:history', { days: 7 });
+    assert.deepEqual([bad.ok, bad.code, bad.status], [false, 'invalid', 400]);
+    assert.deepEqual(await call('chat:fetch', { id: 4711 }), { ok: true, message: { id: 4711, bridge: { placeholder: { kind: 'image', state: 'loading' } } } });
+    assert.equal((await call('chat:fetch', { id: 'x' })).code, 'invalid');
+    assert.equal((await call('chat:fetch', { id: 5 })).code, 'invalid');
+    assert.deepEqual(calls, [['history', -1], ['history', 7], ['fetch', 4711], ['fetch', 5]]);
+  });
 });

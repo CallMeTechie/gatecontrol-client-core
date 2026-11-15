@@ -1234,7 +1234,18 @@
       "code_copied": "Code copied",
       "load_failed": "The linked services could not be loaded.",
       "back": "Back to the overview",
-      "err_no_answer": "No answer from the server. Please get a new code."
+      "err_no_answer": "No answer from the server. Please get a new code.",
+      "hist_title": "Load older history",
+      "hist_sub": "Only when linking · {{choice}}",
+      "hist_off": "Off",
+      "hist_days": "Last {{n}} days",
+      "hist_all": "Everything",
+      "hist_admin_off": "Switched off on this server",
+      "hist_pending": "{{n}} arrive tonight",
+      "hist_saved": "Saved – applies the next time you link",
+      "phone_offline": "Phone not seen for {{days}} days. Open {{name}} on your phone – after about 14 days without the phone {{name}} ends the link.",
+      "phone_offline_now": "Phone not seen for {{days}} days. Open {{name}} on your phone – {{name}} may end the link at any time.",
+      "foot_preview_hist": "Chats with contacts of the service appear in your chat list as soon as a new message arrives there; GateControl takes older history (chosen above) over at night. Texts, replies, reactions, pictures, videos, voice messages and files go both ways."
     },
     "bc": {
       "via": "over {{network}}",
@@ -1307,7 +1318,10 @@
         "voice": "{{network}} does not take this voice recording.",
         "file": "{{network}} does not take this file."
       },
-      "scan_wait": "Being checked for viruses – will be sent in a moment …"
+      "scan_wait": "Being checked for viruses – will be sent in a moment …",
+      "ph_on_request": "older history",
+      "ph_fetch": "Load",
+      "fetch_invalid": "This file can no longer be requested."
     },
     "nc": {
       "row": "{{network}} chat by number",

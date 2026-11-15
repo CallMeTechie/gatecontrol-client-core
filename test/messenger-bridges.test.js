@@ -75,7 +75,7 @@ describe('bridges – helpers', () => {
     assert.deepEqual(b.networks[0].logins.map((l) => [l.id, l.state]), [['l1', 'connected'], ['l2', 'unknown']]);
     assert.equal(b.networks[0].consent, true);
     assert.equal(b.networks[0].outdated, true);
-    assert.deepEqual(U.normalizeBridges({ available: false, networks: [{ id: 'whatsapp' }] }), { available: false, location: 'server', networks: [] });
+    assert.deepEqual(U.normalizeBridges({ available: false, networks: [{ id: 'whatsapp' }] }), { available: false, location: 'server', networks: [], history: null });
     assert.deepEqual(U.normalizeBridges(null).networks, []);
   });
 
@@ -258,7 +258,7 @@ describe('bridges – MessengerService', () => {
     srv.state.bridge.networks[0].allowed = false;
     await assert.rejects(m.bridgeLogin('whatsapp', 'qr'), (e) => e.code === 'bridge_locked' && e.status === 403);
     srv.state.bridge.available = false;
-    assert.deepEqual(await m.bridges(), { available: false, location: 'server', networks: [] });
+    assert.deepEqual(await m.bridges(), { available: false, location: 'server', networks: [], history: null });
   });
 
   it('a chat over a bridge: listed with the mark, text out, contacts typing', async () => {

@@ -1234,7 +1234,18 @@
       "code_copied": "Code kopiert",
       "load_failed": "Die verknüpften Dienste ließen sich nicht laden.",
       "back": "Zurück zur Übersicht",
-      "err_no_answer": "Keine Antwort vom Server. Bitte einen neuen Code anfordern."
+      "err_no_answer": "Keine Antwort vom Server. Bitte einen neuen Code anfordern.",
+      "hist_title": "Älteren Verlauf laden",
+      "hist_sub": "Nur beim Verknüpfen · {{choice}}",
+      "hist_off": "Aus",
+      "hist_days": "Letzte {{n}} Tage",
+      "hist_all": "Alles",
+      "hist_admin_off": "Auf diesem Server abgeschaltet",
+      "hist_pending": "{{n}} kommen heute Nacht",
+      "hist_saved": "Gespeichert – gilt beim nächsten Verknüpfen",
+      "phone_offline": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – nach etwa 14 Tagen ohne Handy trennt {{name}} die Verknüpfung.",
+      "phone_offline_now": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – {{name}} kann die Verknüpfung jederzeit trennen.",
+      "foot_preview_hist": "Chats mit Kontakten des Dienstes erscheinen in deiner Chatliste, sobald dort eine neue Nachricht eintrifft; älteren Verlauf (oben gewählt) übernimmt GateControl nachts. Texte, Antworten, Reaktionen, Bilder, Videos, Sprachnachrichten und Dateien gehen in beide Richtungen."
     },
     "bc": {
       "via": "über {{network}}",
@@ -1307,7 +1318,10 @@
         "voice": "{{network}} nimmt diese Sprachaufnahme nicht an.",
         "file": "{{network}} nimmt diese Datei nicht an."
       },
-      "scan_wait": "Wird auf Viren geprüft – wird gleich gesendet …"
+      "scan_wait": "Wird auf Viren geprüft – wird gleich gesendet …",
+      "ph_on_request": "älterer Verlauf",
+      "ph_fetch": "Laden",
+      "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern."
     },
     "nc": {
       "row": "{{network}}-Chat mit Nummer",

@@ -96,6 +96,11 @@
  * `bridge.mediaTypes` (else bridge_text_only / bridge_media_type with reason image | voice | video); 423 scan_pending
  * is sent again by the queue.
  *
+ * Messenger 1.17 (feature `bridge_history`; code 'unsupported' without it):
+ *   chat:bridge:history  ({ days: 0 | 30 | -1 }) → { ok, history: { available, days, default, options, pending } }
+ *   chat:fetch           ({ id }) → { ok, message }   a file of the older history (placeholder on_request), now
+ * Refusals: invalid (nothing to fetch / days), feature_off, not_found.
+ *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate, chat:feed, chat:lists,
  * chat:reminders.
@@ -248,6 +253,13 @@ function registerMessengerHandlers(handle, {
   const num = (v) => (typeof v === 'string' ? v.slice(0, 40) : '');
   handle('chat:bridge:resolve', wrap(async (a) => ({ ok: true, ...(await m.bridgeResolve(text(a.network, 32), num(a.number), text(a.cc, 5))) })));
   handle('chat:bridge:chat', wrap(async (a) => ({ ok: true, ...(await m.bridgeStartChat(text(a.network, 32), num(a.number), text(a.cc, 5))) })));
+  // Messenger 1.17 (feature `bridge_history`; code 'unsupported' without it): older history at a new link, its files
+  handle('chat:bridge:history', wrap(async (a) => ({ ok: true, history: await m.setBridgeHistory(a.days) })));
+  handle('chat:fetch', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id) return invalid();
+    return { ok: true, message: await m.fetchBridgeFile(id) };
+  }));
   handle('chat:resend', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();
