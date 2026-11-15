@@ -1362,7 +1362,8 @@ class MessengerService extends EventEmitter {
     const st = this._msgs.get(c.id);
     if (st && st.way && !posInt(upTo)) return Promise.resolve(null);
     const newest = st && !st.way && !st.window ? this._newestOf(st) : null;
-    const to = posInt(upTo) || (newest ? newest.id : null);
+    // not loaded yet: the entry's newest message (of any way)
+    const to = posInt(upTo) || (newest ? newest.id : null) || posInt(c.lastMessage && c.lastMessage.id);
     for (const w of personWayIds(c)) this.emit('read-local', { conversationId: w, upTo: to });
     if (!c.unread) return Promise.resolve({ lastReadId: null, unread: 0 });
     const key = `p${c.person.id}:${to || 'all'}`;
