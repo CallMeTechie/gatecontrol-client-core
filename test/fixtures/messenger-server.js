@@ -119,17 +119,21 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
   }
 
   /** A chat over a bridge: one member (the linked person), no peer; `state` as GET conversations says it. */
-  function addBridgeConv({ kind = 'direct', title = 'Kim Muster', network = 'whatsapp', bridgeState = 'ok', closed = false } = {}) {
-    const id = addConv({ kind, members: [me], title });
-    Object.assign(state.convs.get(id), { bridge: { network, state: bridgeState, closed } });
+  function addBridgeConv({ kind = 'direct', title = 'Kim Muster', network = 'whatsapp', bridgeState = 'ok', closed = false, channel = false, readOnly = false } = {}) {
+    const id = addConv({ kind: channel ? 'group' : kind, members: [me], title });
+    // 1.20: a channel (muted from the start, read only), a group where only admins write
+    Object.assign(state.convs.get(id), { bridge: { network, state: bridgeState, closed, channel, readOnly: readOnly || channel, reactions: 'own' }, notify: channel ? 'none' : 'all' });
     return id;
   }
 
   /** A message of a contact (`contact`: { contactId, name }) or of the person's phone (`remote`), a placeholder, a notice. */
-  function addBridgeMsg(convId, { contact = { contactId: 12, name: 'Kim Muster' }, text = 'Hallo', remote = false, placeholder = null, notice = false, state: st = null, reason = null } = {}) {
+  function addBridgeMsg(convId, { contact = { contactId: 12, name: 'Kim Muster' }, text = 'Hallo', remote = false, placeholder = null, notice = false, state: st = null, reason = null, post = false, marks = null, preview = null } = {}) {
     const mine = remote || st != null;
     const m = addMsg(convId, { senderId: mine ? me : null, text, kind: notice ? 'system' : 'text' });
-    m.bridge = { sender: mine || notice ? null : contact, remote, state: mine ? (st || 'sent') : null, reason, placeholder };
+    // 1.20: a post of a channel (`post`: no contact wrote it), the format of the text, a link preview
+    m.bridge = { sender: mine || notice || post ? null : contact, remote, state: mine ? (st || 'sent') : null, reason, placeholder, ...(post ? { channel: true } : {}) };
+    m.marks = marks;
+    m.preview = preview;
     if (notice) m.system = { event: 'bridge_notice', network: state.convs.get(convId).bridge.network };
     return m;
   }
@@ -313,6 +317,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         via: `bridge:${c.bridge.network}`,
         system: m.system || null,
         bridge: m.bridge || { sender: null, remote: false, state: m.senderId === viewer ? 'sent' : null, reason: null, placeholder: null },
+        marks: m.marks || null,
+        preview: m.preview || null,
         ...(m.senderId === viewer && m.bridge && m.bridge.state ? { status: { pending: 'sending' }[m.bridge.state] || m.bridge.state } : {}),
       } : {}),
     };
@@ -329,8 +335,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       managedBy: null, readonly: false, disappearingS: 0, createdBy: me, createdAt: iso(c.createdAt), updatedAt: iso(c.updatedAt),
       lastMessageId: last ? last.id : null,
       members: c.members.map((x) => ({ ...person(x.id), role: x.role, joinedAt: iso(c.createdAt) })),
-      me: { role: mine.role, mutedUntil: null, notify: 'all', lastReadId: mine.lastRead, lastDeliveredId: mine.lastDelivered },
-      muted: false,
+      me: { role: mine.role, mutedUntil: null, notify: c.notify || 'all', lastReadId: mine.lastRead, lastDeliveredId: mine.lastDelivered },
+      muted: c.notify === 'none',
       unread: list.filter((m) => m.senderId !== viewer && m.id > mine.lastRead && !m.deleted).length,
       lastMessage: last ? msgView(last, viewer) : null,
       typing: [],
@@ -347,12 +353,16 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         title: c.title, peer: null, avatarUrl: null,
         bridge: {
           network: c.bridge.network, label: 'WhatsApp', state: c.bridge.state, closed: !!c.bridge.closed,
+          ...(features && features.bridge_channels === true ? { channel: !!c.bridge.channel, readOnly: !!c.bridge.readOnly, ...(c.bridge.channel ? { reactions: c.bridge.reactions } : {}) } : {}),
           supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing', ...(state.bridge.media ? ['image', 'video', 'voice', 'file'] : [])],
           ...(state.bridge.media ? { mediaTypes: { image: ['image/jpeg', 'image/png', 'image/webp'], video: ['video/mp4'], voice: ['audio/ogg', 'audio/mp4', 'audio/aac', 'audio/mpeg'], file: null } } : {}),
         },
         avatarMediaId: c.avatarMediaId || null,
         readUpTo: c.bridge.readUpTo || null, deliveredUpTo: c.bridge.deliveredUpTo || null, receipts: [],
-        can: { send: c.bridge.state === 'ok' && !c.bridge.closed, pin: true, editInfo: false, manageMembers: false, leave: false, setDisappearing: false },
+        can: {
+          send: c.bridge.state === 'ok' && !c.bridge.closed && !c.bridge.readOnly, pin: true, editInfo: false, manageMembers: false, leave: false, setDisappearing: false,
+          ...(features && features.bridge_channels === true ? { sendReason: c.bridge.channel ? 'channel' : (c.bridge.readOnly ? 'admins_only' : null), react: c.bridge.state === 'ok' && (!c.bridge.channel || c.bridge.reactions === 'own') } : {}),
+        },
       } : {}),
     };
   }
@@ -619,10 +629,19 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     const r14 = await route14(req, res, seg, q, body);
     if (r14 !== undefined) return r14;
     if (a === 'people') return json(res, 200, { ok: true, people: users.filter((x) => x.id !== me).map((x) => ({ id: x.id, name: x.name, avatarUrl: x.avatarUrl, initials: x.initials, colorHex: x.colorHex, color: 'green' })) });
+    // 1.20: channels on their own page for a client that knows them (?channels=1)
+    const chans = !!(features && features.bridge_channels === true) && (q.channels === '1' || !!(body && typeof body === 'object' && body.channels === true));
+    const isChan = (x) => !!(x.bridge && x.bridge.channel);
     if (a === 'conversations' && !b && m === 'GET') {
       const since = q.since ? Date.parse(q.since) : null;
-      const list = [...state.convs.values()].filter((x) => (!since || x.updatedAt > since) && (!x.bridge || (bridged && state.msgs.get(x.id).length))).map((x) => convView(x));
-      return json(res, 200, { ok: true, conversations: list, removed: [], serverTime: iso(now()) });
+      const list = [...state.convs.values()].filter((x) => (!since || x.updatedAt > since) && (!x.bridge || (bridged && state.msgs.get(x.id).length)) && !(chans && isChan(x))).map((x) => convView(x));
+      const cl = chans && bridged ? [...state.convs.values()].filter((x) => isChan(x) && state.msgs.get(x.id).length).map((x) => convView(x)) : null;
+      return json(res, 200, { ok: true, conversations: list, removed: [], ...(cl ? { channels: { count: cl.length, unread: cl.reduce((n, x) => n + x.unread, 0) } } : {}), serverTime: iso(now()) });
+    }
+    if (a === 'channels' && !b && m === 'GET') {
+      if (!bridged || !(features && features.bridge_channels === true)) return err(res, 404, 'not_found');
+      const cl = [...state.convs.values()].filter((x) => isChan(x) && state.msgs.get(x.id).length).map((x) => convView(x));
+      return json(res, 200, { ok: true, channels: cl, removed: [], unread: cl.reduce((n, x) => n + x.unread, 0), serverTime: iso(now()) });
     }
     if (a === 'conversations' && !b && m === 'POST') {
       if (body.kind === 'direct') {
@@ -639,6 +658,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (!c && m === 'GET') return json(res, 200, { ok: true, conversation: convView(conv) });
       if (!c && m === 'PATCH') {
         if (body.title) conv.title = body.title;
+        if (body.notify === 'all' || body.notify === 'none') conv.notify = body.notify;
         if (Array.isArray(body.remove) && body.remove.includes(me)) { state.convs.delete(conv.id); return json(res, 200, { ok: true, conversation: null, left: true }); }
         conv.updatedAt = now();
         return json(res, 200, { ok: true, conversation: convView(conv), left: false });
@@ -668,6 +688,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (c === 'messages' && m === 'POST') {
         const dup = list.find((x) => x.clientId === body.clientId && x.senderId === me);
         if (dup) return json(res, 200, { ok: true, message: msgView(dup), duplicate: true });
+        if (conv.bridge && conv.bridge.readOnly && features && features.bridge_channels === true) return err(res, 409, 'bridge_read_only', { reason: conv.bridge.channel ? 'channel' : 'admins_only' });
         if (conv.bridge) {
           const fileKind = state.bridge.media && ['image', 'voice', 'file'].includes(body.kind) && body.mediaId;
           if (!fileKind && ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'meta'].some((k) => body[k] != null))) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
@@ -734,9 +755,12 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (!msg || (state.convs.get(msg.conversationId).bridge && !bridged)) return err(res, 404, 'not_found');
       // 1.17: a file of the older history, fetched now
       if (c === 'fetch' && m === 'POST') {
-        if (!(features && features.bridge_history === true) || !state.convs.get(msg.conversationId).bridge) return err(res, 404, 'not_found');
+        if (!state.convs.get(msg.conversationId).bridge) return err(res, 404, 'not_found');
         const ph = msg.bridge && msg.bridge.placeholder;
-        if (!ph || ph.state !== 'on_request') return err(res, 400, 'invalid');
+        // 1.17: on request (bridge_history); 1.19: once more after it failed (`retry: true`)
+        const again = ph && ph.state === 'failed' && ph.retry === true;
+        if (!again && !(features && features.bridge_history === true)) return err(res, 404, 'not_found');
+        if (!ph || (ph.state !== 'on_request' && !again)) return err(res, 400, 'invalid');
         state.bridge.fetches.push(msg.id);
         msg.bridge = { ...msg.bridge, placeholder: { ...ph, state: 'loading' } };
         msg.changedAt = now();

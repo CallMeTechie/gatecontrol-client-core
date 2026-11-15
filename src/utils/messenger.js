@@ -60,6 +60,10 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.18: „Neuer Chat“ with contacts — GateControl, WhatsApp, the address book (GET contacts/new-chat,
   // POST bridges/:network/chats { ref } | { contactId, phoneKind }) — only for people who linked a service
   'bridge_contacts',
+  // Messenger 1.20: WhatsApp channels on a page of their own (GET channels, ?channels=1 — they leave GET conversations),
+  // groups where only admins write, format (`marks`), link previews, the own reaction in a channel — for the same
+  // people as bridge_chats
+  'bridge_channels',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -69,6 +73,8 @@ const FEATURE_BRIDGE_MEDIA = 'bridge_media';
 const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
 // Messenger 1.18 `GET me` feature: „Neuer Chat“ with contacts.
 const FEATURE_BRIDGE_CONTACTS = 'bridge_contacts';
+// Messenger 1.20 `GET me` feature: channels, read-only groups, format, link previews.
+const FEATURE_BRIDGE_CHANNELS = 'bridge_channels';
 // GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
 // address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
 const CONTACTS_QUERY_MAX = 100;
@@ -651,6 +657,8 @@ function parseChatNotification(n) {
     // action_approved, action_denied, reaction) and their own collapse_key.
     // Messenger 1.14: a message of a chat over a bridge (`data.bridge: "whatsapp"`)
     bridge: isBridgeNet(data.bridge) ? data.bridge : null,
+    // Messenger 1.20: a post of a channel („<Kanal> · Kanal über WhatsApp“, only „Als gelesen“)
+    channel: isBridgeNet(data.bridge) && data.channel === true,
     pushKind: typeof data.kind === 'string' && /^[a-z_]{1,40}$/.test(data.kind) ? data.kind : null,
     deepLink: typeof data.deepLink === 'string' && /^[a-z_]{1,40}$/.test(data.deepLink) ? data.deepLink : null,
     reminderId: posInt(data.reminderId),
@@ -825,6 +833,21 @@ function contactChatBody(v) {
   if (typeof o.ref === 'string') return CONTACT_REF_RE.test(o.ref) ? { ref: o.ref } : null;
   const id = posInt(o.contactId);
   return id && typeof o.phoneKind === 'string' && PHONE_KEY_RE.test(o.phoneKind) ? { contactId: id, phoneKind: o.phoneKind } : null;
+}
+
+/** Messenger 1.20: is this conversation a channel of another messenger (`bridge.channel`, read only)? */
+function isChannel(c) {
+  return !!(c && c.bridge && typeof c.bridge === 'object' && c.bridge.channel === true);
+}
+
+/**
+ * Messenger 1.20: `channels` of GET conversations?channels=1 → { count, unread } (channels with a post, their new
+ * posts together), or null when the answer has none (an older plugin, a client without ?channels=1).
+ */
+function normalizeChannelSummary(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const int = (x) => (Number.isSafeInteger(x) && x >= 0 && x <= 1e6 ? x : 0);
+  return { count: int(v.count), unread: int(v.unread) };
 }
 
 /** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
@@ -1018,6 +1041,9 @@ module.exports = {
   FEATURE_BRIDGE_MEDIA,
   FEATURE_BRIDGE_NEW_CHAT,
   FEATURE_BRIDGE_CONTACTS,
+  FEATURE_BRIDGE_CHANNELS,
+  isChannel,
+  normalizeChannelSummary,
   CONTACTS_QUERY_MAX,
   normalizeNewChatContacts,
   contactChatBody,

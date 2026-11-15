@@ -507,7 +507,8 @@
       "expires": "Verschwindet {{time}}",
       "openVideo": "Video abspielen",
       "videoUnsupported": "Dieses Video kann hier nicht abgespielt werden. Speichere es oder öffne es mit einem anderen Programm.",
-      "unsupported": "Diese Nachricht braucht eine neuere App-Version"
+      "unsupported": "Diese Nachricht braucht eine neuere App-Version",
+      "openLink": "Link öffnen"
     },
     "loc": {
       "button": "Standort senden",
@@ -711,7 +712,9 @@
       "invalid_number": "Das ist keine gültige Telefonnummer.",
       "child_new_chat_off": "Neue Chats per Nummer haben deine Eltern für dich nicht freigegeben.",
       "contact_expired": "Die Kontaktliste ist abgelaufen. Sie wird neu geladen.",
-      "mail_missing": "Das Adressbuch aus Mail ist gerade nicht erreichbar."
+      "mail_missing": "Das Adressbuch aus Mail ist gerade nicht erreichbar.",
+      "bridge_read_only": "Hier kannst du nicht schreiben: In Kanälen schreibt nur der Kanal, in manchen Gruppen nur die Admins.",
+      "reactions_off": "Reagieren geht in Kanälen nicht: WhatsApp hat eine Reaktion abgelehnt."
     },
     "enterHintCtrl": "Strg+Enter sendet · Enter neue Zeile",
     "filter": {
@@ -1323,7 +1326,8 @@
       "scan_wait": "Wird auf Viren geprüft – wird gleich gesendet …",
       "ph_on_request": "älterer Verlauf",
       "ph_fetch": "Laden",
-      "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern."
+      "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern.",
+      "ph_retry": "Erneut versuchen"
     },
     "nc": {
       "row": "{{network}}-Chat mit Nummer",
@@ -1410,6 +1414,38 @@
       "privacy": "Deine {{network}}-Kontakte bleiben auf deinem Server. Eine Nummer aus deinem Adressbuch geht nur dann an {{network}}, wenn du den Kontakt antippst.",
       "loading": "Kontakte werden geladen …",
       "failed": "Die Kontakte konnten nicht geladen werden."
+    },
+    "ch": {
+      "entry": "Kanäle",
+      "title": "Kanäle",
+      "entryNew": "{{n}} neue Beiträge",
+      "entryOne": "1 neuer Beitrag",
+      "entryNone": "Keine neuen Beiträge",
+      "entryAria": "Kanäle, neue Beiträge",
+      "pageHint": "Benachrichtigungen sind für Kanäle aus. Die Glocke im Kanal schaltet sie ein.",
+      "emptyList": "Du folgst keinem Kanal. Kanäle abonnierst du in WhatsApp unter „Aktuelles“.",
+      "label": "Kanal",
+      "sub": "Kanal · {{network}}",
+      "bar": "Ein Kanal von {{network}}. Hier liest du nur mit, Beiträge schreibt der Kanal.",
+      "barMuted": "Benachrichtigungen sind für diesen Kanal aus.",
+      "turnOn": "Einschalten",
+      "readonly": "Nur lesen. In Kanälen schreibt nur der Kanal.",
+      "empty": "Noch keine Beiträge. Neue Beiträge erscheinen hier, sobald der Kanal etwas veröffentlicht.",
+      "picLoading": "Bild wird geladen …",
+      "down": "{{network}} ist gerade nicht erreichbar. Neue Beiträge kommen an, sobald die Brücke wieder läuft.",
+      "bellOn": "Benachrichtigungen für diesen Kanal einschalten",
+      "bellOff": "Benachrichtigungen für diesen Kanal ausschalten",
+      "info": "Kanal über {{network}} · nur lesen",
+      "reactions": "Reaktionen anderer zeigt {{network}} nur in der {{network}}-App. Hier siehst du deine eigene.",
+      "reactionsOff": "Reagieren geht in Kanälen nicht: {{network}} hat eine Reaktion abgelehnt."
+    },
+    "grp": {
+      "adminsOnly": "Nur Admins schreiben in dieser Gruppe."
+    },
+    "profile": {
+      "title": "Mein Profil",
+      "open": "Mein Profil öffnen",
+      "hint": "Name, Bild, Telefonnummern und mehr pflegst du im Portal."
     }
   },
   "school": {
