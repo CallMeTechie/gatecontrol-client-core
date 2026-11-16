@@ -235,6 +235,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       storySeen:     (id) => ipcRenderer.invoke('chat:story:seen', { id }),
       storyViewers:  (id) => ipcRenderer.invoke('chat:story:viewers', { id }),
       storyReact:    (id, emoji) => ipcRenderer.invoke('chat:story:react', { id, emoji }),
+      // Messenger 1.25: a contact's WhatsApp status (status().me.features.bridge_status)
+      bridgedStorySeen:  (id) => ipcRenderer.invoke('chat:story:bridged:seen', { id }),
+      bridgedStoryReply: (id, reply) => ipcRenderer.invoke('chat:story:bridged:reply', { id, text: reply && reply.text, emoji: reply && reply.emoji }),
       blocks:        () => ipcRenderer.invoke('chat:blocks'),
       block:         (userId, blocked) => ipcRenderer.invoke('chat:block', { userId, blocked: blocked !== false }),
       archive:       (id, archived) => ipcRenderer.invoke('chat:archive', { id, archived: archived === true }),

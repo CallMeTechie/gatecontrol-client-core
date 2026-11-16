@@ -67,6 +67,9 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.21: persons — the chat with a GateControl account and the WhatsApp chat of the same human as one entry
   // (?people=1: `person`, `folded`, persons/… routes, suggestions, „Trennen“) — for the same people as bridge_chats
   'chat_people',
+  // Messenger 1.25: the contacts' WhatsApp status updates in the status row (GET status/feed → `bridged`,
+  // POST status/bridged/:id/seen | reply, prefs.privacy.bridgedStatusSeen) — for people who linked WhatsApp
+  'bridge_status',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -117,6 +120,8 @@ const FEATURES_14 = Object.freeze({
   storyDuration: 'story_duration',
   // since 1.6: notice channels / cards, the family chat pinned to the list
   notices: 'notices', noticeRoutes: 'notice_routes',
+  // since 1.25: the contacts' WhatsApp status updates in the status row
+  bridgeStatus: 'bridge_status',
 });
 // Story durations in hours (Messenger 1.4.1 `durationH`, `limits.storyDurationsH`); the server's default is 24.
 const STORY_DURATIONS_H = Object.freeze([1, 3, 6, 12, 24]);
@@ -132,6 +137,8 @@ const PREF_RULES = Object.freeze({
     placeInStatus: ['nobody', 'family', 'all'],
     groupAdd: ['all', 'family', 'nobody'],
     defaultDisappearingS: [0, 86400, 604800, 2592000],
+    // Messenger 1.25: tell WhatsApp when the person views a contact's status (off; only with read receipts)
+    bridgedStatusSeen: 'bool',
   },
   notify: {
     groupsMentionsOnly: 'bool', reactions: 'bool', statusDigest: 'bool', eventReminderMin: [0, 15, 60, 120, 1440],
@@ -167,6 +174,46 @@ const UNSAFE_EXT = new Set([
 ]);
 
 /** Fresh idempotency key for POST …/messages (UUID, matches [A-Za-z0-9_-]{8,64}). */
+/**
+ * Messenger 1.25: `GET status/feed` → `bridged` — the contacts' status updates over a bridge (WhatsApp), checked and
+ * capped: [{ network, contact: { id, name, avatarMediaId, avatarUrl }, chatId, canReply, stories: [{ id, kind, text,
+ * mediaId, thumbMediaId, video, url, thumbUrl, createdAt, expiresAt, seen }], unseen }]. A contact stands for no
+ * account (no user id): the views key it by network and contact id.
+ */
+const BRIDGED_KINDS = Object.freeze(['text', 'image', 'video', 'unsupported']);
+function bridgedFeedOf(list) {
+  const out = [];
+  const seen = new Set();
+  for (const it of (Array.isArray(list) ? list : []).slice(0, 200)) {
+    if (!it || typeof it !== 'object' || !BRIDGE_NET_RE.test(String(it.network || ''))) continue;
+    const c = it.contact && typeof it.contact === 'object' ? it.contact : {};
+    const id = posInt(c.id);
+    if (!id || seen.has(`${it.network}:${id}`)) continue;
+    const stories = [];
+    for (const s of (Array.isArray(it.stories) ? it.stories : []).slice(0, 50)) {
+      if (!s || typeof s !== 'object' || !posInt(s.id) || !BRIDGED_KINDS.includes(s.kind)) continue;
+      stories.push({
+        id: posInt(s.id), kind: s.kind, text: typeof s.text === 'string' ? s.text.slice(0, 4000) : null,
+        mediaId: isMediaId(s.mediaId) ? s.mediaId : null, thumbMediaId: isMediaId(s.thumbMediaId) ? s.thumbMediaId : null,
+        video: s.video && typeof s.video === 'object' ? { durationMs: posInt(s.video.durationMs) || null, width: posInt(s.video.width) || null, height: posInt(s.video.height) || null } : null,
+        url: typeof s.url === 'string' ? s.url : null, thumbUrl: typeof s.thumbUrl === 'string' ? s.thumbUrl : null,
+        createdAt: isIso(s.createdAt) ? s.createdAt : null, expiresAt: isIso(s.expiresAt) ? s.expiresAt : null, seen: s.seen === true,
+      });
+    }
+    if (!stories.length) continue;
+    seen.add(`${it.network}:${id}`);
+    out.push({
+      network: it.network,
+      contact: { id, name: typeof c.name === 'string' && c.name.trim() ? c.name.slice(0, 120) : null, avatarMediaId: isMediaId(c.avatarMediaId) ? c.avatarMediaId : null, avatarUrl: typeof c.avatarUrl === 'string' ? c.avatarUrl : null },
+      chatId: posInt(it.chatId) || null,
+      canReply: it.canReply === true || !!posInt(it.chatId),
+      stories,
+      unseen: stories.some((s) => !s.seen),
+    });
+  }
+  return out;
+}
+
 function newClientId() {
   return crypto.randomUUID();
 }
@@ -1223,6 +1270,7 @@ module.exports = {
   NOTIFY_MEDIA_RE,
   isNotifyMediaPath,
   newClientId,
+  bridgedFeedOf,
   isClientId,
   isMediaId,
   isAvatarPath,

@@ -1026,7 +1026,9 @@
       "myStoriesTitle": "Meine Storys",
       "storiesOne": "1 Story aktiv",
       "storiesN": "{{n}} Storys aktiv",
-      "open": "Ansehen"
+      "open": "Ansehen",
+      "bridgedVia": "über {{network}}",
+      "bridgedUnknown": "{{network}}-Kontakt"
     },
     "story": {
       "title": "Status",
@@ -1067,7 +1069,14 @@
       "hours": "{{n}} Std.",
       "hintTime": "Dein Status verschwindet nach {{time}}. Antworten kommen als Chat-Nachricht zu dir.",
       "sharing": "Wird geteilt …",
-      "failed": "Nicht geteilt: {{error}}"
+      "failed": "Nicht geteilt: {{error}}",
+      "bridgedAgo": "über {{network}} · {{age}}",
+      "bridgedUnsupported": "Dieser Status lässt sich hier nicht zeigen. Öffne ihn in {{network}}.",
+      "bridgedReplyPh": "Antwort über {{network}}",
+      "bridgedReplyHint": "Geht als Nachricht in euren {{network}}-Chat, auch eine Reaktion",
+      "bridgedNoChat": "Kein {{network}}-Chat mit dieser Person gefunden. Antworten geht gerade nur in {{network}}.",
+      "bridgedReacted": "Reaktion {{emoji}} als Nachricht über {{network}} gesendet",
+      "bridgedReplied": "Antwort über {{network}} gesendet"
     },
     "set": {
       "title": "Chat-Einstellungen",
@@ -1162,7 +1171,12 @@
       "routes": "Wo Mitteilungen erscheinen",
       "routesSub": "GateControl, Familien-Chat oder eigener Chat",
       "linked": "Verknüpfte Dienste",
-      "linkedSub": "Mit Kontakten in anderen Messengern schreiben"
+      "linkedSub": "Mit Kontakten in anderen Messengern schreiben",
+      "statusSec": "Status",
+      "bridgedSeen": "WhatsApp mitteilen, wenn ich einen Status ansehe",
+      "bridgedSeenHint": "Wenn an, erscheinst du beim Kontakt in WhatsApp unter „Gesehen von“. Wenn aus, wird der Status nur hier als gesehen markiert (grauer Ring).",
+      "bridgedSeenNeeds": "Funktioniert nur, wenn „{{receipts}}“ eingeschaltet ist.",
+      "statusDigestHintBridged": "Nur GateControl-Personen. WhatsApp-Status lösen keine Mitteilung aus."
     },
     "notice": {
       "tag": "Mitteilungen",

@@ -42,7 +42,10 @@
  *   chat:update-hint:dismiss () → { ok }   close the "newer version" banner (status().updateHint) for this set of features
  *
  * Messenger 1.4.0 (each answers code 'unsupported' when `GET me` lacks the feature):
- *   chat:status:feed     ({ refresh? }) → { ok, items, me, serverTime }        status strip / stories
+ *   chat:status:feed     ({ refresh? }) → { ok, items, me, bridged, serverTime } status strip / stories (1.25: bridged —
+ *                        the contacts' WhatsApp status updates)
+ *   chat:story:bridged:seen  ({ id }) → { ok }                                 1.25: a contact's WhatsApp status was shown
+ *   chat:story:bridged:reply ({ id, text? | emoji? }) → { ok, message }        1.25: answer / reaction as a WhatsApp message
  *   chat:status:set      ({ preset, text?, until?, visibility?, userIds?, eta?, destLabel? }) → { ok, status }
  *   chat:status:clear    () → { ok }
  *   chat:story:create    ({ kind, text?, bg?, font?, visibility?, userIds?, eventMessageId?, place?, video?, file?, thumb?, durationH? }) → { ok, story }
@@ -463,6 +466,14 @@ function registerMessengerHandlers(handle, {
   }));
   handle('chat:story:delete', wrap(async (a) => (posInt(a.id) ? { ok: await m.deleteStory(posInt(a.id)) } : invalid())));
   handle('chat:story:seen', wrap(async (a) => (posInt(a.id) ? { ok: await m.storySeen(posInt(a.id)) } : invalid())));
+  // Messenger 1.25: a contact's WhatsApp status — watched; an answer or a reaction goes as a message into the WhatsApp chat
+  handle('chat:story:bridged:seen', wrap(async (a) => (posInt(a.id) ? { ok: await m.bridgedStorySeen(posInt(a.id)) } : invalid())));
+  handle('chat:story:bridged:reply', wrap(async (a) => {
+    const emoji = typeof a.emoji === 'string' && a.emoji && a.emoji.length <= 16 ? a.emoji : null;
+    const text = typeof a.text === 'string' && a.text.trim() && a.text.length <= 4000 ? a.text : null;
+    if (!posInt(a.id) || (emoji == null) === (text == null)) return invalid();
+    return { ok: true, message: await m.bridgedStoryReply(posInt(a.id), emoji ? { emoji } : { text }) };
+  }));
   handle('chat:story:viewers', wrap(async (a) => (posInt(a.id) ? { ok: true, viewers: await m.storyViewers(posInt(a.id)) } : invalid())));
   handle('chat:story:react', wrap(async (a) => {
     if (!posInt(a.id) || typeof a.emoji !== 'string' || !a.emoji || a.emoji.length > 16) return invalid();
