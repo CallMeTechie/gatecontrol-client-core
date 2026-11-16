@@ -58,6 +58,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     // 1.4.0
     statuses: new Map(),      // userId → status
     stories: [],              // { id, userId, kind, text, mediaId, thumbMediaId, createdAt, seen:Set, reactions }
+    // Messenger 1.25: the contacts' WhatsApp status updates (`bridged` of the feed, only with features.bridge_status)
+    bridged: [],              // { network, contact: { id, name }, chatId, canReply, stories: [{ id, kind, text, createdAt, seen }] }
     nextStory: 300,
     blocks: [],
     lists: [],
@@ -605,7 +607,9 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       return { user: userOut(id), status: state.statuses.get(id) || null, stories, unseen: stories.some((x) => !x.seen) };
     }).sort((x, y) => Number(y.unseen) - Number(x.unseen));
     const mine = state.stories.filter((x) => x.userId === me).map((x) => storyOut(x, true));
-    return { items, me: { user: userOut(me), status: state.statuses.get(me) || null, stories: mine, unseen: false }, serverTime: iso(now()) };
+    const bridged = features && features.bridge_status === true
+      ? { bridged: state.bridged.map((x) => ({ ...x, stories: x.stories.map((s) => ({ ...s })), unseen: x.stories.some((s) => !s.seen) })) } : {};
+    return { items, me: { user: userOut(me), status: state.statuses.get(me) || null, stories: mine, unseen: false }, ...bridged, serverTime: iso(now()) };
   }
   const findMsg = (id) => { let msg = null; for (const l of state.msgs.values()) msg = l.find((x) => x.id === Number(id)) || msg; return msg; };
   const changed = (msg, type) => { msg.changedAt = now(); return type; };
@@ -641,6 +645,20 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (m === 'DELETE') { state.statuses.delete(me); return json(res, 200, { ok: true, status: null }); }
     }
     if (a === 'status' && b === 'feed') return json(res, 200, { ok: true, ...feed() });
+    // Messenger 1.25: a contact's WhatsApp status — watched; an answer or a reaction as a message in the direct chat
+    if (a === 'status' && b === 'bridged' && m === 'POST') {
+      const it = state.bridged.find((x) => x.stories.some((s) => s.id === Number(c)));
+      const st = it && it.stories.find((s) => s.id === Number(c));
+      if (!st) return err(res, 404, 'not_found');
+      if (d === 'seen') { st.seen = true; return json(res, 200, { ok: true, seen: true, reported: false }); }
+      if (d === 'reply') {
+        if (!it.chatId || !state.convs.has(it.chatId)) return err(res, 404, 'not_found', { reason: 'no_chat' });
+        if ((bd.emoji == null) === (bd.text == null)) return err(res, 400, 'invalid');
+        st.seen = true;
+        const msg = addMsg(it.chatId, { senderId: me, text: bd.emoji ? `${bd.emoji} auf deinen Status` : bd.text });
+        return json(res, 200, { ok: true, message: msgView(msg), conversationId: it.chatId, ...(bd.emoji ? { emoji: bd.emoji } : {}) });
+      }
+    }
     if (a === 'status' && b === 'stories') {
       if (!c && m === 'POST') {
         if (bd.kind === 'text' && !bd.text) return err(res, 400, 'invalid');

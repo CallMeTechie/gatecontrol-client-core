@@ -81,7 +81,7 @@ const {
   FEATURE_LINKED, FEATURE_BRIDGE_CHATS, BRIDGE_FLOWS, isBridgeNet, isBridgeId, bridgePhone, normalizeBridges, normalizeBridgeLogin,
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
-  FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary,
+  FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary, bridgedFeedOf, newClientId,
   FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
   normalizeHandoff, HANDOFF_TARGETS, BRIDGE_SECRET_MAX,
 } = require('../utils/messenger');
@@ -2051,7 +2051,9 @@ class MessengerService extends EventEmitter {
     const key = 'feed';
     if (this._inflight.has(key)) return this._inflight.get(key).then((d) => this._copy(d));
     const run = this.api.statusFeed().then((r) => {
-      const data = { items: Array.isArray(r.items) ? r.items : [], me: r.me && typeof r.me === 'object' ? r.me : null, serverTime: r.serverTime || null };
+      // Messenger 1.25: the contacts' WhatsApp status updates beside the accounts (bridgedFeedOf: checked, capped)
+      const bridged = this.supports(FEATURES_14.bridgeStatus) ? bridgedFeedOf(r.bridged) : [];
+      const data = { items: Array.isArray(r.items) ? r.items : [], me: r.me && typeof r.me === 'object' ? r.me : null, bridged, serverTime: r.serverTime || null };
       this._feed = { at: this.now(), data };
       this.emit('feed', this._copy(data));
       return data;
@@ -2132,6 +2134,51 @@ class MessengerService extends EventEmitter {
       if (hit) this.emit('feed', this._copy(d));
     }
     return true;
+  }
+
+  /**
+   * Messenger 1.25: a contact's WhatsApp status was shown — POST status/bridged/:id/seen (WhatsApp learns it only on the
+   * person's own switch); the cached feed marks it seen.
+   */
+  async bridgedStorySeen(id) {
+    this._need(FEATURES_14.bridgeStatus);
+    const sid = posInt(id);
+    if (!sid) throw new MessengerError('invalid', { code: 'invalid' });
+    await this.api.bridgedStorySeen(sid);
+    this._markBridgedSeen(sid);
+    return true;
+  }
+
+  _markBridgedSeen(sid) {
+    const d = this._feed.data;
+    if (!d || !Array.isArray(d.bridged)) return;
+    let hit = false;
+    for (const it of d.bridged) {
+      for (const st of it.stories) if (st.id === sid && !st.seen) { st.seen = true; hit = true; }
+      it.unseen = it.stories.some((st) => !st.seen);
+    }
+    if (hit) this.emit('feed', this._copy(d));
+  }
+
+  /**
+   * Messenger 1.25: an answer ({ text }) or a reaction ({ emoji }) to a contact's WhatsApp status — the server sends it as
+   * a message into the WhatsApp chat with the contact (a reaction as „❤️ auf deinen Status“; the bridge cannot react to
+   * a status). → the message
+   */
+  async bridgedStoryReply(id, { text = null, emoji = null } = {}) {
+    this._need(FEATURES_14.bridgeStatus);
+    const sid = posInt(id);
+    const body = { clientId: newClientId() };
+    if (typeof emoji === 'string' && emoji && emoji.length <= 16 && text == null) body.emoji = emoji;
+    else if (typeof text === 'string' && text.trim() && text.length <= 4000 && emoji == null) body.text = text.trim();
+    if (!sid || (!body.emoji && !body.text)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.bridgedStoryReply(sid, body);
+    this._markBridgedSeen(sid);
+    if (r.message && posInt(r.message.conversationId)) {
+      if (!this._convs.has(r.message.conversationId)) this._refreshConvSoon(r.message.conversationId);
+      this._replaceMessage(r.message);
+    }
+    return r.message || null;
   }
 
   async storyViewers(id) {
@@ -2498,6 +2545,8 @@ class MessengerService extends EventEmitter {
       case 'status.update':
       case 'story.new':
       case 'story.remove':
+      // Messenger 1.25: a contact's WhatsApp status came, went or was watched
+      case 'story.bridged':
         this._refreshFeedSoon();
         break;
       case 'lists.update':

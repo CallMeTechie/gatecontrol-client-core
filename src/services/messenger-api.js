@@ -331,6 +331,11 @@ class MessengerApi {
 
   async storyReact(id, emoji) { return this.api('POST', `status/stories/${this._id(id)}/react`, { body: { emoji } }); }
 
+  // Messenger 1.25: a contact's WhatsApp status — watched; an answer or a reaction as a message into the WhatsApp chat
+  async bridgedStorySeen(id) { return this.api('POST', `status/bridged/${this._id(id)}/seen`, { body: {} }); }
+
+  async bridgedStoryReply(id, body) { return this.api('POST', `status/bridged/${this._id(id)}/reply`, { body }); }
+
   // ── Messenger 1.4.0: blocks, archive, pins, lists, export, reminders, suggest ──
 
   async blocks() { return this.api('GET', 'blocks'); }

@@ -59,7 +59,7 @@ describe('createBridgeApi', () => {
       'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:person:candidates', 'chat:person:merge', 'chat:person:name', 'chat:person:split', 'chat:person:way', 'chat:pin', 'chat:places', 'chat:poll', 'chat:prefs',
       'chat:react', 'chat:read', 'chat:remind', 'chat:reminder:delete', 'chat:reminders', 'chat:resend', 'chat:search',
       'chat:send', 'chat:status', 'chat:status:clear', 'chat:status:feed', 'chat:status:set', 'chat:storage',
-      'chat:story:create', 'chat:story:delete', 'chat:story:react', 'chat:story:seen', 'chat:story:viewers',
+      'chat:story:bridged:reply', 'chat:story:bridged:seen', 'chat:story:create', 'chat:story:delete', 'chat:story:react', 'chat:story:seen', 'chat:story:viewers',
       'chat:suggest', 'chat:suggestion:answer', 'chat:suggestions', 'chat:to-calendar', 'chat:to-drive', 'chat:to-list', 'chat:typing', 'chat:update', 'chat:update-hint:dismiss', 'chat:view',
       'config:get', 'config:getAll', 'config:import-file',
       'config:import-qr', 'config:set', 'dns:leak-test',

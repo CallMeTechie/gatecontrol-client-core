@@ -515,6 +515,25 @@ Needs GateControl with `gc.bridges` version 11 and Messenger ≥ 1.24.0; recogni
 * Texts: `chat.br.*_telegram`, `chat.br.code_wrong`, `chat.br.pw_*`, `chat.br.next_step`, `chat.br.other_number`,
   `chat.br.sub_noapp`, `chat.br.pill_noapp`, `chat.bc.bot`, `chat.bc.members`, `chat.ch.filter`, `chat.person.rec*_telegram`.
 
+### Messenger 1.25: WhatsApp-Status in der Status-Reihe
+
+One feature word, `bridge_status` — for people who linked WhatsApp, on a server with `gc.bridges` version 12 (the room of
+the contacts' status updates is no chat any more). Without it everything stays as it was.
+
+* `statusFeed()` → also `bridged: [{ network, contact: { id, name, avatarMediaId, avatarUrl }, chatId, canReply, stories:
+  [{ id, kind: text | image | video | unsupported, text, mediaId, thumbMediaId, video, url, thumbUrl, createdAt,
+  expiresAt, seen }], unseen }]` (`bridgedFeedOf`: checked and capped; `[]` without the word). A contact is no account:
+  the views mix the entries into the strip themselves (Pro: `GCChatState.mixFeed`, unseen first, then the newest; key
+  `wa:<contactId>`) with the WhatsApp logo at the ring.
+* `bridgedStorySeen(id)` — shown in the viewer (the cached feed marks it seen). WhatsApp learns it only when the person
+  turned `prefs.privacy.bridgedStatusSeen` on (default off, only with read receipts; the server decides).
+* `bridgedStoryReply(id, { text } | { emoji })` — an answer or a reaction goes as a message into the WhatsApp chat with
+  the contact (a reaction as „❤️ auf deinen Status“: the bridge cannot react to a status). The viewer says so under the
+  field; it shows no viewers. `canReply: false`: no way to the contact — only that line.
+* `setPrefs({ privacy: { bridgedStatusSeen } })` (PREF_RULES), the live event `story.bridged` refreshes the feed.
+* Texts: `chat.st.bridged*`, `chat.story.bridged*`, `chat.set.statusSec`, `chat.set.bridgedSeen*`,
+  `chat.set.statusDigestHintBridged`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -648,7 +667,7 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 `bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
 1.17: `bridgeHistory(days)`, `fetchFile(id)`, 1.18: `newChatContacts(network, q)`,
 `bridgeContactChat(network, contact)`, `storage`, `clearCache`, 1.23: `bridgeRecognition(allowed, network?)`,
-`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`, 1.25: `bridgedStorySeen(id)`, `bridgedStoryReply(id, { text | emoji })`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`, 1.23: `onHandoff`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
