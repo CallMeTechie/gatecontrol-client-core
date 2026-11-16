@@ -15,6 +15,7 @@ const editions = require('./services/editions');
 const RdpAllow = require('./services/rdp-allow');
 const RemoteHost = require('./services/remote-host');
 const RemoteHostApi = require('./services/remote-host-api');
+const RemoteTerm = require('./services/remote-term');
 const RdpSessionFirewall = require('./services/rdp-session-firewall');
 // Fernzugriff stage 7: "Bildschirm teilen" (capture, sender of gc-screen.v1, SendInput)
 const ScreenCapture = require('./services/screen-capture');
@@ -125,6 +126,7 @@ module.exports = {
   RdpAllow,
   RemoteHost,
   RemoteHostApi,
+  RemoteTerm,
   RdpSessionFirewall,
   ScreenCapture,
   ScreenShare,
