@@ -84,6 +84,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       qrRenewAt: null,          // a waiting call number at which the QR code is renewed (a new step)
       loginFails: null,         // { status, code, reason } for the next waiting call
       phoneRefused: false,
+      tgPassword: null,         // 1.24: Telegram asks for this password after the code (null: no two-step verification)
       sendFails: null,          // a reason: the bridge does not take the next message (stored as failed)
       calls: [],                // what was asked of the bridge (never a number: only that one came)
       // 1.15: files over the bridge (supports + mediaTypes), the new chat by number (features.bridge_new_chat)
@@ -243,6 +244,23 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (g) return err(res, g[0], g[1]);
       const pr = B.process;
       if (!pr || pr.id !== seg[3]) return err(res, 404, 'not_found');
+      // 1.24: Telegram — number, the code from the Telegram app, the password of the two-step verification (B.tgPassword);
+      // a wrong one is asked again (`retry`); what was typed is never kept, only whether it fitted
+      if (body && body.input && net.id === 'telegram') {
+        const tg = (sid, type, retry) => json(res, 200, { ok: true, login: { processId: pr.id, step: { id: sid, type: 'user_input', fields: [{ id: type === 'password' ? 'pass' : 'code', type, optional: false }], ...(retry ? { retry: true } : {}) } } });
+        const v = String(Object.values(body.input)[0] || '');
+        B.calls.push({ op: 'input', step: seg[4], field: Object.keys(body.input)[0] });
+        if (seg[4] === 'phone1') return tg('code1', '2fa_code', false);
+        if (seg[4].startsWith('code')) {
+          if (v !== '47000') return tg('code1.incorrect', '2fa_code', true);
+          if (B.tgPassword) return tg('pass1', 'password', false);
+        } else if (seg[4].startsWith('pass') && v !== B.tgPassword) {
+          return tg('pass1.incorrect', 'password', true);
+        }
+        B.process = null;
+        net.logins = [{ id: 'login1', name: 'Kim Muster', state: 'connected', since: iso(now()) }];
+        return json(res, 200, { ok: true, login: { processId: pr.id, step: { id: 'done', type: 'complete', loginId: 'login1' } } });
+      }
       if (body && body.input) {
         const v = body.input.phone_number;
         B.calls.push({ op: 'input', step: seg[4], ok: /^\+[0-9]{6,15}$/.test(String(v || '')) });

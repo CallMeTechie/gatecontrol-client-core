@@ -239,6 +239,8 @@ describe('messenger IPC', () => {
     assert.equal((await call('chat:bridge:login', { network: 'whatsapp', flow: 'phone' })).login.step.type, 'phone');
     assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 's1', phone: '+49 1512 0000000', fieldId: 'phone_number' }), { ok: true, login: { processId: 'p1', waiting: true } });
     assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'c1', phone: 4915 }), { ok: true, login: { processId: 'p1', waiting: true } });
+    // Messenger 1.24: Telegram's code or password (`secret`) — cut at 256, the field it answers
+    assert.deepEqual(await call('chat:bridge:step', { network: 'telegram', processId: 'p1', stepId: 'pass1', secret: 'x'.repeat(300), fieldId: 'pass' }), { ok: true, login: { processId: 'p1', waiting: true } });
     const gone = await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'gone' });
     assert.deepEqual([gone.ok, gone.code, gone.reason, gone.status], [false, 'bridge_failed', 'timeout', 502]);
     assert.deepEqual(await call('chat:bridge:cancel', { network: 'whatsapp', processId: 'p1' }), { ok: true });
@@ -246,7 +248,7 @@ describe('messenger IPC', () => {
     assert.deepEqual(calls, [
       ['consent', 'whatsapp'], ['login', 'whatsapp', 'phone'],
       ['step', 'whatsapp', 'p1', 's1', { phone: '+49 1512 0000000', fieldId: 'phone_number' }],
-      ['step', 'whatsapp', 'p1', 'c1', {}], ['step', 'whatsapp', 'p1', 'gone', {}],
+      ['step', 'whatsapp', 'p1', 'c1', {}], ['step', 'telegram', 'p1', 'pass1', { secret: 'x'.repeat(256), fieldId: 'pass' }], ['step', 'whatsapp', 'p1', 'gone', {}],
       ['cancel', 'whatsapp', 'p1'], ['unlink', 'whatsapp', 'login1'],
     ]);
     assert.deepEqual(await call('chat:resend', { id: 4711 }), { ok: true, message: { id: 4711, bridge: { state: 'sent' } } });

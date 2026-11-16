@@ -83,7 +83,7 @@ const {
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary,
   FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
-  normalizeHandoff, HANDOFF_TARGETS,
+  normalizeHandoff, HANDOFF_TARGETS, BRIDGE_SECRET_MAX,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -1692,13 +1692,17 @@ class MessengerService extends EventEmitter {
 
   /**
    * The next step. `phone` (as typed) answers the step that asks for the number — checked here, sent once, never
-   * kept or logged; without it the server waits for the phone (up to 15 s) → normalizeBridgeLogin.
+   * kept or logged; without it the server waits for the phone (up to 15 s) → normalizeBridgeLogin. Messenger 1.24:
+   * `secret` answers Telegram's step for the code or the password — sent once, never kept, logged or put in an error.
    */
-  async bridgeStep(network, processId, stepId, { phone = null, fieldId = null } = {}) {
+  async bridgeStep(network, processId, stepId, { phone = null, secret = null, fieldId = null } = {}) {
     this._need(FEATURE_LINKED);
     if (!isBridgeNet(network) || !isBridgeId(processId) || !isBridgeId(stepId)) throw new MessengerError('invalid', { code: 'invalid' });
     let input = null;
-    if (phone != null) {
+    if (secret != null) {
+      if (typeof secret !== 'string' || !secret.length || secret.length > BRIDGE_SECRET_MAX || !isBridgeId(fieldId)) throw new MessengerError('invalid', { code: 'invalid' });
+      input = { [fieldId]: secret };
+    } else if (phone != null) {
       const number = bridgePhone(phone);
       if (!number) throw new MessengerError('invalid number', { code: 'phone_invalid' });
       input = { [isBridgeId(fieldId) ? fieldId : 'phone_number']: number };

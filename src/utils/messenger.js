@@ -705,7 +705,11 @@ function bridgePushContext(entry) {
 }
 
 // The services' own names (never translated); an id this version does not know shows as it is.
-const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp', signal: 'Signal' });
+const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp', signal: 'Signal', telegram: 'Telegram' });
+// Messenger 1.24: what a service still waits for (`networks[].needs`; 'app': Telegram not set up by an administrator)
+const BRIDGE_NEEDS = Object.freeze(['app', 'script', 'compose']);
+// Messenger 1.24 (Telegram): the longest code or password that goes to the bridge
+const BRIDGE_SECRET_MAX = 256;
 const bridgeLabel = (id) => BRIDGE_LABELS[id] || (typeof id === 'string' && id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
 const isBridgeNet = (v) => typeof v === 'string' && BRIDGE_NET_RE.test(v);
 const isBridgeId = (v) => typeof v === 'string' && BRIDGE_ID_RE.test(v);
@@ -1037,6 +1041,8 @@ function normalizeBridges(b) {
     })(),
     history: normalizeNetHistory(n.history),
     recognition: normalizeRecognition(n.recognition, n.id),
+    // Messenger 1.24: 'app' — Telegram is not set up on the server yet (nothing to link)
+    needs: BRIDGE_NEEDS.includes(n.needs) ? n.needs : null,
   }));
   // Messenger 1.21: „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ (only when GateControl has the call)
   const recognition = src.available === true ? normalizeRecognition(src.recognition) : null;
@@ -1068,6 +1074,9 @@ function normalizeQrMatrix(m) {
  *   { processId, waiting: true }                       the phone has not confirmed yet — ask again
  *   { processId, step: { id, type: 'complete' } }
  *   { processId, step: { id, type: 'phone', fieldId } } the number is asked for
+ *   { processId, step: { id, type: 'secret', kind: 'code' | 'password', fieldId, retry } }  Messenger 1.24 (Telegram):
+ *                                                      the code from the service's app, the password of the two-step
+ *                                                      verification; retry: the one before was wrong
  *   { processId, step: { id, type: 'code', code } }     the pairing code, then wait
  *   { processId, step: { id, type: 'qr', matrix } }     the QR code (drawn from its modules), then wait
  *   { processId, step: { id, type: 'unsupported' } }    a step this version cannot show
@@ -1084,6 +1093,11 @@ function normalizeBridgeLogin(l) {
   if (!id) return none;
   if (st.type === 'user_input') {
     const f = (Array.isArray(st.fields) ? st.fields : []).find((x) => x && isBridgeId(x.id));
+    // Messenger 1.24: Telegram's code and password
+    if (f && (f.type === '2fa_code' || f.type === 'password')) {
+      return { processId: src.processId, step: { id, type: 'secret', kind: f.type === 'password' ? 'password' : 'code', fieldId: f.id, retry: st.retry === true } };
+    }
+    if (f && f.type && f.type !== 'phone_number') return none;
     return { processId: src.processId, step: { id, type: 'phone', fieldId: f ? f.id : 'phone_number' } };
   }
   if (st.type === 'display_and_wait') {
@@ -1174,6 +1188,7 @@ module.exports = {
   normalizeRecognition,
   normalizeHandoff,
   normalizeNetHistory,
+  BRIDGE_SECRET_MAX,
   HANDOFF_TARGETS,
   CONTACTS_QUERY_MAX,
   normalizeNewChatContacts,

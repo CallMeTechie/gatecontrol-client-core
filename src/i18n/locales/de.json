@@ -1276,7 +1276,35 @@
       "phone_history_chosen": "Du hast „Die letzten {{n}} Tage“ gewählt",
       "phone_history_take": "Wählst du auf dem Handy „Übertragen“, übernimmt GateControl davon die letzten {{n}} Tage, nachts und in Häppchen. Später geht das bei {{name}} nicht mehr.",
       "net_signal": "Signal",
-      "mark_signal": "SG"
+      "mark_signal": "SG",
+      "net_telegram": "Telegram",
+      "mark_telegram": "TG",
+      "note_telegram_unofficial": "Inoffiziell. GateControl meldet sich als eigenes Gerät „GateControl“ bei Telegram an. Telegram sperrt selten Konten, die das tun.",
+      "note_telegram_e2e": "Lesbar auf deinem Server. Geheime Chats bleiben auf deinem Handy und kommen nicht an.",
+      "flow_qr_telegram": "Mit QR-Code",
+      "flow_phone_telegram": "Mit Telefonnummer",
+      "link_sub_telegram": "QR-Code oder Telefonnummer",
+      "qr_lead_telegram": "Am PC am schnellsten mit QR-Code:",
+      "qr_step1_telegram": "Telegram auf dem Handy öffnen",
+      "qr_step2_telegram": "Einstellungen → Geräte",
+      "qr_step3_telegram": "Desktop-Gerät verbinden, Code scannen",
+      "qr_renews_telegram": "Er läuft nach kurzer Zeit ab und erneuert sich.",
+      "phone_label_telegram": "Telefonnummer",
+      "phone_hint_telegram": "Mit Ländervorwahl. Wird nicht gespeichert, geht nur an Telegram.",
+      "code_label_telegram": "Code",
+      "code_hint_telegram": "Der Code steht in deiner Telegram-App, nicht in einer SMS.",
+      "code_warn_telegram": "Gib den Code nur hier ein, weil du die Verknüpfung gerade selbst gestartet hast. Wer dich danach fragt, will dein Konto.",
+      "code_wrong": "Der Code stimmt nicht.",
+      "pw_label_telegram": "Telegram-Passwort (zweistufige Bestätigung)",
+      "pw_hint_telegram": "Geht einmal an Telegram, wird nicht gespeichert.",
+      "pw_wrong": "Das Passwort stimmt nicht. Vergessen? Zurücksetzen geht nur in der Telegram-App.",
+      "pw_send": "Anmelden",
+      "next_step": "Weiter",
+      "other_number": "Andere Nummer",
+      "sub_noapp": "Noch nicht eingerichtet (Admin).",
+      "pill_noapp": "Nicht eingerichtet",
+      "linked_telegram": "Telegram ist verknüpft.",
+      "sub_logged_out_telegram": "Telegram hat die Verknüpfung beendet – zum Beispiel, weil die Sitzung in Telegram unter „Geräte“ beendet wurde."
     },
     "bc": {
       "via": "über {{network}}",
@@ -1334,7 +1362,7 @@
       "info_kind_group": "Gruppe bei {{network}}",
       "ph_loading": "wird geladen …",
       "ph_fail": {
-        "too_large": "zu groß für deinen Server – in {{network}} ansehen",
+        "too_large": "zu groß, öffne es in {{network}}",
         "type": "diese Art nimmt GateControl nicht an – in {{network}} ansehen",
         "infected": "gesperrt – Schadsoftware gefunden",
         "quota": "kein Platz mehr auf deinem Server – in {{network}} ansehen",
@@ -1356,7 +1384,9 @@
       "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern.",
       "ph_retry": "Erneut versuchen",
       "signal_safety": "Sicherheitsnummern prüfst du in der Signal-App. Die Brücke nimmt neue Schlüssel von selbst an.",
-      "timer": "Nachrichten verschwinden nach {{time}}. Ändern geht nur in {{network}}."
+      "timer": "Nachrichten verschwinden nach {{time}}. Ändern geht nur in {{network}}.",
+      "bot": "Bot",
+      "members": "{{n}} Mitglieder"
     },
     "nc": {
       "row": "{{network}}-Chat mit Nummer",
@@ -1466,7 +1496,8 @@
       "bellOff": "Benachrichtigungen für diesen Kanal ausschalten",
       "info": "Kanal über {{network}} · nur lesen",
       "reactions": "Reaktionen anderer zeigt {{network}} nur in der {{network}}-App. Hier siehst du deine eigene.",
-      "reactionsOff": "Reagieren geht in Kanälen nicht: {{network}} hat eine Reaktion abgelehnt."
+      "reactionsOff": "Reagieren geht in Kanälen nicht: {{network}} hat eine Reaktion abgelehnt.",
+      "filter": "Dienst"
     },
     "grp": {
       "adminsOnly": "Nur Admins schreiben in dieser Gruppe."
@@ -1515,7 +1546,11 @@
       "recTitle_signal": "Dürfen andere auf diesem Server dich an deinem Signal erkennen?",
       "recText_signal": "Hat jemand hier dich bei Signal, schlägt GateControl vor, euren Signal-Chat mit deinem Konto zusammenzuführen. Deine Nummer sieht dabei niemand.",
       "recSavedYes_signal": "Andere auf diesem Server können dich jetzt an deinem Signal erkennen.",
-      "recSavedNo_signal": "Niemand erkennt dich an deinem Signal."
+      "recSavedNo_signal": "Niemand erkennt dich an deinem Signal.",
+      "recTitle_telegram": "Dürfen andere auf diesem Server dich an deinem Telegram erkennen?",
+      "recText_telegram": "Hat jemand hier dich bei Telegram, schlägt GateControl vor, euren Telegram-Chat mit deinem Konto zusammenzuführen. Deine Nummer und dein Benutzername bleiben verborgen.",
+      "recSavedYes_telegram": "Andere auf diesem Server können dich jetzt an deinem Telegram erkennen.",
+      "recSavedNo_telegram": "Niemand erkennt dich an deinem Telegram."
     },
     "profile": {
       "title": "Mein Profil",
