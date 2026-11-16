@@ -16,6 +16,10 @@ const RdpAllow = require('./services/rdp-allow');
 const RemoteHost = require('./services/remote-host');
 const RemoteHostApi = require('./services/remote-host-api');
 const RdpSessionFirewall = require('./services/rdp-session-firewall');
+// Fernzugriff stage 7: "Bildschirm teilen" (capture, sender of gc-screen.v1, SendInput)
+const ScreenCapture = require('./services/screen-capture');
+const ScreenShare = require('./services/screen-share');
+const ScreenInput = require('./services/screen-input');
 const WindowsRdpInfo = require('./services/windows-rdp-info');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
@@ -122,6 +126,9 @@ module.exports = {
   RemoteHost,
   RemoteHostApi,
   RdpSessionFirewall,
+  ScreenCapture,
+  ScreenShare,
+  ScreenInput,
   WindowsRdpInfo,
   ConnectionMonitor,
   Updater,

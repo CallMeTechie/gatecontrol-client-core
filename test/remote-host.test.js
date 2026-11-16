@@ -65,7 +65,7 @@ test('enable: register, clean rules, code; disable signs off and removes every r
   assert.equal(s.status, 'ready');
   assert.equal(s.deviceId, 100001);
   assert.match(s.code, /^\d{3}-\d{3}-\d{3}$/);
-  assert.deepEqual(api.calls[0], ['register', { name: 'PC-MARC', edition: 'pro', rdp: { available: true, enabled: true, port: 3389 }, osUser: 'marc', appVersion: '1.95.0' }]);
+  assert.deepEqual(api.calls[0], ['register', { name: 'PC-MARC', edition: 'pro', rdp: { available: true, enabled: true, port: 3389, offered: true }, osUser: 'marc', appVersion: '1.95.0' }]);
   const off = await host.disable();
   assert.equal(off.status, 'off');
   assert.equal(off.code, null);
