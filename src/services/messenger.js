@@ -88,6 +88,8 @@ const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
 
 const { MessengerError } = MessengerApi;
+// Messenger 1.22: the levels of „Wer sieht dein Bild?“ in GateControl's profile
+const AVATAR_LEVELS = Object.freeze(['all', 'contacts', 'family', 'self']);
 const CACHE_KEY = 'messengerCache';
 const HINT_KEY = 'messengerUpdateHint';
 const CACHE_CONVS = 40;
@@ -371,6 +373,8 @@ class MessengerService extends EventEmitter {
       integrations: { familie: familieOf(m), drive: !!(m.integrations && m.integrations.drive === true) },
       limits: m.limits && typeof m.limits === 'object' ? { ...m.limits } : {},
       license: m.license && typeof m.license === 'object' ? { ...m.license } : null,
+      // Messenger 1.22: „Wer sieht dein Bild?“ lives in GateControl's profile (prefs.privacy.avatarProfile is its level)
+      avatarInProfile: m.avatarInProfile === true,
     };
   }
 
@@ -379,6 +383,8 @@ class MessengerService extends EventEmitter {
     const src = p && typeof p === 'object' ? p : null;
     const out = { readReceipts: src ? src.readReceipts !== false : true, typing: src ? src.typing !== false : true, preview: src ? src.preview !== false : true };
     for (const k of ['privacy', 'notify', 'chats']) if (src && src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) out[k] = { ...src[k] };
+    // Messenger 1.22: the level of the profile — a known one or none
+    if (out.privacy && !AVATAR_LEVELS.includes(out.privacy.avatarProfile)) delete out.privacy.avatarProfile;
     return out;
   }
 
