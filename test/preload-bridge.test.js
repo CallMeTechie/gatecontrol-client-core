@@ -51,7 +51,7 @@ describe('createBridgeApi', () => {
       'app:version', 'autostart:set',
       'cameras:check', 'cameras:clips', 'cameras:list', 'cameras:live', 'cameras:push:set', 'cameras:status', 'cameras:still:save',
       'chat:action', 'chat:actions', 'chat:archive', 'chat:arrival:stop', 'chat:avatar', 'chat:block', 'chat:blocks',
-      'chat:bridge:cancel', 'chat:bridge:chat', 'chat:bridge:consent', 'chat:bridge:contact-chat', 'chat:bridge:contacts', 'chat:bridge:history', 'chat:bridge:login', 'chat:bridge:recognition', 'chat:bridge:resolve', 'chat:bridge:step', 'chat:bridge:unlink', 'chat:bridges',
+      'chat:bridge:cancel', 'chat:bridge:chat', 'chat:bridge:consent', 'chat:bridge:contact-chat', 'chat:bridge:contacts', 'chat:bridge:handoff', 'chat:bridge:handoff:end', 'chat:bridge:history', 'chat:bridge:login', 'chat:bridge:recognition', 'chat:bridge:resolve', 'chat:bridge:step', 'chat:bridge:unlink', 'chat:bridges',
       'chat:cache:clear', 'chat:card:image', 'chat:channels', 'chat:check', 'chat:conversation', 'chat:conversations', 'chat:create',
       'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:fetch', 'chat:lists', 'chat:lists:save',
       'chat:map:reverse', 'chat:map:search', 'chat:map:tile',
@@ -131,7 +131,7 @@ describe('createBridgeApi', () => {
     const events = [...new Set(ipc.calls.on.map((c) => c[0]))].sort();
     assert.deepEqual(events, [
       'cameras:push', 'cameras:state',
-      'chat:conversations', 'chat:feed', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
+      'chat:conversations', 'chat:feed', 'chat:handoff', 'chat:lists', 'chat:messages', 'chat:navigate', 'chat:outbox', 'chat:reminders',
       'chat:state', 'chat:suggestions', 'chat:typing', 'chat:unread',
       'dnsprotect:change',
       'drive:changed', 'drive:guard', 'drive:op', 'drive:remote', 'drive:state', 'drive:sync', 'drive:transfers', 'drive:vault', 'drive:vault-lock', 'drive:vault-move',

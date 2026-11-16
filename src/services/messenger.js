@@ -83,6 +83,7 @@ const {
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary,
   FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
+  normalizeHandoff, HANDOFF_TARGETS,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
 const SC = require('../utils/scan');
@@ -1937,13 +1938,34 @@ class MessengerService extends EventEmitter {
 
   /**
    * „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ — PUT bridges/recognition { allowed } (GateControl
-   * with gc.bridges version 9; 403 feature_off else) → recognition | null
+   * with gc.bridges version 9; 403 feature_off else) → recognition | null. Messenger 1.23: per service (`network`,
+   * Signal with gc.bridges version 10) → the consent of that service (`recognitions[network]`).
    */
-  async setRecognition(allowed) {
+  async setRecognition(allowed, network = 'whatsapp') {
     this._need(FEATURE_LINKED);
-    if (typeof allowed !== 'boolean') throw new MessengerError('invalid', { code: 'invalid' });
-    const r = await this.api.bridgeRecognition(allowed);
+    if (typeof allowed !== 'boolean' || !isBridgeNet(network)) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.bridgeRecognition(allowed, network);
+    const all = r && r.recognitions && typeof r.recognitions === 'object' ? r.recognitions : null;
+    if (network !== 'whatsapp') return normalizeRecognition(all ? all[network] : null, network);
     return normalizeRecognition(r.recognition);
+  }
+
+  /**
+   * Messenger 1.23 „Im Portal fortsetzen“ / „Im Windows-Client fortsetzen“: the linking step of a service with the QR
+   * code only (Signal) goes to a second screen → { network, target, expiresAt, portalPath }.
+   */
+  async bridgeHandoff(network, target) {
+    this._need(FEATURE_LINKED);
+    if (!isBridgeNet(network) || !HANDOFF_TARGETS.includes(target)) throw new MessengerError('invalid', { code: 'invalid' });
+    const h = normalizeHandoff((await this.api.bridgeHandoff(network, target)).handoff);
+    if (!h) throw new MessengerError('bad answer', { code: 'bad_response' });
+    return h;
+  }
+
+  /** Messenger 1.23: the second screen is not needed any more (the link is shown here, done or given up). Never throws. */
+  async bridgeHandoffEnd(network) {
+    if (!isBridgeNet(network)) return false;
+    try { await this.api.bridgeHandoffEnd(network); return true; } catch { return false; }
   }
 
   async fetchBridgeFile(messageId) {
@@ -2551,6 +2573,13 @@ class MessengerService extends EventEmitter {
         if (!cid || !uid) return;
         const t = Date.parse(d.until);
         this._setTyping(cid, uid, d.until && Number.isFinite(t) ? Math.min(t, this.now() + this.timing.typingValidMs + 2000) : null);
+        break;
+      }
+      // Messenger 1.23: another device of the person sent the linking step of Signal here („Im Windows-Client
+      // fortsetzen“) or took it back (`target: null`) — the page „Verknüpfte Dienste“ opens it (event `handoff`)
+      case 'bridge.handoff': {
+        const h = normalizeHandoff(d);
+        if (h) this.emit('handoff', h);
         break;
       }
       case 'conversation.update':

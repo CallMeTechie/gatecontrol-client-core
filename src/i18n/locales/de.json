@@ -570,14 +570,20 @@
       "actionRun": "{{name}}: „{{label}}“ ausgeführt",
       "actionRunAs": "{{name}}: „{{label}}“ ausgeführt (freigegeben von {{as}})",
       "actionDenied": "{{name}} hat „{{label}}“ abgelehnt",
-      "unknown": "Hinweis"
+      "unknown": "Hinweis",
+      "disOnNet": "In {{network}} geändert: Nachrichten verschwinden nach {{time}}",
+      "disOffNet": "In {{network}} geändert: Nachrichten verschwinden nicht mehr"
     },
     "dis": {
       "off": "Aus",
       "86400": "1 Tag",
       "604800": "1 Woche",
       "2592000": "1 Monat",
-      "seconds": "{{n}} s"
+      "seconds": "{{n}} s",
+      "minutes": "{{n}} Min.",
+      "hours": "{{n}} Std.",
+      "days": "{{n}} Tage",
+      "weeks": "{{n}} Wochen"
     },
     "mute": {
       "off": "Alle",
@@ -1251,7 +1257,26 @@
       "hist_saved": "Gespeichert – gilt beim nächsten Verknüpfen",
       "phone_offline": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – nach etwa 14 Tagen ohne Handy trennt {{name}} die Verknüpfung.",
       "phone_offline_now": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – {{name}} kann die Verknüpfung jederzeit trennen.",
-      "foot_preview_hist": "Chats mit Kontakten des Dienstes erscheinen in deiner Chatliste, sobald dort eine neue Nachricht eintrifft; älteren Verlauf (oben gewählt) übernimmt GateControl nachts. Texte, Antworten, Reaktionen, Bilder, Videos, Sprachnachrichten und Dateien gehen in beide Richtungen."
+      "foot_preview_hist": "Chats mit Kontakten des Dienstes erscheinen in deiner Chatliste, sobald dort eine neue Nachricht eintrifft; älteren Verlauf (oben gewählt) übernimmt GateControl nachts. Texte, Antworten, Reaktionen, Bilder, Videos, Sprachnachrichten und Dateien gehen in beide Richtungen.",
+      "note_signal_unofficial": "Inoffiziell. GateControl meldet sich bei Signal als verknüpftes Gerät, wie Signal Desktop. Signal bietet dafür keinen offiziellen Weg.",
+      "note_signal_phone": "Dein Handy bleibt das Hauptgerät. Ohne Signal auf dem Handy geht es nicht. Höchstens fünf Geräte sind möglich.",
+      "note_signal_e2e": "Lesbar auf deinem Server. Bis zum Server ist alles verschlüsselt. Danach liegen deine Signal-Nachrichten in GateControl, wie die anderen Chats.",
+      "note_signal_safety": "Sicherheitsnummern prüfst du nur in der Signal-App. GateControl merkt nicht, wenn sich eine ändert.",
+      "qr_lead_signal": "Mit dem Handy scannen:",
+      "qr_step1_signal": "Signal auf dem Handy öffnen",
+      "qr_step2_signal": "Einstellungen → Verknüpfte Geräte",
+      "qr_step3_signal": "Gerät hinzufügen, dann diesen Code scannen",
+      "qr_renews_signal": "Er erneuert sich von selbst.",
+      "sub_logged_out_signal": "Signal hat die Verknüpfung beendet – zum Beispiel, weil das Gerät in Signal unter „Verknüpfte Geräte“ entfernt wurde.",
+      "linked_signal": "Signal ist verknüpft. Neue Chats erscheinen mit ihrer ersten Nachricht.",
+      "hist_line": "Verlauf: {{n}} Tage",
+      "hist_line_pending": "Verlauf: {{n}} Tage, wird nachts geladen",
+      "hist_once": "{{name}}: nur beim Verknüpfen, höchstens {{n}} Tage. Wer später umstellt, bekommt bei {{name}} nichts mehr.",
+      "phone_history": "{{name}} fragt jetzt auf deinem Handy, ob es den Nachrichtenverlauf überträgt.",
+      "phone_history_chosen": "Du hast „Die letzten {{n}} Tage“ gewählt",
+      "phone_history_take": "Wählst du auf dem Handy „Übertragen“, übernimmt GateControl davon die letzten {{n}} Tage, nachts und in Häppchen. Später geht das bei {{name}} nicht mehr.",
+      "net_signal": "Signal",
+      "mark_signal": "SG"
     },
     "bc": {
       "via": "über {{network}}",
@@ -1279,7 +1304,8 @@
         "file": "Datei",
         "sticker": "Sticker",
         "location": "Standort",
-        "unsupported": "Nachricht dieser Art wird hier noch nicht angezeigt – in {{network}} ansehen."
+        "unsupported": "Nachricht dieser Art wird hier noch nicht angezeigt – in {{network}} ansehen.",
+        "view_once": "Einmal-Ansicht. Öffne sie in {{network}}."
       },
       "ph_later": "folgt; in {{network}} ansehen",
       "failed": "Nicht gesendet.",
@@ -1328,7 +1354,9 @@
       "ph_on_request": "älterer Verlauf",
       "ph_fetch": "Laden",
       "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern.",
-      "ph_retry": "Erneut versuchen"
+      "ph_retry": "Erneut versuchen",
+      "signal_safety": "Sicherheitsnummern prüfst du in der Signal-App. Die Brücke nimmt neue Schlüssel von selbst an.",
+      "timer": "Nachrichten verschwinden nach {{time}}. Ändern geht nur in {{network}}."
     },
     "nc": {
       "row": "{{network}}-Chat mit Nummer",
@@ -1483,7 +1511,11 @@
       "recNo": "Nein",
       "recYes": "Ja, erkennen lassen",
       "recSavedYes": "Andere auf diesem Server können dich jetzt an deinem WhatsApp erkennen.",
-      "recSavedNo": "Niemand erkennt dich an deinem WhatsApp."
+      "recSavedNo": "Niemand erkennt dich an deinem WhatsApp.",
+      "recTitle_signal": "Dürfen andere auf diesem Server dich an deinem Signal erkennen?",
+      "recText_signal": "Hat jemand hier dich bei Signal, schlägt GateControl vor, euren Signal-Chat mit deinem Konto zusammenzuführen. Deine Nummer sieht dabei niemand.",
+      "recSavedYes_signal": "Andere auf diesem Server können dich jetzt an deinem Signal erkennen.",
+      "recSavedNo_signal": "Niemand erkennt dich an deinem Signal."
     },
     "profile": {
       "title": "Mein Profil",

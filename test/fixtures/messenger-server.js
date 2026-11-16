@@ -111,6 +111,9 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     suggestions: [],
     answers: [],
     recognition: null,
+    // 1.23: the consent per further service (network → { asked, allowed }, e.g. signal), an open „am PC fortsetzen“
+    recognitions: {},
+    handoff: null,
     personReads: [],
   };
   const streams = new Set();
@@ -184,13 +187,28 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     if (seg[0] !== 'bridges') return undefined;
     if (!(features && features.linked_services === true)) return err(res, 404, 'not_found');
     const hist = features && features.bridge_history === true;
-    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: B.networks, ...(hist ? { history: B.history } : {}), ...(state.recognition ? { recognition: { available: true, network: 'whatsapp', ...state.recognition } } : {}) } : { available: false, networks: [] } });
-    // 1.21 (gc.bridges version 9): „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“
+    // 1.23: networks[].recognition of the further services, the open handoff
+    const recOf = (id) => (state.recognitions[id] ? { available: true, ...state.recognitions[id] } : null);
+    const nets = () => B.networks.map((n) => (state.recognitions[n.id] ? { ...n, recognition: recOf(n.id) } : n));
+    if (seg.length === 1 && m === 'GET') return json(res, 200, { ok: true, bridges: B.available ? { available: true, location: B.location, networks: nets(), ...(hist ? { history: B.history } : {}), ...(state.recognition ? { recognition: { available: true, network: 'whatsapp', ...state.recognition } } : {}), ...(state.handoff ? { handoff: state.handoff } : {}) } : { available: false, networks: [] } });
+    // 1.21 (gc.bridges version 9): „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ (1.23: `network`)
     if (seg.length === 2 && seg[1] === 'recognition' && m === 'PUT') {
       if (!state.recognition) return err(res, 403, 'feature_off');
       if (typeof (body && body.allowed) !== 'boolean') return err(res, 400, 'invalid');
-      state.recognition = { asked: true, allowed: body.allowed };
-      return json(res, 200, { ok: true, recognition: { available: true, network: 'whatsapp', ...state.recognition } });
+      const net = body.network == null ? 'whatsapp' : body.network;
+      if (net !== 'whatsapp' && !state.recognitions[net]) return err(res, 400, 'invalid');
+      if (net === 'whatsapp') state.recognition = { asked: true, allowed: body.allowed };
+      else state.recognitions[net] = { asked: true, allowed: body.allowed };
+      const recognitions = { whatsapp: { available: true, ...state.recognition } };
+      for (const k of Object.keys(state.recognitions)) recognitions[k] = recOf(k);
+      return json(res, 200, { ok: true, recognition: { available: true, network: 'whatsapp', ...state.recognition }, ...(body.network != null ? { recognitions } : {}) });
+    }
+    // 1.23: „Im Portal / Windows-Client fortsetzen“
+    if (seg.length === 3 && seg[2] === 'handoff' && (m === 'POST' || m === 'DELETE')) {
+      if (m === 'DELETE') { state.handoff = null; return json(res, 200, { ok: true, handoff: null }); }
+      if (!['portal', 'windows'].includes(body && body.target)) return err(res, 400, 'invalid');
+      state.handoff = { network: seg[1], target: body.target, expiresAt: new Date(now() + 600000).toISOString() };
+      return json(res, 200, { ok: true, handoff: { ...state.handoff, portalPath: '/portal#plg-gatecontrol-messenger' } });
     }
     // 1.17: what of the older messages comes over
     if (seg.length === 2 && seg[1] === 'history' && m === 'PUT') {

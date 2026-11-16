@@ -570,14 +570,20 @@
       "actionRun": "{{name}}: “{{label}}” done",
       "actionRunAs": "{{name}}: “{{label}}” done (shared by {{as}})",
       "actionDenied": "{{name}} declined “{{label}}”",
-      "unknown": "Notice"
+      "unknown": "Notice",
+      "disOnNet": "Changed in {{network}}: messages disappear after {{time}}",
+      "disOffNet": "Changed in {{network}}: messages no longer disappear"
     },
     "dis": {
       "off": "Off",
       "86400": "1 day",
       "604800": "1 week",
       "2592000": "1 month",
-      "seconds": "{{n}} s"
+      "seconds": "{{n}} s",
+      "minutes": "{{n}} min",
+      "hours": "{{n}} h",
+      "days": "{{n}} days",
+      "weeks": "{{n}} weeks"
     },
     "mute": {
       "off": "All",
@@ -1251,7 +1257,26 @@
       "hist_saved": "Saved – applies the next time you link",
       "phone_offline": "Phone not seen for {{days}} days. Open {{name}} on your phone – after about 14 days without the phone {{name}} ends the link.",
       "phone_offline_now": "Phone not seen for {{days}} days. Open {{name}} on your phone – {{name}} may end the link at any time.",
-      "foot_preview_hist": "Chats with contacts of the service appear in your chat list as soon as a new message arrives there; GateControl takes older history (chosen above) over at night. Texts, replies, reactions, pictures, videos, voice messages and files go both ways."
+      "foot_preview_hist": "Chats with contacts of the service appear in your chat list as soon as a new message arrives there; GateControl takes older history (chosen above) over at night. Texts, replies, reactions, pictures, videos, voice messages and files go both ways.",
+      "note_signal_unofficial": "Unofficial. GateControl signs in to Signal as a linked device, like Signal Desktop. Signal offers no official way for this.",
+      "note_signal_phone": "Your phone stays the main device. It does not work without Signal on your phone. At most five devices are possible.",
+      "note_signal_e2e": "Readable on your server. Everything is encrypted up to the server. After that your Signal messages are in GateControl, like the other chats.",
+      "note_signal_safety": "Safety numbers are checked in the Signal app only. GateControl does not notice when one changes.",
+      "qr_lead_signal": "Scan with your phone:",
+      "qr_step1_signal": "Open Signal on your phone",
+      "qr_step2_signal": "Settings → Linked devices",
+      "qr_step3_signal": "Link new device, then scan this code",
+      "qr_renews_signal": "It renews itself.",
+      "sub_logged_out_signal": "Signal ended the link – for example because the device was removed in Signal under “Linked devices”.",
+      "linked_signal": "Signal is linked. New chats appear with their first message.",
+      "hist_line": "History: {{n}} days",
+      "hist_line_pending": "History: {{n}} days, loaded at night",
+      "hist_once": "{{name}}: only when linking, at most {{n}} days. Changing it later brings nothing from {{name}}.",
+      "phone_history": "{{name}} now asks on your phone whether to transfer your message history.",
+      "phone_history_chosen": "You chose “The last {{n}} days”",
+      "phone_history_take": "If you choose “Transfer” on your phone, GateControl takes the last {{n}} days of it, at night and in small portions. {{name}} does not allow this later.",
+      "net_signal": "Signal",
+      "mark_signal": "SG"
     },
     "bc": {
       "via": "over {{network}}",
@@ -1279,7 +1304,8 @@
         "file": "File",
         "sticker": "Sticker",
         "location": "Location",
-        "unsupported": "This kind of message is not shown here yet – see it in {{network}}."
+        "unsupported": "This kind of message is not shown here yet – see it in {{network}}.",
+        "view_once": "View once. Open it in {{network}}."
       },
       "ph_later": "follows; see it in {{network}}",
       "failed": "Not sent.",
@@ -1328,7 +1354,9 @@
       "ph_on_request": "older history",
       "ph_fetch": "Load",
       "fetch_invalid": "This file can no longer be requested.",
-      "ph_retry": "Try again"
+      "ph_retry": "Try again",
+      "signal_safety": "Check safety numbers in the Signal app. The bridge accepts new keys on its own.",
+      "timer": "Messages disappear after {{time}}. Only {{network}} can change it."
     },
     "nc": {
       "row": "{{network}} chat by number",
@@ -1483,7 +1511,11 @@
       "recNo": "No",
       "recYes": "Yes, allow",
       "recSavedYes": "Others on this server can now recognise you by your WhatsApp.",
-      "recSavedNo": "Nobody recognises you by your WhatsApp."
+      "recSavedNo": "Nobody recognises you by your WhatsApp.",
+      "recTitle_signal": "May others on this server recognise you by your Signal?",
+      "recText_signal": "If someone here has you on Signal, GateControl suggests merging your Signal chat with your account. Nobody sees your number.",
+      "recSavedYes_signal": "Others on this server can now recognise you by your Signal.",
+      "recSavedNo_signal": "Nobody recognises you by your Signal."
     },
     "profile": {
       "title": "My profile",
