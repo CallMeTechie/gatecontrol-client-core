@@ -13,6 +13,10 @@ const ApiClient = require('./services/api-client');
 const KillSwitch = require('./services/killswitch');
 const editions = require('./services/editions');
 const RdpAllow = require('./services/rdp-allow');
+const RemoteHost = require('./services/remote-host');
+const RemoteHostApi = require('./services/remote-host-api');
+const RdpSessionFirewall = require('./services/rdp-session-firewall');
+const WindowsRdpInfo = require('./services/windows-rdp-info');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
 const DnsPolicy = require('./services/dns-policy');
@@ -115,6 +119,10 @@ module.exports = {
   KillSwitch,
   editions,
   RdpAllow,
+  RemoteHost,
+  RemoteHostApi,
+  RdpSessionFirewall,
+  WindowsRdpInfo,
   ConnectionMonitor,
   Updater,
   DnsPolicy,
