@@ -474,8 +474,20 @@ class MessengerApi {
   /** Messenger 1.17: what of the older messages comes over at a new link (0, 30 or -1 = everything) → { history }. */
   async bridgeHistory(days) { return this.api('PUT', 'bridges/history', { body: { days } }); }
 
-  /** Messenger 1.21 (GateControl with gc.bridges version 9): PUT bridges/recognition { allowed } → { recognition } */
-  async bridgeRecognition(allowed) { return this.api('PUT', 'bridges/recognition', { body: { allowed: allowed === true } }); }
+  /**
+   * Messenger 1.21 (GateControl with gc.bridges version 9): PUT bridges/recognition { allowed } → { recognition }.
+   * Messenger 1.23: one consent per service — `network` other than whatsapp goes in the body → { recognition, recognitions }.
+   */
+  async bridgeRecognition(allowed, network = 'whatsapp') {
+    const net = this._net(network);
+    return this.api('PUT', 'bridges/recognition', { body: { allowed: allowed === true, ...(net !== 'whatsapp' ? { network: net } : {}) } });
+  }
+
+  /** Messenger 1.23: the linking step of a service with the QR code only on a second screen → { handoff }. */
+  async bridgeHandoff(network, target) { return this.api('POST', `bridges/${this._net(network)}/handoff`, { body: { target } }); }
+
+  /** Messenger 1.23: the second screen is not needed any more → { handoff: null }. */
+  async bridgeHandoffEnd(network) { return this.api('DELETE', `bridges/${this._net(network)}/handoff`); }
 
   /** Messenger 1.17: fetch a file of the older history now (placeholder state on_request) → { message }. */
   async fetchFile(messageId) { return this.api('POST', `messages/${this._id(messageId)}/fetch`, { body: {} }); }

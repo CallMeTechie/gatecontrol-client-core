@@ -477,6 +477,26 @@ ways of a person are separate chats in the list (as for older apps, and as the o
 * The push of a way (`data.person` { id, conversationId }): the server's title „Jenny Backes · über WhatsApp“; a click
   opens the entry, the buttons stay on the message's way. A push of the open person shows no toast.
 
+### Messenger 1.23: Signal (Brücken Stufe 7a)
+
+Needs GateControl with `gc.bridges` version 10 and Messenger ≥ 1.23.0; recognised by fields and the network name
+`signal` only.
+
+* `bridges()` → each network carries `flows` (Signal: `['qr']` only — a linked device; missing: both ways),
+  `history` { maxDays, phoneConfirms } (Signal: at most 30 days, the phone asks at the link whether it hands the
+  history over — later nothing comes) and `recognition` (the consent „Erkennen“ of that service, null: not offered);
+  `handoff` { network, target, expiresAt } while a „am PC fortsetzen“ of the person runs (left out otherwise).
+* `setRecognition(allowed, network?)` → `PUT bridges/recognition { allowed, network }` (network left out for
+  WhatsApp, as before) → the consent of that service.
+* `bridgeHandoff(network, 'portal' | 'windows')` → `POST bridges/:network/handoff` (the phone app's „Im Portal
+  fortsetzen“ / „Im Windows-Client fortsetzen“) → { network, target, expiresAt, portalPath }; `bridgeHandoffEnd(network)`
+  → `DELETE …/handoff` (never throws).
+* The live event `bridge.handoff` becomes the event `handoff` { network, target, expiresAt, portalPath } (`target: null`:
+  it is over) — the Windows app opens „Signal verknüpfen“ at the QR code when `target` is `windows`.
+* Texts: `chat.br.*_signal`, `chat.br.phone_history*`, `chat.br.hist_once`, `chat.bc.signal_safety`, `chat.bc.timer`,
+  `chat.bc.ph.view_once`, `chat.sys.disOnNet` / `disOffNet`, `chat.dis.minutes|hours|days|weeks`,
+  `chat.person.rec*_signal`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -609,9 +629,10 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 `bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`, 1.15:
 `bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
 1.17: `bridgeHistory(days)`, `fetchFile(id)`, 1.18: `newChatContacts(network, q)`,
-`bridgeContactChat(network, contact)`, `storage`, `clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+`bridgeContactChat(network, contact)`, `storage`, `clearCache`, 1.23: `bridgeRecognition(allowed, network?)`,
+`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
-`onFeed`, `onLists`, `onReminders`. Arguments and answers:
+`onFeed`, `onLists`, `onReminders`, 1.23: `onHandoff`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
 `{ ok: false, code, error }` — `chat.error.<code>` has the text.
 

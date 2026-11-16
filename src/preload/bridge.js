@@ -288,7 +288,12 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       splitPerson:    (id, conversationId) => ipcRenderer.invoke('chat:person:split', { id, conversationId: conversationId == null ? null : conversationId }),
       renamePerson:   (id, name) => ipcRenderer.invoke('chat:person:name', { id, name }),
       personCandidates: (id) => ipcRenderer.invoke('chat:person:candidates', { id }),
-      bridgeRecognition: (allowed) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true }),
+      // Messenger 1.23: per service (network: 'signal'; missing → WhatsApp); „Im Portal / Windows-Client fortsetzen“
+      // of a service with the QR code only, and the event when another device sends that step here
+      bridgeRecognition: (allowed, network) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true, ...(typeof network === 'string' ? { network } : {}) }),
+      bridgeHandoff:    (network, target) => ipcRenderer.invoke('chat:bridge:handoff', { network, target }),
+      bridgeHandoffEnd: (network) => ipcRenderer.invoke('chat:bridge:handoff:end', { network }),
+      onHandoff:        (cb) => subscribe('chat:handoff', cb),
       onSuggestions:  (cb) => subscribe('chat:suggestions', cb),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),

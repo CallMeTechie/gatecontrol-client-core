@@ -120,6 +120,10 @@
  *   chat:person:name       ({ id, name: 'account'|conversationId }) → { ok, conversation }
  *   chat:person:candidates ({ id }) → { ok, accounts, chats }          „Mit Person zusammenführen …“
  *   chat:bridge:recognition ({ allowed }) → { ok, recognition }        asked once after WhatsApp was linked
+ *                        Messenger 1.23: ({ allowed, network? }) — one consent per service (network missing: whatsapp)
+ *   chat:bridge:handoff     ({ network, target: 'portal'|'windows' }) → { ok, handoff: { network, target, expiresAt, portalPath } }
+ *   chat:bridge:handoff:end ({ network }) → { ok }                     the second screen is not needed any more
+ *   event chat:handoff      { network, target: 'portal'|'windows'|null, expiresAt, portalPath } (bridge.handoff; null: over)
  * Refusals: cannot_merge (reason group | channel | not_direct | two_accounts | one_way), not_found, feature_off.
  *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
@@ -147,6 +151,8 @@ const CHAT_EVENTS = {
   lists: 'chat:lists',
   reminders: 'chat:reminders',
   suggestions: 'chat:suggestions',
+  // Messenger 1.23: „Im Windows-Client fortsetzen“ of another device (bridge.handoff)
+  handoff: 'chat:handoff',
 };
 const MAX_IPC_FILE = 64 * 1024 * 1024;
 
@@ -306,7 +312,14 @@ function registerMessengerHandlers(handle, {
     return { ok: true, conversation: await m.renamePerson(id, name) };
   }));
   handle('chat:person:candidates', wrap(async (a) => (posInt(a.id) ? { ok: true, ...(await m.personCandidates(posInt(a.id))) } : invalid())));
-  handle('chat:bridge:recognition', wrap(async (a) => (typeof a.allowed === 'boolean' ? { ok: true, recognition: await m.setRecognition(a.allowed) } : invalid())));
+  handle('chat:bridge:recognition', wrap(async (a) => {
+    if (typeof a.allowed !== 'boolean') return invalid();
+    // Messenger 1.23: one consent per service (network missing: WhatsApp, as before)
+    return { ok: true, recognition: await m.setRecognition(a.allowed, a.network == null ? 'whatsapp' : text(a.network, 32)) };
+  }));
+  // Messenger 1.23: „Im Portal / Windows-Client fortsetzen“ (a service with the QR code only) and its end
+  handle('chat:bridge:handoff', wrap(async (a) => ({ ok: true, handoff: await m.bridgeHandoff(text(a.network, 32), text(a.target, 16)) })));
+  handle('chat:bridge:handoff:end', wrap(async (a) => ({ ok: await m.bridgeHandoffEnd(text(a.network, 32)) })));
   handle('chat:fetch', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();

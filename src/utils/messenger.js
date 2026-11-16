@@ -102,7 +102,9 @@ const NEW_CHAT_REASONS = Object.freeze(['unlinked', 'logged_out', 'unreachable',
 const DEFAULT_CC = '+49';
 // The ways to link an account (POST bridges/:network/login { flow }).
 const BRIDGE_FLOWS = Object.freeze(['phone', 'qr']);
-// A network id as the plugin names it (today: whatsapp), a login / process / step id of the bridge.
+// Messenger 1.23: where the step of a service that links by QR code only (Signal) goes („am PC fortsetzen“).
+const HANDOFF_TARGETS = Object.freeze(['portal', 'windows']);
+// A network id as the plugin names it (whatsapp; Messenger 1.23: signal), a login / process / step id of the bridge.
 const BRIDGE_NET_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const BRIDGE_ID_RE = /^[A-Za-z0-9._:=+-]{1,128}$/;
 const BRIDGE_LOGIN_STATES = Object.freeze(['connected', 'connecting', 'logged_out', 'error', 'unknown']);
@@ -703,7 +705,7 @@ function bridgePushContext(entry) {
 }
 
 // The services' own names (never translated); an id this version does not know shows as it is.
-const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp' });
+const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp', signal: 'Signal' });
 const bridgeLabel = (id) => BRIDGE_LABELS[id] || (typeof id === 'string' && id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
 const isBridgeNet = (v) => typeof v === 'string' && BRIDGE_NET_RE.test(v);
 const isBridgeId = (v) => typeof v === 'string' && BRIDGE_ID_RE.test(v);
@@ -923,10 +925,33 @@ function isSuggestionId(v) {
   return typeof v === 'string' && /^\d{1,15}-\d{1,15}$/.test(v);
 }
 
-/** GET bridges → recognition { available, network, asked, allowed } (gc.bridges version 9), else null. */
-function normalizeRecognition(r) {
+/**
+ * GET bridges → recognition { available, network, asked, allowed } (gc.bridges version 9), else null. Messenger 1.23:
+ * also `networks[].recognition` (one consent per service; `network` given by the caller when the object names none).
+ */
+function normalizeRecognition(r, network = 'whatsapp') {
   if (!r || typeof r !== 'object' || r.available !== true) return null;
-  return { available: true, network: isBridgeNet(r.network) ? r.network : 'whatsapp', asked: r.asked === true, allowed: r.allowed === true };
+  return { available: true, network: isBridgeNet(r.network) ? r.network : (isBridgeNet(network) ? network : 'whatsapp'), asked: r.asked === true, allowed: r.allowed === true };
+}
+
+/**
+ * Messenger 1.23: an open „am PC fortsetzen“ (GET bridges → handoff, the live event bridge.handoff, POST
+ * bridges/:network/handoff) → { network, target: 'portal' | 'windows' | null, expiresAt, portalPath }, or null.
+ * `target: null` (the event of DELETE …/handoff or a finished link): it is over.
+ */
+function normalizeHandoff(h) {
+  if (!h || typeof h !== 'object' || Array.isArray(h) || !isBridgeNet(h.network)) return null;
+  const target = HANDOFF_TARGETS.includes(h.target) ? h.target : null;
+  if (h.target != null && !target) return null;
+  const at = typeof h.expiresAt === 'string' && Number.isFinite(Date.parse(h.expiresAt)) ? h.expiresAt.slice(0, 40) : null;
+  const path = typeof h.portalPath === 'string' && /^\/[A-Za-z0-9/#._-]{0,199}$/.test(h.portalPath) && !h.portalPath.includes('//') ? h.portalPath : null;
+  return { network: h.network, target, expiresAt: target ? at : null, portalPath: path };
+}
+
+/** Messenger 1.23: `networks[].history` → { maxDays (null: as chosen), phoneConfirms } (Signal: 30, true). */
+function normalizeNetHistory(h) {
+  const v = h && typeof h === 'object' && !Array.isArray(h) ? h : {};
+  return { maxDays: Number.isSafeInteger(v.maxDays) && v.maxDays > 0 && v.maxDays <= 100000 ? v.maxDays : null, phoneConfirms: v.phoneConfirms === true };
 }
 
 /** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
@@ -1004,9 +1029,19 @@ function normalizeBridges(b) {
     newChat: normalizeNewChat(n.newChat),
     // Messenger 1.17: the bridge's warning — the phone was not seen for `days` (≥ 12) days
     phone: normalizePhone(n.phone),
+    // Messenger 1.23: the ways in (Signal: the QR code only; an older plugin names none: both), what of the history
+    // this service brings, its consent „Erkennen“ (null: not offered)
+    flows: (() => {
+      const f = Array.isArray(n.flows) ? [...new Set(n.flows.filter((x) => BRIDGE_FLOWS.includes(x)))] : [];
+      return f.length ? f : BRIDGE_FLOWS.slice();
+    })(),
+    history: normalizeNetHistory(n.history),
+    recognition: normalizeRecognition(n.recognition, n.id),
   }));
   // Messenger 1.21: „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ (only when GateControl has the call)
   const recognition = src.available === true ? normalizeRecognition(src.recognition) : null;
+  // Messenger 1.23: an open „am PC fortsetzen“ of the person (only one that still runs)
+  const handoff = src.available === true ? normalizeHandoff(src.handoff) : null;
   return {
     available: src.available === true,
     location: src.location === 'gateway' ? 'gateway' : 'server',
@@ -1014,6 +1049,7 @@ function normalizeBridges(b) {
     // Messenger 1.17: older messages at a new link (null: the server has none)
     history: src.available === true ? normalizeBridgeHistory(src.history) : null,
     ...(recognition ? { recognition } : {}),
+    ...(handoff && handoff.target ? { handoff } : {}),
   };
 }
 
@@ -1136,6 +1172,9 @@ module.exports = {
   mergeBody,
   isSuggestionId,
   normalizeRecognition,
+  normalizeHandoff,
+  normalizeNetHistory,
+  HANDOFF_TARGETS,
   CONTACTS_QUERY_MAX,
   normalizeNewChatContacts,
   contactChatBody,
