@@ -1488,7 +1488,15 @@
     "profile": {
       "title": "My profile",
       "open": "Open my profile",
-      "hint": "Name, picture, phone numbers and more are kept in the portal."
+      "hint": "Name, picture, phone numbers and more are kept in the portal.",
+      "picture": "Picture: {{level}}",
+      "opensPortal": "opens the portal",
+      "level": {
+        "all": "Everyone",
+        "contacts": "Contacts",
+        "family": "Family",
+        "self": "Only me"
+      }
     }
   },
   "school": {
