@@ -497,6 +497,24 @@ Needs GateControl with `gc.bridges` version 10 and Messenger ≥ 1.23.0; recogni
   `chat.bc.ph.view_once`, `chat.sys.disOnNet` / `disOffNet`, `chat.dis.minutes|hours|days|weeks`,
   `chat.person.rec*_signal`.
 
+### Messenger 1.24: Telegram (Brücken Stufe 7b)
+
+Needs GateControl with `gc.bridges` version 11 and Messenger ≥ 1.24.0; recognised by fields and the network name
+`telegram` only.
+
+* `bridges()` → a network may carry `needs: 'app'` — Telegram is not set up on the server yet (an administrator enters
+  the application id once in the Messenger's settings); the apps show „Noch nicht eingerichtet (Admin).“ and offer no
+  link. Telegram's `flows` are `['qr', 'phone']`; the Windows app preselects the QR code.
+* `bridgeLogin('telegram', 'phone' | 'qr')`, then `bridgeStep`: after the number (`{ phone, fieldId }`) the step
+  `{ type: 'secret', kind: 'code', fieldId, retry }` asks for the code from the Telegram app, with two-step verification
+  `{ type: 'secret', kind: 'password', … }` follows (also after the QR code). `bridgeStep(network, processId, stepId,
+  { secret, fieldId })` answers it (1–256 characters); a wrong one comes back as the same kind with `retry: true`.
+  The code and the password go to the server once and are never kept, logged or put into an error.
+* Chats over Telegram may carry `bridge.bot` (a bot: the tag „Bot“) and `bridge.members` (large groups: „N Mitglieder ·
+  …“ in the list); Telegram channels are on the channels page like WhatsApp's, with one chip per service there.
+* Texts: `chat.br.*_telegram`, `chat.br.code_wrong`, `chat.br.pw_*`, `chat.br.next_step`, `chat.br.other_number`,
+  `chat.br.sub_noapp`, `chat.br.pill_noapp`, `chat.bc.bot`, `chat.bc.members`, `chat.ch.filter`, `chat.person.rec*_telegram`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,

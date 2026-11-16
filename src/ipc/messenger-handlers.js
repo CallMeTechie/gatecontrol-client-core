@@ -81,8 +81,9 @@
  *   chat:bridges         () → { ok, bridges: { available, location, networks: [{ id, state, allowed, lock, consent, outdated, logins }] } }
  *   chat:bridge:consent  ({ network }) → { ok, consent }
  *   chat:bridge:login    ({ network, flow: 'phone'|'qr' }) → { ok, login }
- *   chat:bridge:step     ({ network, processId, stepId, phone?, fieldId? }) → { ok, login }   without phone: waits for the phone (≤ 15 s);
- *                        login: { processId, waiting } | { processId, step: { id, type: 'complete'|'phone'|'code'|'qr'|'unsupported', fieldId?, code?, matrix? } }
+ *   chat:bridge:step     ({ network, processId, stepId, phone?, secret?, fieldId? }) → { ok, login }   without phone or secret: waits for the
+ *                        phone (≤ 15 s); secret (1.24): Telegram's code or password, passed through once
+ *                        login: { processId, waiting } | { processId, step: { id, type: 'complete'|'phone'|'secret'|'code'|'qr'|'unsupported', fieldId?, kind?, retry?, code?, matrix? } }
  *   chat:bridge:cancel   ({ network, processId }) → { ok }
  *   chat:bridge:unlink   ({ network, loginId }) → { ok }
  *   chat:resend          ({ id }) → { ok, message }   an own message with bridge.state 'failed', once more
@@ -280,7 +281,10 @@ function registerMessengerHandlers(handle, {
   handle('chat:bridge:login', wrap(async (a) => ({ ok: true, login: await m.bridgeLogin(text(a.network, 32), text(a.flow, 8)) })));
   handle('chat:bridge:step', wrap(async (a) => ({
     ok: true,
-    login: await m.bridgeStep(text(a.network, 32), text(a.processId, 128), text(a.stepId, 128), typeof a.phone === 'string' ? { phone: a.phone.slice(0, 40), fieldId: text(a.fieldId, 128) } : {}),
+    // Messenger 1.24: `secret` — Telegram's code or password, passed through once (never logged)
+    login: await m.bridgeStep(text(a.network, 32), text(a.processId, 128), text(a.stepId, 128),
+      typeof a.secret === 'string' ? { secret: a.secret.slice(0, 256), fieldId: text(a.fieldId, 128) }
+        : (typeof a.phone === 'string' ? { phone: a.phone.slice(0, 40), fieldId: text(a.fieldId, 128) } : {})),
   })));
   handle('chat:bridge:cancel', wrap(async (a) => ({ ok: await m.bridgeCancel(text(a.network, 32), text(a.processId, 128)) })));
   handle('chat:bridge:unlink', wrap(async (a) => ({ ok: await m.bridgeUnlink(text(a.network, 32), text(a.loginId, 128)) })));
