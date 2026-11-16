@@ -829,6 +829,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         features: features || { direct: true, groups: true, voice: true, files: true, location: true, reactions: true, edit: true, search: true, disappearing: true, bridges: false, e2e: false },
         integrations: { familie: { lists: !!familie, calendar: !!familie, places: !!familie } },
         limits: { maxBytes: 1024 * 1024, types: ['image/webp', 'image/jpeg', 'image/png', 'audio/ogg', 'audio/webm', 'video/mp4', 'application/pdf'], quotaFull: false, editWindowS: 900, maxVoiceS: 300, textMax: 4000, thumbMaxBytes: 65536, imageMaxSide: 2048, groupMax: 256, titleMax: 80, pageMax: 100, typingS: 6, typingEveryS: 3, activeS: 30, disappearingS: [0, 86400], retentionDays: 0, statusTextMax: 60, storyTextMax: 700, ...(features && features.story_duration === true ? { storyDurationsH: STORY_DURATIONS_H } : {}), pollOptionsMax: 12, pinsMax: 3, listsMax: 20 },
+        // Messenger 1.22: „Wer sieht dein Bild?“ from the profile (state.avatarInProfile, a test switch)
+        ...(state.avatarInProfile ? { avatarInProfile: true } : {}),
         serverTime: iso(now()) });
     }
     if (a === 'prefs' && m === 'PUT') {

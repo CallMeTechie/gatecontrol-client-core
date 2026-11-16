@@ -1520,7 +1520,15 @@
     "profile": {
       "title": "Mein Profil",
       "open": "Mein Profil öffnen",
-      "hint": "Name, Bild, Telefonnummern und mehr pflegst du im Portal."
+      "hint": "Name, Bild, Telefonnummern und mehr pflegst du im Portal.",
+      "picture": "Bild: {{level}}",
+      "opensPortal": "öffnet das Portal",
+      "level": {
+        "all": "Alle",
+        "contacts": "Kontakte",
+        "family": "Familie",
+        "self": "Nur ich"
+      }
     }
   },
   "school": {
