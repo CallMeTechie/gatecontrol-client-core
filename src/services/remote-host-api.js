@@ -13,7 +13,9 @@
  *   PUT    …/api/host/share                         { shareMode: 'code' | 'open' }
  *   DELETE …/api/host                               the switch is off
  *   POST   …/api/host/code                          → { code: '482-913-075', expiresAt }
- *   POST   …/api/host/requests/<id>                 { decision: 'allow' | 'deny', mode? } → { request }
+ *   POST   …/api/host/requests/<id>                 { decision: 'allow' | 'deny', mode? } → { request, screen? }
+ *   POST   …/api/host/screen/<id>/end               { reason: 'stopped' | 'failed' } (1.5: the screen of this PC ended before it ran)
+ *   POST   /api/v1/client/remote/screen-token        { ref } → { token, wsPath, ttl, role } (GateControl's relay, stage 7)
  *   GET    …/api/host/firewall                      → { open: [{ sessionKey, allow, port, until }] }
  *   POST   …/api/host/firewall                      { sessionKey, state: 'open' | 'closed' | 'failed', reason? }
  *
@@ -29,6 +31,7 @@ const PLUGIN_ID = 'gatecontrol-remote';
 const API_BASE = `/api/v1/client/plugins/${PLUGIN_ID}/api/`;
 const REQUEST_RE = /^rq_[A-Za-z0-9_-]{8,40}$/;
 const SESSION_KEY_RE = /^fw_[A-Za-z0-9_-]{8,40}$/;
+const REF_RE = /^[A-Za-z0-9_-]{43}$/;
 
 class RemoteHostApi {
   /**
@@ -58,6 +61,18 @@ class RemoteHostApi {
 
   firewallList() { return this._api('GET', 'host/firewall'); }
 
+  /** 1.5: a screen request of this PC ended before (or while) its picture ran. */
+  screenEnd(requestId, reason) {
+    if (!REQUEST_RE.test(String(requestId || ''))) return Promise.reject(new RemoteHostError('invalid request', { code: 'invalid' }));
+    return this.http._call('POST', API_BASE + 'host/screen/' + encodeURIComponent(requestId) + '/end', { body: { reason: reason === 'stopped' ? 'stopped' : 'failed' } });
+  }
+
+  /** Stage 7: a single-use token (60 s) for the sending side of a relay ticket — GateControl's own route, not the plugin's. */
+  screenToken(ref) {
+    if (!REF_RE.test(String(ref || ''))) return Promise.reject(new RemoteHostError('invalid ref', { code: 'invalid' }));
+    return this.http._call('POST', '/api/v1/client/remote/screen-token', { body: { ref } });
+  }
+
   firewallReport(sessionKey, state, reason) {
     if (!SESSION_KEY_RE.test(String(sessionKey || ''))) return Promise.reject(new RemoteHostError('invalid session key', { code: 'invalid' }));
     return this._api('POST', 'host/firewall', { sessionKey, state, ...(reason ? { reason: String(reason).slice(0, 120) } : {}) });
@@ -69,5 +84,6 @@ RemoteHostApi.PLUGIN_ID = PLUGIN_ID;
 RemoteHostApi.API_BASE = API_BASE;
 RemoteHostApi.REQUEST_RE = REQUEST_RE;
 RemoteHostApi.SESSION_KEY_RE = SESSION_KEY_RE;
+RemoteHostApi.REF_RE = REF_RE;
 
 module.exports = RemoteHostApi;

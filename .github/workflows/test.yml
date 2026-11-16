@@ -28,6 +28,7 @@ jobs:
   # unit tests on Windows' ABI. And the autostart task against the real Task Scheduler (schtasks /XML). And the OCR of
   # Windows (Drive scans → searchable PDF): its WinRT layout, the words of a test picture when the runner has an OCR language.
   # And the folders of the person signed in (utils/user-folders.js): SID, ProfileList and User Shell Folders through koffi.
+  # And SendInput of "Bildschirm teilen" (services/screen-input.js): the INPUT layout, the virtual and the input desktop.
   windows-hello:
     name: Windows Hello (WinRT, no prompt)
     runs-on: windows-latest
@@ -37,4 +38,4 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node --test test/windows-hello.win.test.js test/windows-hello.test.js test/vault-hello.test.js test/autostart-task.test.js test/autostart-task.win.test.js test/windows-ocr.win.test.js test/windows-ocr.test.js test/user-folders.win.test.js test/user-folders.test.js
+      - run: node --test test/windows-hello.win.test.js test/windows-hello.test.js test/vault-hello.test.js test/autostart-task.test.js test/autostart-task.win.test.js test/windows-ocr.win.test.js test/windows-ocr.test.js test/user-folders.win.test.js test/user-folders.test.js test/screen-input.win.test.js test/screen-share.test.js
