@@ -56,7 +56,7 @@ describe('createBridgeApi', () => {
       'chat:delete', 'chat:edit', 'chat:event', 'chat:export', 'chat:fetch', 'chat:lists', 'chat:lists:save',
       'chat:map:reverse', 'chat:map:search', 'chat:map:tile',
       'chat:media', 'chat:media:list', 'chat:media:open', 'chat:media:save', 'chat:messages', 'chat:notice:image', 'chat:open',
-      'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:person:candidates', 'chat:person:merge', 'chat:person:name', 'chat:person:split', 'chat:person:way', 'chat:pin', 'chat:places', 'chat:poll', 'chat:prefs',
+      'chat:outbox:discard', 'chat:outbox:retry', 'chat:people', 'chat:person:candidates', 'chat:person:merge', 'chat:person:name', 'chat:person:reply-pref', 'chat:person:split', 'chat:person:way', 'chat:pin', 'chat:places', 'chat:poll', 'chat:prefs',
       'chat:react', 'chat:read', 'chat:remind', 'chat:reminder:delete', 'chat:reminders', 'chat:resend', 'chat:search',
       'chat:send', 'chat:status', 'chat:status:clear', 'chat:status:feed', 'chat:status:set', 'chat:storage',
       'chat:story:bridged:reply', 'chat:story:bridged:seen', 'chat:story:create', 'chat:story:delete', 'chat:story:react', 'chat:story:seen', 'chat:story:viewers',

@@ -12,6 +12,8 @@
 //   messengerServer({ features: { ...FEATURES_14, story_duration: true } })  // 1.4.1: story durationH
 //   features.chat_people (1.21): persons — srv.addPerson({ convIds, userId, nameFrom }), ?people=1 folds the ways
 //   (`person`, `folded`), persons/… routes, state.suggestions, state.recognition (GET bridges › recognition)
+//   features.placeMessages (1.27): person.replyPref (PUT persons/:id { replyPref } → state.replyPrefs), reply.fallback,
+//   state.bridge.location (`supports` names location, kind location over the bridge), message.placeMessage
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code, times?, extra?) (extra: more fields of the refusal, e.g. { finding }),
@@ -91,6 +93,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       calls: [],                // what was asked of the bridge (never a number: only that one came)
       // 1.15: files over the bridge (supports + mediaTypes), the new chat by number (features.bridge_new_chat)
       media: false,
+      // 1.27 (gc.bridges version 14): the bridge sends a location (`supports` names `location`)
+      location: false,
       scanPending: 0,           // so many sends of a file are refused with 423 scan_pending first
       numbers: new Map(),       // '+49…' → name of the numbers "at WhatsApp"
       lookups: 0,
@@ -373,6 +377,15 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     }
     let pick = best ? best.c : lead;
     if (pick.bridge && gc && !(pick.bridge.state === 'ok' && !pick.bridge.closed)) pick = gc;
+    // 1.27: „Nachrichten senden über“ — a fixed way while it can send, else GateControl with `fallback`
+    let fallback = false;
+    const pref = p.replyPref || 'auto';
+    const want = pref !== 'auto' ? convs.find((c) => wayName(c) === pref) : null;
+    if (want) {
+      const sends = !want.bridge || (want.bridge.state === 'ok' && !want.bridge.closed);
+      if (sends) pick = want;
+      else if (gc && gc !== want) { pick = gc; fallback = true; }
+    }
     const ways = views.slice().sort((x, y) => (x.bridge ? 1 : 0) - (y.bridge ? 1 : 0) || x.id - y.id).map((v) => ({
       way: v.bridge ? v.bridge.network : 'gatecontrol', label: v.bridge ? v.bridge.label : 'GateControl', conversationId: v.id, title: v.title,
       avatarUrl: v.avatarUrl || null, avatarMediaId: v.avatarMediaId || null, unread: v.unread, muted: v.muted, archived: v.archived,
@@ -391,7 +404,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       archived: views.every((v) => v.archived),
       person: {
         id: p.id, name, nameFrom: src ? src.id : (acc ? 'account' : null), userId: p.userId, conversationId: lead.id, names, ways,
-        reply: { way: wayName(pick), label: pick.bridge ? 'WhatsApp' : 'GateControl', conversationId: pick.id },
+        reply: { way: wayName(pick), label: pick.bridge ? 'WhatsApp' : 'GateControl', conversationId: pick.id, ...(fallback ? { fallback: true } : {}) },
+        ...(features && features.placeMessages === true ? { replyPref: pref } : {}),
         createdAt: iso(p.createdAt),
       },
     };
@@ -443,7 +457,15 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     const p = state.persons.get(Number(b));
     if (!p) return err(res, 404, 'not_found');
     if (seg.length === 2 && m === 'GET') { const e = personEntry(p); return json(res, 200, { ok: true, conversation: e, person: e.person }); }
-    if (seg.length === 2 && m === 'PATCH') {
+    if (seg.length === 2 && (m === 'PATCH' || m === 'PUT')) {
+      // 1.27: replyPref — auto | gatecontrol | a network the person has (else bad_request); not a word → invalid
+      if (body.replyPref !== undefined) {
+        const v = body.replyPref === null ? 'auto' : body.replyPref;
+        if (typeof v !== 'string' || !/^[a-z]{2,20}$/.test(v)) return err(res, 400, 'invalid');
+        if (v !== 'auto' && !p.ways.some((id) => wayName(state.convs.get(id)) === v)) return err(res, 400, 'bad_request');
+        p.replyPref = v;
+        state.replyPrefs = (state.replyPrefs || []).concat([{ personId: p.id, method: m, replyPref: v }]);
+      }
       if (body.name !== undefined) p.nameFrom = body.name;
       for (const id of p.ways) { const x = state.convs.get(id); if (body.notify) x.notify = body.notify; x.updatedAt = now(); }
       const e = personEntry(p);
@@ -533,7 +555,9 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       text: m.deleted ? null : m.text, replyTo: null,
       media: m.mediaId && !m.deleted ? { id: m.mediaId, mime: (state.media.get(m.mediaId) || {}).mime || null, bytes: (state.media.get(m.mediaId) || {}).data?.length || 0, url: null, thumbId: m.thumbMediaId || null, thumbUrl: null, ...(m.scan ? { scan: m.scan } : {}) } : null,
       ...(m.video && !m.deleted ? { video: m.video } : {}),
-      meta: m.deleted ? null : m.meta, location: null, system: null, reactions: m.deleted ? [] : m.reactions,
+      meta: m.deleted ? null : m.meta, location: m.deleted ? null : m.location || null, system: null, reactions: m.deleted ? [] : m.reactions,
+      // 1.27: sent by a place message — only the sender sees it
+      ...(features && features.placeMessages === true ? { placeMessage: m.placeMessage && m.senderId === viewer ? m.placeMessage : null } : {}),
       ...(m.poll ? { poll: m.poll } : {}), ...(m.event ? { event: m.event } : {}), ...(m.action ? { action: m.action } : {}),
       ...(m.arrival ? { arrival: m.arrival } : {}), ...(m.card ? { card: m.card } : {}), ...(m.replyStory ? { replyStory: m.replyStory } : {}),
       status: m.senderId === viewer ? (m.id <= readUpTo ? 'read' : m.id <= deliveredUpTo ? 'delivered' : 'sent') : null,
@@ -580,7 +604,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         bridge: {
           network: c.bridge.network, label: 'WhatsApp', state: c.bridge.state, closed: !!c.bridge.closed,
           ...(features && features.bridge_channels === true ? { channel: !!c.bridge.channel, readOnly: !!c.bridge.readOnly, ...(c.bridge.channel ? { reactions: c.bridge.reactions } : {}) } : {}),
-          supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing', ...(state.bridge.media ? ['image', 'video', 'voice', 'file'] : [])],
+          supports: ['text', 'reply', 'reaction', 'edit', 'delete', 'read', 'typing', ...(state.bridge.media ? ['image', 'video', 'voice', 'file'] : []), ...(state.bridge.location ? ['location'] : [])],
           ...(state.bridge.media ? { mediaTypes: { image: ['image/jpeg', 'image/png', 'image/webp'], video: ['video/mp4'], voice: ['audio/ogg', 'audio/mp4', 'audio/aac', 'audio/mpeg'], file: null } } : {}),
         },
         avatarMediaId: c.avatarMediaId || null,
@@ -960,8 +984,11 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         if (conv.bridge && conv.bridge.readOnly && features && features.bridge_channels === true) return err(res, 409, 'bridge_read_only', { reason: conv.bridge.channel ? 'channel' : 'admins_only' });
         if (conv.bridge) {
           const fileKind = state.bridge.media && ['image', 'voice', 'file'].includes(body.kind) && body.mediaId;
-          if (!fileKind && ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'meta'].some((k) => body[k] != null))) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
-          if (['location', 'poll', 'event', 'arrival', 'action', 'replyStory'].some((k) => body[k] != null)) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          // 1.27: a location where the bridge sends one — lat, lon, label only
+          const locKind = state.bridge.location && body.kind === 'location' && body.location && !body.text;
+          if (locKind && Object.keys(body.location).some((k) => !['lat', 'lon', 'label'].includes(k))) return err(res, 400, 'invalid');
+          if (!fileKind && !locKind && ((body.kind != null && body.kind !== 'text') || ['mediaId', 'thumbMediaId', 'video', 'meta'].some((k) => body[k] != null))) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
+          if ([locKind ? null : 'location', 'poll', 'event', 'arrival', 'action', 'replyStory'].some((k) => k && body[k] != null)) return err(res, 409, 'bridge_text_only', { reason: 'kind' });
           if (fileKind) {
             const fm = state.media.get(body.mediaId);
             if (!fm) return err(res, 409, 'media_invalid');
@@ -976,7 +1003,8 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
           if (st === 'unreachable') return err(res, 503, 'bridge_unreachable', { reason: 'not_running' });
           if (st === 'logged_out' || st === 'unlinked') return err(res, 409, 'bridge_unlinked', { reason: st });
           if (conv.bridge.closed) return err(res, 502, 'bridge_failed', { reason: 'chat_closed' });
-          const bm = addMsg(conv.id, { senderId: me, text: body.text || null, clientId: body.clientId, kind: fileKind ? body.kind : 'text', mediaId: fileKind ? body.mediaId : null, meta: fileKind ? body.meta || null : null });
+          const bm = addMsg(conv.id, { senderId: me, text: body.text || null, clientId: body.clientId, kind: fileKind || locKind ? body.kind : 'text', mediaId: fileKind ? body.mediaId : null, meta: fileKind ? body.meta || null : null });
+          if (locKind) bm.location = { ...body.location };
           bm.bridge = { sender: null, remote: false, state: state.bridge.sendFails ? 'failed' : 'sent', reason: state.bridge.sendFails || null, placeholder: null };
           state.lastSendBody = body;
           return json(res, 200, { ok: true, message: msgView(bm), duplicate: false });
@@ -992,6 +1020,7 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
         if (body.kind === 'action') rich.action = { ...body.action, plugin: body.action.plugin || null, icon: null, needsConfirm: false, state: 'open', result: null, by: null, at: null, can: { run: body.action.mode === 'run', approve: false, deny: false } };
         if (body.replyStory) rich.replyStory = { storyId: body.replyStory.storyId, ownerId: 8, preview: { kind: 'text', text: 'Story', thumbMediaId: null } };
         const msg = addMsg(conv.id, { senderId: me, text: body.text || null, kind: body.kind || 'text', clientId: body.clientId, mediaId: body.mediaId || null, meta: body.meta || null, thumbMediaId: body.thumbMediaId || null, video: body.video || null, ...rich });
+        if (body.location) msg.location = { ...body.location };
         state.lastSendBody = body;
         return json(res, 200, { ok: true, message: msgView(msg), duplicate: false });
       }

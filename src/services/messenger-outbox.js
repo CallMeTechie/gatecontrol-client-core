@@ -93,9 +93,11 @@ class MessengerOutbox extends EventEmitter {
    * Queue a message. `files.main` / `files.thumb`: { data, mime, name } —
    * kept until sent. Returns the entry (pending message view: toPending()).
    * @param {object} req - { conversationId, clientId?, body (buildSendBody result), files?, personId? }
-   *   personId (Messenger 1.21): a person's entry — sent through POST persons/:id/messages, the server picks the way
+   *   personId (Messenger 1.21): a person's entry — sent through POST persons/:id/messages, the server picks the way;
+   *   wayId (Messenger 1.27): … but straight to this way of it (POST conversations/<wayId>/messages: what only
+   *   GateControl carries goes to the person's GateControl chat while the text goes over a bridge)
    */
-  async add({ conversationId, clientId, body, files = {}, personId = null } = {}) {
+  async add({ conversationId, clientId, body, files = {}, personId = null, wayId = null } = {}) {
     const convId = posInt(conversationId);
     if (!convId || !body || typeof body !== 'object') throw new MessengerError('invalid message', { code: 'invalid' });
     const id = isClientId(clientId) ? clientId : crypto.randomUUID();
@@ -107,6 +109,7 @@ class MessengerOutbox extends EventEmitter {
       clientId: id,
       conversationId: convId,
       ...(posInt(personId) ? { personId: posInt(personId) } : {}),
+      ...(posInt(personId) && posInt(wayId) ? { wayId: posInt(wayId) } : {}),
       body: { ...body },
       files: {},
       mediaId: null,
@@ -293,8 +296,12 @@ class MessengerOutbox extends EventEmitter {
     }
   }
 
-  /** POST …/messages: the conversation's, or (Messenger 1.21) the person's — its server picks the way. */
+  /**
+   * POST …/messages: the conversation's, or (Messenger 1.21) the person's — its server picks the way; 1.27: or the one
+   * way of the person the message must take (`wayId`).
+   */
   _post(e) {
+    if (e.wayId) return this.api.send(e.wayId, this._body(e));
     return e.personId ? this.api.personSend(e.personId, this._body(e)) : this.api.send(e.conversationId, this._body(e));
   }
 

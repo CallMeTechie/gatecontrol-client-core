@@ -192,8 +192,8 @@ describe('persons (Messenger 1.21) – MessengerService', () => {
     await m.getMessages(gc);
     assert.equal(m.replyWay(gc).way, 'whatsapp');
     assert.equal(m.replyWay(wa), null);
-    // the answer goes over WhatsApp: no poll there
-    await assert.rejects(m.send({ conversationId: gc, kind: 'location', location: { lat: 50, lon: 7 } }), (e) => e.code === 'bridge_text_only');
+    // the answer goes over WhatsApp (1.27: a location WhatsApp cannot send goes to the GateControl way —
+    // messenger-versandweg.test.js)
     await m.send({ conversationId: gc, kind: 'text', text: 'Hallo Schatz' });
     await waitFor(() => calls(srv, `persons/${pid}/messages`).some((r) => r.method === 'POST'), 4000, 'person send');
     const sent = srv.state.msgs.get(wa).find((x) => x.text === 'Hallo Schatz');

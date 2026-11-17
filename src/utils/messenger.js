@@ -70,6 +70,10 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.25: the contacts' WhatsApp status updates in the status row (GET status/feed → `bridged`,
   // POST status/bridged/:id/seen | reply, prefs.privacy.bridgedStatusSeen) — for people who linked WhatsApp
   'bridge_status',
+  // Messenger 1.27: „Nachrichten senden über“ per person (person.replyPref, PUT persons/:id { replyPref }), the plus menu
+  // with everything the person can get, place messages (GET place-messages …; run on the phone only — this client
+  // shows the line „Ortsnachricht · <Ort>“ at an own message, nothing else)
+  'placeMessages',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -86,6 +90,11 @@ const FEATURE_CHAT_PEOPLE = 'chat_people';
 // The way of a message / a conversation of a person: GateControl or the network of a bridge.
 const GC_WAY = 'gatecontrol';
 const WAY_RE = /^[a-z]{2,20}$/;
+// Messenger 1.27 `GET me` feature: the choice of the way per person (replyPref), place messages.
+const FEATURE_PLACE_MESSAGES = 'placeMessages';
+const REPLY_AUTO = 'auto';
+// Kinds only GateControl carries: to a person whose text goes over a bridge they go to its GateControl way.
+const GC_ONLY_KINDS = Object.freeze(['poll', 'event', 'action']);
 // GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
 // address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
 const CONTACTS_QUERY_MAX = 100;
@@ -946,6 +955,45 @@ function personReplyWay(c) {
   return c.person.ways.find((w) => w && posInt(w.conversationId) === id) || null;
 }
 
+/** Messenger 1.27: the person's GateControl way (one that can send), or null. */
+function personGcWay(c) {
+  if (!isPerson(c)) return null;
+  return c.person.ways.find((w) => w && w.way === GC_WAY && !w.bridge && !(w.can && w.can.send === false)) || null;
+}
+
+/** Messenger 1.27: „Nachrichten senden über“ of a person → 'auto' | 'gatecontrol' | a network ('auto' when unknown). */
+function personReplyPref(c) {
+  const v = isPerson(c) ? c.person.replyPref : null;
+  return typeof v === 'string' && (v === REPLY_AUTO || WAY_RE.test(v)) ? v : REPLY_AUTO;
+}
+
+/**
+ * Messenger 1.27: the body of PUT persons/:id { replyPref } — 'auto' (also null), or a way the person has → { replyPref },
+ * else null (the server would answer bad_request / invalid).
+ */
+function replyPrefBody(c, pref) {
+  const v = pref == null ? REPLY_AUTO : pref;
+  if (typeof v !== 'string' || !isPerson(c)) return null;
+  if (v === REPLY_AUTO) return { replyPref: REPLY_AUTO };
+  if (!WAY_RE.test(v) || !c.person.ways.some((w) => w && w.way === v)) return null;
+  return { replyPref: v };
+}
+
+/** Messenger 1.27 (gc.bridges version 14): does the bridge of a chat send a location (`bridge.supports` names it)? */
+function bridgeTakesLocation(bridge) {
+  return !!(bridge && typeof bridge === 'object' && Array.isArray(bridge.supports) && bridge.supports.includes('location'));
+}
+
+/**
+ * Messenger 1.27: a message only GateControl carries — a poll, an event, a home action, a reply to a story, a location
+ * when the bridge sends none — must leave a person over its GateControl way while the text goes over `bridge`.
+ */
+function needsGcWay(body, bridge) {
+  if (!bridge || !body) return false;
+  if (GC_ONLY_KINDS.includes(body.kind) || body.replyStory) return true;
+  return body.kind === 'location' && !bridgeTakesLocation(bridge);
+}
+
 /** The way of a message (`way`, sent with ?people=1) — 'gatecontrol' or a bridge's network, else null. */
 function wayOf(m) {
   return m && typeof m.way === 'string' && WAY_RE.test(m.way) ? m.way : null;
@@ -1229,6 +1277,14 @@ module.exports = {
   isPerson,
   personWayIds,
   personReplyWay,
+  personGcWay,
+  personReplyPref,
+  replyPrefBody,
+  bridgeTakesLocation,
+  needsGcWay,
+  FEATURE_PLACE_MESSAGES,
+  REPLY_AUTO,
+  GC_ONLY_KINDS,
   wayOf,
   mergeBody,
   isSuggestionId,
