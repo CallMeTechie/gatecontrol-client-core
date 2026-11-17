@@ -11,7 +11,11 @@
  * The WebSocket runs here in the main process; the renderer only gets the terminal's bytes and the state.
  *
  *   devices()                         → { devices: [ssh devices], sshRight }
- *   tmux(deviceId)                    → { sessions, tmux, hostKey: 'pinned' | 'unpinned' | null } (only attachable names)
+ *   tmux(deviceId)                    → { sessions, hidden, others, kill, tmux, hostKey: 'pinned' | 'unpinned' | null }
+ *                                       (sessions: only attachable names; with kill, each with its id and windowList,
+ *                                       and the other sessions in others, so they can be ended)
+ *   tmuxKill(deviceId, { session, window? })  → { killed: 'session' | 'window', …the new list }  (Fernzugriff 1.8)
+ *   tmuxKillDetached(deviceId, [sessionIds])  → { killed: [ids], skipped: [{ id, reason }], …the new list }
  *   open({ deviceId, deviceName, tmux, recording, record, cols, rows }) → status of the new session (its local id)
  *   input(id, data) · resize(id, cols, rows) · trust(id, yes) · reconnect(id) · close(id) · closeAll() · list()
  * Events: 'status' (status of one session, also { closed: true } when it is gone), 'data' { id, data: Uint8Array }.
@@ -43,6 +47,9 @@ const REF_RE = /^[A-Za-z0-9_-]{43}$/;
 const CODE_RE = /^[a-z_]{1,40}$/;
 const ALG_RE = /^[A-Za-z0-9@._+-]{1,40}$/;
 const SHA_RE = /^[A-Za-z0-9+/=_-]{20,90}$/;
+const SESSION_ID_RE = /^\$\d{1,6}$/;
+const WINDOW_ID_RE = /^@\d{1,6}$/;
+const MAX_KILL_DETACHED = 50;
 
 /** Final: no automatic reconnect (contract §3 plus shell_refused, design question 9). */
 const FINAL = new Set(['host_key_rejected', 'host_key_unpinned', 'auth_failed', 'key_unreadable', 'credential_required',
@@ -62,7 +69,13 @@ function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
 const clean = (v, max = 100) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, max) : '') || null;
 const clamp = (v, lo, hi, d) => (Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d);
-const isoMs = (v) => { const t = typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null; };
+/** A time as GateControl sends it: ISO text, or tmux's seconds since 1970 (as a number or as digits). */
+const isoMs = (v) => {
+  if (typeof v === 'string' && /^\d{9,11}$/.test(v)) v = Number(v);
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? (v < 1e11 ? v * 1000 : v) : null;
+  const t = typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isFinite(t) ? t : null;
+};
 const posId = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null);
 
 /** An SSH device of GET devices, or null (another protocol, broken). */
@@ -81,19 +94,72 @@ function deviceOf(d) {
   };
 }
 
-/** The tmux sessions: only names the core can attach are offered, the others only counted. */
+/** The windows of a session (Fernzugriff 1.8, only with kill): id @n, index, name, active, the running command. */
+function windowsOf(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  return list.slice(0, 200).map((w) => (w && typeof w === 'object' && WINDOW_ID_RE.test(String(w.id)) ? {
+    id: w.id, index: clamp(w.index, 0, 99999, 0), name: clean(w.name, 64) || '', active: w.active === true,
+    panes: clamp(w.panes, 0, 999, 1), command: clean(w.command, 64),
+  } : null)).filter((w) => w && !seen.has(w.id) && seen.add(w.id)).sort((a, b) => a.index - b.index);
+}
+
+/** What the plugin needs back to end a session: its number, its name and its creation time exactly as listed. */
+function identityOf(s) {
+  if (!s || typeof s !== 'object' || !SESSION_ID_RE.test(String(s.id)) || typeof s.name !== 'string' || !s.name || s.name.length > 256) return null;
+  const c = s.created;
+  const created = (typeof c === 'number' && Number.isFinite(c)) || (typeof c === 'string' && c.length <= 64) ? c : null;
+  return { id: s.id, name: s.name, created };
+}
+
+/**
+ * The tmux sessions: only names the core can attach are offered, the others only counted. With `kill` (GateControl
+ * with gc.remote 9, plugin 1.8) each session also has its id and windowList, and the others come in `others`
+ * (they cannot be resumed, but ended).
+ */
 function tmuxOf(body) {
-  const list = Array.isArray(body && body.sessions) ? body.sessions : [];
-  const all = list.slice(0, 200).map((s) => ({
-    name: clean(s && s.name, 64), windows: clamp(s && s.windows, 0, 9999, 0), attached: clamp(s && s.attached, 0, 9999, 0),
-    activity: isoMs(s && s.activity), attachable: !!(s && s.attachable === true),
-  })).filter((s) => s.name);
-  const ok = all.filter((s) => s.attachable && TMUX_RE.test(s.name)).sort((a, b) => (b.activity || 0) - (a.activity || 0));
-  return {
+  const b = body && typeof body === 'object' ? body : {};
+  const list = Array.isArray(b.sessions) ? b.sessions : [];
+  const kill = b.kill === true;
+  const seen = new Set();
+  const all = list.slice(0, 200).map((s) => {
+    const o = {
+      name: clean(s && s.name, 64), windows: clamp(s && s.windows, 0, 9999, 0), attached: clamp(s && s.attached, 0, 9999, 0),
+      activity: isoMs(s && s.activity), attachable: !!(s && s.attachable === true),
+    };
+    if (kill) {
+      const ident = identityOf(s);
+      if (!ident || seen.has(ident.id)) return o;
+      seen.add(ident.id);
+      o.id = ident.id;
+      o.created = isoMs(s.created);
+      o.windowList = windowsOf(s.windowList);
+    }
+    return o;
+  }).filter((s) => s.name);
+  const byActivity = (a, b2) => (b2.activity || 0) - (a.activity || 0);
+  const ok = all.filter((s) => s.attachable && TMUX_RE.test(s.name)).sort(byActivity);
+  const out = {
     sessions: ok, hidden: all.length - ok.length,
-    tmux: typeof body.tmux === 'string' && TMUX_RE.test(body.tmux) ? body.tmux : null,
-    hostKey: body.hostKey === 'pinned' || body.hostKey === 'unpinned' ? body.hostKey : null,
+    tmux: typeof b.tmux === 'string' && TMUX_RE.test(b.tmux) ? b.tmux : null,
+    hostKey: b.hostKey === 'pinned' || b.hostKey === 'unpinned' ? b.hostKey : null,
+    kill,
   };
+  if (kill) out.others = all.filter((s) => !(s.attachable && TMUX_RE.test(s.name)) && s.id).sort(byActivity);
+  return out;
+}
+
+/** The sessions as GateControl listed them, by id (for the body of tmux/kill and tmux/kill-detached). */
+function identitiesOf(body) {
+  const m = new Map();
+  if (!body || body.kill !== true || !Array.isArray(body.sessions)) return m;
+  for (const s of body.sessions.slice(0, 200)) {
+    const ident = identityOf(s);
+    if (!ident || m.has(ident.id)) continue;
+    const windows = new Map(windowsOf(s.windowList).map((w) => [w.id, w.index]));
+    m.set(ident.id, { ...ident, attached: clamp(s.attached, 0, 9999, 0), windows });
+  }
+  return m;
 }
 
 /** A name for „Neue Sitzung“: tmux, taken → tmux-2 … */
@@ -172,9 +238,15 @@ class RemoteTerm extends EventEmitter {
     this._setRepeat = setRepeat;
     this._clearRepeat = clearRepeat;
     this.sessions = new Map();
+    /** deviceId → the tmux sessions of the last list (id → { id, name, created, attached, windows }). */
+    this._tmuxSeen = new Map();
   }
 
-  _api(method, p, body) { return this.http._call(method, API_BASE + p, body === undefined ? {} : { body }); }
+  _api(method, p, body, params) {
+    const o = body === undefined ? {} : { body };
+    if (params) o.params = params;
+    return this.http._call(method, API_BASE + p, o);
+  }
 
   // ─── The plugin ───
 
@@ -186,9 +258,56 @@ class RemoteTerm extends EventEmitter {
     return { devices, sshRight };
   }
 
+  /** The list with the windows (windows=1; older plugins ignore it and answer as before, kill: false). */
   async tmux(deviceId) {
     if (!posId(deviceId)) throw new RemoteTermError('invalid device', { code: 'invalid' });
-    return tmuxOf(await this._api('GET', `devices/${deviceId}/tmux`));
+    return this._tmuxList(deviceId, await this._api('GET', `devices/${deviceId}/tmux`, undefined, { windows: 1 }));
+  }
+
+  _tmuxList(deviceId, body) {
+    this._tmuxSeen.set(deviceId, identitiesOf(body));
+    if (this._tmuxSeen.size > 100) this._tmuxSeen.delete(this._tmuxSeen.keys().next().value);
+    return tmuxOf(body);
+  }
+
+  /** A session (or one window of it) of the last list; gone from it → tmux_gone (the renderer reloads quietly). */
+  _tmuxKnown(deviceId, sessionId) {
+    const s = this._tmuxSeen.get(deviceId) && this._tmuxSeen.get(deviceId).get(sessionId);
+    if (!s) throw new RemoteTermError('unknown tmux session', { code: 'tmux_gone' });
+    return s;
+  }
+
+  /**
+   * „Beenden“ (a session) or „Schließen“ (one window): GateControl lists again and checks number, name and creation
+   * time before kill-session / kill-window. The answer carries the new list.
+   */
+  async tmuxKill(deviceId, { session, window = null } = {}) {
+    if (!posId(deviceId) || !SESSION_ID_RE.test(String(session)) || (window != null && !WINDOW_ID_RE.test(String(window)))) {
+      throw new RemoteTermError('invalid tmux target', { code: 'invalid' });
+    }
+    const s = this._tmuxKnown(deviceId, session);
+    const body = { session: { id: s.id, name: s.name, created: s.created } };
+    if (window != null) {
+      if (!s.windows.has(window)) throw new RemoteTermError('unknown tmux window', { code: 'tmux_gone' });
+      body.window = { id: window, index: s.windows.get(window) };
+    }
+    const r = await this._api('POST', `devices/${deviceId}/tmux/kill`, body);
+    this.log.info(`Remote terminal: tmux ${window != null ? 'window closed' : 'session ended'}`);
+    return { killed: r.killed === 'window' ? 'window' : 'session', ...this._tmuxList(deviceId, r) };
+  }
+
+  /** „Alle getrennten Sitzungen beenden“: the checked ones (1–50); GateControl skips any that is attached by now. */
+  async tmuxKillDetached(deviceId, ids) {
+    if (!posId(deviceId) || !Array.isArray(ids) || !ids.length || ids.length > MAX_KILL_DETACHED || !ids.every((x) => SESSION_ID_RE.test(String(x)))) {
+      throw new RemoteTermError('invalid tmux sessions', { code: 'invalid' });
+    }
+    const sessions = [...new Set(ids)].map((x) => this._tmuxKnown(deviceId, x)).map((s) => ({ id: s.id, name: s.name, created: s.created }));
+    const r = await this._api('POST', `devices/${deviceId}/tmux/kill-detached`, { sessions });
+    const killed = (Array.isArray(r.killed) ? r.killed : []).filter((x) => SESSION_ID_RE.test(String(x))).slice(0, MAX_KILL_DETACHED);
+    const skipped = (Array.isArray(r.skipped) ? r.skipped : []).filter((x) => x && SESSION_ID_RE.test(String(x.id)))
+      .map((x) => ({ id: x.id, reason: CODE_RE.test(String(x.reason)) ? x.reason : 'failed' })).slice(0, MAX_KILL_DETACHED);
+    this.log.info(`Remote terminal: ${killed.length} detached tmux session(s) ended`);
+    return { killed, skipped, ...this._tmuxList(deviceId, r) };
   }
 
   // ─── Sessions ───
@@ -449,6 +568,7 @@ RemoteTerm.TMUX_RE = TMUX_RE;
 RemoteTerm.verdict = verdict;
 RemoteTerm.deviceOf = deviceOf;
 RemoteTerm.tmuxOf = tmuxOf;
+RemoteTerm.identitiesOf = identitiesOf;
 RemoteTerm.suggestName = suggestName;
 RemoteTerm.connectBody = connectBody;
 RemoteTerm.parseFrame = parseFrame;

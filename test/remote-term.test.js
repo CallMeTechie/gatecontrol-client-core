@@ -57,6 +57,27 @@ describe('RemoteTerm: pure parts', () => {
     assert.equal(RemoteTerm.parseFrame('nope'), null);
     assert.equal(RemoteTerm.deviceOf({ id: 4, name: 'x', protocol: 'ssh', engine: 'term', tmux: 'a:b' }).tmux, null);
   });
+
+  it('tmux lists: windows and ids only with kill, the others to end, tmux seconds as times', () => {
+    const { tmuxSessions } = require('./fixtures/term-server');
+    const old = RemoteTerm.tmuxOf({ sessions: tmuxSessions(), tmux: 'tmux', hostKey: 'pinned' });
+    assert.equal(old.kill, false);
+    assert.equal(old.others, undefined);
+    assert.equal(old.sessions[0].windowList, undefined, 'an older GateControl: no windows, nothing to end');
+    assert.equal(old.hidden, 1);
+    const l = RemoteTerm.tmuxOf({ sessions: [...tmuxSessions(), { id: '$3', name: 'dup', windows: 1, attachable: true }, { id: 'x', name: 'bad id', attachable: false }],
+      tmux: 'tmux', hostKey: 'pinned', kill: true });
+    assert.equal(l.kill, true);
+    assert.deepEqual(l.sessions.map((s) => [s.id, s.name]), [['$2', 'tmux'], ['$1', 'build'], [undefined, 'dup']]);
+    assert.deepEqual(l.sessions[0].windowList.map((w) => [w.id, w.index, w.name, w.active, w.command]),
+      [['@2', 0, 'bash', false, 'bash'], ['@3', 1, 'logs', true, 'journalctl'], ['@4', 2, 'htop', false, 'htop']]);
+    assert.equal(l.sessions[0].created, 1763380000000);
+    assert.deepEqual(l.others.map((s) => [s.id, s.name, s.created]), [['$3', 'backup.alt', 1763200000000]], 'without an id it cannot be ended');
+    assert.equal(RemoteTerm.tmuxOf({ sessions: [{ name: 'a', attachable: true, activity: 1763384000 }] }).sessions[0].activity, 1763384000000);
+    const ids = RemoteTerm.identitiesOf({ kill: true, sessions: tmuxSessions() });
+    assert.deepEqual(ids.get('$3'), { id: '$3', name: 'backup.alt', created: '1763200000', attached: 0, windows: new Map([['@5', 0]]) });
+    assert.equal(RemoteTerm.identitiesOf({ sessions: tmuxSessions() }).size, 0);
+  });
 });
 
 describe('RemoteTerm against the test server', () => {
@@ -70,6 +91,53 @@ describe('RemoteTerm against the test server', () => {
     assert.deepEqual(t.sessions.map((s) => s.name), ['tmux', 'build'], 'the most recently active first');
     assert.equal(t.hidden, 1);
     assert.equal(t.hostKey, 'pinned');
+  });
+
+  it('tmux with windows: end a window, the last window, a session, all detached ones; quiet reload codes', async () => {
+    const { srv, term } = await setup();
+    srv.tmuxKill = true;
+    const t = await term.tmux(2);
+    assert.equal(t.kill, true);
+    assert.deepEqual(t.others.map((s) => s.id), ['$3']);
+
+    // one window: the body carries the session exactly as listed and the window's index
+    const w = await term.tmuxKill(2, { session: '$2', window: '@4' });
+    assert.deepEqual(srv.kills[0], { path: 'kill', body: { session: { id: '$2', name: 'tmux', created: 1763380000 }, window: { id: '@4', index: 2 } } });
+    assert.equal(w.killed, 'window');
+    assert.equal(w.sessions.find((s) => s.id === '$2').windowList.length, 2, 'the answer is the new list');
+
+    // the session's created comes back as text when tmux sent text
+    const s3 = await term.tmuxKill(2, { session: '$3' });
+    assert.deepEqual(srv.kills[1].body, { session: { id: '$3', name: 'backup.alt', created: '1763200000' } });
+    assert.equal(s3.killed, 'session');
+    assert.deepEqual(s3.others, []);
+
+    // gone since the last list: tmux_gone without asking GateControl; changed on the device: tmux_changed
+    await assert.rejects(term.tmuxKill(2, { session: '$3' }), (e) => e.code === 'tmux_gone');
+    assert.equal(srv.kills.length, 2);
+    srv.tmuxSessions.find((s) => s.id === '$2').created = 1;
+    await assert.rejects(term.tmuxKill(2, { session: '$2' }), (e) => e.code === 'tmux_changed');
+    await assert.rejects(term.tmuxKill(2, { session: 'tmux' }), (e) => e.code === 'invalid');
+    await assert.rejects(term.tmuxKill(2, { session: '$2', window: '2' }), (e) => e.code === 'invalid');
+
+    // all detached ones: the attached one is skipped by GateControl
+    srv.tmuxSessions = require('./fixtures/term-server').tmuxSessions();
+    await term.tmux(2);
+    const all = await term.tmuxKillDetached(2, ['$2', '$3', '$1']);
+    assert.deepEqual(srv.kills.at(-1).body.sessions.map((s) => s.id), ['$2', '$3', '$1']);
+    assert.deepEqual(all.killed, ['$2', '$3']);
+    assert.deepEqual(all.skipped, [{ id: '$1', reason: 'attached' }]);
+    assert.deepEqual(all.sessions.map((s) => s.name), ['build']);
+    await assert.rejects(term.tmuxKillDetached(2, []), (e) => e.code === 'invalid');
+    await assert.rejects(term.tmuxKillDetached(2, ['$9']), (e) => e.code === 'tmux_gone');
+  });
+
+  it('an older GateControl: kill false, no windows, nothing can be ended', async () => {
+    const { term } = await setup();
+    const t = await term.tmux(2);
+    assert.equal(t.kill, false);
+    assert.equal(t.sessions[0].windowList, undefined);
+    await assert.rejects(term.tmuxKill(2, { session: '$2' }), (e) => e.code === 'tmux_gone');
   });
 
   it('connect, bytes both ways, resize, a lost socket comes back with a new token, shell_refused ends for good', async () => {
