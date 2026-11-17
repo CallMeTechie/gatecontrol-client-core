@@ -1,19 +1,38 @@
 'use strict';
 
 // A small GateControl server for the SSH terminal (app contract „Fernzugriff Stufe 3 – Apps“): the plugin's app API
-// (GET devices, GET devices/<id>/tmux, POST devices/<id>/connect), the core's term-token and the WebSocket
+// (GET devices, GET devices/<id>/tmux, POST devices/<id>/connect; with srv.tmuxKill = true also the windows and
+// POST devices/<id>/tmux/kill and …/kill-detached of Fernzugriff 1.8), the core's term-token and the WebSocket
 // /api/v1/remote/ssh-tunnel speaking gc-term.v1 — the handshake and frames of RFC 6455 written out (no ws package).
 //
 //   const srv = await termServer();
 //   srv.url, srv.connects (bodies), srv.tokens (count), srv.sockets (open ones: { send(obj|Buffer), close(), drop() }),
 //   srv.onHello = (sock, hello) => …  (default: ready with tmux and recording false), srv.received (frames),
-//   srv.fail(path, status, code, times), srv.close()
+//   srv.fail(path, status, code, times), srv.close(),
+//   srv.tmuxKill (false: an older GateControl, kill: false), srv.tmuxSessions (the device's sessions, changed by the
+//   kills), srv.kills ({ path, body } of each kill request)
 
 const http = require('node:http');
 const crypto = require('node:crypto');
 
 const PLUGIN = '/api/v1/client/plugins/gatecontrol-remote/api/';
 const REF = 'R'.repeat(43);
+
+/** The sessions of device 2 (Fernzugriff 1.8: with ids and windows; created as tmux sends it, a number or text). */
+function tmuxSessions() {
+  return [
+    { id: '$1', name: 'build', windows: 1, attached: 1, created: 1763300000, activity: '2026-11-16T09:00:00Z', attachable: true,
+      windowList: [{ id: '@1', index: 0, name: 'make', active: true, panes: 1, command: 'make' }] },
+    { id: '$2', name: 'tmux', windows: 3, attached: 0, created: 1763380000, activity: '2026-11-16T09:58:00Z', attachable: true,
+      windowList: [
+        { id: '@2', index: 0, name: 'bash', active: false, panes: 1, command: 'bash' },
+        { id: '@3', index: 1, name: 'logs', active: true, panes: 1, command: 'journalctl' },
+        { id: '@4', index: 2, name: 'htop', active: false, panes: 1, command: 'htop' },
+      ] },
+    { id: '$3', name: 'backup.alt', windows: 1, attached: 0, created: '1763200000', attachable: false,
+      windowList: [{ id: '@5', index: 0, name: 'rsync', active: true, panes: 1, command: 'rsync' }] },
+  ];
+}
 
 function frame(op, payload) {
   const len = payload.length;
@@ -25,6 +44,7 @@ function frame(op, payload) {
 async function termServer() {
   const state = {
     connects: [], tokens: 0, sockets: [], received: [], failures: new Map(), protocols: [], urls: [],
+    tmuxKill: false, tmuxSessions: tmuxSessions(), kills: [],
     onHello: (sock) => sock.send({ t: 'ready', hostKey: { alg: 'ssh-ed25519', sha256: 'x'.repeat(43) }, hostKeyNew: false, tmux: { available: true, session: 'tmux' }, recording: false, mode: 'control' }),
   };
   const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -50,12 +70,47 @@ async function termServer() {
           { id: 3, name: 'nas-keller', protocol: 'ssh', online: true, engine: 'guac' },
         ], rights: { ssh: true } });
       }
-      if (p === PLUGIN + 'devices/2/tmux') {
-        return json(res, 200, { sessions: [
-          { name: 'build', windows: 1, attached: 1, activity: '2026-11-16T09:00:00Z', attachable: true },
-          { name: 'tmux', windows: 3, attached: 0, activity: '2026-11-16T09:58:00Z', attachable: true },
-          { name: 'backup.alt', windows: 1, attached: 0, attachable: false },
-        ], tmux: 'tmux', hostKey: 'pinned' });
+      const windows = /[?&]windows=(1|true)(&|$)/.test(req.url);
+      const listing = (withWindows) => ({
+        tmux: 'tmux', hostKey: 'pinned', kill: state.tmuxKill,
+        sessions: state.tmuxSessions.map(({ id, windowList, ...rest }) => (state.tmuxKill && withWindows ? { id, ...rest, windowList } : rest)),
+      });
+      if (p === PLUGIN + 'devices/2/tmux' && req.method === 'GET') {
+        const l = listing(windows);
+        if (!state.tmuxKill) delete l.kill;
+        return json(res, 200, l);
+      }
+      // Fernzugriff 1.8: the plugin lists again and checks number, name and creation time first
+      const same = (want, s) => s.name === want.name && s.created === want.created;
+      if (p === PLUGIN + 'devices/2/tmux/kill' && req.method === 'POST' && state.tmuxKill) {
+        state.kills.push({ path: 'kill', body });
+        const want = body.session || {};
+        const s = state.tmuxSessions.find((x) => x.id === want.id);
+        if (!s) return json(res, 404, { ok: false, code: 'tmux_gone', error: 'Die Sitzung gibt es nicht mehr.' });
+        if (!same(want, s)) return json(res, 409, { ok: false, code: 'tmux_changed', error: 'Unter dieser Nummer läuft etwas anderes.' });
+        let killed = 'session';
+        if (body.window) {
+          const w = s.windowList.find((x) => x.id === body.window.id);
+          if (!w) return json(res, 404, { ok: false, code: 'tmux_gone', error: 'Das Fenster gibt es nicht mehr.' });
+          s.windowList = s.windowList.filter((x) => x !== w);
+          s.windows = s.windowList.length;
+          if (s.windowList.length) killed = 'window';
+        }
+        if (killed === 'session') state.tmuxSessions = state.tmuxSessions.filter((x) => x !== s);
+        return json(res, 200, { ok: true, killed, ...listing(true) });
+      }
+      if (p === PLUGIN + 'devices/2/tmux/kill-detached' && req.method === 'POST' && state.tmuxKill) {
+        state.kills.push({ path: 'kill-detached', body });
+        const killed = [];
+        const skipped = [];
+        for (const want of body.sessions || []) {
+          const s = state.tmuxSessions.find((x) => x.id === want.id);
+          if (!s) skipped.push({ id: want.id, reason: 'tmux_gone' });
+          else if (!same(want, s)) skipped.push({ id: want.id, reason: 'tmux_changed' });
+          else if (s.attached > 0) skipped.push({ id: want.id, reason: 'attached' });
+          else { killed.push(s.id); state.tmuxSessions = state.tmuxSessions.filter((x) => x !== s); }
+        }
+        return json(res, 200, { ok: true, killed, skipped, ...listing(true) });
       }
       if (p === PLUGIN + 'devices/2/connect' && req.method === 'POST') {
         state.connects.push(body);
@@ -130,4 +185,4 @@ async function termServer() {
   });
 }
 
-module.exports = { termServer, PLUGIN, REF };
+module.exports = { termServer, tmuxSessions, PLUGIN, REF };
