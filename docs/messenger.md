@@ -534,6 +534,29 @@ the contacts' status updates is no chat any more). Without it everything stays a
 * Texts: `chat.st.bridged*`, `chat.story.bridged*`, `chat.set.statusSec`, `chat.set.bridgedSeen*`,
   `chat.set.statusDigestHintBridged`.
 
+### Messenger 1.27: Versandweg, Plus-Menü, Standort über Brücken
+
+One feature word, `placeMessages` (known: no update hint). It brings `person.replyPref` and the plus menu with
+everything; a location over a bridge is read per chat from `bridge.supports` (`location`, `gc.bridges` version 14:
+WhatsApp, Telegram — never Signal), not from the word.
+
+* `setReplyPref(id, pref)` — „Nachrichten senden über“ of a person: `'auto'` (also null), `'gatecontrol'` or a network
+  the person has (`replyPrefBody`; else `invalid` before the server sees it) → `PUT persons/:id { replyPref }`, the entry
+  (its `person.reply` follows the choice). Without the word: `unsupported`.
+* `replyWay(id)` → also `pref` (`personReplyPref`) and `fallback` („Immer <Netz>“ cannot send right now, GateControl
+  took over — the view says „<Netz> nicht verbunden …“ under the composer).
+* `send()` to a person whose text goes over a bridge: what only GateControl carries — a poll, an event, a home action,
+  a reply to a story, a location the bridge cannot send (`needsGcWay`) — goes straight to the person's GateControl way
+  (`personGcWay`; outbox `wayId` → `POST conversations/<way>/messages`), shown in the person as before; a quoted message
+  of another way is dropped there. Without a GateControl way it stays `bridge_text_only`.
+* A location crosses a bridge whose `supports` names `location` (`bridgeTakesLocation`): `{ lat, lon, label }` only
+  (`accuracy` is left out). An incoming location of a bridge arrives as `kind: "location"` (the map, as any location;
+  old messages stay the placeholder with `geo`).
+* `message.placeMessage` `{ name, trigger }` — only in the sender's view: the line „Ortsnachricht · <Ort>“ (display only;
+  place messages are made and run on the phone).
+* Texts: `chat.person.reply*`, `chat.person.viaGc`, `chat.attachMenu.gcNote`, `chat.msg.placeMessage`,
+  `chat.error.bad_request`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -667,7 +690,7 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 `bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
 1.17: `bridgeHistory(days)`, `fetchFile(id)`, 1.18: `newChatContacts(network, q)`,
 `bridgeContactChat(network, contact)`, `storage`, `clearCache`, 1.23: `bridgeRecognition(allowed, network?)`,
-`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`, 1.25: `bridgedStorySeen(id)`, `bridgedStoryReply(id, { text | emoji })`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`, 1.25: `bridgedStorySeen(id)`, `bridgedStoryReply(id, { text | emoji })`, 1.27: `setReplyPref(id, pref)`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
 `onFeed`, `onLists`, `onReminders`, 1.23: `onHandoff`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are

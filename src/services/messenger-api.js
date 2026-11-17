@@ -265,6 +265,9 @@ class MessengerApi {
   /** PATCH persons/:id { name?, notify?, mutedUntil? } → { conversation, person } */
   async patchPerson(id, body) { this._needPersons(); return this.api('PATCH', `persons/${this._id(id)}`, { body }); }
 
+  /** Messenger 1.27: PUT persons/:id { replyPref } („Nachrichten senden über“: auto | gatecontrol | network) → { conversation, person } */
+  async setReplyPref(id, replyPref) { this._needPersons(); return this.api('PUT', `persons/${this._id(id)}`, { body: { replyPref } }); }
+
   async archivePerson(id, archived) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/archive`, { body: { archived: archived === true } }); }
 
   /** POST persons { conversationIds, userId?, name? } → { conversation, person } */

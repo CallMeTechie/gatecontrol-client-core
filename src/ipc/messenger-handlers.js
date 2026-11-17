@@ -318,6 +318,13 @@ function registerMessengerHandlers(handle, {
     if (!id || !name) return invalid();
     return { ok: true, conversation: await m.renamePerson(id, name) };
   }));
+  // Messenger 1.27: „Nachrichten senden über“ — 'auto' (null), 'gatecontrol' or a network of the person (checked in the core)
+  handle('chat:person:reply-pref', wrap(async (a) => {
+    const id = posInt(a.id);
+    const pref = a.pref == null ? 'auto' : text(a.pref, 20);
+    if (!id || !/^[a-z]{2,20}$/.test(pref)) return invalid();
+    return { ok: true, conversation: await m.setReplyPref(id, pref) };
+  }));
   handle('chat:person:candidates', wrap(async (a) => (posInt(a.id) ? { ok: true, ...(await m.personCandidates(posInt(a.id))) } : invalid())));
   handle('chat:bridge:recognition', wrap(async (a) => {
     if (typeof a.allowed !== 'boolean') return invalid();

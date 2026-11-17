@@ -291,6 +291,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       splitPerson:    (id, conversationId) => ipcRenderer.invoke('chat:person:split', { id, conversationId: conversationId == null ? null : conversationId }),
       renamePerson:   (id, name) => ipcRenderer.invoke('chat:person:name', { id, name }),
       personCandidates: (id) => ipcRenderer.invoke('chat:person:candidates', { id }),
+      // Messenger 1.27 (status().me.features.placeMessages): „Nachrichten senden über“ — 'auto' | 'gatecontrol' | network
+      setReplyPref:   (id, pref) => ipcRenderer.invoke('chat:person:reply-pref', { id, pref: pref || 'auto' }),
       // Messenger 1.23: per service (network: 'signal'; missing → WhatsApp); „Im Portal / Windows-Client fortsetzen“
       // of a service with the QR code only, and the event when another device sends that step here
       bridgeRecognition: (allowed, network) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true, ...(typeof network === 'string' ? { network } : {}) }),
