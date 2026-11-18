@@ -74,6 +74,9 @@ const KNOWN_FEATURES = Object.freeze([
   // with everything the person can get, place messages (GET place-messages …; run on the phone only — this client
   // shows the line „Ortsnachricht · <Ort>“ at an own message, nothing else)
   'placeMessages',
+  // Messenger 1.28: „Meine Orte“ of GateControl's profile next to Familie's places (GET places, `ref` profile:<id> |
+  // home | place:<id>) — the source of the place choice on this PC
+  'profilePlaces',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -92,6 +95,10 @@ const GC_WAY = 'gatecontrol';
 const WAY_RE = /^[a-z]{2,20}$/;
 // Messenger 1.27 `GET me` feature: the choice of the way per person (replyPref), place messages.
 const FEATURE_PLACE_MESSAGES = 'placeMessages';
+// Messenger 1.28 `GET me` feature: GET places (the person's own profile places + Familie's, with `ref`).
+const FEATURE_PROFILE_PLACES = 'profilePlaces';
+const PLACE_REF_RE = /^(?:profile:[1-9][0-9]{0,15}|home|place:[1-9][0-9]{0,15})$/;
+const PLACE_ICONS = Object.freeze(['home', 'work', 'school', 'gym', 'shop', 'family', 'pin']);
 const REPLY_AUTO = 'auto';
 // Kinds only GateControl carries: to a person whose text goes over a bridge they go to its GateControl way.
 const GC_ONLY_KINDS = Object.freeze(['poll', 'event', 'action']);
@@ -458,6 +465,55 @@ function normalizePoll(p) {
     if (!isIso(p.closesAt)) throw invalidErr('poll closesAt');
     out.closesAt = new Date(p.closesAt).toISOString();
   }
+  return out;
+}
+
+/**
+ * One entry of the place choice → { ref, source: 'profile' | 'familie', id, name, icon, lat, lon, radiusM, address,
+ * visibility, lastUsedAt, usageCount, rank } or null. Messenger 1.28 `GET places` gives `ref`; an older Messenger's
+ * `GET familie/places` entry ({ id, name, lat, lon, radiusM }) becomes a Familie place (`home` / `place:<id>`).
+ */
+function normalizePickPlace(v, rank = 0) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  let ref = typeof v.ref === 'string' && PLACE_REF_RE.test(v.ref) ? v.ref : null;
+  if (!ref && v.ref === undefined) {
+    if (v.id === 'home') ref = 'home';
+    else if (typeof v.id === 'string' && /^place:[1-9][0-9]{0,15}$/.test(v.id)) ref = v.id;
+    else if (Number.isSafeInteger(v.id) && v.id > 0) ref = `place:${v.id}`;
+  }
+  if (!ref) return null;
+  const name = cleanLine(v.name, 80);
+  if (!name) return null;
+  const lat = typeof v.lat === 'number' ? v.lat : Number(v.lat);
+  const lon = typeof v.lon === 'number' ? v.lon : Number(v.lon);
+  const point = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+  const profile = ref.startsWith('profile:');
+  const r = Number(v.radiusM);
+  const at = typeof v.lastUsedAt === 'string' && Number.isFinite(Date.parse(v.lastUsedAt)) ? new Date(Date.parse(v.lastUsedAt)).toISOString() : null;
+  const n = Number(v.usageCount);
+  return {
+    ref, source: profile && v.source !== 'familie' ? 'profile' : 'familie',
+    // what an event's place keeps for a Familie place (familiePlaceId) — the plugin's own id
+    id: profile ? Number(ref.slice(8)) : (typeof v.id === 'string' || Number.isSafeInteger(v.id) ? v.id : ref),
+    name, icon: PLACE_ICONS.includes(v.icon) ? v.icon : (ref === 'home' ? 'home' : 'pin'),
+    lat: point ? lat : null, lon: point ? lon : null,
+    radiusM: Number.isFinite(r) && r > 0 ? Math.min(100000, Math.max(10, Math.round(r))) : null,
+    address: profile ? cleanLine(v.address, 200) || null : null,
+    visibility: profile && ['self', 'family', 'all'].includes(v.visibility) ? v.visibility : null,
+    lastUsedAt: at, usageCount: Number.isSafeInteger(n) && n > 0 ? n : 0, rank,
+  };
+}
+
+/** A list of the place choice → the entries (each `ref` once, at most 200), in the order given. */
+function normalizePickPlaces(list) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(list) ? list : []).forEach((v, i) => {
+    const p = normalizePickPlace(v, i);
+    if (!p || seen.has(p.ref) || out.length >= 200) return;
+    seen.add(p.ref);
+    out.push(p);
+  });
   return out;
 }
 
@@ -1282,7 +1338,7 @@ module.exports = {
   replyPrefBody,
   bridgeTakesLocation,
   needsGcWay,
-  FEATURE_PLACE_MESSAGES,
+  FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlace, normalizePickPlaces,
   REPLY_AUTO,
   GC_ONLY_KINDS,
   wayOf,

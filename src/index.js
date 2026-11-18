@@ -52,6 +52,7 @@ const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
 const NotesService = require('./services/notes');
 const NotesApi = require('./services/notes-api');
+const { PlacesService } = require('./services/places');
 const { AppSignin, SigninError } = require('./services/app-signin');
 const { startLoopbackListener } = require('./services/signin-loopback');
 
@@ -94,6 +95,7 @@ const driveUtil = require('./utils/drive');
 const driveSyncUtil = require('./utils/drive-sync');
 const mailUtil = require('./utils/mail');
 const notesUtil = require('./utils/notes');
+const placesUtil = require('./utils/places');
 const scanUtil = require('./utils/scan');
 
 // ── Shared validators ───────────────────────────────────────
@@ -164,6 +166,8 @@ module.exports = {
   // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)
   NotesService,
   NotesApi,
+  // „Mein Profil › Meine Orte“ (GateControl 1.299.0)
+  PlacesService,
   AppSignin,
   SigninError,
   startLoopbackListener,
@@ -229,6 +233,7 @@ module.exports = {
   driveSyncUtil,
   mailUtil,
   notesUtil,
+  placesUtil,
   scanUtil,
 
   // Support bundle

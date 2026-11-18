@@ -696,6 +696,15 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
 `{ ok: false, code, error }` — `chat.error.<code>` has the text.
 
+## Messenger 1.28: „Meine Orte“ in the place choice
+
+With the word `profilePlaces`, `chat:places { all: true }` (preload `chat.pickPlaces()`) reads `GET places`: the
+person's own places of GateControl's profile and Familie's places, each with `ref` (`profile:<id>` | `home` |
+`place:<id>`), `source`, `icon`, `usageCount`, `lastUsedAt` — in the Messenger's order (most used here in the last 90
+days first). Without the word it answers Familie's places as before (`source: 'familie'`, `profile: false`).
+`chat:places` without `all` is unchanged. An event's place keeps a copy (`{ label, lat, lon }`; a Familie place with
+`familiePlaceId`). See docs/places.md.
+
 ## Known limits
 
 * The own position needs the Windows location service (and "Let desktop

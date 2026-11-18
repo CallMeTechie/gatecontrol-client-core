@@ -14,6 +14,8 @@
 //   (`person`, `folded`), persons/… routes, state.suggestions, state.recognition (GET bridges › recognition)
 //   features.placeMessages (1.27): person.replyPref (PUT persons/:id { replyPref } → state.replyPrefs), reply.fallback,
 //   state.bridge.location (`supports` names location, kind location over the bridge), message.placeMessage
+//   features.profilePlaces (1.28): GET places → state.pickPlaces (own profile places and Familie's, with `ref`, already
+//   in the Messenger's order) and state.pickSources
 //   srv.url, srv.state (conversations, messages, media, requests),
 //   srv.event(type, data) → `event: plugin` on every open push stream,
 //   srv.notify(payload) → `event: notification`, srv.fail(path, status, code, times?, extra?) (extra: more fields of the refusal, e.g. { finding }),
@@ -71,6 +73,12 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
     toList: [],
     toCalendar: [],
     places: [{ id: 'home', name: 'Zuhause', lat: 50.1, lon: 7.1, radiusM: 150 }],
+    // Messenger 1.28 GET places (features.profilePlaces)
+    pickPlaces: [
+      { ref: 'profile:12', source: 'profile', id: 12, name: 'Arbeit', icon: 'work', lat: 50.110922, lon: 8.682127, radiusM: 200, address: 'Hafenstraße 4, Musterstadt', visibility: 'self', lastUsedAt: '2026-11-18T07:31:00.000Z', usageCount: 3 },
+      { ref: 'home', source: 'familie', id: 'home', name: 'Zuhause', icon: 'home', lat: 50.1, lon: 7.1, radiusM: 150, address: null, visibility: null, lastUsedAt: null, usageCount: 0 },
+    ],
+    pickSources: { profile: true, familie: true },
     actions: [
       { id: 'garage.open', plugin: 'gatecontrol-garage', label: 'Garage öffnen', icon: 'M0 0h24v24H0z', kind: 'button', needsConfirm: false, state: null, subtitle: null, pluginName: 'Garage' },
       { id: 'door.open', plugin: 'gatecontrol-door', label: 'Haustür öffnen', icon: null, kind: 'button', needsConfirm: true, state: null, subtitle: null, pluginName: 'Tür' },
@@ -724,6 +732,10 @@ async function messengerServer({ me = 7, plugin = true, tab = true, people = nul
       if (b && m === 'DELETE') { state.reminders = state.reminders.filter((x) => x.id !== Number(b)); return json(res, 200, { ok: true, deleted: true }); }
     }
     if (a === 'actions' && !b) return json(res, 200, { ok: true, actions: state.actions });
+    if (a === 'places' && !b && m === 'GET') {
+      if (!(features && features.profilePlaces === true)) return err(res, 404, 'not_found');
+      return json(res, 200, { ok: true, places: state.pickPlaces, sources: state.pickSources });
+    }
     if (a === 'familie' && b === 'places') return familie ? json(res, 200, { ok: true, places: state.places }) : err(res, 409, 'unavailable');
     if (a === 'conversations' && b && ['archive', 'pins', 'export'].includes(c)) {
       const conv = state.convs.get(Number(b));

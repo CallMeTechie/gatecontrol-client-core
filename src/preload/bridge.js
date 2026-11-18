@@ -254,6 +254,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Messenger 1.10: the file of a message into Drive (folderId: a folder picked, else Meine Dateien › Messenger)
       toDrive:       (id, folderId) => ipcRenderer.invoke('chat:to-drive', { id, folderId: folderId || null }),
       places:        () => ipcRenderer.invoke('chat:places'),
+      // „Meine Orte“ (Messenger 1.28 `profilePlaces`): the source of the place choice — the person's own places of the
+      // profile and Familie's places, each with `ref`, in the Messenger's order (most used here first). Without the
+      // feature: Familie's places as before (source 'familie')
+      pickPlaces:    () => ipcRenderer.invoke('chat:places', { all: true }),
       poll:          (id, op, args) => ipcRenderer.invoke('chat:poll', { ...(args || {}), id, op }),
       event:         (id, op, args) => ipcRenderer.invoke('chat:event', { ...(args || {}), id, op }),
       stopArrival:   (id) => ipcRenderer.invoke('chat:arrival:stop', { id }),
@@ -986,7 +990,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       places:        () => ipcRenderer.invoke('notes:places'),
       createPlace:   (place) => ipcRenderer.invoke('notes:place:create', { place: { ...(place || {}) } }),
       updatePlace:   (id, patch) => ipcRenderer.invoke('notes:place:update', { id, patch: { ...(patch || {}) } }),
-      deletePlace:   (id) => ipcRenderer.invoke('notes:place:delete', { id }),
+      // plugin 1.8.0 (`profilePlaces`): a place another plugin still uses answers code 'in_use' with `usedBy`;
+      // { force: true } deletes it all the same
+      deletePlace:   (id, opts) => ipcRenderer.invoke('notes:place:delete', { id, force: !!(opts && opts.force === true) }),
       setPlaceFav:   (key, placeId) => ipcRenderer.invoke('notes:place:fav', { key, placeId: placeId || null }),
       searchPlaces:  (input) => ipcRenderer.invoke('notes:place:search', { ...(input || {}) }),
       placeConsent:  (id, accept) => ipcRenderer.invoke('notes:task:place:consent', { id, accept: accept === true }),
@@ -1043,6 +1049,27 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onVault:       (cb) => subscribe('notes:vault', cb),
       onVaultLock:   (cb) => subscribe('notes:vault-lock', cb),
       onImport:      (cb) => subscribe('notes:import', cb),
+    },
+
+    // ── Meine Orte (Mein Profil › Meine Orte, GateControl 1.299.0) ──
+    // The person's own places of the profile; the forms of Chats and Notizen choose from them. Windows watches no
+    // places (the phone does). A search only on „Suchen“ / Enter, from 3 characters; `near` ({ lat, lon }) is rounded
+    // to ~1 km before it leaves the PC. While the server's address search is off, this PC's map service answers
+    // (`via: 'device'`).
+    places: {
+      status:        () => ipcRenderer.invoke('places:status'),
+      list:          (opts) => ipcRenderer.invoke('places:list', { refresh: !!(opts && opts.refresh), shared: !!(opts && opts.shared) }),
+      get:           (id) => ipcRenderer.invoke('places:get', { id }),
+      create:        (place) => ipcRenderer.invoke('places:create', { place: { ...(place || {}) } }),
+      update:        (id, patch) => ipcRenderer.invoke('places:update', { id, patch: { ...(patch || {}) } }),
+      remove:        (id, opts) => ipcRenderer.invoke('places:delete', { id, force: !!(opts && opts.force === true) }),
+      markUsed:      (id) => ipcRenderer.invoke('places:used', { id }),
+      search:        (q, near, lang) => ipcRenderer.invoke('places:search', { q, near: near && typeof near === 'object' ? { lat: near.lat, lon: near.lon } : undefined, lang }),
+      mapTile:       (z, x, y) => ipcRenderer.invoke('places:map:tile', { z, x, y }),
+      mapReverse:    (lat, lon, lang) => ipcRenderer.invoke('places:map:reverse', { lat, lon, lang }),
+      // { ids, deleted, origin: 'local' | 'push' | 'reconnect' | 'reset' } — load the lists again
+      onChanged:     (cb) => subscribe('places:changed', cb),
+      onState:       (cb) => subscribe('places:state', cb),
     },
 
     // ── Shell ────────────────────────────────────────────

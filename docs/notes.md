@@ -217,3 +217,12 @@ The test server (`test/fixtures/notes-server.js`) has `Task.deadline` and `me.dr
 (`STAGE5`); its default stays an older plugin. `srv.addDeadline()` makes such a task, `srv.reminderPush(taskId)` its
 push. `test/fixtures/drive-server.js` names `reminder.by` with `deadlineHub` (or `srv.remindBy`). Tests:
 `test/notes-deadlines.test.js`.
+
+## Plugin 1.8.0: „Meine Orte“ live in the profile
+
+With the word `profilePlaces` the places of „Meine Orte“ are those of GateControl's profile (docs/places.md): every id
+is the profile's, `ref` is `profile:<id>`, a place has `icon`, `visibility` and `usedBy`, `GET places` adds `profile:
+true` and `notMoved` (what the move could not take), `me.places.profile` says that POST / PATCH / DELETE change the
+profile. `notes:place:create` / `:update` take `icon` and `visibility`; `notes:place:delete` answers code `in_use` with
+`usedBy` and `ref` while another plugin uses the place, `{ force: true }` deletes it all the same. A task's place may be
+`{ ref: 'profile:<id>' }`.

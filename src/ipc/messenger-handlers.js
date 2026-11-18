@@ -69,6 +69,8 @@
  *   chat:to-drive        ({ id, folderId? }) → { ok, saved: { nodeId, name, where } } (Messenger 1.10, Drive)
  *   chat:to-calendar     ({ id, title, startsAt, endsAt?, allDay?, place? }) → { ok, eventId }
  *   chat:places          () → { ok, places }                                     Familie places
+ *                        ({ all: true }) → { ok, places, sources, profile }      the place choice: Messenger 1.28
+ *                        (`profilePlaces`) GET places — own profile places + Familie's, with `ref`; older: Familie's
  *   chat:poll            ({ id, op: 'vote'|'option'|'close'|'nudge', optionIds?, text? }) → { ok, message, nudged? }
  *   chat:event           ({ id, op: 'rsvp'|'check'|'edit', answer?, guests?, itemId?, done?, patch? }) → { ok, message }
  *   chat:arrival:stop    ({ id }) → { ok, message }
@@ -527,7 +529,7 @@ function registerMessengerHandlers(handle, {
     if (!posInt(a.id) || !(a.folderId === undefined || a.folderId === null || posInt(a.folderId))) return invalid();
     return { ok: true, saved: await m.toDrive(posInt(a.id), posInt(a.folderId) || null) };
   }));
-  handle('chat:places', wrap(async () => ({ ok: true, places: await m.places() })));
+  handle('chat:places', wrap(async (a) => (a.all === true ? { ok: true, ...(await m.pickPlaces()) } : { ok: true, places: await m.places() })));
   handle('chat:poll', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();
