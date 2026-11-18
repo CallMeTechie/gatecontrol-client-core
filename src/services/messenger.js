@@ -83,7 +83,7 @@ const {
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary, bridgedFeedOf, newClientId,
   FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, personGcWay, personReplyPref, replyPrefBody,
-  bridgeTakesLocation, needsGcWay, FEATURE_PLACE_MESSAGES, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
+  bridgeTakesLocation, needsGcWay, FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlaces, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
   normalizeHandoff, HANDOFF_TARGETS, BRIDGE_SECRET_MAX,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
@@ -2396,6 +2396,23 @@ class MessengerService extends EventEmitter {
   async places() {
     const r = await this.api.familiePlaces();
     return Array.isArray(r.places) ? r.places : [];
+  }
+
+  /**
+   * The source of the place choice (utils/messenger.js normalizePickPlace): Messenger 1.28 (`profilePlaces`) → GET
+   * places — the person's own places of the profile and Familie's places, most used here first — with `sources`;
+   * an older Messenger → Familie's places as before (source 'familie', `profile: false`). Without Familie: [].
+   */
+  async pickPlaces() {
+    if (this.supports(FEATURE_PROFILE_PLACES)) {
+      const r = await this.api.places();
+      const src = r && r.sources && typeof r.sources === 'object' ? r.sources : {};
+      return { places: normalizePickPlaces(r.places), sources: { profile: src.profile === true, familie: src.familie === true }, profile: true };
+    }
+    const fam = this._me && this._me.integrations && this._me.integrations.familie;
+    if (!(fam && fam.places === true)) return { places: [], sources: { profile: false, familie: false }, profile: false };
+    const r = await this.api.familiePlaces();
+    return { places: normalizePickPlaces(r.places), sources: { profile: false, familie: true }, profile: false };
   }
 
   // ── Messenger 1.4.0: polls, events, arrival ──────────────

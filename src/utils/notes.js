@@ -94,7 +94,13 @@ const CODE_RE = /^[A-Za-z0-9_.-]{1,60}$/;
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const ICON_RE = /^[a-z][a-z0-9-]{0,39}$/;
 const OSM_REF_RE = /^osm:[NWR]\d{1,18}$/;
-const PLACE_REF_RE = /^(?:osm:[NWR]\d{1,18}|familie:(?:home|place:\d{1,15}))$/;
+const PLACE_REF_RE = /^(?:osm:[NWR]\d{1,18}|familie:(?:home|place:\d{1,15})|profile:[1-9]\d{0,15})$/;
+// plugin 1.8.0 (`profilePlaces`): a place of GateControl's profile („Mein Profil › Meine Orte“)
+const PROFILE_REF_RE = /^profile:[1-9]\d{0,15}$/;
+const PROFILE_ICONS = ['home', 'work', 'school', 'gym', 'shop', 'family', 'pin'];
+const PROFILE_VISIBILITY = ['self', 'family', 'all'];
+const USE_PLUGIN_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const USE_KIND_RE = /^[a-z][a-z0-9_.-]{0,39}$/;
 const FAMILY_ID_RE = /^(?:home|place:\d{1,15})$/;
 const PLACE_KEY_RE = /^(?:kind:[a-z]{2,20}|name:[^\u0000-\u001f\u007f]{2,40})$/;
 const HTTPS_RE = /^https:\/\/[A-Za-z0-9.-]{1,120}(?:\/[A-Za-z0-9._~\/?=&%#-]{0,300})?$/;
@@ -227,6 +233,13 @@ const familyIdOf = (v) => (typeof v === 'string' && FAMILY_ID_RE.test(v) ? v : n
 const placeRefOf = (v) => (typeof v === 'string' && PLACE_REF_RE.test(v) ? v : null);
 const coordOf = (v, max) => (typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max ? v : null);
 const radiusOf = (v) => (Number.isFinite(v) && v > 0 ? Math.max(PLACE_RADIUS.min, Math.min(PLACE_RADIUS.max, Math.round(v))) : null);
+/** „Genutzt von“ of a place of the profile (plugin 1.8.0) → [{ plugin, pluginName, kind, count }]. */
+const usedByOf = (v) => arr(v).slice(0, 50).map((u) => {
+  const x = obj(u);
+  if (!x || typeof x.plugin !== 'string' || !USE_PLUGIN_RE.test(x.plugin) || typeof x.kind !== 'string' || !USE_KIND_RE.test(x.kind)) return null;
+  const n = typeof x.count === 'number' && Number.isFinite(x.count) ? Math.round(x.count) : 0;
+  return n > 0 ? { plugin: x.plugin, pluginName: line(x.pluginName, 60) || null, kind: x.kind, count: Math.min(n, 1000000) } : null;
+}).filter(Boolean);
 const roundOf = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
 const searchStateOf = (v) => (SEARCH_STATES.includes(v) ? v : 'off');
 
@@ -283,6 +296,11 @@ function normalizePlace(v) {
     ref: placeRefOf(o.ref), family: bool(o.family),
     favFor: arr(o.favFor).slice(0, 50).map((f) => { const x = obj(f); const key = x && placeKeyOf(x.key); return key ? { key, label: line(x.label, PLACE_LABEL_MAX) || '' } : null; }).filter(Boolean),
     uses: count(o.uses) || 0, updatedAt: msOf(o.updatedAt),
+    // plugin 1.8.0 (`profilePlaces`): the place lives in GateControl's profile (id = the profile's id) — its symbol,
+    // who sees it and „Genutzt von“ (only what the plugin sends)
+    ...(PROFILE_ICONS.includes(o.icon) ? { icon: o.icon } : {}),
+    ...(PROFILE_VISIBILITY.includes(o.visibility) ? { visibility: o.visibility } : {}),
+    ...(Array.isArray(o.usedBy) ? { usedBy: usedByOf(o.usedBy) } : {}),
   };
 }
 
@@ -304,6 +322,13 @@ function normalizePlaces(v) {
     places: arr(o.places).slice(0, 1000).map(normalizePlace).filter(Boolean),
     family: arr(o.family).slice(0, 100).map(normalizeFamilyPlace).filter(Boolean),
     favs: normalizeFavs(o.favs),
+    // plugin 1.8.0: the places live in the profile; what the move could not take ({ name, reason, field })
+    ...(o.profile === true ? { profile: true } : {}),
+    ...(Array.isArray(o.notMoved) ? { notMoved: o.notMoved.slice(0, 100).map((x) => {
+      const n = obj(x);
+      const name = n && line(n.name, PLACE_NAME_MAX);
+      return name ? { name, reason: ['invalid', 'limit'].includes(n.reason) ? n.reason : 'invalid', field: typeof n.field === 'string' ? n.field.slice(0, 40) : null } : null;
+    }).filter(Boolean) } : {}),
   };
 }
 
@@ -371,6 +396,8 @@ function mePlacesOf(v) {
     nearby: o.nearby !== false, quiet: quietOf(o.quiet), perTask: count(o.perTask) || 0,
     radius: { min: radiusOf(r.min) || PLACE_RADIUS.min, max: radiusOf(r.max) || PLACE_RADIUS.max, default: radiusOf(r.default) || PLACE_RADIUS.default },
     family: bool(o.family),
+    // plugin 1.8.0: { places: true, edit: 'plugin' } — the places are the profile's (POST / PATCH / DELETE change it)
+    ...(obj(o.profile) && obj(o.profile).places === true ? { profile: { places: true, edit: line(obj(o.profile).edit, 20) || 'plugin' } } : {}),
   };
 }
 
@@ -1026,6 +1053,10 @@ function placeArg(v) {
   } else if (o.familyId != null) {
     if (!familyIdOf(o.familyId)) return undefined;
     b.familyId = o.familyId;
+  } else if (typeof o.ref === 'string' && PROFILE_REF_RE.test(o.ref) && o.lat === undefined && o.lon === undefined) {
+    // plugin 1.8.0: a place of the profile by its reference (also one shared by someone else with „Familie“ / „Alle“)
+    b.ref = o.ref;
+    concrete = true;
   } else if (o.lat !== undefined || o.lon !== undefined || o.name !== undefined || o.ref != null) {
     const name = line(o.name, PLACE_NAME_MAX);
     const lat = coordOf(o.lat, 90);
@@ -1159,7 +1190,7 @@ function assignArg(p) {
 /** POST places { name, lat, lon, address?, radius?, ref? } — a new one of „Meine Orte“ → the body, or null. */
 function placeCreate(p) {
   const o = obj(p);
-  const b = o && placePatch({ name: o.name, lat: o.lat, lon: o.lon, address: o.address, radius: o.radius });
+  const b = o && placePatch({ name: o.name, lat: o.lat, lon: o.lon, address: o.address, radius: o.radius, icon: o.icon, visibility: o.visibility });
   if (!b || !b.name || b.lat === undefined || b.lon === undefined) return null;
   if (o.ref != null) { if (typeof o.ref !== 'string' || !OSM_REF_RE.test(o.ref)) return null; b.ref = o.ref; }
   return b;
@@ -1176,6 +1207,9 @@ function placePatch(p) {
   if (o.lon !== undefined) { if (coordOf(o.lon, 180) === null) return null; b.lon = o.lon; }
   if (o.radius !== undefined && o.radius !== null) { if (!Number.isFinite(o.radius) || o.radius < PLACE_RADIUS.min || o.radius > PLACE_RADIUS.max) return null; b.radius = Math.round(o.radius); }
   if (o.named !== undefined && o.named !== null) { if (typeof o.named !== 'boolean') return null; b.named = o.named; }
+  // plugin 1.8.0: the symbol and who sees the place (fields of the profile)
+  if (o.icon !== undefined && o.icon !== null) { if (!PROFILE_ICONS.includes(o.icon)) return null; b.icon = o.icon; }
+  if (o.visibility !== undefined && o.visibility !== null) { if (!PROFILE_VISIBILITY.includes(o.visibility)) return null; b.visibility = o.visibility; }
   return b;
 }
 
@@ -1352,7 +1386,7 @@ module.exports = {
   line, text, posId, count, dateOf, timeOf, areaOf, colorOf, pluginOf, vaultIdOf, isMediaId, repeatOf, openOf, shopIdOf, isoOf,
   normalizeShopList, normalizeShopItem, normalizeShopping, normalizeOpsAnswer, normalizeAttach, shopOp, shopOps, assignArg,
   TURNS, STARS_MAX, FEEDBACK, peopleArg,
-  PLACE_RADIUS, PLACE_TRIGGERS, placeKeyOf, familyIdOf, normalizePlace, normalizeFamilyPlace, normalizePlaces, normalizeFavs, normalizePlaceSuggest,
+  PLACE_RADIUS, PLACE_TRIGGERS, usedByOf, placeKeyOf, familyIdOf, normalizePlace, normalizeFamilyPlace, normalizePlaces, normalizeFavs, normalizePlaceSuggest,
   normalizePlaceSearch, placeArg, placeCreate, placePatch, favArg, placeSearchArg, placePrefsArg,
   normalizeTask, normalizeItem, normalizeEntry, normalizeList, normalizeGroup, normalizeNotebook, normalizeNoteSummary, normalizeNote,
   normalizeAttachment, normalizeYesterday, normalizeView, normalizeNav, normalizePrefs, normalizeMe, normalizePeople, normalizeSources, normalizeSearch,

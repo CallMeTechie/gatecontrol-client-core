@@ -33,6 +33,7 @@ const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
 const { registerMailHandlers } = require('./mail-handlers');
 const { registerNotesHandlers } = require('./notes-handlers');
+const { registerPlacesHandlers } = require('./places-handlers');
 const MapService = require('../services/map-service');
 const { createUserFolders } = require('../utils/user-folders');
 
@@ -219,6 +220,10 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notes] - NotesService (opt-in, "Notizen & Aufgaben"): registers the
  *   notes:* channels (ipc/notes-handlers.js), forwards its events to the main window
  *   and resets it (its Tresor keys, the export picked) after a successful server:setup.
+ * @param {object} [ctx.places] - PlacesService (opt-in, „Mein Profil › Meine Orte“, GateControl ≥ 1.299.0):
+ *   registers the places:* channels (ipc/places-handlers.js), forwards its events to the main window and resets it
+ *   after a successful server:setup. Without its own `maps` it gets the map service below (the address search of
+ *   this PC while the server's is off).
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
  * @param {object} [ctx.userFolders] - utils/user-folders createUserFolders() (tests);
@@ -255,6 +260,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const driveStream = (driveSvc && ctx.driveStream) || null;
   const mailSvc = ctx.mail || null;
   const notesSvc = ctx.notes || null;
+  const placesSvc = ctx.places || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
   const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
@@ -327,6 +333,10 @@ function registerBaseHandlers(ipcMain, ctx) {
       Promise.resolve().then(() => mailSvc.resetForNewServer()).catch((err) => log.warn(`Mail reset failed: ${err.message}`));
     }
     // Notizen & Aufgaben: availability, the Tresor keys and an export picked belong to the old server.
+    // Meine Orte: the places belong to the old server's profile.
+    if (placesSvc) {
+      Promise.resolve().then(() => placesSvc.resetForNewServer()).catch((err) => log.warn(`Meine Orte reset failed: ${err.message}`));
+    }
     if (notesSvc) {
       Promise.resolve().then(() => notesSvc.resetForNewServer()).catch((err) => log.warn(`Notizen reset failed: ${err.message}`));
     }
@@ -835,7 +845,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (notificationCenter) registerNotifyHandlers(handle, { notificationCenter, getMainWindow, log });
 
   // OpenStreetMap tiles / addresses for the chats' maps and Drive's photo map (one service: one queue, one cache)
-  const maps = ctx.maps || (messenger || driveSvc ? new MapService({
+  const maps = ctx.maps || (messenger || driveSvc || placesSvc ? new MapService({
     log,
     userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
     getLang: () => getLocale(),
@@ -889,6 +899,12 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Notizen & Aufgaben (plugin gatecontrol-notizen, opt-in) ──
   if (notesSvc) registerNotesHandlers(handle, { notes: notesSvc, getMainWindow, log });
+
+  // ── Meine Orte (profile of GateControl ≥ 1.299.0, opt-in) ──
+  if (placesSvc) {
+    if (!placesSvc.maps && maps) placesSvc.maps = maps;
+    registerPlacesHandlers(handle, { places: placesSvc, maps, getMainWindow, log });
+  }
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).

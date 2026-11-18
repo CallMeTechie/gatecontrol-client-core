@@ -247,7 +247,11 @@ class NotesApi {
   updatePlace(id, body) { return this._place(this.api('PATCH', `places/${this._id(id)}`, { body })); }
 
   /** DELETE places/<id> — tasks that hang on the place keep it; a second call answers `gone`. */
-  async deletePlace(id) { const r = await this.api('DELETE', `places/${this._id(id)}`); return { gone: r.gone === true }; }
+  /** plugin 1.8.0: a place another plugin still uses → 409 in_use { usedBy }; force deletes it all the same. */
+  async deletePlace(id, { force = false } = {}) {
+    const r = await this.api('DELETE', `places/${this._id(id)}`, force ? { params: { force: 1 } } : undefined);
+    return { gone: r.gone === true };
+  }
 
   async setPlaceFav(body) { return N.normalizeFavs((await this.api('PUT', 'places/favs', { body })).favs); }
 
