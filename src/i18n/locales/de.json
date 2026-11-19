@@ -1990,6 +1990,9 @@
       "blocked": "Gesperrt",
       "percent": "Anteil"
     },
+    "profile": {
+      "home": "Profil „{{name}}“ · gilt zu Hause und unterwegs"
+    },
     "scope": {
       "person": "Zahlen aller deiner Geräte",
       "server": "Zahlen aller Geräte des Servers"
@@ -2032,7 +2035,10 @@
       "fallbackText": "Dein Internet läuft weiter, aber ohne Schutz. Dein Admin wurde benachrichtigt. Der Schutz schaltet sich von selbst wieder ein.",
       "notAllowedTitle": "Unterbrechen nicht erlaubt.",
       "profile": "Für dein Profil hat der Admin das Unterbrechen gesperrt. Geht eine Seite nicht, die du brauchst, frag deine Eltern oder den Admin.",
-      "admins_only": "Unterbrechen dürfen hier nur Admins."
+      "admins_only": "Unterbrechen dürfen hier nur Admins.",
+      "internetTitle": "Internet pausiert bis {{time}} Uhr",
+      "internetText": "Dein Internet ist pausiert (Familie). Das gilt auch unterwegs über das VPN: Es gehen nur ausdrücklich erlaubte Seiten. Den Schutz zu unterbrechen ändert daran nichts.",
+      "internet_paused": "Das Internet ist pausiert (Familie). Den Schutz zu unterbrechen ändert daran nichts."
     },
     "top": {
       "title": "Top gesperrte Domains",
@@ -2064,7 +2070,8 @@
         "30": "30 Minuten",
         "60": "1 Stunde",
         "240": "4 Stunden"
-      }
+      },
+      "internetPaused": "Internet pausiert bis {{time}} (Familie)"
     },
     "toast": {
       "outageTitle": "DNS-Schutz: Filter ausgefallen",

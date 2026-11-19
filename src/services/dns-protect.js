@@ -21,10 +21,14 @@
  * - The apps draw what the server says (`may`) and check nothing themselves.
  * - There are no live events: `status` is asked again every 45 s while the
  *   card is watched (watch(true)), every 5 min otherwise (tray, outage), and
- *   shortly after the end of a running pause. 429 stretches the interval.
- * - A plugin that is gone or switched off under us (404, 501 unsupported,
- *   409 off, 403 without a person) is "no DNS protection"; a plugin in
- *   trouble (502 / 503 / 504, no network) keeps the last answer (`stale`).
+ *   shortly after the end of a running pause or of "Internet pausiert"
+ *   (`status.internet`, plugin 1.1.0). 429 stretches the interval.
+ * - A plugin that is gone or switched off under us (the core's 404 — server
+ *   1.301.0: `reason: "plugin_unavailable"`, older: no `error` text —, 501
+ *   unsupported, 409 off, 403 without a person) is "no DNS protection"; the
+ *   plugin's own 404 (unknown device, with its sentence) asks the status
+ *   again; a plugin in trouble (502 / 503 / 504, no network) keeps the last
+ *   answer (`stale`).
  * - 'outage' when the filter goes from running to "fallback" (the plugin
  *   tells only admins; the app shows its own Windows notification).
  *
@@ -41,14 +45,14 @@ const DEFAULT_TIMING = {
   recheckMs: 10 * 60 * 1000,   // no DNS protection: ask permissions again
   retryMinMs: 5000,            // network errors: 5 s …
   retryMaxMs: 5 * 60 * 1000,   // … 5 min
-  goneMinMs: 60 * 1000,        // the plugin refused although permissions names it: 1 min … recheckMs
+  goneMinMs: 60 * 1000,        // the plugin refused although permissions names it: at once, then 1 min … recheckMs
   pollMs: 45 * 1000,           // status while the card is shown
   idleMs: 5 * 60 * 1000,       // status otherwise
   afterPauseMs: 2000,          // status this long after the end of a pause
 };
 
 // Refusals that mean "no DNS protection (any more)".
-const GONE = (e) => e.status === 404 || e.status === 501 || (e.status === 409 && e.code === 'off') || (e.status === 403 && (e.code === 'forbidden' || e.code === 'no_user'));
+const GONE = (e) => dns.pluginGone(e) || e.status === 501 || (e.status === 409 && e.code === 'off') || (e.status === 403 && (e.code === 'forbidden' || e.code === 'no_user'));
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -329,7 +333,9 @@ class DnsProtectService extends EventEmitter {
       this._avail = { state: 'unavailable', reason: e.status === 404 ? 'not_found' : e.code, plugin: null, filter: null, checkedAt: this.now() };
       clearTimeout(this._pollTimer);
       this._pollTimer = null;
-      if (this._started) this._scheduleCheck(Math.min(this.timing.recheckMs, this.timing.goneMinMs * (2 ** this._gone)));
+      // permissions is asked again at once the first time (the server may report no DNS protection now), then
+      // after 1 min … recheckMs while it still names a plugin that refuses
+      if (this._started) this._scheduleCheck(this._gone === 0 ? 0 : Math.min(this.timing.recheckMs, this.timing.goneMinMs * (2 ** (this._gone - 1))));
       this._gone = Math.min(this._gone + 1, 10);
       return;
     }
@@ -343,11 +349,12 @@ class DnsProtectService extends EventEmitter {
     this._pollTimer = null;
     if (!this._started || !this.available()) return;
     let ms = (this._watched ? this.timing.pollMs : this.timing.idleMs) * (2 ** this._slow);
-    // A running pause ends: ask shortly after.
-    const p = this._data && this._data.pause;
-    if (p && p.until && !this._stale) {
-      const left = p.until - dns.serverNow(this.snapshot(), this.now());
-      ms = Math.min(ms, Math.max(0, left) + this.timing.afterPauseMs);
+    // A running pause — or "Internet pausiert" of the family plugin — ends: ask shortly after.
+    if (!this._stale) {
+      const at = dns.serverNow(this.snapshot(), this.now());
+      for (const end of [this._data && this._data.pause && this._data.pause.until, this._data && this._data.internet && this._data.internet.until]) {
+        if (end) ms = Math.min(ms, Math.max(0, end - at) + this.timing.afterPauseMs);
+      }
     }
     this._pollTimer = setTimeout(() => this._refreshNow().catch(() => {}), ms);
     if (this._pollTimer.unref) this._pollTimer.unref();
@@ -388,7 +395,8 @@ class DnsProtectService extends EventEmitter {
       if (scope === this._scope) {
         if (GONE(e)) { this._failed(e); this._publish(); }
         // Refused: what the server allows has changed — show it.
-        else if (e.status === 403 || e.status === 409) this._refreshNow().catch(() => {});
+        // (a 404 here is the plugin's own: the device or person it was about is unknown)
+        else if (e.status === 403 || e.status === 404 || e.status === 409) this._refreshNow().catch(() => {});
       }
       throw e;
     }
