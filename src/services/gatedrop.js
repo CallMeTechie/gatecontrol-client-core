@@ -50,6 +50,9 @@
  * transfer to this PC reports ok only with every file and always with `bytes` (else 'incomplete'); after its own
  * ok as the sender this PC asks GET sends/<id> until the receiver decided and uploads the files (POST
  * sends/<id>/items) when the delivery waits for them (pending + direct_failed).
+ * GateDrop 1.6: our ok leaves the delivery 'direct' until the receiver confirms (then 'delivered' / 'opened' with
+ * pickedAt); without a confirmation 20 s later the plugin takes the server way (pending + direct_failed → upload). The
+ * ~30 s of asking show phase 'sent' ("Wird übertragen …") instead of an early "direkt gesendet".
  *
  * Waiting for the other end of a direct transfer (a device pulls from us, or
  * pushes to us) GET transfers/<id> is asked every few seconds: when that end
@@ -93,8 +96,9 @@ const DEFAULT_TIMING = {
   scanRecheckMs: [10000, 20000, 40000, 60000, 120000, 120000, 120000, 120000], // a received file still being checked: look again
   scanRecheckLateMs: 5 * 60 * 1000, // … then every 5 minutes
   scanRecheckMax: 8 + 48,           // … for about 4 hours in all (afterwards: GET pending at the next connect)
-  // GateDrop 1.5: after this PC's own ok of a direct transfer, GET sends/<id> at these waits (ms) until the receiving
-  // end decided — it confirmed (pickedAt), or not everything arrived and the files must go up (pending + direct_failed)
+  // GateDrop 1.5/1.6: after this PC's own ok of a direct transfer, GET sends/<id> at these waits (ms, ~30 s in all — the
+  // 1.6 plugin falls back after 20 s) until the receiving end decided — it confirmed (pickedAt), or not everything
+  // arrived / no confirmation and the files must go up (pending + direct_failed)
   directVerifyMs: [0, 1000, 2000, 3000, 5000, 8000, 11000],
 };
 const MAX_SAVED = 100;
@@ -891,8 +895,9 @@ class GateDropService extends EventEmitter {
     const answer = await this._report(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
     let indexes = null;
     if (ok) {
-      // GateDrop 1.5: the receiving end decides — it may report that not everything arrived (also after our ok)
-      const after = await this._afterDirectOk(d, answer, sendId);
+      // GateDrop 1.5/1.6: the receiving end decides — it may report that not everything arrived (also after our ok)
+      const after = await this._afterDirectOk(d, answer, sendId,
+        () => this.emit('progress', { id: jobId, dir: 'out', phase: 'sent', sent: total, total, sendId, deviceId: d.deviceId, handover: true }));
       if (!after.upload) return { ok: true, via: after.via };
       indexes = Array.isArray(after.missing) ? after.missing : list.map((_, i) => i);
       this.log.info(`GateDrop direct to ${d.deviceId || 'device'}: the receiver did not get everything – server path`);
@@ -910,13 +915,16 @@ class GateDropService extends EventEmitter {
   }
 
   /**
-   * After this PC's own ok of a direct transfer (GateDrop 1.5): the delivery is 'delivered' but only picked up once
-   * the receiving device confirms it got every byte. Its failure ('incomplete', …) takes the server way, which waits
-   * for the files (pending + direct_failed — what `fallback: 'upload'` means). Our own answer says so when the
-   * receiver was first; else GET sends/<id> is asked at `timing.directVerifyMs` until the receiver decided.
+   * After this PC's own ok of a direct transfer: only the receiving device's confirmation is the pick-up. GateDrop 1.5
+   * marks the delivery 'delivered' (pickedAt null) on our ok, 1.6 leaves it 'direct' until the receiver confirms
+   * ('delivered' / 'opened' with pickedAt); without a confirmation 20 s after our ok 1.6 takes the server way itself.
+   * Its failure ('incomplete', no confirmation, …) waits for the files (pending + direct_failed — what
+   * `fallback: 'upload'` means): they go up. Our own answer says so when the receiver was first; else GET sends/<id> is
+   * asked at `timing.directVerifyMs` (~30 s) until it decided. Meanwhile the job shows phase 'sent' ("Wird übertragen …",
+   * `onWait`). An older plugin (no pickedAt) is not waited for.
    * → { via: 'direct' | 'server', upload?: true, missing?: [indexes] }
    */
-  async _afterDirectOk(d, answer, sendId) {
+  async _afterDirectOk(d, answer, sendId, onWait = () => {}) {
     const missingOf = (send) => (send ? send.items.filter((it) => !it.mediaId && !SC.isBlocked(it.scan)).map((it) => it.index) : null);
     const own = answer && answer.delivery;
     if (own && own.status === 'pending' && own.error === 'direct_failed') {
@@ -924,21 +932,38 @@ class GateDropService extends EventEmitter {
       try { send = await this.api.send(sendId); } catch { send = null; }
       return { via: 'server', upload: true, missing: missingOf(send) };
     }
-    if (own && own.pickedAt) return { via: 'direct' };
+    if (own && (own.pickedAt || own.status === 'opened')) return { via: 'direct' };
     if (!sendId || !d.deviceId) return { via: 'direct' };
     const waits = Array.isArray(this.timing.directVerifyMs) ? this.timing.directVerifyMs : [];
+    let waiting = false;
     for (const ms of waits) {
       if (ms > 0) await this._sleep(ms);
       let send = null;
       try { send = await this.api.send(sendId); } catch (err) { this.log.debug(`GateDrop send ${sendId}: ${err.code || err.message}`); continue; }
-      const dl = send && !send.removed ? send.deliveries.find((x) => x.kind === 'device' && x.target === d.deviceId) : null;
-      if (!dl) return { via: 'direct' };
-      if (dl.status === 'pending' && dl.error === 'direct_failed') return { via: 'server', upload: true, missing: missingOf(send) };
-      if (dl.status === 'delivered' && dl.via === 'server') return { via: 'server' }; // the files were on the server: it delivered
-      // confirmed, or nothing more to do (failed / expired / removed), or an older plugin (no pickedAt: it does not wait for the receiver)
-      if (dl.pickedAt || dl.status !== 'delivered' || !('pickedAt' in dl)) return { via: 'direct' };
+      const verdict = GateDropService._pickup(send, d.deviceId);
+      if (verdict === 'upload') return { via: 'server', upload: true, missing: missingOf(send) };
+      if (verdict === 'server') return { via: 'server' }; // the files were on the server: it delivered
+      if (verdict === 'direct') return { via: 'direct' };
+      if (!waiting) { waiting = true; onWait(); }
     }
+    this.log.info(`GateDrop direct to ${d.deviceId}: no confirmation of the receiver – done as sent`);
     return { via: 'direct' };
+  }
+
+  /**
+   * Where the delivery of `send` (GET sends/<id>) to the device `deviceId` stands after this PC's ok:
+   * 'upload' (pending + direct_failed: the files still on this PC must go up), 'server' (delivered via the server),
+   * 'wait' (not confirmed yet: 'direct' since 1.6, 'delivered' via direct without pickedAt in 1.5) or 'direct' (done:
+   * confirmed, opened, nothing more to do — failed / expired / removed — or an older plugin without pickedAt).
+   */
+  static _pickup(send, deviceId) {
+    const dl = send && !send.removed ? send.deliveries.find((x) => x.kind === 'device' && x.target === deviceId) : null;
+    if (!dl) return 'direct';
+    if (dl.status === 'pending' && dl.error === 'direct_failed') return 'upload';
+    if (dl.status === 'delivered' && dl.via === 'server') return 'server';
+    if (!('pickedAt' in dl) || dl.pickedAt || dl.status === 'opened') return 'direct';
+    if (dl.status === 'direct' || dl.status === 'delivered') return 'wait';
+    return 'direct';
   }
 
   _sleep(ms) {

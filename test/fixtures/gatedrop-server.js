@@ -40,6 +40,9 @@
 //     plays the receiving end after the sender's ok (`receiverDelayMs` later): ok → picked up, else the delivery waits for
 //     the files (pending + direct_failed, the plugin's `fallback: 'upload'`); srv.removeSend(id) → "Vom Admin entfernt"
 //     (removed, deliveries not picked up expired with error 'removed'), srv.pick(id) → every delivery picked up,
+//   GateDrop 1.6 (version ≥ 1.6.0): the sender's ok leaves the delivery 'direct'; only the receiving end's ok
+//     (receiverAfterOk) makes it 'delivered' via direct with pickedAt; without it `confirmMs` (state, default 20 s) after
+//     the sender's ok GET sends/<id> of the sender takes the server way first (files only local → pending + direct_failed)
 //   srv.close()
 
 const http = require('node:http');
@@ -59,8 +62,11 @@ const atLeast = (v, min) => {
 
 async function gatedropServer({ plugin = true, version = '1.0.0', targets = null, direct = null, inbox = null } = {}) {
   const v15 = atLeast(version, '1.5.0');
+  const v16 = atLeast(version, '1.6.0');
   const state = {
     v15,
+    v16,
+    confirmMs: 20000,
     receiverAfterOk: null,
     receiverDelayMs: 0,
     plugin,
@@ -336,6 +342,16 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     }
     if (req.method === 'GET' && (m = /^sends\/([^/]+)$/.exec(route))) {
       const st = state.sends.get(m[1]);
+      // GateDrop 1.6: a direct delivery not confirmed `confirmMs` after the sender's ok takes the server way (overdue)
+      if (v16 && st) {
+        for (const tr of state.transfers.values()) {
+          const dl = tr.sendId === st.id && tr.senderOkAt && tr.status === 'done' ? deviceDelivery(st, tr.toDevice) : null;
+          if (!dl || dl.status !== 'direct' || dl.pickedAt || Date.now() - tr.senderOkAt < state.confirmMs) continue;
+          tr.status = 'expired';
+          const missing = st.items.filter((i) => !i.mediaId).map((i) => i.idx);
+          Object.assign(dl, missing.length ? { status: 'pending', via: null, error: 'direct_failed' } : { status: 'delivered', via: 'server', error: 'direct_failed' });
+        }
+      }
       return st ? json(res, 200, { ok: true, send: view(st) }) : json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
     }
     if (req.method === 'POST' && (m = /^transfers\/([^/]+)\/result$/.exec(route))) {
@@ -355,14 +371,19 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
         if (body.ok) {
           tr.status = 'done';
           tr.oks = (tr.oks || 0) + 1;
-          if (dl && (dl.status === 'direct' || dl.status === 'pending') && !(dl.error === 'direct_failed')) Object.assign(dl, { status: 'delivered', via: 'direct', error: null });
+          tr.senderOkAt = tr.senderOkAt || Date.now();
+          if (v16) {
+            // only the receiving end's ok delivers: the sender's leaves the delivery 'direct'
+            if (dl && dl.status === 'pending' && dl.error !== 'direct_failed') Object.assign(dl, { status: 'direct', via: null, error: null });
+          } else if (dl && (dl.status === 'direct' || dl.status === 'pending') && !(dl.error === 'direct_failed')) Object.assign(dl, { status: 'delivered', via: 'direct', error: null });
+          if (v16 && dl && tr.oks >= 2 && dl.status === 'direct') Object.assign(dl, { status: 'delivered', via: 'direct', error: null });
           if (dl && tr.oks >= 2 && dl.status === 'delivered' && dl.via === 'direct') dl.pickedAt = dl.pickedAt || Date.now();
           const recv = state.receiverAfterOk;
           if (recv && dl) {
             state.receiverAfterOk = null;
             setTimeout(() => {
               state.results.push({ transferId: tr.id, side: 'receiver', ...recv });
-              if (recv.ok) dl.pickedAt = Date.now();
+              if (recv.ok) Object.assign(dl, v16 ? { status: 'delivered', via: 'direct', error: null } : {}, { pickedAt: Date.now() });
               else { tr.status = 'failed'; tr.peer = { ok: false, error: recv.error || 'failed' }; fallBack(); }
             }, state.receiverDelayMs);
           }
