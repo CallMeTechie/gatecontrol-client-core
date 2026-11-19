@@ -5,6 +5,11 @@
  * devices, plugin gatecontrol-dns from 1.0.0, server from 1.264.0): what
  * GET /api/v1/client/permissions says about it, the cleaned answer of the
  * plugin's `status`, the body of `pause`, and the entries of the tray menu.
+ * Plugin 1.1.0 (server from 1.267.0) adds, without changing anything else:
+ * `status.internet` ("Internet pausiert" of the family plugin also holds over
+ * the VPN), the reason `internet_paused`, `pause.minutes` and, in `GET
+ * people`, `people[].pause` / `people[].internet`. An older plugin simply
+ * does not send them (null).
  * No Electron, no network.
  */
 
@@ -17,7 +22,7 @@ const STATES = ['active', 'paused', 'fallback', 'unfiltered', 'starting', 'off']
 const DEVICE_STATES = ['filtered', 'ownDns', 'excluded', 'disabled'];
 const COUNTER_SCOPES = ['device', 'person', 'server'];
 const PAUSE_SCOPES = ['peer', 'user', 'all'];
-const REASONS = ['admins_only', 'profile', 'not_filtered', 'no_device', 'fallback', 'off', 'paused_for_all'];
+const REASONS = ['admins_only', 'profile', 'not_filtered', 'no_device', 'fallback', 'off', 'paused_for_all', 'internet_paused'];
 // The minutes the plugin offers; the chips of the card and the tray entries.
 const DURATIONS = [5, 30, 60, 240];
 const EXTEND_MINUTES = 30;
@@ -82,7 +87,21 @@ function normalizePause(raw) {
     since: msOf(raw.since),
     by,
     byMe: raw.byMe === true,
+    // the duration that was picked (with "+30 Min." the whole of it); null without an end or from a plugin < 1.1.0
+    minutes: !openEnd && typeof raw.minutes === 'number' && posInt(raw.minutes) && raw.minutes <= MAX_MINUTES ? raw.minutes : null,
   };
+}
+
+/**
+ * "Internet pausiert" (plugin 1.1.0: the family plugin paused the internet of
+ * the person, and over the VPN only "Immer erlaubt" answers): { until } (ms)
+ * or null. Not a state of the protection — it keeps running, and pausing it
+ * does not bring the internet back.
+ */
+function normalizeInternet(raw) {
+  if (!raw || typeof raw !== 'object' || raw.paused !== true) return null;
+  const until = msOf(raw.until);
+  return until ? { until } : null;
 }
 
 function normalizeDevice(raw) {
@@ -126,6 +145,8 @@ function normalizeStatus(raw) {
     device: normalizeDevice(r.device),
     profile,
     pause,
+    // null in the fallback and while off: the plugin sends it only while the filter runs
+    internet: r.state === 'fallback' || r.state === 'off' ? null : normalizeInternet(r.internet),
     outage: r.state === 'fallback' ? { since: msOf(r.outage && r.outage.since) } : null,
     counters: { scope: COUNTER_SCOPES.includes(c.scope) ? c.scope : 'server', queries, blocked, percent: pct },
     top: normalizeTop(r.top),
@@ -133,6 +154,46 @@ function normalizeStatus(raw) {
     manage: r.manage === true,
     serverTime: msOf(r.serverTime),
   };
+}
+
+/**
+ * The answer of GET people (only with `status.manage`: admins and parents)
+ * → { all: { may, pause } | null, people: [{ userId, name, role, self, may,
+ * pause, internet, devices: [{ peerId, name, state, pause, internetPaused }] }] }
+ * or null. `people[].pause` is the person's pause as the plugin (1.1.0) says
+ * it; an older plugin does not send it — then the common pause of all its
+ * filtered devices, as the plugin would derive it. Not shown in the Windows
+ * apps yet ("Für andere unterbrechen" waits for its design).
+ */
+function normalizePeople(raw) {
+  const r = raw && typeof raw === 'object' ? raw : null;
+  if (!r || !Array.isArray(r.people)) return null;
+  const all = r.all && typeof r.all === 'object' ? { may: normalizeMay(r.all.may), pause: normalizePause(r.all.pause) } : null;
+  const people = [];
+  for (const p of r.people) {
+    const userId = p && typeof p === 'object' ? posInt(p.userId) : null;
+    if (!userId || people.length >= 500) continue;
+    const devices = (Array.isArray(p.devices) ? p.devices : []).slice(0, 100).map((d) => {
+      const dev = normalizeDevice(d);
+      return dev && dev.peerId ? { ...dev, pause: normalizePause(d.pause), internetPaused: msOf(d.internetPaused) } : null;
+    }).filter(Boolean);
+    let pause = normalizePause(p.pause);
+    if (!pause && !Object.prototype.hasOwnProperty.call(p, 'pause')) {
+      const filtered = devices.filter((d) => d.state === 'filtered');
+      pause = filtered.length && filtered.every((d) => d.pause) ? filtered[0].pause : null;
+    }
+    people.push({
+      userId,
+      name: clean(p.name, 80),
+      role: p.role === 'admin' ? 'admin' : 'user',
+      self: p.self === true,
+      may: normalizeMay(p.may),
+      pause,
+      internet: normalizeInternet(p.internet),
+      devices,
+    });
+  }
+  return { all, people };
 }
 
 /**
@@ -196,15 +257,20 @@ function dnsProtectMenuItems({ snapshot, t, locale = 'de', pause, resume }) {
   const line = (label) => ({ label, enabled: false });
   if (s.state === 'fallback') return [line(t('dnsProtect.tray.fallback'))];
   if (s.state === 'unfiltered') return [line(t('dnsProtect.tray.unfiltered'))];
+  // "Internet pausiert" (Familie): a second grey line under the state, until the server says it is over
+  const internet = s.internet
+    ? [line(t('dnsProtect.tray.internetPaused', { time: clockText(onLocalClock(s.internet.until, snapshot), locale) }))]
+    : [];
   if (s.state === 'paused') {
     const p = s.pause;
     const until = p && p.until ? clockText(onLocalClock(p.until, snapshot), locale) : '';
     return [
       line(until ? t('dnsProtect.tray.pausedUntil', { time: until }) : t('dnsProtect.tray.paused')),
+      ...internet,
       ...(s.may.resume ? [{ label: t('dnsProtect.tray.resume'), click: () => resume() }] : []),
     ];
   }
-  const items = [line(t('dnsProtect.tray.active'))];
+  const items = [line(t('dnsProtect.tray.active')), ...internet];
   if (!s.may.pause) return items;
   const submenu = s.may.durations.map((m) => ({ label: t(`dnsProtect.tray.minutes.${m}`), click: () => pause({ minutes: m }) }));
   if (submenu.length) submenu.push({ type: 'separator' });
@@ -225,7 +291,9 @@ module.exports = {
   vpnDnsOf,
   normalizeMay,
   normalizePause,
+  normalizeInternet,
   normalizeStatus,
+  normalizePeople,
   pauseBody,
   serverNow,
   onLocalClock,

@@ -21,7 +21,8 @@
  * - The apps draw what the server says (`may`) and check nothing themselves.
  * - There are no live events: `status` is asked again every 45 s while the
  *   card is watched (watch(true)), every 5 min otherwise (tray, outage), and
- *   shortly after the end of a running pause. 429 stretches the interval.
+ *   shortly after the end of a running pause or of "Internet pausiert"
+ *   (`status.internet`, plugin 1.1.0). 429 stretches the interval.
  * - A plugin that is gone or switched off under us (404, 501 unsupported,
  *   409 off, 403 without a person) is "no DNS protection"; a plugin in
  *   trouble (502 / 503 / 504, no network) keeps the last answer (`stale`).
@@ -343,11 +344,12 @@ class DnsProtectService extends EventEmitter {
     this._pollTimer = null;
     if (!this._started || !this.available()) return;
     let ms = (this._watched ? this.timing.pollMs : this.timing.idleMs) * (2 ** this._slow);
-    // A running pause ends: ask shortly after.
-    const p = this._data && this._data.pause;
-    if (p && p.until && !this._stale) {
-      const left = p.until - dns.serverNow(this.snapshot(), this.now());
-      ms = Math.min(ms, Math.max(0, left) + this.timing.afterPauseMs);
+    // A running pause — or "Internet pausiert" of the family plugin — ends: ask shortly after.
+    if (!this._stale) {
+      const at = dns.serverNow(this.snapshot(), this.now());
+      for (const end of [this._data && this._data.pause && this._data.pause.until, this._data && this._data.internet && this._data.internet.until]) {
+        if (end) ms = Math.min(ms, Math.max(0, end - at) + this.timing.afterPauseMs);
+      }
     }
     this._pollTimer = setTimeout(() => this._refreshNow().catch(() => {}), ms);
     if (this._pollTimer.unref) this._pollTimer.unref();

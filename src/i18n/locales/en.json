@@ -2032,7 +2032,10 @@
       "fallbackText": "Your internet keeps working, but without protection. Your admin has been notified. Protection switches itself back on.",
       "notAllowedTitle": "Pausing is not allowed.",
       "profile": "The admin has locked pausing for your profile. If a site you need does not work, ask your parents or the admin.",
-      "admins_only": "Only admins may pause here."
+      "admins_only": "Only admins may pause here.",
+      "internetTitle": "Internet paused until {{time}}",
+      "internetText": "Your internet is paused (Family). This also holds on the road through the VPN: only expressly allowed sites work. Pausing the protection does not change that.",
+      "internet_paused": "The internet is paused (Family). Pausing the protection does not change that."
     },
     "top": {
       "title": "Top blocked domains",
@@ -2064,7 +2067,8 @@
         "30": "30 minutes",
         "60": "1 hour",
         "240": "4 hours"
-      }
+      },
+      "internetPaused": "Internet paused until {{time}} (Family)"
     },
     "toast": {
       "outageTitle": "DNS protection: filter down",

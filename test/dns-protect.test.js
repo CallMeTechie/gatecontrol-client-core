@@ -126,9 +126,10 @@ describe('utils/dns-protect', () => {
 
   it('status: pause, open end, outage, a device with its own DNS server', () => {
     const p = dns.normalizeStatus(paused());
-    assert.deepEqual(p.pause, { scope: 'peer', until: ms('2026-11-12T14:12:00Z'), openEnd: false, since: ms('2026-11-12T13:42:00Z'), by: { userId: 2, name: 'Anna' }, byMe: true });
-    const open = dns.normalizeStatus(paused({ pause: { scope: 'all', until: null, openEnd: true, since: null, by: null, byMe: false, remainingSeconds: null } }));
-    assert.deepEqual(open.pause, { scope: 'all', until: null, openEnd: true, since: null, by: null, byMe: false });
+    // a plugin < 1.1.0 sends no `minutes`
+    assert.deepEqual(p.pause, { scope: 'peer', until: ms('2026-11-12T14:12:00Z'), openEnd: false, since: ms('2026-11-12T13:42:00Z'), by: { userId: 2, name: 'Anna' }, byMe: true, minutes: null });
+    const open = dns.normalizeStatus(paused({ pause: { scope: 'all', until: null, openEnd: true, since: null, by: null, byMe: false, remainingSeconds: null, minutes: null } }));
+    assert.deepEqual(open.pause, { scope: 'all', until: null, openEnd: true, since: null, by: null, byMe: false, minutes: null });
     // a pause only counts while the state says so; one without an end is none
     assert.equal(dns.normalizeStatus(status({ pause: { ...PAUSE } })).pause, null);
     assert.equal(dns.normalizeStatus(paused({ pause: { scope: 'peer', until: 'soon' } })).pause, null);
@@ -139,6 +140,64 @@ describe('utils/dns-protect', () => {
     assert.equal(dns.normalizeStatus(status({ device: { peerId: 3, name: 'PC', state: 'ownDns', ownDns: '<b>' } })).device.ownDns, null);
     assert.equal(dns.normalizeStatus(status({ device: null })).device, null);
     assert.equal(dns.normalizeMay({ reason: 'made_up' }).reason, null);
+  });
+
+  it('plugin 1.1.0: the picked duration, "Internet pausiert", the new reason', () => {
+    // pause.minutes: the whole picked duration (with "+30 Min." 60), never with an open end
+    assert.equal(dns.normalizeStatus(paused({ pause: { ...PAUSE, minutes: 60 } })).pause.minutes, 60);
+    for (const bad of [0, -5, 1.5, '30', dns.MAX_MINUTES + 1]) assert.equal(dns.normalizePause({ ...PAUSE, minutes: bad }).minutes, null, String(bad));
+    assert.equal(dns.normalizePause({ ...PAUSE, until: null, openEnd: true, minutes: 30 }).minutes, null);
+    // internet paused (Familie): the protection runs, pausing it is not offered
+    const INTERNET = { paused: true, until: '2026-11-12T14:33:00.000Z', remainingSeconds: 2700 };
+    const MAY_IP = { ...MAY, pause: false, durations: [], reason: 'internet_paused' };
+    const a = dns.normalizeStatus(status({ internet: { ...INTERNET }, may: MAY_IP }));
+    assert.equal(a.state, 'active');
+    assert.deepEqual(a.internet, { until: ms('2026-11-12T14:33:00Z') });
+    assert.equal(a.may.reason, 'internet_paused');
+    assert.deepEqual(a.may.durations, []);
+    // already paused when the internet pause began: both
+    const p = dns.normalizeStatus(paused({ internet: { ...INTERNET } }));
+    assert.equal(p.state, 'paused');
+    assert.ok(p.pause && p.internet);
+    // another reason stays the reason, the internet pause is still told
+    assert.equal(dns.normalizeStatus(status({ internet: { ...INTERNET }, may: { ...MAY, pause: false, reason: 'profile' } })).internet.until, ms('2026-11-12T14:33:00Z'));
+    // missing (plugin < 1.1.0), null, not paused, no end, the fallback: none
+    for (const o of [{}, { internet: null }, { internet: { paused: false, until: INTERNET.until } }, { internet: { paused: true, until: null } }, { internet: 'yes' }]) {
+      assert.equal(dns.normalizeStatus(status(o)).internet, null, JSON.stringify(o));
+    }
+    assert.equal(dns.normalizeStatus({ ...fallback(), internet: { ...INTERNET } }).internet, null);
+  });
+
+  it('people: the pause of a person (1.1.0) or the common one of its devices (older plugin)', () => {
+    const dev = (peerId, pause = null, o = {}) => ({ peerId, name: `Gerät ${peerId}`, platform: 'android', state: 'filtered', ownDns: null, profile: null, suspended: !!pause, pause, internetPaused: null, timesSuspended: null, today: null, may: { ...MAY }, ...o });
+    const USER_PAUSE = { ...PAUSE, scope: 'user', byMe: false, minutes: 30 };
+    const r = dns.normalizePeople({
+      ok: true,
+      all: { may: { ...MAY, durations: [5, 30, 60, 240], forever: true }, pause: null },
+      people: [
+        { userId: 2, name: 'Marc', role: 'admin', self: true, may: { ...MAY }, pause: null, internet: null, devices: [dev(20)] },
+        { userId: 4, name: 'Lea\u0007', role: 'user', self: false, may: { ...MAY, pause: false, durations: [], reason: 'internet_paused' }, pause: { ...USER_PAUSE }, internet: { paused: true, until: '2026-11-12T14:33:00.000Z', remainingSeconds: 2700 }, devices: [dev(21, { ...USER_PAUSE }, { internetPaused: '2026-11-12T14:33:00.000Z' }), dev(22, { ...USER_PAUSE })] },
+        // an older plugin: no `pause` on the person — all filtered devices paused → the first one's
+        { userId: 5, name: 'Tom', role: 'user', self: false, may: { ...MAY }, devices: [dev(31, { ...PAUSE }), dev(32, null, { state: 'ownDns' })] },
+        { userId: 6, name: 'Mia', role: 'user', self: false, may: { ...MAY }, devices: [dev(41, { ...PAUSE }), dev(42)] },
+        { userId: 'x', name: 'kaputt', devices: [] },
+      ],
+    });
+    assert.deepEqual(r.all.may.durations, [5, 30, 60, 240]);
+    assert.equal(r.all.pause, null);
+    assert.deepEqual(r.people.map((p) => p.userId), [2, 4, 5, 6]);
+    assert.deepEqual([r.people[0].role, r.people[0].self, r.people[0].pause], ['admin', true, null]);
+    const lea = r.people[1];
+    assert.equal(lea.name, 'Lea');
+    assert.deepEqual([lea.pause.scope, lea.pause.minutes, lea.pause.until], ['user', 30, ms('2026-11-12T14:12:00Z')]);
+    assert.deepEqual(lea.internet, { until: ms('2026-11-12T14:33:00Z') });
+    assert.equal(lea.may.reason, 'internet_paused');
+    assert.deepEqual(lea.devices.map((d) => [d.peerId, d.internetPaused]), [[21, ms('2026-11-12T14:33:00Z')], [22, null]]);
+    assert.equal(r.people[2].pause.scope, 'peer');
+    assert.equal(r.people[3].pause, null);
+    assert.equal(dns.normalizePeople({ ok: true, all: null, people: [] }).all, null);
+    assert.equal(dns.normalizePeople({ ok: false }), null);
+    assert.equal(dns.normalizePeople(null), null);
   });
 
   it('pause body: exactly one of minutes, forever, extend', () => {
@@ -188,6 +247,16 @@ describe('utils/dns-protect', () => {
     assert.deepEqual(calls.pop(), ['resume']);
     const all = items(paused({ pause: { scope: 'all', until: null, openEnd: true, since: null, by: null, byMe: false }, may: { ...MAY, pause: false, reason: 'paused_for_all' } }));
     assert.deepEqual(all.map((i) => i.label), ['dnsProtect.tray.paused']);
+    // "Internet pausiert" (Familie): a grey line under the state, no "unterbrechen"
+    const INTERNET = { paused: true, until: '2026-11-12T14:33:00.000Z', remainingSeconds: 2700 };
+    const ip = items(status({ internet: { ...INTERNET }, may: { ...MAY, pause: false, durations: [], reason: 'internet_paused' } }));
+    assert.equal(ip.length, 2);
+    assert.equal(ip[0].label, 'dnsProtect.tray.active');
+    assert.match(ip[1].label, /^dnsProtect\.tray\.internetPaused\(\d\d:33\)$/);
+    assert.equal(ip[1].enabled, false);
+    // paused before the internet pause began: the state, the internet line, "wieder einschalten"
+    const pip = items(paused({ internet: { ...INTERNET } }));
+    assert.deepEqual(pip.map((i) => i.label.replace(/\(.*\)$/, '')), ['dnsProtect.tray.pausedUntil', 'dnsProtect.tray.internetPaused', 'dnsProtect.tray.resume']);
     // fallback: one line; not filtered: one line; nothing while there is no DNS protection
     assert.deepEqual(items(fallback()).map((i) => [i.label, i.enabled]), [['dnsProtect.tray.fallback', false]]);
     assert.deepEqual(items(status({ state: 'unfiltered' })).map((i) => i.label), ['dnsProtect.tray.unfiltered']);
@@ -370,6 +439,10 @@ describe('DnsProtectService', () => {
       api.routes['GET status'] = paused();
       await s.refresh();
       assert.deepEqual(timers.map((x) => x.delay), [DnsProtectService.DEFAULT_TIMING.idleMs]);
+      // "Internet pausiert" that ends before the next question: asked 2 s after its end, too
+      api.routes['GET status'] = status({ internet: { paused: true, until: '2026-11-12T13:50:00.000Z', remainingSeconds: 120 }, may: { ...MAY, pause: false, durations: [], reason: 'internet_paused' } });
+      await s.refresh();
+      assert.deepEqual(timers.map((x) => x.delay), [120000 + 2000]);
       // 429 stretches the interval
       api.routes['GET status'] = refusal(429, 'rate_limited');
       s.watch(true);
@@ -490,7 +563,8 @@ describe('i18n dnsProtect.* (de / en)', () => {
       assert.ok(d[`dnsProtect.dur.${m}`], `dur ${m}`);
       assert.ok(d[`dnsProtect.tray.minutes.${m}`], `tray ${m}`);
     }
-    for (const r of ['profile', 'admins_only']) assert.ok(d[`dnsProtect.banner.${r}`], r);
+    for (const r of ['profile', 'admins_only', 'internet_paused']) assert.ok(d[`dnsProtect.banner.${r}`], r);
+    for (const k of ['banner.internetTitle', 'banner.internetText', 'tray.internetPaused']) assert.ok(d[`dnsProtect.${k}`], k);
     for (const s of ['active', 'paused', 'fallback', 'unfiltered', 'starting']) assert.ok(d[`dnsProtect.chip.${s}`], s);
   });
 });
