@@ -8,8 +8,10 @@
  * Plugin 1.1.0 (server from 1.267.0) adds, without changing anything else:
  * `status.internet` ("Internet pausiert" of the family plugin also holds over
  * the VPN), the reason `internet_paused`, `pause.minutes` and, in `GET
- * people`, `people[].pause` / `people[].internet`. An older plugin simply
- * does not send them (null).
+ * people`, `people[].pause` / `people[].internet`. Plugin 1.2.0 adds
+ * `status.profile.home` ("gilt zu Hause und unterwegs"); server 1.301.0 tells
+ * the core's 404 (plugin gone) from the plugin's own (pluginGone). An older
+ * plugin or server simply does not send them.
  * No Electron, no network.
  */
 
@@ -139,7 +141,8 @@ function normalizeStatus(raw) {
   const blocked = Math.min(count(c.blocked), queries);
   const pct = typeof c.percent === 'number' && Number.isFinite(c.percent) ? Math.min(100, Math.max(0, c.percent)) : 0;
   const pause = r.state === 'paused' ? normalizePause(r.pause) : null;
-  const profile = r.profile && typeof r.profile === 'object' && clean(r.profile.name, 80) ? { name: clean(r.profile.name, 80), safeSearch: r.profile.safeSearch === true } : null;
+  // home (plugin 1.2.0): the profile is shared with the DNS filter of a home network that is switched on
+  const profile = r.profile && typeof r.profile === 'object' && clean(r.profile.name, 80) ? { name: clean(r.profile.name, 80), safeSearch: r.profile.safeSearch === true, home: r.profile.home === true } : null;
   return {
     state: r.state,
     device: normalizeDevice(r.device),
@@ -194,6 +197,20 @@ function normalizePeople(raw) {
     });
   }
   return { all, people };
+}
+
+/**
+ * A 404 under /api/v1/client/plugins/<id>/api/: is the plugin gone (true) or
+ * did the plugin answer "unknown device / person" itself (false)? Server
+ * 1.301.0: the core says `reason: "plugin_unavailable"` (a plugin cannot fake
+ * it); a plugin's own 404 carries its sentence in `error`; a 404 with neither
+ * comes from the core of an older server — the plugin is gone.
+ */
+function pluginGone(err) {
+  if (!err || err.status !== 404) return false;
+  const b = err.body && typeof err.body === 'object' ? err.body : {};
+  if (b.reason === 'plugin_unavailable') return true;
+  return !(typeof b.error === 'string' && b.error.trim());
 }
 
 /**
@@ -294,6 +311,7 @@ module.exports = {
   normalizeInternet,
   normalizeStatus,
   normalizePeople,
+  pluginGone,
   pauseBody,
   serverNow,
   onLocalClock,

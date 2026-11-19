@@ -1990,6 +1990,9 @@
       "blocked": "Blocked",
       "percent": "Share"
     },
+    "profile": {
+      "home": "Profile “{{name}}” · holds at home and on the road"
+    },
     "scope": {
       "person": "Figures of all your devices",
       "server": "Figures of all devices of the server"

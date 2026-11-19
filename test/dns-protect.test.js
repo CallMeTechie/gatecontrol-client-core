@@ -117,6 +117,11 @@ describe('utils/dns-protect', () => {
     assert.deepEqual(s.may.durations, [5, 240]);
     assert.equal(s.may.maxMinutes, dns.MAX_MINUTES);
     assert.equal(s.serverTime, NOW);
+    // profile.home (plugin 1.2.0): shared with a home network's DNS filter; missing → false
+    assert.deepEqual(s.profile, { name: 'Standard', safeSearch: false, home: false });
+    assert.equal(dns.normalizeStatus(status({ profile: { id: 'p1', name: 'Kinder', safeSearch: true, home: true } })).profile.home, true);
+    assert.equal(dns.normalizeStatus(status({ profile: { id: 'p1', name: 'Kinder', home: 'yes' } })).profile.home, false);
+    assert.equal(dns.normalizeStatus(status({ profile: null })).profile, null);
     assert.equal(s.pause, null);
     assert.equal(s.outage, null);
     assert.equal(dns.normalizeStatus({ ok: true, state: 'whatever' }), null);
@@ -347,7 +352,11 @@ describe('DnsProtectService', () => {
 
   it('the plugin gone or switched off: no card; the plugin in trouble: the last answer', async () => {
     for (const [err, reason] of [
+      // a server before 1.301.0: the core's 404 without reason and text
       [refusal(404, 'not_found'), 'not_found'],
+      // from 1.301.0: the core says so
+      [refusal(404, 'not_found', { reason: 'plugin_unavailable' }), 'not_found'],
+      [refusal(404, 'not_found', { reason: 'plugin_unavailable', error: 'Plugin not available' }), 'not_found'],
       [refusal(501, 'unsupported'), 'unsupported'],
       [refusal(409, 'off'), 'off'],
       [refusal(403, 'no_user'), 'no_user'],
@@ -372,6 +381,22 @@ describe('DnsProtectService', () => {
       api.routes['GET status'] = paused();
       assert.deepEqual([(await s.refresh()).stale, s.snapshot().error, s.snapshot().data.state], [false, null, 'paused']);
     }
+    // the plugin's own 404 (with its sentence): the protection is still there, the status is asked again
+    const own = refusal(404, 'not_found', { error: 'Dieses Gerät kennt der DNS-Schutz nicht.' });
+    assert.equal(dns.pluginGone(own), false);
+    const p = service({ 'POST pause': own });
+    await p.s.check();
+    const before = p.asked('GET status');
+    await assert.rejects(p.s.pause({ minutes: 5 }), (e) => e.message === 'Dieses Gerät kennt der DNS-Schutz nicht.');
+    await new Promise((r) => setImmediate(r));
+    assert.equal(p.s.snapshot().state, 'available');
+    assert.equal(p.asked('GET status'), before + 1);
+    const g = service();
+    await g.s.check();
+    g.api.routes['GET status'] = own;
+    const kept = await g.s.refresh();
+    assert.deepEqual([kept.state, kept.stale, kept.error], ['available', true, 'not_found']);
+    for (const e of [null, refusal(403, 'forbidden'), refusal(404, 'not_found', { error: '   ' })]) assert.equal(dns.pluginGone(e), !!e && e.status === 404, String(e && e.code));
     // trouble before the first answer: the card says "not reachable"
     const first = service({ 'GET status': refusal(503, 'not_running') });
     const snap = await first.s.check();
@@ -466,6 +491,14 @@ describe('DnsProtectService', () => {
       pc.emit('hello');
       await new Promise((r) => setImmediate(r));
       assert.equal(asked(`GET ${dns.PERMISSIONS_PATH}`), perms + 1);
+      // the plugin gone (the core's 404): permissions at once, then after 1 min while it still names the plugin
+      api.routes['GET status'] = refusal(404, 'not_found', { reason: 'plugin_unavailable' });
+      await s.refresh();
+      assert.deepEqual(timers.map((x) => x.delay), [0]);
+      await timers[0].fn();
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(timers.map((x) => x.delay), [DnsProtectService.DEFAULT_TIMING.goneMinMs]);
+      api.routes['GET status'] = status();
       // no DNS protection: permissions again after 10 min, no status timer
       api.routes[`GET ${dns.PERMISSIONS_PATH}`] = { ok: true, vpnDns: null };
       await s.check();
@@ -564,7 +597,7 @@ describe('i18n dnsProtect.* (de / en)', () => {
       assert.ok(d[`dnsProtect.tray.minutes.${m}`], `tray ${m}`);
     }
     for (const r of ['profile', 'admins_only', 'internet_paused']) assert.ok(d[`dnsProtect.banner.${r}`], r);
-    for (const k of ['banner.internetTitle', 'banner.internetText', 'tray.internetPaused']) assert.ok(d[`dnsProtect.${k}`], k);
+    for (const k of ['banner.internetTitle', 'banner.internetText', 'tray.internetPaused', 'profile.home']) assert.ok(d[`dnsProtect.${k}`], k);
     for (const s of ['active', 'paused', 'fallback', 'unfiltered', 'starting']) assert.ok(d[`dnsProtect.chip.${s}`], s);
   });
 });

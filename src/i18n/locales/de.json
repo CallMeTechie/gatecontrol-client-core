@@ -1990,6 +1990,9 @@
       "blocked": "Gesperrt",
       "percent": "Anteil"
     },
+    "profile": {
+      "home": "Profil „{{name}}“ · gilt zu Hause und unterwegs"
+    },
     "scope": {
       "person": "Zahlen aller deiner Geräte",
       "server": "Zahlen aller Geräte des Servers"
