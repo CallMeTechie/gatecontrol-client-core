@@ -273,6 +273,8 @@ function registerMessengerHandlers(handle, {
       event: a.event && typeof a.event === 'object' ? a.event : undefined,
       action: a.action && typeof a.action === 'object' ? a.action : undefined,
       replyStory: a.replyStory && typeof a.replyStory === 'object' ? a.replyStory : undefined,
+      // Messenger 1.27: „Nur diese Nachricht über …“ — 'gatecontrol' or a network (checked again in the core)
+      way: typeof a.way === 'string' && /^[a-z]{2,20}$/.test(a.way) ? a.way : undefined,
     };
     if (a.file && !req.file) return { ok: false, code: 'invalid', error: 'invalid file' };
     return { ok: true, message: await m.send(req) };

@@ -233,7 +233,76 @@ describe('Versandweg (Messenger 1.27) – MessengerService', () => {
   });
 });
 
+describe('Versandweg (Messenger 1.27) – „Nur diese Nachricht über …“', () => {
+  it('the way of a kind that can send now', () => {
+    const e = {
+      id: 12,
+      person: {
+        id: 1, conversationId: 12, replyPref: 'auto',
+        ways: [{ way: 'gatecontrol', conversationId: 12, bridge: null, can: { send: true } }, { way: 'whatsapp', conversationId: 13, bridge: { network: 'whatsapp' }, can: { send: true } }, { way: 'signal', conversationId: 14, bridge: { network: 'signal' }, can: { send: false } }],
+        reply: { way: 'whatsapp', conversationId: 13 },
+      },
+    };
+    assert.equal(U.personSendWay(e, 'gatecontrol').conversationId, 12);
+    assert.equal(U.personSendWay(e, 'whatsapp').conversationId, 13);
+    assert.equal(U.personSendWay(e, 'signal'), null, 'cannot send right now');
+    assert.equal(U.personSendWay(e, 'telegram'), null, 'a way the person does not have');
+    assert.equal(U.personSendWay(e, '<x>'), null);
+    assert.equal(U.personSendWay({ id: 5 }, 'gatecontrol'), null, 'no person');
+  });
+
+  it('only this message over GateControl: straight to the GateControl chat, the choice stays; the way of the server goes as before', async () => {
+    const { srv, m } = await setup();
+    const { gc, wa, pid } = fill(srv);
+    m.start();
+    await m.check();
+    await m.getMessages(gc);
+    assert.equal(m.replyWay(gc).way, 'whatsapp');
+    await m.send({ conversationId: gc, kind: 'text', text: 'Nur hier.', way: 'gatecontrol' });
+    await waitFor(() => srv.state.msgs.get(gc).some((x) => x.text === 'Nur hier.'), 4000, 'sent over GateControl');
+    assert.equal(calls(srv, `conversations/${gc}/messages`).length, 1);
+    assert.equal(calls(srv, `persons/${pid}/messages`).length, 0);
+    assert.equal(srv.state.msgs.get(wa).some((x) => x.text === 'Nur hier.'), false);
+    assert.equal((srv.state.replyPrefs || []).length, 0, '„Nachrichten senden über“ is not changed');
+    assert.equal(m.replyWay(gc).way, 'whatsapp');
+    // the way the server picks anyway: through the person as before
+    await m.send({ conversationId: gc, kind: 'text', text: 'Wie immer.', way: 'whatsapp' });
+    await waitFor(() => calls(srv, `persons/${pid}/messages`).length, 4000, 'sent through the person');
+    await waitFor(() => srv.state.msgs.get(wa).some((x) => x.text === 'Wie immer.'), 4000, 'over WhatsApp');
+  });
+
+  it('a way that cannot send, one the person does not have, a chat that is no person; an answer keeps its way', async () => {
+    const { srv, m } = await setup();
+    const { gc, wa, pid, g1 } = fill(srv);
+    m.start();
+    await m.check();
+    await m.getMessages(gc);
+    await assert.rejects(m.send({ conversationId: gc, kind: 'text', text: 'x', way: 'signal' }), (e) => e.code === 'way_unavailable');
+    const solo = srv.addConv({ kind: 'direct', members: [7, 9] });
+    await m.refreshConversations({ full: true });
+    await assert.rejects(m.send({ conversationId: solo, kind: 'text', text: 'x', way: 'gatecontrol' }), (e) => e.code === 'invalid');
+    // an answer to the GateControl message goes back over GateControl, whatever was picked for the next message
+    await m.send({ conversationId: gc, kind: 'text', text: 'Ja.', replyTo: g1.id, way: 'whatsapp' });
+    await waitFor(() => calls(srv, `persons/${pid}/messages`).length, 4000, 'answer through the person');
+    srv.state.convs.get(wa).bridge.state = 'logged_out';
+    await m.refreshConversations({ full: true });
+    await assert.rejects(m.send({ conversationId: gc, kind: 'text', text: 'x', way: 'whatsapp' }), (e) => e.code === 'way_unavailable');
+  });
+});
+
 describe('Versandweg (Messenger 1.27) – IPC', () => {
+  it('chat:send passes a way only as a plain word', async () => {
+    const { registerMessengerHandlers } = require('../src/ipc/messenger-handlers');
+    const h = new Map();
+    const seen = [];
+    const m = new Proxy({ on() {} }, { get: (t, k) => (k in t ? t[k] : (...args) => { seen.push([k, ...args]); return Promise.resolve({ id: 1 }); }) });
+    registerMessengerHandlers((ch, fn) => h.set(ch, fn), { messenger: m, getMainWindow: () => null, log });
+    await h.get('chat:send')(null, { conversationId: 12, kind: 'text', text: 'a', way: 'gatecontrol' });
+    await h.get('chat:send')(null, { conversationId: 12, kind: 'text', text: 'b', way: '../x' });
+    assert.equal(seen[0][1].way, 'gatecontrol');
+    assert.equal(seen[1][1].way, undefined);
+  });
+
   it('chat:person:reply-pref checks the arguments before the service sees them', async () => {
     const { registerMessengerHandlers } = require('../src/ipc/messenger-handlers');
     const h = new Map();

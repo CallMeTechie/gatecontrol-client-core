@@ -723,7 +723,8 @@
       "bridge_read_only": "You can't write here: in channels only the channel posts, in some groups only the admins.",
       "reactions_off": "Reactions don't work in channels: WhatsApp refused one.",
       "cannot_merge": "These chats can't be merged: only chats with one person, never groups or channels, and at most one GateControl account.",
-      "bad_request": "This person has no such way."
+      "bad_request": "This person has no such way.",
+      "way_unavailable": "Nothing can be sent this way right now. Choose another one."
     },
     "enterHintCtrl": "Ctrl+Enter sends · Enter new line",
     "filter": {
@@ -1534,7 +1535,6 @@
       "src": "Messages from",
       "srcAll": "All",
       "placeholder": "Message via {{way}}",
-      "waHint": "Sent via {{network}}. {{network}}'s encryption ends at the bridge next to your server.",
       "via": "via {{network}}",
       "onlyYou": "Merged for you only – {{name}} sees nothing of it.",
       "waysTitle": "Ways to reach {{name}}",
@@ -1577,7 +1577,14 @@
       "replyNetSub": "If {{network}} is not connected, it goes via GateControl",
       "replyNote": "If you reply to a message, the reply still goes the way of that message.",
       "replyFallback": "{{network}} not connected – the message goes via GateControl.",
-      "viaGc": "Goes via GateControl"
+      "viaGc": "Goes via GateControl",
+      "onceTitle": "Only this message via",
+      "onceButton": "Way for the next message: {{way}} – change",
+      "oncePlaceholder": "Only this message via {{way}}",
+      "onceGcSub": "every feature",
+      "onceLastSub": "the way of the last message",
+      "onceStdSub": "your default",
+      "onceChange": "Change the default for {{name}} …"
     },
     "profile": {
       "title": "My profile",

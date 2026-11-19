@@ -723,7 +723,8 @@
       "bridge_read_only": "Hier kannst du nicht schreiben: In Kanälen schreibt nur der Kanal, in manchen Gruppen nur die Admins.",
       "reactions_off": "Reagieren geht in Kanälen nicht: WhatsApp hat eine Reaktion abgelehnt.",
       "cannot_merge": "Diese Chats lassen sich nicht zusammenführen: nur Chats mit einer Person, nie Gruppen oder Kanäle, und höchstens ein GateControl-Konto.",
-      "bad_request": "Diesen Weg hat die Person nicht."
+      "bad_request": "Diesen Weg hat die Person nicht.",
+      "way_unavailable": "Über diesen Weg geht gerade nichts raus. Wähle einen anderen."
     },
     "enterHintCtrl": "Strg+Enter sendet · Enter neue Zeile",
     "filter": {
@@ -1534,7 +1535,6 @@
       "src": "Nachrichten aus",
       "srcAll": "Alle",
       "placeholder": "Nachricht über {{way}}",
-      "waHint": "Geht über {{network}}. Die Verschlüsselung von {{network}} endet an der Brücke neben deinem Server.",
       "via": "über {{network}}",
       "onlyYou": "Nur für dich zusammengeführt – {{name}} sieht davon nichts.",
       "waysTitle": "Wege von {{name}}",
@@ -1577,7 +1577,14 @@
       "replyNetSub": "Ist {{network}} nicht verbunden, geht es über GateControl",
       "replyNote": "Antwortest du auf eine Nachricht, geht die Antwort weiter über deren Weg.",
       "replyFallback": "{{network}} nicht verbunden – die Nachricht geht über GateControl.",
-      "viaGc": "Geht über GateControl"
+      "viaGc": "Geht über GateControl",
+      "onceTitle": "Nur diese Nachricht über",
+      "onceButton": "Weg für die nächste Nachricht: {{way}} – ändern",
+      "oncePlaceholder": "Nur diese Nachricht über {{way}}",
+      "onceGcSub": "alle Funktionen",
+      "onceLastSub": "Weg der letzten Nachricht",
+      "onceStdSub": "dein Standard",
+      "onceChange": "Standard für {{name}} ändern …"
     },
     "profile": {
       "title": "Mein Profil",
