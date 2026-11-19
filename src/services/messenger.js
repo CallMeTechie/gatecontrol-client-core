@@ -82,7 +82,7 @@ const {
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary, bridgedFeedOf, newClientId,
-  FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, personGcWay, personReplyPref, replyPrefBody,
+  FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, personGcWay, personSendWay, personReplyPref, replyPrefBody,
   bridgeTakesLocation, needsGcWay, FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlaces, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
   normalizeHandoff, HANDOFF_TARGETS, BRIDGE_SECRET_MAX,
 } = require('../utils/messenger');
@@ -1147,9 +1147,23 @@ class MessengerService extends EventEmitter {
     // may send is that way's (its bridge, its can)
     const pid = this._pidOf(cid);
     let c = pid ? this._sendWayOf(entry, body.replyTo) : entry;
+    let wayId = null;
+    // Messenger 1.27, „Nur diese Nachricht über …“: a way of the person chosen in the composer for this one message —
+    // straight to that chat when it is not the way the server picks anyway. An answer still goes its message's way.
+    if (req.way != null) {
+      if (!pid) throw new MessengerError('no person', { code: 'invalid' });
+      if (!body.replyTo) {
+        const w = personSendWay(entry, req.way);
+        if (!w) throw new MessengerError('way cannot send', { code: 'way_unavailable' });
+        const rw = personReplyWay(entry);
+        if (!rw || posInt(rw.conversationId) !== posInt(w.conversationId)) {
+          wayId = posInt(w.conversationId);
+          c = { bridge: w.bridge || null, can: w.can || { send: true }, readonly: false };
+        }
+      }
+    }
     // Messenger 1.27: what only GateControl carries (poll, event, home action, a location the text's bridge cannot send)
     // goes to the person's GateControl way while the text goes over a bridge — straight to that chat, as the portal does
-    let wayId = null;
     if (pid && c && needsGcWay(body, c.bridge)) {
       const gc = personGcWay(entry);
       if (gc) {

@@ -1017,6 +1017,15 @@ function personGcWay(c) {
   return c.person.ways.find((w) => w && w.way === GC_WAY && !w.bridge && !(w.can && w.can.send === false)) || null;
 }
 
+/**
+ * Messenger 1.27, „Nur diese Nachricht über …“ (Schnellwechsel im Schreibfeld): the person's way of kind `way`
+ * ('gatecontrol' or a network) that can send right now, or null.
+ */
+function personSendWay(c, way) {
+  if (!isPerson(c) || typeof way !== 'string' || !WAY_RE.test(way)) return null;
+  return c.person.ways.find((w) => w && w.way === way && !(w.way === GC_WAY && w.bridge) && !(w.can && w.can.send === false)) || null;
+}
+
 /** Messenger 1.27: „Nachrichten senden über“ of a person → 'auto' | 'gatecontrol' | a network ('auto' when unknown). */
 function personReplyPref(c) {
   const v = isPerson(c) ? c.person.replyPref : null;
@@ -1334,6 +1343,7 @@ module.exports = {
   personWayIds,
   personReplyWay,
   personGcWay,
+  personSendWay,
   personReplyPref,
   replyPrefBody,
   bridgeTakesLocation,

@@ -549,13 +549,18 @@ WhatsApp, Telegram — never Signal), not from the word.
   a reply to a story, a location the bridge cannot send (`needsGcWay`) — goes straight to the person's GateControl way
   (`personGcWay`; outbox `wayId` → `POST conversations/<way>/messages`), shown in the person as before; a quoted message
   of another way is dropped there. Without a GateControl way it stays `bridge_text_only`.
+* „Nur diese Nachricht über …“ (Schnellwechsel im Schreibfeld): `send({ …, way })` with `'gatecontrol'` or a network of
+  the person sends this one message over that way (`personSendWay`: a way of that kind that can send now, else
+  `way_unavailable`) — straight to its chat (outbox `wayId`) when it is not the way the server picks anyway.
+  `person.replyPref` stays as it is. An answer (`replyTo`) still goes its message's way (`way` is ignored then); `way`
+  on a chat that is no person is `invalid`.
 * A location crosses a bridge whose `supports` names `location` (`bridgeTakesLocation`): `{ lat, lon, label }` only
   (`accuracy` is left out). An incoming location of a bridge arrives as `kind: "location"` (the map, as any location;
   old messages stay the placeholder with `geo`).
 * `message.placeMessage` `{ name, trigger }` — only in the sender's view: the line „Ortsnachricht · <Ort>“ (display only;
   place messages are made and run on the phone).
-* Texts: `chat.person.reply*`, `chat.person.viaGc`, `chat.attachMenu.gcNote`, `chat.msg.placeMessage`,
-  `chat.error.bad_request`.
+* Texts: `chat.person.reply*`, `chat.person.once*`, `chat.person.viaGc`, `chat.attachMenu.gcNote`,
+  `chat.msg.placeMessage`, `chat.error.bad_request`, `chat.error.way_unavailable`.
 
 ## Locations ("Standort senden")
 
