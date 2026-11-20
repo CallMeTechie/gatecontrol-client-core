@@ -14,7 +14,7 @@
  *     unsent change of it), the outbox (one save per entry, the first base
  *     revision stays), JSON of the copy — encrypted records only;
  *   - the entry JSON v1 `{ v: 1, type, title, fav, notes, urls, apps,
- *     fields, custom }` (unknown keys are kept as they are);
+ *     fields, custom, match? }` (unknown keys are kept as they are);
  *   - 2FA codes (TOTP, RFC 6238), the password generator and its strength
  *     estimate, matching by web address, import of other password managers'
  *     exports, the Vault context of a push message.
@@ -350,15 +350,21 @@ function ownerKey(scope) {
 
 // ── Entry JSON v1 ────────────────────────────────────────────────
 
-const ENTRY_KNOWN = new Set(['v', 'type', 'title', 'fav', 'notes', 'urls', 'apps', 'fields', 'custom']);
+const ENTRY_KNOWN = new Set(['v', 'type', 'title', 'fav', 'notes', 'urls', 'apps', 'fields', 'custom', 'match']);
+
+/** „Passt zu“ of an entry's web addresses: 'exact' = only the very host; missing / 'domain' = the whole domain (default). */
+const MATCH_EXACT = 'exact';
+const MATCH_DOMAIN = 'domain';
 const strings = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string' && x.trim() !== '') : []);
 
 /**
  * An entry's plaintext in the shape every platform writes:
- * `{ v: 1, type, title, fav?, notes?, urls: [], apps: [], fields: { … }, custom: [{ name, value, secret }] }`.
+ * `{ v: 1, type, title, fav?, notes?, urls: [], apps: [], fields: { … }, custom: [{ name, value, secret }], match? }`.
  * Field keys per type: login `username`, `password`, `totp` · totp `totp` · card `holder`, `number`,
  * `expiry` (MM/YY), `cvc`, `pin` · wifi `ssid`, `password`, `security` · identity `name`, `email`, `phone`,
  * `address`, `birthday` · note: only `notes`. Keys this version does not know are kept unchanged.
+ * `match` („Passt zu“): 'exact' is written, 'domain' (the default) is left out, any other value is kept
+ * as it is (and matched like 'domain').
  * `v` may be left out (a new entry from the page); any other version, an unknown type → null.
  */
 function normalizeEntry(input) {
@@ -388,8 +394,12 @@ function normalizeEntry(input) {
   out.custom = (Array.isArray(input.custom) ? input.custom : []).filter(isObj)
     .map((c) => ({ name: typeof c.name === 'string' ? c.name : '', value: typeof c.value === 'string' ? c.value : '', secret: c.secret === true }))
     .filter((c) => c.name.trim() !== '' || c.value !== '');
+  if (input.match !== undefined && input.match !== MATCH_DOMAIN) out.match = clone(input.match);
   return out;
 }
+
+/** 'exact' | 'domain' — how an entry's web addresses fit a page (any value but 'exact' is 'domain'). */
+const entryMatch = (d) => (d && d.match === MATCH_EXACT ? MATCH_EXACT : MATCH_DOMAIN);
 
 const field = (d, k) => (d && d.fields && typeof d.fields[k] === 'string' ? d.fields[k] : '');
 const entryUsername = (d) => field(d, 'username') || field(d, 'email');
@@ -650,20 +660,6 @@ const goodMasterPassword = (password) => typeof password === 'string' && Array.f
 
 const SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'gov', 'ac', 'edu', 'or', 'ne', 'go']);
 
-/** "https://www.Login.Example.co.uk:8443/x" → "login.example.co.uk"; null when it is no host. */
-function urlHost(url) {
-  if (typeof url !== 'string') return null;
-  let s = url.trim().toLowerCase();
-  if (!s) return null;
-  const i = s.indexOf('://');
-  if (i >= 0) s = s.slice(i + 3);
-  s = s.split('/')[0].split('?')[0].split('#')[0];
-  s = s.slice(s.lastIndexOf('@') + 1).split(':')[0].replace(/\.+$/, '');
-  if (s.startsWith('www.')) s = s.slice(4);
-  if (!s || !/^[\p{L}\p{Nd}.-]+$/u.test(s)) return null;
-  return s;
-}
-
 /** The registrable part of a host: "login.example.co.uk" → "example.co.uk"; an IP stays as it is. */
 function siteOf(host) {
   if (/^[\d.]+$/.test(host)) return host;
@@ -675,29 +671,84 @@ function siteOf(host) {
   return parts.slice(-n).join('.');
 }
 
+/**
+ * The host for an exact comparison: "https://WWW.Nas.Example.test.:5001/x" → "www.nas.example.test" —
+ * without case, port and a trailing dot; "www." stays (it is another host); null when it is no host.
+ */
+function exactHost(url) {
+  if (typeof url !== 'string') return null;
+  let s = url.trim().toLowerCase();
+  if (!s) return null;
+  const i = s.indexOf('://');
+  if (i >= 0) s = s.slice(i + 3);
+  s = s.split('/')[0].split('?')[0].split('#')[0];
+  s = s.slice(s.lastIndexOf('@') + 1).split(':')[0].replace(/\.+$/, '');
+  if (!s || !/^[\p{L}\p{Nd}.-]+$/u.test(s)) return null;
+  return s;
+}
+
+/** "https://www.Login.Example.co.uk:8443/x" → "login.example.co.uk" ("www." left out); null when it is no host. */
+function urlHost(url) {
+  const s = exactHost(url);
+  return s && s.startsWith('www.') ? s.slice(4) || null : s;
+}
+
+/**
+ * How an entry's web addresses fit a page: 'host' (one of them has exactly the page's host),
+ * 'domain' (only the same registrable domain) or null. Independent of the entry's `match`.
+ */
+function hostFit(data, webDomain) {
+  const page = exactHost(webDomain);
+  if (!page) return null;
+  const want = siteOf(urlHost(webDomain));
+  let fit = null;
+  for (const u of (data && Array.isArray(data.urls) ? data.urls : [])) {
+    const x = exactHost(u);
+    if (!x) continue;
+    if (x === page) return 'host';
+    if (siteOf(urlHost(u)) === want) fit = 'domain';
+  }
+  return fit;
+}
+
+/** Does the entry fit the page: same host when its `match` is 'exact', else the same registrable domain. */
 function fitsDomain(data, webDomain) {
-  const h = urlHost(webDomain);
-  if (!h) return false;
-  const want = siteOf(h);
-  return data.urls.some((u) => {
-    const x = urlHost(u);
-    return !!x && siteOf(x) === want;
-  });
+  const fit = hostFit(data, webDomain);
+  return fit === 'host' || (fit === 'domain' && entryMatch(data) !== MATCH_EXACT);
+}
+
+/** Rank of a fit for suggestions: the exact host (0) before only the domain (1) before anything else (2). */
+const fitRank = (fit) => (fit === 'host' ? 0 : fit === 'domain' ? 1 : 2);
+
+/**
+ * Comparator for suggestions by web address: an entry with the page's exact host before one with only
+ * its domain; `then` (the previous order) within each group. items → their entry JSON via `dataOf`.
+ */
+function byHostFit(webDomain, then = () => 0, dataOf = (x) => x.data) {
+  const ranks = new Map();
+  const rank = (x) => {
+    if (!ranks.has(x)) ranks.set(x, fitRank(hostFit(dataOf(x), webDomain)));
+    return ranks.get(x);
+  };
+  return (a, b) => rank(a) - rank(b) || then(a, b);
 }
 
 const fitsApp = (data, app) => typeof app === 'string' && data.apps.some((a) => a.toLowerCase() === app.toLowerCase());
 
 /**
- * Entries for a login form: by the page's domain (same site), else by the
- * app (`apps`). Logins (or entries with a user name / password), not trashed,
- * favourites first. entries: [{ data, trashed }].
+ * Entries for a login form: by the page's domain (same site; an entry with
+ * `match: 'exact'` only on its very host), else by the app (`apps`). Logins
+ * (or entries with a user name / password), not trashed. By a domain: the
+ * exact host first, then the domain only; within each favourites first, then
+ * A–Z. entries: [{ data, trashed }].
  */
 function matchEntries(entries, { domain = null, app = null } = {}) {
   const live = entries.filter((e) => !e.trashed && (e.data.type === 'login' || entryUsername(e.data) || field(e.data, 'password')));
   let hits = [];
   if (typeof domain === 'string' && domain.trim()) hits = live.filter((e) => fitsDomain(e.data, domain));
   else if (typeof app === 'string' && app.trim()) hits = live.filter((e) => fitsApp(e.data, app));
-  return hits.sort((a, b) => (a.data.fav === b.data.fav ? a.data.title.toLowerCase().localeCompare(b.data.title.toLowerCase()) : a.data.fav ? -1 : 1));
+  const byFav = (a, b) => (a.data.fav === b.data.fav ? a.data.title.toLowerCase().localeCompare(b.data.title.toLowerCase()) : a.data.fav ? -1 : 1);
+  return hits.sort(typeof domain === 'string' && domain.trim() ? byHostFit(domain, byFav) : byFav);
 }
 
 // ── Import ───────────────────────────────────────────────────────
@@ -981,7 +1032,8 @@ module.exports = {
   normalizeEntry, entryUsername, entrySubtitle, entrySummary, entryValue,
   base32Decode, parseTotp, totpLabel, totpCode, prettyCode,
   generatorOptions, generatePassword, passwordBits, passwordStrength, wordCount, goodMasterPassword,
-  urlHost, siteOf, fitsDomain, fitsApp, matchEntries,
+  MATCH_EXACT, MATCH_DOMAIN, entryMatch,
+  urlHost, exactHost, siteOf, hostFit, fitsDomain, fitsApp, byHostFit, matchEntries,
   csvRows, parseImport, importCounts, withoutDuplicates, duplicateFlags,
   pushContext,
   SHARE_TARGETS, SHARE_DURATIONS, SHARE_SECURITY, wifiOf, wifiText, wifiSame, parseShare, parseShares,
