@@ -26,6 +26,7 @@ const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
 const { registerFamilieHandlers } = require('./familie-handlers');
 const { registerDnsProtectHandlers } = require('./dns-protect-handlers');
+const { registerQuickActionsHandlers } = require('./quick-actions-handlers');
 const { registerPrintHandlers } = require('./print-handlers');
 const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
@@ -220,6 +221,9 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notes] - NotesService (opt-in, "Notizen & Aufgaben"): registers the
  *   notes:* channels (ipc/notes-handlers.js), forwards its events to the main window
  *   and resets it (its Tresor keys, the export picked) after a successful server:setup.
+ * @param {object} [ctx.quickActions] - QuickActionsService (opt-in, the plugins' quick actions):
+ *   registers the quickactions:* channels (ipc/quick-actions-handlers.js) and drops
+ *   the old server's actions after a successful server:setup.
  * @param {object} [ctx.places] - PlacesService (opt-in, „Mein Profil › Meine Orte“, GateControl ≥ 1.299.0):
  *   registers the places:* channels (ipc/places-handlers.js), forwards its events to the main window and resets it
  *   after a successful server:setup. Without its own `maps` it gets the map service below (the address search of
@@ -261,6 +265,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const mailSvc = ctx.mail || null;
   const notesSvc = ctx.notes || null;
   const placesSvc = ctx.places || null;
+  const quickActionsSvc = ctx.quickActions || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
   const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
@@ -339,6 +344,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
     if (notesSvc) {
       Promise.resolve().then(() => notesSvc.resetForNewServer()).catch((err) => log.warn(`Notizen reset failed: ${err.message}`));
+    }
+    // Schnellaktionen: the actions kept belong to the old server.
+    if (quickActionsSvc) {
+      try { quickActionsSvc.resetForNewServer(); } catch (err) { log.warn(`Quick actions reset failed: ${err.message}`); }
     }
   }
 
@@ -879,6 +888,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── DNS-Schutz (plugin behind permissions.vpnDns, opt-in) ──
   if (dnsProtectSvc) registerDnsProtectHandlers(handle, { dnsProtect: dnsProtectSvc, getMainWindow, log });
+
+  // ── Schnellaktionen (the plugins' quick actions, opt-in) ──
+  if (quickActionsSvc) registerQuickActionsHandlers(handle, { quickActions: quickActionsSvc, log });
 
   // ── Kameras im Heimnetz (plugin gatecontrol-door, opt-in) ──
   if (camerasSvc) registerCameraHandlers(handle, { cameras: camerasSvc, getMainWindow, log, dialog, dialogPath: folders.dialogPath });

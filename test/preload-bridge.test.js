@@ -112,6 +112,7 @@ describe('createBridgeApi', () => {
       'places:status', 'places:update', 'places:used', 'policy:get', 'policy:refresh', 'portal:open',
       'print:again', 'print:cancel', 'print:check', 'print:drive', 'print:dropped', 'print:forget', 'print:job', 'print:overview', 'print:pick', 'print:sources',
       'print:status', 'print:submit', 'print:transfer:cancel', 'print:transfers',
+      'quickactions:list', 'quickactions:run',
       'rdp-allow:toggle',
       'school:absences', 'school:attachment:drive', 'school:avatar', 'school:changes', 'school:check', 'school:messages', 'school:status', 'school:timetable',
       'server:setup', 'server:test', 'services:list', 'shell:open-external',
@@ -241,6 +242,7 @@ describe('createBridgeApi', () => {
       mail: { on() {} },
       notes: { on() {} },
       places: { on() {} },
+      quickActions: { list() {}, run() {}, resetForNewServer() {} },
       installUpdate() {}, getTunnelState: () => ({}),
       wgConfigFile: 'wg.conf',
     });
