@@ -37,6 +37,7 @@ const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
 const FamilieService = require('./services/familie');
 const DnsProtectService = require('./services/dns-protect');
+const QuickActionsService = require('./services/quick-actions');
 const PrintService = require('./services/print');
 const CamerasService = require('./services/cameras');
 const GateDropService = require('./services/gatedrop');
@@ -85,6 +86,7 @@ const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
 const familieUtil = require('./utils/familie');
 const dnsProtectUtil = require('./utils/dns-protect');
+const quickActionsUtil = require('./utils/quick-actions');
 const printUtil = require('./utils/print');
 const camerasUtil = require('./utils/cameras');
 const notifyRoutes = require('./utils/notify-routes');
@@ -149,6 +151,7 @@ module.exports = {
   SchoolService,
   FamilieService,
   DnsProtectService,
+  QuickActionsService,
   PrintService,
   CamerasService,
   GateDropService,
@@ -223,6 +226,7 @@ module.exports = {
   schoolUtil,
   familieUtil,
   dnsProtectUtil,
+  quickActionsUtil,
   printUtil,
   camerasUtil,
   notifyRoutes,

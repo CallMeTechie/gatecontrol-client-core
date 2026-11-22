@@ -419,6 +419,18 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onChange:  (cb) => subscribe('dnsprotect:change', cb),
     },
 
+    // ── Schnellaktionen (the plugins' quick actions: light, shutters, heating, chains …) ─
+    // Served when the app passes a QuickActionsService to registerBaseHandlers
+    // (ipc/quick-actions-handlers.js lists arguments and answers).
+    quickActions: {
+      list:      () => ipcRenderer.invoke('quickactions:list'),
+      // how: {} (a button), { state: 'on'|'off' } (a toggle) or { control, value } (a control of its widget)
+      run:       (plugin, id, how) => {
+        const h = how && typeof how === 'object' ? how : {};
+        return ipcRenderer.invoke('quickactions:run', { plugin, id, control: h.control, value: h.value, state: h.state });
+      },
+    },
+
     // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
     // Served when the app passes a CamerasService to registerBaseHandlers
     // (ipc/camera-handlers.js lists arguments and answers). Pictures and
