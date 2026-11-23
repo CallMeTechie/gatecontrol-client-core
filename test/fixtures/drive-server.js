@@ -70,6 +70,10 @@
 // X-GC-Local of every request in state.local [{ method, route, value }].
 // Drive 1.24: GET nodes/<id>/children gives each preview `lan` / `largeLan` = srv.previewLan(node, xGcLocal, 'small' |
 // 'large') when that gives one.
+// Drive 1.31: 'framePhotos' (GET frame/photos[?ids=], POST / DELETE frame/photos { ids } (DELETE also ?ids=);
+// state.frame: the album „Fotorahmen“ { id, items } or null, made at the first share; skipped not_found / not_image /
+// vault (encrypted) / blocked (srv.frameBlocked: a Set of ids) / child (srv.frameChild: a Set of ids);
+// srv.frameForbidden → POST / DELETE 403 { code: 'forbidden', field: 'frame' }; state.frameCalls).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -106,6 +110,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   // Drive 1.7 'timeTravel': how every node was after each change
   state.history = [];
   state.albums = new Map();
+  // Drive 1.31 'framePhotos'
+  state.frame = null;
+  state.frameCalls = [];
   // Drive 1.8 'docAi': nodeId → the full insight; deadlines; areas switched off
   state.insights = new Map();
   state.deadlines = [];
@@ -1345,6 +1352,45 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         a.updatedAt = Date.now();
         return json(res, 200, { ok: true, album: albumView(a) });
       }
+    }
+    if (has('framePhotos') && route === 'frame/photos') {
+      const q = url.searchParams.get('ids');
+      const asked = q ? q.split(',').map(Number) : null;
+      const sent = body && Array.isArray(body.ids) ? body.ids : null;
+      state.frameCalls.push({ method: req.method, ids: sent || asked });
+      const view = () => (state.frame ? { id: state.frame.id, name: 'Fotorahmen', areaId: 'mine:2', count: state.frame.items.length, frame: true, canEdit: true, canFrame: true } : null);
+      const inFrame = () => (state.frame ? state.frame.items.map((id) => state.nodes.get(id)).filter((n) => n && !n.deleted).sort((x, y) => when(y) - when(x)).map((n) => n.id) : []);
+      if (req.method === 'GET') {
+        const all = inFrame();
+        const ids = asked ? all.filter((id) => asked.includes(id)) : all;
+        return json(res, 200, { ok: true, album: view(), ids, count: all.length });
+      }
+      if (req.method !== 'POST' && req.method !== 'DELETE') return refuse(res, 405, 'method');
+      if (srv.frameForbidden) return json(res, 403, { ok: false, code: 'forbidden', field: 'frame', error: 'forbidden' });
+      const ids = sent || asked || [];
+      if (!ids.length || ids.length > 500) return json(res, 400, { ok: false, code: 'invalid', field: 'ids', error: 'invalid' });
+      if (req.method === 'DELETE') {
+        const before = state.frame ? state.frame.items.length : 0;
+        if (state.frame) state.frame.items = state.frame.items.filter((id) => !ids.includes(id));
+        const all = inFrame();
+        return json(res, 200, { ok: true, album: view(), removed: before - (state.frame ? state.frame.items.length : 0), ids: all, count: all.length });
+      }
+      const skipped = [];
+      let added = 0;
+      for (const id of ids) {
+        const n = state.nodes.get(id);
+        let reason = null;
+        if (!n || n.deleted || n.isDir) reason = 'not_found';
+        else if (n.encrypted) reason = 'vault';
+        else if (!/^image\//.test(n.mime || '')) reason = 'not_image';
+        else if (srv.frameBlocked && srv.frameBlocked.has(id)) reason = 'blocked';
+        else if (srv.frameChild && srv.frameChild.has(id)) reason = 'child';
+        if (reason) { skipped.push({ id, reason }); continue; }
+        if (!state.frame) state.frame = { id: ++nextId, items: [] };
+        if (!state.frame.items.includes(id)) { state.frame.items.push(id); added++; }
+      }
+      const all = inFrame();
+      return json(res, 200, { ok: true, album: view(), added, skipped, ids: all, count: all.length });
     }
     if (has('storage') && req.method === 'GET' && route === 'storage') {
       const all = url.searchParams.get('all') === '1';

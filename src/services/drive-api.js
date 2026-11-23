@@ -71,6 +71,8 @@
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
  *   GET    …/api/offline · PUT|DELETE …/api/nodes/<id>/offline    Drive 1.20 'offline': „offline verfügbar“ (a mark of the
  *          person: the phones keep the files, the home gateways hold them first)
+ *   GET    …/api/frame/photos[?ids=] · POST frame/photos { ids } · DELETE frame/photos { ids } (+ ?ids=)   Drive 1.31
+ *          'framePhotos': photos of the person for the photo frame (album „Fotorahmen“; 403 { field: 'frame' })
  *
  * Home cache (Drive 1.20, GateControl 1.231): GET nodes/<id>/content goes out with `X-GC-Local` (this PC's private
  * IPv4 addresses, utils/home-cache.js); in the home network of a gateway that holds the file the answer carries
@@ -1073,6 +1075,24 @@ class DriveApi {
   albumItems(id, ids, { remove = false } = {}) {
     const list = this._ids(ids);
     return this._albumAnswer(this.api(remove ? 'DELETE' : 'POST', `albums/${this._albumId(id)}/items`, { body: { ids: list }, ...(remove ? { params: { ids: list.join(',') } } : {}) }));
+  }
+
+  // ── Photo frame (Drive 1.31, 'framePhotos') ──────────────
+
+  /** GET frame/photos[?ids=1,2,3] → { album, ids, count }; with `ids` only those of them that are in the frame. */
+  async framePhotos(ids = null) {
+    const params = ids === null || ids === undefined ? {} : { ids: this._ids(ids).join(',') };
+    return drive.normalizeFramePhotos(await this.api('GET', 'frame/photos', { params }));
+  }
+
+  /**
+   * POST frame/photos { ids } (1 … 500) → { album, added, skipped: [{ id, reason }], ids, count };
+   * remove: DELETE frame/photos { ids } (+ ?ids=, a body of a DELETE may not pass every proxy) → { album, removed, ids, count }.
+   */
+  async setFramePhotos(ids, { remove = false } = {}) {
+    const list = this._ids(ids);
+    const opts = { body: { ids: list }, ...(remove ? { params: { ids: list.join(',') } } : {}) };
+    return drive.normalizeFramePhotos(await this.api(remove ? 'DELETE' : 'POST', 'frame/photos', opts));
   }
 
   // ── Storage (Drive 1.7, 'storage') ───────────────────────

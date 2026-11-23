@@ -658,6 +658,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       deleteAlbum:  (id) => ipcRenderer.invoke('drive:album:delete', { id }),
       addToAlbum:   (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids }),
       removeFromAlbum: (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids, remove: true }),
+      // Drive 1.31 'framePhotos': photos for the photo frame (framePhotos(ids): only those of `ids` in it)
+      framePhotos:  (ids) => ipcRenderer.invoke('drive:frame:photos', { ids: ids || null }),
+      addToFrame:   (ids) => ipcRenderer.invoke('drive:frame:set', { ids }),
+      removeFromFrame: (ids) => ipcRenderer.invoke('drive:frame:set', { ids, remove: true }),
       // Drive 1.16 'photoPlaces' / 'photoPeople': photos(opts) also takes place, bbox, person, districts, withPeople;
       // filter: { area?, q?, person? }
       photoMonthsBy: (area, filter) => ipcRenderer.invoke('drive:photos:months', { ...(filter || {}), area: area || null }),
