@@ -159,6 +159,13 @@ describe('GateDrop answers', () => {
       { id: '52', name: 'Handy', platform: 'android', online: true, direct: true, mode: 'push', owner: { id: '4', name: null } },
     ]);
     assert.equal(gd.normalizeTargets({ me: { receiveFrom: 'all' } }).me.receiveFrom, null);
+    // GateDrop 1.7.0: GateControl TV keeps its platform (own and another person's device), anything else unknown
+    const tv = gd.normalizeTargets({
+      devices: [{ id: '44', name: 'Wohnzimmer', platform: 'android-tv', online: true }, { id: '45', name: 'Box', platform: 'fire-tv' }],
+      peopleDevices: [{ id: '54', name: 'TV', platform: 'android-tv', owner: { id: 3, name: 'Marc' } }],
+    });
+    assert.deepEqual(tv.devices.map((d) => [d.id, d.platform, d.direct]), [['44', 'android-tv', false], ['45', 'unknown', false]]);
+    assert.deepEqual(tv.peopleDevices.map((d) => [d.id, d.platform]), [['54', 'android-tv']]);
     // GET / PUT device
     assert.deepEqual(gd.normalizeDeviceAccess({ ok: true, device: { id: '42', receiveFrom: 'self' } }), { id: '42', receiveFrom: 'self' });
     assert.equal(gd.normalizeDeviceAccess({ ok: true, device: { id: '42', receiveFrom: 'friends' } }), null);

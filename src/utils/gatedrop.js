@@ -36,7 +36,8 @@ const LINK_EXPIRES = Object.freeze(['1h', '1d', '7d', 'once']);
 const INBOX_KINDS = Object.freeze(['received', 'sent', 'links']);
 // waiting (GateDrop 1.1.0): the target device was offline, the send waits in its `pending` list.
 const DELIVERY_STATUS = Object.freeze(['pending', 'waiting', 'direct', 'delivered', 'opened', 'failed', 'expired']);
-const PLATFORMS = Object.freeze(['android', 'windows', 'ios', 'web']);
+// android-tv: GateControl TV (GateDrop 1.7.0) — a receiver through the server, shown with its own icon.
+const PLATFORMS = Object.freeze(['android', 'android-tv', 'windows', 'ios', 'web']);
 // Who may send to this device (GateDrop 1.2.0, GET/PUT device): only its owner, or every account.
 const RECEIVE_FROM = Object.freeze(['self', 'everyone']);
 
