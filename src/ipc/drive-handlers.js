@@ -60,6 +60,8 @@
  *   drive:album:update    ({ id, name?, coverId?, frame? }) → { ok, album }         (frame: Drive 1.7 'frame')
  *   drive:album:delete    ({ id }) → { ok }
  *   drive:album:items     ({ id, ids, remove? }) → { ok, album }
+ *   drive:frame:photos    ({ ids? }) → { ok, album, ids, count }                    (Drive 1.31 'framePhotos')
+ *   drive:frame:set       ({ ids, remove? }) → { ok, album, added, removed, skipped, ids, count }
  *   drive:storage         ({ all? }) → { ok, total, limit, areas, people, largest, duplicates }   (Drive 1.7 'storage')
  *   drive:storage:prune   ({ areaId, keep }) → { ok, removed, freedBytes }
  *   drive:insight         ({ id }) → { ok, insight }                               (Drive 1.8 'docAi')
@@ -364,6 +366,14 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
     if (!isAlbumId(a.id) || !Array.isArray(a.ids) || !a.ids.length || a.ids.length > 500 || !a.ids.every(isId)) return invalid();
     return s.albumItems(a.id, a.ids, { remove: a.remove === true });
   }));
+  // Drive 1.31 'framePhotos': photos for the photo frame
+  const isIds = (v) => Array.isArray(v) && v.length > 0 && v.length <= 500 && v.every(isId);
+  handle('drive:frame:photos', wrap(async (a) => {
+    if (!(a.ids === undefined || a.ids === null || isIds(a.ids))) return invalid();
+    return s.framePhotos(a.ids || null);
+  }));
+  handle('drive:frame:set', wrap(async (a) => (isIds(a.ids) && (a.remove === undefined || typeof a.remove === 'boolean')
+    ? s.setFramePhotos(a.ids, { remove: a.remove === true }) : invalid())));
   handle('drive:storage', wrap(async (a) => s.storage({ all: a.all === true })));
   handle('drive:storage:prune', wrap(async (a) => (optArea(a.areaId) && a.areaId && Number.isSafeInteger(a.keep) && a.keep >= 0 && a.keep <= 1000 ? s.pruneVersions({ areaId: a.areaId, keep: a.keep }) : invalid())));
 
