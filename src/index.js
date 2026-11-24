@@ -49,6 +49,11 @@ const DriveVaultViews = require('./services/drive-vault-view');
 const DriveApi = require('./services/drive-api');
 const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
+// Medien (Stufe 4e): Jellyfin and the NAS shares (SMB through Windows, WebDAV), the gcmedia: stream
+const MediaService = require('./services/media');
+const MediaStore = require('./services/media-store');
+const MediaStreamService = require('./services/media-stream');
+const MediaLanRoute = require('./services/media-lan-route');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
 const NotesService = require('./services/notes');
@@ -119,7 +124,7 @@ const { setupAppLifecycle } = require('./lifecycle/app-events');
 const { recoverKillSwitch } = require('./lifecycle/killswitch-startup');
 
 // ── Preload ─────────────────────────────────────────────────
-const { createBridgeApi, createSubscriber } = require('./preload/bridge');
+const { createBridgeApi, createSubscriber, createMediaBridge } = require('./preload/bridge');
 
 module.exports = {
   // Services
@@ -164,6 +169,11 @@ module.exports = {
   DriveVaultViews,
   DriveApi,
   DriveSync,
+  // Medien (Stufe 4e): MediaService (its .stream is the gcmedia: handler: SCHEME, SCHEME_PRIVILEGES), MediaStore
+  MediaService,
+  MediaStore,
+  MediaStreamService,
+  MediaLanRoute,
   MailService,
   MailApi,
   // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)
@@ -256,6 +266,7 @@ module.exports = {
   // Preload
   createBridgeApi,
   createSubscriber,
+  createMediaBridge,
 
   // i18n
   i18n,
