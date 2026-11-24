@@ -1152,4 +1152,52 @@ function createSubscriber(ipcRenderer) {
   };
 }
 
-module.exports = { createBridgeApi, createSubscriber };
+/**
+ * "Medien" (Stufe 4e, Pro only — decision 26 a): the app preload adds it as `api.media = createMediaBridge(ipcRenderer)`
+ * when the app passes a MediaService to registerBaseHandlers (ipc/media-handlers.js lists arguments and answers).
+ * Pictures and video are gcmedia:// addresses of the answers (no IPC, no access in the page).
+ */
+function createMediaBridge(ipcRenderer) {
+  const subscribe = createSubscriber(ipcRenderer);
+  const inv = (ch, arg) => ipcRenderer.invoke(ch, arg);
+  return {
+    status:        () => inv('media:status'),
+    setCaps:       (caps) => inv('media:caps:set', caps && typeof caps === 'object' ? caps : {}),
+    setQuality:    (quality) => inv('media:quality:set', { quality }),
+    check:         (id, opts) => inv('media:check', { id, force: !!(opts && opts.force) }),
+    networkChanged: () => inv('media:network'),
+    discover:      () => inv('media:discover'),
+    server:        (address) => inv('media:server', { address }),
+    trust:         (address, fingerprint) => inv('media:trust', { address, fingerprint }),
+    quickConnect: {
+      start:  (address) => inv('media:qc:start', { address }),
+      poll:   (flow) => inv('media:qc:poll', { flow }),
+      cancel: (flow) => inv('media:qc:cancel', { flow }),
+    },
+    signIn:        ({ address, user, password } = {}) => inv('media:signin', { address, user, password }),
+    authorize:     (id, code) => inv('media:authorize', { id, code }),
+    addShare:      ({ kind, address, user, password, useExisting } = {}) => inv('media:share:add', { kind, address, user, password, useExisting: useExisting === true }),
+    removeSource:  (id) => inv('media:source:remove', { id }),
+    setAlwaysOriginal: (id, on) => inv('media:source:original', { id, on: on === true }),
+    resume:        (id, limit) => inv('media:resume', { id, limit }),
+    latest:        (id, limit) => inv('media:latest', { id, limit }),
+    movies:        (id, opts) => inv('media:movies', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    series:        (id, opts) => inv('media:series', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    seasons:       (id, seriesId) => inv('media:seasons', { id, seriesId }),
+    episodes:      (id, seriesId, seasonId) => inv('media:episodes', { id, seriesId, seasonId: seasonId || null }),
+    search:        (id, q) => inv('media:search', { id, q }),
+    detail:        (id, itemId) => inv('media:detail', { id, itemId }),
+    play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
+    report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),
+    setPlayed:     (id, itemId, played) => inv('media:played', { id, itemId, played: played === true }),
+    endStream:     (urlOrPlayId) => inv('media:stream:end', String(urlOrPlayId || '').startsWith('gcmedia:') ? { url: urlOrPlayId } : { playId: urlOrPlayId }),
+    shareList:     (id, dir) => inv('media:share:list', { id, dir: dir || '' }),
+    shareOpen:     (id, path) => inv('media:share:open', { id, path }),
+    tracks:        (seriesId) => inv('media:tracks', { seriesId }),
+    setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
+    onState:       (cb) => subscribe('media:state', cb),
+    onLink:        (cb) => subscribe('media:link', cb),
+  };
+}
+
+module.exports = { createBridgeApi, createSubscriber, createMediaBridge };

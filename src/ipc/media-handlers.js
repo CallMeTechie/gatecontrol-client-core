@@ -1,0 +1,153 @@
+'use strict';
+
+/**
+ * IPC of "Medien" (Stufe 4e; opt-in: registerBaseHandlers(…, { media }) — the Pro client, decision 26 a).
+ * Arguments from the renderer are checked here and again in MediaService. Every handler resolves; failures come back
+ * as { ok: false, code, error? }. No token, no password, no api_key ever goes to the page: pictures and video are
+ * gcmedia:// addresses (MediaService.stream.handleProtocol), not IPC.
+ *
+ *   media:status          () → { ok, supported, deviceName, quality, caps, sources: [{ id, kind, name, address, unc,
+ *                         userName, serverId, alwaysOriginal, pairWith, signedIn, hasPassword, pinned, useExisting,
+ *                         ready, link: { atHome, via: 'lan' | 'tunnel', bps, measuredAt, route } }] }
+ *   media:caps:set        ({ hevc, av1, vp9, mkv, hdr, ac3, eac3, maxAudioChannels }) → { ok, caps }   what the page's
+ *                         Chromium plays (canPlayType / MediaCapabilities, matchMedia('(dynamic-range: high)'))
+ *   media:quality:set     ({ quality: 'auto' | 'original' | '20' | '12' | '8' | '4' | '2' }) → { ok, quality }
+ *   media:check           ({ id, force? }) → { ok, link }   home or away now, away the bandwidth
+ *   media:network         () → { ok }   the network changed (Wi-Fi, tunnel up/down): home/away found again
+ *   media:discover        () → { ok, servers: [{ address, id, name }] }   Jellyfin in the LAN (UDP 7359, never the VPN)
+ *   media:server          ({ address }) → { ok, address, server: { name, version, id, supported }, quickConnect }
+ *                         | { ok: false, code: 'cert_untrusted', address, certificate: { fingerprint, subject, issuer,
+ *                         validTo, selfSigned } } | 'unsupported_version' | 'offline' | 'invalid'
+ *   media:trust           ({ address, fingerprint }) → { ok }   the certificate the person confirmed (pinned)
+ *   media:qc:start        ({ address }) → { ok, flow, code, server }   Quick Connect of this PC (code to confirm)
+ *   media:qc:poll         ({ flow }) → { ok, state: 'waiting' } | { ok, state: 'done', source } | { ok: false, code: 'expired' }
+ *   media:qc:cancel       ({ flow }) → { ok }
+ *   media:signin          ({ address, user, password }) → { ok, source }   (the password goes to Jellyfin once)
+ *   media:authorize       ({ id, code }) → { ok }   "Gerät anmelden": a TV's / PC's Quick Connect code confirmed
+ *   media:share:add       ({ kind: 'smb' | 'webdav', address, user?, password?, useExisting? }) → { ok, source }
+ *                         | { ok: false, code: 'smb_conflict' (Windows error 1219: offer useExisting) | 'unauthorized' |
+ *                         'not_found' | 'offline' | 'unsupported' | 'cert_untrusted' (+ certificate) }
+ *   media:source:remove   ({ id }) → { ok }   (Jellyfin: this device signed out of the server first)
+ *   media:source:original ({ id, on }) → { ok }   "Immer Original"
+ *   media:resume | media:latest ({ id, limit? }) → { ok, items }   titles with poster/backdrop gcmedia:// URLs,
+ *                         resumable, leftMs, progress
+ *   media:movies | media:series ({ id, start?, limit?, sort?: 'name' | 'added' | 'year', unplayed?, genre? })
+ *                         → { ok, items, total, start, next }
+ *   media:seasons         ({ id, seriesId }) → { ok, items }
+ *   media:episodes        ({ id, seriesId, seasonId? }) → { ok, items }
+ *   media:search          ({ id, q }) → { ok, items }
+ *   media:detail          ({ id, itemId }) → { ok, title, versions: [{ …, videoLabel, hdr, audio: [{ …, label, fate:
+ *                         'decoded' | 'converted' }], subtitles: [{ …, burnIn }], pick: { audioIndex, subtitleIndex },
+ *                         quality: { originalBps, originalFits, adaptedBps, suggestAdapted } }], link }
+ *   media:play            ({ id, itemId, versionId?, startMs?, audioIndex?, subtitleIndex?, quality?, originalBps?,
+ *                         seriesId? }) → { ok, playId, url, hls, method, converted, bitrate, audioIndex, subtitleIndex,
+ *                         subtitles: [{ index, url, mime, language, label }], transcodeReasons, link }
+ *   media:report          ({ playId, event: 'start' | 'progress' | 'stop', positionMs, paused?, durationMs? }) → { ok }
+ *   media:played          ({ id, itemId, played }) → { ok }
+ *   media:stream:end      ({ url | playId }) → { ok }   the addresses stop working
+ *   media:share:list      ({ id, dir? }) → { ok, dir, via: 'smb' | 'webdav', items: [{ name, path, directory, size,
+ *                         modifiedAt, kind, progress }], link }
+ *   media:share:open      ({ id, path }) → { ok, playId, url, mime, size, via, check: { verdict: 'yes' | 'partial' |
+ *                         'no' | 'unknown', video, audio, reasons, external, streams }, progress }
+ *   media:tracks          ({ seriesId }) → { ok, choice }
+ *   media:tracks:set      ({ seriesId, choice: { audioLanguage, subtitleLanguage, subtitlesOff } }) → { ok }
+ *
+ * Events to the main window: media:state (status()), media:link ({ sourceId, link }).
+ */
+
+const J = require('../utils/media-jellyfin');
+const MS = require('../utils/media-sources');
+
+const MEDIA_EVENTS = { state: 'media:state', link: 'media:link' };
+
+const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+const isId = (v) => typeof v === 'string' && MS.ID_RE.test(v);
+const isItem = (v) => typeof v === 'string' && J.ID_RE.test(v);
+const isStr = (v, max) => typeof v === 'string' && v.length <= max;
+const optInt = (v) => (Number.isInteger(v) ? v : undefined);
+
+function fail(err) {
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed' };
+}
+
+/**
+ * @param {Function} handle - registerBaseHandlers' handle(channel, fn)
+ * @param {object} deps
+ * @param {object} deps.media - MediaService
+ * @param {Function} deps.getMainWindow
+ * @param {object} deps.log
+ */
+function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
+  const wrap = (fn) => async (_e, arg) => {
+    try {
+      return await fn(obj(arg));
+    } catch (err) {
+      return fail(err);
+    }
+  };
+  const invalid = () => ({ ok: false, code: 'invalid', error: 'invalid argument' });
+
+  handle('media:status', wrap(async () => m.status()));
+  handle('media:caps:set', wrap(async (a) => m.setCaps(a)));
+  handle('media:quality:set', wrap(async (a) => m.setQuality(a.quality)));
+  handle('media:check', wrap(async (a) => (isId(a.id) ? m.check(a.id, { force: a.force === true }) : invalid())));
+  handle('media:network', wrap(async () => m.networkChanged()));
+  handle('media:discover', wrap(async () => m.discover()));
+  handle('media:server', wrap(async (a) => (isStr(a.address, 512) ? m.server(a.address) : invalid())));
+  handle('media:trust', wrap(async (a) => (isStr(a.address, 512) && isStr(a.fingerprint, 128) ? m.trust({ address: a.address, fingerprint: a.fingerprint }) : invalid())));
+  handle('media:qc:start', wrap(async (a) => (isStr(a.address, 512) ? m.quickConnectStart(a.address) : invalid())));
+  handle('media:qc:poll', wrap(async (a) => (isStr(a.flow, 64) ? m.quickConnectPoll(a.flow) : invalid())));
+  handle('media:qc:cancel', wrap(async (a) => m.quickConnectCancel(isStr(a.flow, 64) ? a.flow : null)));
+  handle('media:signin', wrap(async (a) => (isStr(a.address, 512) && isStr(a.user, 128) && isStr(a.password, 512)
+    ? m.signIn({ address: a.address, user: a.user, password: a.password }) : invalid())));
+  handle('media:authorize', wrap(async (a) => (isId(a.id) && isStr(a.code, 16) ? m.authorizeDevice({ sourceId: a.id, code: a.code }) : invalid())));
+  handle('media:share:add', wrap(async (a) => {
+    if ((a.kind !== 'smb' && a.kind !== 'webdav') || !isStr(a.address, 512)) return invalid();
+    if ((a.user != null && !isStr(a.user, 128)) || (a.password != null && !isStr(a.password, 512))) return invalid();
+    return m.addShare({ kind: a.kind, address: a.address, user: a.user || null, password: a.user ? (a.password || '') : null, useExisting: a.useExisting === true });
+  }));
+  handle('media:source:remove', wrap(async (a) => (isId(a.id) ? m.removeSource(a.id) : invalid())));
+  handle('media:source:original', wrap(async (a) => (isId(a.id) && typeof a.on === 'boolean' ? m.setAlwaysOriginal(a.id, a.on) : invalid())));
+  handle('media:resume', wrap(async (a) => (isId(a.id) ? m.resume(a.id, a.limit) : invalid())));
+  handle('media:latest', wrap(async (a) => (isId(a.id) ? m.latest(a.id, a.limit) : invalid())));
+  const pageArgs = (a) => ({ start: a.start, limit: a.limit, sort: a.sort, unplayed: a.unplayed === true, genre: isStr(a.genre, 64) ? a.genre : null });
+  handle('media:movies', wrap(async (a) => (isId(a.id) ? m.movies(a.id, pageArgs(a)) : invalid())));
+  handle('media:series', wrap(async (a) => (isId(a.id) ? m.series(a.id, pageArgs(a)) : invalid())));
+  handle('media:seasons', wrap(async (a) => (isId(a.id) && isItem(a.seriesId) ? m.seasons(a.id, a.seriesId) : invalid())));
+  handle('media:episodes', wrap(async (a) => {
+    if (!isId(a.id) || !isItem(a.seriesId) || (a.seasonId != null && !isItem(a.seasonId))) return invalid();
+    return m.episodes(a.id, a.seriesId, a.seasonId || null);
+  }));
+  handle('media:search', wrap(async (a) => (isId(a.id) && isStr(a.q, 200) ? m.search(a.id, a.q) : invalid())));
+  handle('media:detail', wrap(async (a) => (isId(a.id) && isItem(a.itemId) ? m.detail(a.id, a.itemId) : invalid())));
+  handle('media:play', wrap(async (a) => {
+    if (!isId(a.id) || !isItem(a.itemId) || (a.versionId != null && !isItem(a.versionId)) || (a.seriesId != null && !isItem(a.seriesId))) return invalid();
+    return m.play({
+      sourceId: a.id, itemId: a.itemId, versionId: a.versionId || null, startMs: a.startMs, audioIndex: optInt(a.audioIndex),
+      subtitleIndex: optInt(a.subtitleIndex), quality: isStr(a.quality, 16) ? a.quality : undefined,
+      originalBps: Number.isFinite(a.originalBps) ? a.originalBps : undefined, seriesId: a.seriesId || null,
+    });
+  }));
+  handle('media:report', wrap(async (a) => {
+    if (!isStr(a.playId, 64) || !['start', 'progress', 'stop'].includes(a.event)) return invalid();
+    return m.report({ playId: a.playId, event: a.event, positionMs: a.positionMs, paused: a.paused === true, durationMs: a.durationMs });
+  }));
+  handle('media:played', wrap(async (a) => (isId(a.id) && isItem(a.itemId) && typeof a.played === 'boolean' ? m.setPlayed(a.id, a.itemId, a.played) : invalid())));
+  handle('media:stream:end', wrap(async (a) => {
+    const v = isStr(a.url, 4096) ? a.url : isStr(a.playId, 64) ? a.playId : null;
+    return v ? m.stream.revoke(v) : invalid();
+  }));
+  handle('media:share:list', wrap(async (a) => (isId(a.id) && (a.dir == null || isStr(a.dir, 1024)) ? m.shareList({ sourceId: a.id, dir: a.dir || '' }) : invalid())));
+  handle('media:share:open', wrap(async (a) => (isId(a.id) && isStr(a.path, 1024) && a.path ? m.shareOpen({ sourceId: a.id, path: a.path }) : invalid())));
+  handle('media:tracks', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.trackChoice(a.seriesId) : invalid())));
+  handle('media:tracks:set', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.setTrackChoice(a.seriesId, obj(a.choice)) : invalid())));
+
+  const send = (channel, payload) => {
+    const win = getMainWindow && getMainWindow();
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win.webContents) return;
+    try { win.webContents.send(channel, payload); } catch (err) { log.debug(`${channel} not delivered: ${err.message}`); }
+  };
+  for (const [event, channel] of Object.entries(MEDIA_EVENTS)) m.on(event, (payload) => send(channel, payload));
+}
+
+module.exports = { registerMediaHandlers, MEDIA_EVENTS };
