@@ -45,7 +45,7 @@ jobs:
   # through Windows itself (a local share and user, WNetAddConnection2W, error 1219). Elevated runner, changes only
   # in memory (routes store=active) and removed again.
   media-windows:
-    name: Medien (Windows: VPN-Route, SMB)
+    name: "Medien (Windows: VPN-Route, SMB)"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
