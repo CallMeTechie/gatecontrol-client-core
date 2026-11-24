@@ -167,12 +167,14 @@ describe('Medien on Windows: the spike — LAN binding while the tunnel carries 
 
 describe('Medien on Windows: SMB through Windows (UNC, WNetAddConnection2W, 1219)', { skip }, () => {
   const dir = path.join(os.tmpdir(), 'gcmedia-share');
-  const users = [['gcmedia1', 'Gc-Media-Test-2026!a'], ['gcmedia2', 'Gc-Media-Test-2026!b']];
+  // at most 14 characters: net user asks a question for longer passwords
+  const users = [['gcmedia1', 'Gc-Med1a#26xA'], ['gcmedia2', 'Gc-Med1a#26xB']];
 
   before(async () => {
     fs.mkdirSync(path.join(dir, 'Neu'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'Neu', 'Kobaltnacht (2025).mkv'), '0123456789');
-    for (const [u, pw] of users) await run('net', ['user', u, pw, '/add']).catch(() => run('net', ['user', u, pw]));
+    for (const [u] of users) await run('net', ['user', u, '/delete']).catch(() => {});
+    for (const [u, pw] of users) await run('net', ['user', u, pw, '/add', '/Y']);
     await run('icacls', [dir, '/grant', 'gcmedia1:(OI)(CI)R', 'gcmedia2:(OI)(CI)R']);
     await run('net', ['share', `gcmedia=${dir}`, '/GRANT:gcmedia1,READ', '/GRANT:gcmedia2,READ']);
   });
