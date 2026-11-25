@@ -5,7 +5,8 @@
 // invisible sign-in (Quick Connect with the plugin's device id, URL-encoded header, the code to the plugin, again after
 // a 401), the network rule (away only through the VPN: started on opening, without it nothing sent; the admin's
 // exception; home by GateControl's home-network detection, never by the plugin's probes), SMB error 1219 → WebDAV, media.revoke, no_access, the plugin
-// gone for 24 h, 30 / 90 days offline, sources of this PC taken over.
+// gone for 24 h, 30 / 90 days offline, sources of this PC taken over, DELETE v1/jellyfin/device?sourceId=… before an
+// access the plugin made is discarded here.
 
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
@@ -109,6 +110,7 @@ function setup({ jf, handlers = {}, tunnel = null, now = () => clock.t, mem = cr
     [`POST ${P('v1/jellyfin/paired')}`]: () => ({ v: 1 }),
     [`POST ${P('v1/sources/:id/report')}`]: () => ({ v: 1 }),
     [`POST ${P('v1/shares/:id/checked')}`]: () => ({ v: 1 }),
+    [`DELETE ${P('v1/jellyfin/device')}`]: () => ({ v: 1, sources: [] }),
     ...handlers,
   });
   const nc = { handlers: [], addPushHandler(h) { this.handlers.push(h); return () => {}; } };
@@ -458,5 +460,110 @@ describe('MediaServerSources', () => {
     const logout = jf.requests.find((r) => r.path === '/Sessions/Logout');
     assert.ok(logout && logout.headers.authorization.includes('Token="old-tok"'), 'the old access signed out');
     assert.ok(oldJf.id);
+  });
+
+  describe('DELETE v1/jellyfin/device?sourceId=… before the access goes here (best effort)', () => {
+    const deletes = (api) => api.calls.filter((c) => c.method === 'DELETE');
+    const signedIn = async (opts = {}) => {
+      const c = setup({ jf, tunnel: tunnelUp(), ...opts });
+      await c.ss.refresh();
+      assert.equal((await c.ss.pair('jf-1')).ok, true);
+      c.api.calls.length = 0;
+      return c;
+    };
+
+    it('media.revoke: asked before the list again (a new sign-in is not deleted by it); a share alone: nothing', async () => {
+      const { ss, api, store } = await signedIn();
+      await ss.revoke({ sourceIds: ['sh-1'], reason: 'right' });
+      assert.equal(deletes(api).length, 0, 'no Jellyfin source withdrawn');
+      api.calls.length = 0;
+      await ss.revoke({ sourceIds: ['jf-1'], reason: 'mapping' });
+      const d = deletes(api);
+      assert.equal(d.length, 1);
+      assert.equal(d[0].path, P('v1/jellyfin/device'));
+      assert.deepEqual(d[0].opts.params, { sourceId: 'jf-1' });
+      assert.ok(d[0].opts.timeout > 0, 'never waits long');
+      const iDel = api.calls.indexOf(d[0]);
+      const iList = api.calls.findIndex((c) => c.path === P('v1/sources'));
+      assert.ok(iDel >= 0 && iList > iDel, 'the list only after it');
+      assert.equal(store.source('jf-1').token, null);
+    });
+
+    it('a failure is only logged: the revoke, the removal and the 24 h still happen', async () => {
+      const warned = [];
+      const { ss, api, store } = await signedIn({ handlers: { [`DELETE ${P('v1/jellyfin/device')}`]: () => refusal(503, 'unavailable') } });
+      ss.log = { info() {}, debug() {}, error() {}, warn: (m) => warned.push(m) };
+      const st = await ss.revoke({ sourceIds: null, reason: 'device_removed' });
+      assert.equal(st.state, 'available');
+      assert.equal(deletes(api).length, 1);
+      assert.ok(warned.some((m) => m.includes('jf-1')), warned.join('\n'));
+      assert.equal((await ss.signOutDevice('jf-1')).ok, false, 'never throws');
+      assert.ok(store.source('jf-1'));
+    });
+
+    it('no_access and a source gone from the list: asked for that source only', async () => {
+      const a = await signedIn();
+      a.ss.dropSource('jf-1');
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(deletes(a.api).map((c) => c.opts.params), [{ sourceId: 'jf-1' }]);
+      assert.equal(a.store.source('jf-1'), null);
+
+      const b = await signedIn();
+      const l = listOf(jf.base, { rev: 'r2' });
+      l.sources = l.sources.filter((x) => x.id !== 'jf-1');
+      const orig = b.api._call.bind(b.api);
+      b.api._call = (m, p, o) => (p === P('v1/sources') ? (b.api.calls.push({ method: m, path: p, opts: o }), Promise.resolve(l)) : orig(m, p, o));
+      await b.ss.refresh();
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(deletes(b.api).map((c) => c.opts.params), [{ sourceId: 'jf-1' }]);
+      assert.equal(b.store.source('jf-1'), null);
+      assert.ok(b.store.source('sh-1'), 'the share stays');
+    });
+
+    it('the plugin gone for 24 h: asked once more before its sources go; never signed in: nothing asked', async () => {
+      const { ss, api, store } = await signedIn();
+      const orig = api._call.bind(api);
+      api._call = (m, p, o) => (p === P('v1/sources') ? Promise.reject(refusal(404, 'not_found', { reason: 'plugin_unavailable' })) : orig(m, p, o));
+      await ss.refresh();
+      assert.equal(deletes(api).length, 0, 'within the 24 h nothing');
+      clock.t += DAY + 1000;
+      await ss.refresh();
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(deletes(api).map((c) => c.opts.params), [{ sourceId: 'jf-1' }]);
+      assert.equal(store.sources().length, 0);
+
+      const fresh = setup({ jf, tunnel: tunnelUp() });
+      await fresh.ss.refresh();
+      fresh.ss.dropSource('jf-1');
+      await fresh.ss.revoke({ sourceIds: null, reason: 'admin' });
+      assert.equal(deletes(fresh.api).length, 0, 'no access made: nothing to delete');
+    });
+
+    it('another server: the plugin of the server signed in before is asked (serverChanging), not the new one', async () => {
+      const { ss, api, media, store } = await signedIn();
+      media.serverChanging();
+      const newApi = fakeApi({});
+      ss.api = newApi; // apiClient.configure(): the new server
+      media.serverChanging(); // a second setup before the reset: the first server still counts
+      await media.forgetAll();
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(deletes(api).map((c) => c.opts.params), [{ sourceId: 'jf-1' }]);
+      assert.equal(deletes(newApi).length, 0);
+      assert.equal(store.sources().length, 0);
+      // forgotten without serverChanging (the transport may point elsewhere): nothing sent
+      api.calls.length = 0;
+      await media.forgetAll();
+      assert.equal(deletes(api).length + deletes(newApi).length, 0);
+    });
+
+    it('serverChanging keeps the old axios client of the ApiClient (configure() makes a new one)', () => {
+      const { media } = setup({ jf });
+      const oldClient = { request: async () => ({ status: 200, data: { ok: true } }) };
+      const apiClient = { client: oldClient };
+      const ss = new MediaServerSources({ media, apiClient, now: () => clock.t });
+      ss.serverChanging();
+      apiClient.client = { request: async () => { throw new Error('the new server'); } };
+      assert.equal(ss._leaving.apiClient.client, oldClient);
+    });
   });
 });

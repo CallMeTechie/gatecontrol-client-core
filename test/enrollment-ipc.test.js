@@ -39,7 +39,12 @@ function makeCtx(overrides = {}) {
     log: { info() {}, warn() {}, error() {} },
     connectTunnel() {}, disconnectTunnel() {}, toggleKillSwitch() {}, installUpdate() {}, getTunnelState() {},
     wgConfigFile: 'wg.conf',
+    ...(overrides.media ? { media: overrides.media } : {}),
   };
+  if (overrides.media) {
+    const configure = ctx.apiClient.configure;
+    ctx.apiClient.configure = (...a) => { overrides.media.order.push('configure'); configure(...a); };
+  }
   const ipcMain = { handle: (ch, fn) => { handlers[ch] = fn; }, on() {} };
   registerBaseHandlers(ipcMain, ctx);
   return { handlers, stored, written, calls };
@@ -106,5 +111,27 @@ describe('server:setup with a setup code', () => {
     assert.equal(res.success, true);
     assert.equal(stored['server.apiKey'], 'gc_abc');
     assert.equal(calls.register, 1);
+  });
+
+  it('Medien: the server signed in before is noted before configure(), Medien forgotten after (both paths)', async () => {
+    const media = () => {
+      const m = { order: [], on() {}, serverChanging() { m.order.push('serverChanging'); }, async forgetAll() { m.order.push('forgetAll'); return { ok: true }; } };
+      return m;
+    };
+    const flush = () => new Promise((r) => setImmediate(r));
+    const a = media();
+    const { handlers } = makeCtx({ media: a });
+    assert.equal((await handlers['server:setup']({}, { url: 'https://gate.example.com', apiKey: 'gc_abc' })).success, true);
+    await flush();
+    assert.deepEqual(a.order, ['serverChanging', 'configure', 'forgetAll']);
+
+    ApiClient.redeemSetupCode = async () => ({ ok: true, token: 'gc_minted', peerId: 5, config: null });
+    try {
+      const b = media();
+      const { handlers: h2 } = makeCtx({ media: b });
+      assert.equal((await h2['server:setup']({}, { url: 'https://gate.example.com', apiKey: 'AB12-CD34-EF56-7890' })).success, true);
+      await flush();
+      assert.deepEqual(b.order, ['serverChanging', 'configure', 'forgetAll']);
+    } finally { ApiClient.redeemSetupCode = original; }
   });
 });

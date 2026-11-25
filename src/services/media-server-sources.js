@@ -11,7 +11,7 @@
  *   POST …/v1/jellyfin/paired { sourceId, jellyfinDeviceId }
  *   POST …/v1/shares/{id}/checked { protocol: 'smb', ok, problem? }
  *   POST …/v1/sources/{id}/report { way, ok, problem? }   the way to a source (only on a change)
- *   DELETE …/v1/jellyfin/device                           this PC signed out of Jellyfin ("Medien zurücksetzen")
+ *   DELETE …/v1/jellyfin/device?sourceId=…                this PC signed out of that Jellyfin (before its access goes here)
  *   GET  /api/v1/client/home-network?local=…              at home? GateControl's home-network detection (homeNetwork())
  *
  * - When: at start, after a push reconnect, after the event `media.changed` (event `plugin` of the push stream), after
@@ -28,6 +28,10 @@
  *   at once, everything of the server's sources deleted when it stays so for 24 h (decision 37 a).
  * - Offline (decision 36 a): `offlineHintDays` (30) without the list → a note; `maxOfflineDays` (90) → the NAS
  *   passwords on this PC are deleted.
+ * - Before a Jellyfin access the plugin made is discarded on this PC (another server / signed out of GateControl,
+ *   the source gone from the list, media.revoke, no_access, the plugin gone for 24 h): DELETE v1/jellyfin/device
+ *   ?sourceId=… — the plugin deletes this PC in that Jellyfin. Best effort: a failure is only logged, nothing waits
+ *   for it (media.revoke: the list is asked again only after it, so a new sign-in is not deleted by it).
  *
  * Events: 'state' (status()).
  */
@@ -46,6 +50,7 @@ const DEFAULT_TIMING = Object.freeze({
   pairPollMs: 1000,
   pairRetryMs: 2 * 60 * 1000,     // a failed sign-in is not tried again before (the plugin: 10 per hour)
   changedDelayMs: 300,            // several media.changed in a row → one list
+  deviceTimeoutMs: 5000,          // DELETE v1/jellyfin/device: never longer
 });
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
@@ -88,6 +93,7 @@ class MediaServerSources extends EventEmitter {
     this._pairFails = new Map(); // id → { at, code }
     this._reports = new Map(); // `${sid}|${way}` → 'ok' | problem (sent)
     this._smbFails = new Set();
+    this._leaving = null; // the transport to the server signed in before (serverChanging → signOutAll)
     media.setServerSources(this);
   }
 
@@ -132,6 +138,31 @@ class MediaServerSources extends EventEmitter {
     this._smbFails.clear();
     this._setState('unknown', null);
     if (this._started) this._job(this.refresh({ full: true }));
+  }
+
+  /**
+   * Another server / token is about to be configured (base-handlers, before apiClient.configure()): the transport to
+   * the server signed in now is kept, so signOutAll() reaches that server's plugin, not the new one. The first one
+   * counts until it is used (a setup that failed in between does not replace it).
+   */
+  serverChanging() {
+    if (this._leaving) return;
+    const ac = this.api && this.api.apiClient;
+    this._leaving = ac && ac.client ? new MessengerApi({ apiClient: { client: ac.client }, log: this.log }) : this.api;
+  }
+
+  /**
+   * Medien forgotten on this PC (MediaService.forgetAll, after serverChanging()): every Jellyfin source the plugin
+   * signed this PC in at → DELETE v1/jellyfin/device?sourceId=… at the server signed in before (not awaited).
+   * Without serverChanging() nothing is sent (the transport may already point to another server).
+   */
+  signOutAll() {
+    const api = this._leaving;
+    this._leaving = null;
+    if (!api) return Promise.resolve([]);
+    const p = this._forgetDevice(this._pairedSids(), { api });
+    this._job(p);
+    return p;
   }
 
   _job(p) { Promise.resolve(p).catch((err) => this.log.debug(`Medien (Server): ${err && err.message}`)); }
@@ -306,6 +337,8 @@ class MediaServerSources extends EventEmitter {
   _apply(list, now) {
     const before = this.store.sources();
     const m = MSV.merge(before, list.sources);
+    // a source gone from the list: the plugin deletes this PC in its Jellyfin first (best effort)
+    this._job(this._forgetDevice(this._pairedSids((x) => m.removed.some((r) => r.id === x.id))));
     for (const a of m.adopted) if (a.kind !== 'jellyfin' && a.from !== a.to) this.store.moveProgress(a.from, a.to);
     this.store.replaceAll(m.list);
     const goneIds = m.removed.map((x) => x.id).concat(m.dropped.map((x) => x.id)).filter((id) => !m.list.some((x) => x.id === id));
@@ -340,6 +373,7 @@ class MediaServerSources extends EventEmitter {
       const ids = this.store.sources().filter((x) => x.managed).map((x) => x.id);
       if (ids.length) {
         this.log.info('Medien: the plugin has been unavailable for 24 h — its sources and their access are deleted');
+        this._job(this._forgetDevice(this._pairedSids()));
         try { this.store.removeMany(ids); } catch (err) { this.log.warn(`Medien: not deleted (${err.message})`); }
         this.media.sourcesChanged(ids);
       }
@@ -512,6 +546,9 @@ class MediaServerSources extends EventEmitter {
   async revoke(r) {
     if (!r) return this.status();
     const all = r.sourceIds === null;
+    // the plugin deletes this PC in those Jellyfin servers (started before the access goes here, awaited before the
+    // list is asked again: a new sign-in must not be deleted by it)
+    const signedOut = this._forgetDevice(this._pairedSids((x) => all || r.sourceIds.includes(x.sid)));
     const ids = [];
     for (const x of this.store.sources()) {
       if (!x.managed || (!all && !r.sourceIds.includes(x.sid))) continue;
@@ -523,6 +560,7 @@ class MediaServerSources extends EventEmitter {
     }
     this.log.info(`Medien: access withdrawn by the server (${r.reason}, ${all ? 'all sources' : r.sourceIds.join(', ')})`);
     this.media.sourcesChanged(ids);
+    await signedOut;
     return this.refresh({ full: true });
   }
 
@@ -530,6 +568,7 @@ class MediaServerSources extends EventEmitter {
   dropSource(sid) {
     const ids = this.store.sources().filter((x) => x.managed && x.sid === sid).map((x) => x.id);
     if (!ids.length) return;
+    this._job(this._forgetDevice(this._pairedSids((x) => x.sid === sid)));
     try { this.store.removeMany(ids); } catch (err) { this.log.warn(`Medien: source not removed (${err.message})`); }
     this.media.sourcesChanged(ids);
   }
@@ -557,13 +596,30 @@ class MediaServerSources extends EventEmitter {
     this._job(this.api._call('POST', `${MSV.API_BASE}v1/shares/${encodeURIComponent(x.sid)}/checked`, { body: { protocol: 'smb', ok: ok === true, ...(ok ? {} : { problem: String(problem || 'failed') }) } }));
   }
 
-  /** "Medien zurücksetzen" / the app signed out: the plugin deletes this PC in Jellyfin (all its access). */
-  async signOutDevice() {
+  // ── this PC signed out of Jellyfin (by the plugin) ─────────
+
+  /** The plugin ids of the Jellyfin sources the plugin signed this PC in at (an access or a sign-in made), `pick`ed. */
+  _pairedSids(pick = () => true) {
+    const out = new Set();
+    for (const x of this.store.sources()) {
+      if (x.managed && x.kind === 'jellyfin' && x.sid && (x.token || x.pairedUserId) && pick(x)) out.add(x.sid);
+    }
+    return [...out];
+  }
+
+  _forgetDevice(sids, opts) { return Promise.all(sids.map((sid) => this.signOutDevice(sid, opts))); }
+
+  /**
+   * DELETE v1/jellyfin/device[?sourceId=…]: the plugin deletes this PC in that Jellyfin (without `sourceId`: in all).
+   * Best effort → { ok } | { ok: false, code }; never throws, a failure is only logged.
+   */
+  async signOutDevice(sourceId = null, { api = this.api } = {}) {
     try {
-      await this.api._call('DELETE', `${MSV.API_BASE}v1/jellyfin/device`);
+      await api._call('DELETE', `${MSV.API_BASE}v1/jellyfin/device`, { params: sourceId ? { sourceId } : undefined, timeout: this.timing.deviceTimeoutMs });
       return { ok: true };
     } catch (err) {
-      return no(err.code || 'failed');
+      this.log.warn(`Medien: this PC not signed out of Jellyfin${sourceId ? ` (${sourceId})` : ''} (${(err && (err.code || err.status)) || 'failed'})`);
+      return no((err && err.code) || 'failed');
     }
   }
 }
