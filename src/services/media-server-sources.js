@@ -376,23 +376,31 @@ class MediaServerSources extends EventEmitter {
 
   // ── Jellyfin: signed in by itself (Quick Connect, confirmed by the plugin) ──
 
-  async _pairAll() {
+  /**
+   * Every Jellyfin source without access signed in. In the background the VPN is not started (`startVpn` false: away
+   * it waits for Medien to be opened); opening Medien (MediaService.serverRefresh) starts it when the rule needs it.
+   */
+  async pairPending({ startVpn = false } = {}) {
+    const out = [];
     for (const x of this.store.sources()) {
-      if (x.managed && x.kind === 'jellyfin' && !x.token && !x.problem && x.jfDeviceId) await this.pair(x.id, { background: true });
+      if (x.managed && x.kind === 'jellyfin' && !x.token && !x.problem && x.jfDeviceId) out.push({ id: x.id, ...(await this.pair(x.id, { startVpn })) });
     }
+    return out;
   }
+
+  _pairAll() { return this.pairPending({ startVpn: false }); }
 
   /**
    * Sign source `id` in (contract "Ablauf A"): Quick Connect with the device id and name of the list (URL-encoded
    * header), the code to v1/jellyfin/pair (never shown), Jellyfin asked until it is confirmed, the access of this PC
    * (AuthenticateWithQuickConnect, kept under DPAPI), then v1/jellyfin/paired. code_invalid / an expired request /
-   * device_mismatch: once more. → { ok } | { ok: false, code }. Never starts the VPN (opening Medien does).
+   * device_mismatch: once more. → { ok } | { ok: false, code }. Starts the VPN only with `startVpn` (opening Medien).
    */
-  pair(id, { background = false } = {}) {
+  pair(id, { startVpn = false } = {}) {
     if (this._pairing.has(id)) return this._pairing.get(id);
     const fail = this._pairFails.get(id);
     if (fail && this.now() - fail.at < this.timing.pairRetryMs) return Promise.resolve(no(fail.code));
-    const p = this._pair(id, background).then((r) => {
+    const p = this._pair(id, startVpn).then((r) => {
       if (r.ok) this._pairFails.delete(id);
       else if (r.code !== 'vpn_required') this._pairFails.set(id, { at: this.now(), code: r.code });
       return r;
@@ -401,14 +409,14 @@ class MediaServerSources extends EventEmitter {
     return p;
   }
 
-  async _pair(id) {
+  async _pair(id, startVpn) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const src = this.store.source(id);
       if (!src || !src.managed || src.kind !== 'jellyfin') return no('not_found');
       if (src.token) return { ok: true };
       if (src.problem) return no(src.problem);
       if (!src.jfDeviceId) return no('no_device');
-      const b = await this.media._ready(id, { startVpn: false });
+      const b = await this.media._ready(id, { startVpn });
       if (b) return b;
       const si = this.media.signInClient(id);
       const q = await si.quickConnect();

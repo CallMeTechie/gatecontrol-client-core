@@ -226,12 +226,17 @@ describe('MediaServerSources', () => {
 
   it('the network rule: away only through the VPN — started on opening; without it nothing is sent', async () => {
     const tunnel = { isUp: false, connects: 0, up() { return this.isUp; }, async connect() { this.connects++; this.isUp = true; return true; } };
-    const { ss, media } = setup({ jf, tunnel });
+    const { ss, media, store } = setup({ jf, tunnel });
     const vpn = [];
     media.on('vpn', (e) => vpn.push(e.state));
     await ss.refresh();
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(jf.requests.length, 0, 'the background sign-in does not start the VPN, nothing sent');
+    // opening Medien: the list, the VPN started, signed in
+    const opened = await media.serverRefresh();
+    assert.equal(opened.server.visible, true);
+    assert.equal(tunnel.connects, 1);
+    assert.ok(store.source('jf-1').token);
     const rows = await media.resume('jf-1');
     assert.equal(rows.ok, true);
     assert.equal(tunnel.connects, 1);

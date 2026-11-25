@@ -155,10 +155,15 @@ class MediaService extends EventEmitter {
     return { ok: true, server: this._server ? this._server.status() : null };
   }
 
-  /** media:sources:refresh — the server's list asked now (opening Medien); reads only, sets nothing up. */
+  /**
+   * media:sources:refresh — opening Medien: the server's list asked now, then a Jellyfin source without access signed
+   * in (away the VPN started for it: the network rule). Reads only, sets nothing up.
+   */
   async serverRefresh() {
     if (!this._server) return { ok: true, server: null };
-    return { ok: true, server: await this._server.refresh() };
+    const server = await this._server.refresh();
+    if (typeof this._server.pairPending === 'function') await this._server.pairPending({ startVpn: true });
+    return { ok: true, server: this._server.status ? this._server.status() : server };
   }
 
   /** The server's sources (services/media-server-sources.js): its probes, the sign-in, the reports to the plugin. */
