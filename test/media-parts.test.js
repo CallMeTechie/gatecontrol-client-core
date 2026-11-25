@@ -87,11 +87,16 @@ describe('media-jellyfin: the device profile of Chromium', () => {
     assert.equal(c.name, 'Büro-PC');
   });
 
-  it('the header of every call: who asks, the token never in a URL', () => {
+  it('the header of every call: who asks (URL-encoded values), the token never in a URL', () => {
     const h = J.authorization({ client: 'GateControl Pro', device: 'Büro "PC", 2', deviceId: 'dev-1234', version: '1.0.0' }, 'tok-secret');
     assert.ok(h.startsWith('MediaBrowser '));
-    assert.ok(h.includes('Client="GateControl Pro"'));
-    assert.ok(h.includes('Device="Büro PC  2"'));
+    assert.ok(h.includes('Client="GateControl%20Pro"'));
+    assert.ok(h.includes('Device="B%C3%BCro%20%22PC%22%2C%202"'), h);
+    // the name the plugin gives (Medien-Plugin: "GateControl · …"): raw "·" makes Jellyfin answer 400
+    const g = J.authorization({ client: 'GateControl', device: 'GateControl · Büro-PC', deviceId: 'gc-7Hq2mXk4Rb9tLp0sVw3N', version: '1.10.0' });
+    assert.ok(g.includes('Device="GateControl%20%C2%B7%20B%C3%BCro-PC"'), g);
+    assert.ok(g.includes('DeviceId="gc-7Hq2mXk4Rb9tLp0sVw3N"'));
+    assert.ok(!/[^\x20-\x7e]/.test(g), 'ASCII only');
     assert.ok(h.includes('DeviceId="dev-1234"'));
     assert.ok(h.includes('Token="tok-secret"'));
     assert.ok(!J.authorization({ client: 'x', device: 'y', deviceId: 'z', version: '1' }).includes('Token'));

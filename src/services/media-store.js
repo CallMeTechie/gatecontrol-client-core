@@ -12,6 +12,11 @@
  *     device, decision 11; the newest 500), the quality setting.
  *
  * The logic of the list (pairing SMB ↔ WebDAV, replacing a source signed in again) is utils/media-sources.js.
+ *
+ * Medien-Plugin (W1): the sources come from the server (services/media-server-sources.js): `replaceAll` writes the list
+ * merged with the server's, `moveProgress` keeps the progress of a share taken over under the server's id, and the
+ * last answer of the plugin (rev, the network rule's probes, the offline days, when the server was reached) is kept
+ * as a second safeStorage blob (`serverCache`).
  */
 
 const crypto = require('crypto');
@@ -116,6 +121,58 @@ class MediaStore {
 
   /** Signed out by the server (401): the access goes, the source stays to sign in again. */
   dropToken(id) { return this.update(id, { token: null }); }
+
+  /** The whole list at once (the server's list merged in: services/media-server-sources.js). */
+  replaceAll(list) {
+    this._write(Array.isArray(list) ? list : []);
+    return this.sources();
+  }
+
+  /** Removes several sources (and the progress of their files) at once. */
+  removeMany(ids) {
+    const gone = new Set(ids);
+    if (!gone.size) return;
+    let list = this.sources();
+    for (const id of gone) list = MS.remove(list, id);
+    this._write(list);
+    const p = this._get('progress', {});
+    if (p && typeof p === 'object') {
+      for (const k of Object.keys(p)) if (gone.has(k.split('|')[0])) delete p[k];
+      this._set('progress', p);
+    }
+  }
+
+  /** The progress of the files of share `from` under `to` (a source of this PC taken over by the server's). */
+  moveProgress(from, to) {
+    if (!safeKey(from) || !safeKey(to) || from === to) return;
+    const p = { ...(this._get('progress', {}) || {}) };
+    let moved = false;
+    for (const k of Object.keys(p)) {
+      if (!k.startsWith(`${from}|`)) continue;
+      const nk = `${to}|${k.slice(from.length + 1)}`;
+      if (!safeKey(nk)) continue;
+      p[nk] = p[k];
+      delete p[k];
+      moved = true;
+    }
+    if (moved) this._set('progress', p);
+  }
+
+  /** The plugin's last answer and its times (no secrets, but addresses: encrypted as the sources). */
+  serverCache() {
+    const blob = this._get('server', null);
+    if (typeof blob !== 'string' || !blob || !this.canProtect()) return null;
+    try {
+      const o = JSON.parse(Buffer.from(this.protect.decrypt(Buffer.from(blob, 'base64'))).toString('utf8'));
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+    } catch { return null; }
+  }
+
+  setServerCache(obj) {
+    if (!this.canProtect()) return;
+    if (!obj) { this.store.delete(`${KEY}.server`); return; }
+    this._set('server', Buffer.from(this.protect.encrypt(Buffer.from(JSON.stringify(obj), 'utf8'))).toString('base64'));
+  }
 
   /** Signed out of GateControl / another server: nothing of Medien is left. */
   forgetAll() {

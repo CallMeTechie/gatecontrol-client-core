@@ -2,7 +2,7 @@
 
 // Medien (Stufe 4e): the media:* channels — arguments checked before the service sees them, every handler resolves,
 // events reach the main window; the Pro preload's createMediaBridge invokes
-// only channels the core serves.
+// only channels the core serves. Medien-Plugin (W1): the sources come from the server — no channel sets one up.
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
@@ -25,7 +25,8 @@ function fakeMedia() {
   const rec = (name) => (...args) => { m.calls.push([name, ...args]); return { ok: true, name }; };
   for (const n of ['status', 'setCaps', 'setQuality', 'check', 'networkChanged', 'discover', 'server', 'trust', 'quickConnectStart', 'quickConnectPoll',
     'quickConnectCancel', 'signIn', 'authorizeDevice', 'addShare', 'removeSource', 'setAlwaysOriginal', 'resume', 'latest', 'movies', 'series', 'seasons',
-    'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll']) m[n] = rec(n);
+    'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll',
+    'serverStatus', 'serverRefresh']) m[n] = rec(n);
   m.stream = { revoke: rec('revoke') };
   m.boom = () => { throw Object.assign(new Error('bad'), { code: 'offline' }); };
   return m;
@@ -50,8 +51,6 @@ describe('media-handlers', () => {
     assert.equal((await call('media:check', { id: '../x' })).code, 'invalid');
     assert.equal((await call('media:detail', { id: 's1', itemId: 'Items/../Users' })).code, 'invalid');
     assert.equal((await call('media:play', { id: 's1', itemId: 'm1', versionId: 'a b' })).code, 'invalid');
-    assert.equal((await call('media:signin', { address: 'x', user: 'u' })).code, 'invalid');
-    assert.equal((await call('media:share:add', { kind: 'nfs', address: 'x' })).code, 'invalid');
     assert.equal((await call('media:report', { playId: 'p', event: 'pause' })).code, 'invalid');
     assert.equal((await call('media:source:original', { id: 's1', on: 'yes' })).code, 'invalid');
     assert.equal((await call('media:share:open', { id: 's1', path: '' })).code, 'invalid');
@@ -59,12 +58,15 @@ describe('media-handlers', () => {
     assert.equal(m.calls.length, 0);
     assert.equal((await call('media:play', { id: 's1', itemId: 'm1', audioIndex: 2, subtitleIndex: -1, quality: '8', seriesId: 's9' })).name, 'play');
     assert.deepEqual(m.calls[0][1], { sourceId: 's1', itemId: 'm1', versionId: null, startMs: undefined, audioIndex: 2, subtitleIndex: -1, quality: '8', originalBps: undefined, seriesId: 's9' });
-    await call('media:share:add', { kind: 'smb', address: '\\\\nas\\filme', user: 'kino', password: 'pw', useExisting: true });
-    assert.deepEqual(m.calls[1], ['addShare', { kind: 'smb', address: '\\\\nas\\filme', user: 'kino', password: 'pw', useExisting: true }]);
-    await call('media:share:add', { kind: 'smb', address: '\\\\nas\\filme', password: 'pw' });
-    assert.equal(m.calls[2][1].password, null, 'no password without a user (guest)');
-    await call('media:authorize', { id: 's1', code: '731 205' });
-    assert.deepEqual(m.calls[3], ['authorizeDevice', { sourceId: 's1', code: '731 205' }]);
+    assert.equal((await call('media:sources:refresh')).name, 'serverRefresh');
+    assert.equal((await call('media:sources:status')).name, 'serverStatus');
+  });
+
+  it('read only: no channel sets a source up, signs in, removes one or confirms a code', () => {
+    const { handlers: h } = register(fakeMedia());
+    for (const ch of ['media:discover', 'media:server', 'media:trust', 'media:qc:start', 'media:qc:poll', 'media:qc:cancel', 'media:signin',
+      'media:authorize', 'media:share:add', 'media:source:remove']) assert.equal(h[ch], undefined, ch);
+    assert.ok(h['media:source:original'], '"Immer Original" stays a setting of this PC');
   });
 
   it('every handler resolves; events go to the main window', async () => {
@@ -74,7 +76,10 @@ describe('media-handlers', () => {
     assert.deepEqual(await h['media:status']({}, null), { ok: false, code: 'offline', error: 'x' });
     m.emit('state', { ok: true });
     m.emit('link', { sourceId: 's1', link: { atHome: true } });
-    assert.deepEqual(sent, [[MEDIA_EVENTS.state, { ok: true }], [MEDIA_EVENTS.link, { sourceId: 's1', link: { atHome: true } }]]);
+    m.emit('vpn', { state: 'connecting' });
+    m.emit('server', { visible: true });
+    assert.deepEqual(sent, [[MEDIA_EVENTS.state, { ok: true }], [MEDIA_EVENTS.link, { sourceId: 's1', link: { atHome: true } }],
+      ['media:vpn', { state: 'connecting' }], ['media:sources:state', { visible: true }]]);
   });
 
   it('the bridge of the Pro preload invokes only channels the core serves', () => {

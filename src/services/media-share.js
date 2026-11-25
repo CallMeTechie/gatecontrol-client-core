@@ -302,6 +302,7 @@ class WebDavShare {
         headers: { ...headers, ...(auth ? { Authorization: auth } : {}) },
         localAddress: w.localAddress || null,
         pin: this.source.tlsPin || null,
+        blocked: w.blocked === true,
         maxBytes: responseType === 'stream' ? undefined : S.MAX_LISTING_BYTES,
       });
     };

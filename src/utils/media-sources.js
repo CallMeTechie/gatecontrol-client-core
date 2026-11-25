@@ -12,6 +12,12 @@
  * ("Mit dem Explorer-Zugang verwenden" after Windows' error 1219).
  *
  * The same share set up as SMB and as WebDAV (the same folder name) is one pair: at home SMB, away WebDAV (decision 9).
+ *
+ * Medien-Plugin (W1): a source of the server (`managed: true`, utils/media-server.js) carries besides `sid` (the
+ * plugin's source id), `awayMode` ('vpn' | 'direct') and `awayAddress` (https, the admin's exception), a Jellyfin
+ * source `mapUserId` / `mapUserName` (the user the plugin links), `problem`, `jfDeviceId` / `jfDeviceName` (the device id
+ * and name the plugin gives this PC), `quickConnect`, `pairedUserId` (whose access `token` is); a share `secretRev`
+ * (the server's), `pwRev` (the one of the password kept) and `checkedRev` ("SMB geprüft" reported for it).
  */
 
 const MA = require('./media-address');
@@ -90,9 +96,27 @@ function encode(list) {
       for (const k of ['userId', 'userName', 'token', 'serverId', 'password', 'pairWith', 'tlsPin']) if (x[k]) o[k] = x[k];
       o.alwaysOriginal = x.alwaysOriginal === true;
       if (x.useExisting === true) o.useExisting = true;
+      if (x.managed === true) {
+        o.managed = true;
+        for (const k of MANAGED_TEXT) if (x[k]) o[k] = x[k];
+        for (const k of MANAGED_NUM) if (Number.isSafeInteger(x[k])) o[k] = x[k];
+        if (typeof x.quickConnect === 'boolean') o.quickConnect = x.quickConnect;
+      }
       return o;
     }),
   });
+}
+
+const MANAGED_TEXT = ['sid', 'awayMode', 'awayAddress', 'mapUserId', 'mapUserName', 'problem', 'jfDeviceId', 'jfDeviceName', 'pairedUserId'];
+const MANAGED_NUM = ['secretRev', 'pwRev', 'checkedRev'];
+
+function managedOf(x) {
+  const o = { managed: true };
+  for (const k of MANAGED_TEXT) o[k] = s(x[k], k === 'awayAddress' ? 512 : 128);
+  for (const k of MANAGED_NUM) o[k] = Number.isSafeInteger(x[k]) && x[k] >= 0 ? x[k] : null;
+  o.awayMode = o.awayMode === 'direct' && o.awayAddress && /^https:\/\//.test(o.awayAddress) ? 'direct' : 'vpn';
+  o.quickConnect = typeof x.quickConnect === 'boolean' ? x.quickConnect : null;
+  return o;
 }
 
 /** The stored text → the sources; broken or foreign entries are left out, a partner that is gone is none. */
@@ -124,6 +148,7 @@ function decode(text) {
       pairWith: s(x.pairWith, 64),
       tlsPin: normalizeFingerprint(x.tlsPin),
       useExisting: x.useExisting === true,
+      ...(x.managed === true ? managedOf(x) : {}),
     });
     if (list.length >= MAX_SOURCES) break;
   }
@@ -150,6 +175,16 @@ function publicSource(x) {
     pinned: !!x.tlsPin,
     useExisting: x.useExisting === true,
     ready: ready(x),
+    // Medien-Plugin: a source of the server (no secret here either)
+    managed: x.managed === true,
+    sid: x.managed ? x.sid || null : null,
+    awayMode: x.managed ? x.awayMode || 'vpn' : null,
+    awayAddress: x.managed ? x.awayAddress || null : null,
+    problem: x.managed ? x.problem || null : null,
+    mapUserName: x.managed && x.kind === 'jellyfin' ? x.mapUserName || null : null,
+    deviceName: x.managed && x.kind === 'jellyfin' ? x.jfDeviceName || null : null,
+    quickConnect: x.managed && x.kind === 'jellyfin' && typeof x.quickConnect === 'boolean' ? x.quickConnect : null,
+    smbChecked: x.managed && x.kind === 'smb' ? Number.isSafeInteger(x.checkedRev) && x.checkedRev === x.pwRev : null,
   };
 }
 

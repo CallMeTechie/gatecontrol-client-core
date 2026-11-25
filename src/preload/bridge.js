@@ -1166,18 +1166,12 @@ function createMediaBridge(ipcRenderer) {
     setQuality:    (quality) => inv('media:quality:set', { quality }),
     check:         (id, opts) => inv('media:check', { id, force: !!(opts && opts.force) }),
     networkChanged: () => inv('media:network'),
-    discover:      () => inv('media:discover'),
-    server:        (address) => inv('media:server', { address }),
-    trust:         (address, fingerprint) => inv('media:trust', { address, fingerprint }),
-    quickConnect: {
-      start:  (address) => inv('media:qc:start', { address }),
-      poll:   (flow) => inv('media:qc:poll', { flow }),
-      cancel: (flow) => inv('media:qc:cancel', { flow }),
+    // Medien-Plugin (W1): the sources come from the server — read only
+    sources: {
+      status:  () => inv('media:sources:status'),
+      refresh: () => inv('media:sources:refresh'),
+      onState: (cb) => subscribe('media:sources:state', cb),
     },
-    signIn:        ({ address, user, password } = {}) => inv('media:signin', { address, user, password }),
-    authorize:     (id, code) => inv('media:authorize', { id, code }),
-    addShare:      ({ kind, address, user, password, useExisting } = {}) => inv('media:share:add', { kind, address, user, password, useExisting: useExisting === true }),
-    removeSource:  (id) => inv('media:source:remove', { id }),
     setAlwaysOriginal: (id, on) => inv('media:source:original', { id, on: on === true }),
     resume:        (id, limit) => inv('media:resume', { id, limit }),
     latest:        (id, limit) => inv('media:latest', { id, limit }),
@@ -1201,6 +1195,8 @@ function createMediaBridge(ipcRenderer) {
     setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
     onState:       (cb) => subscribe('media:state', cb),
     onLink:        (cb) => subscribe('media:link', cb),
+    // the tunnel started for Medien: { state: 'connecting' | 'up' | 'failed' }
+    onVpn:         (cb) => subscribe('media:vpn', cb),
   };
 }
 
