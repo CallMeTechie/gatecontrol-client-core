@@ -365,7 +365,9 @@ class MediaService extends EventEmitter {
     const old = this.link(id);
     const home = await this._home();
     const now = this.now();
-    const way = MSV.wayOf({ atHome: home.atHome, awayMode: src.awayMode, tunnelUp: this._tunnelUp() });
+    // the admin's exception is a WebDAV address (https): a share with SMB alone goes away only through the VPN
+    const awayMode = pair && !pair.webdav ? 'vpn' : src.awayMode;
+    const way = MSV.wayOf({ atHome: home.atHome, awayMode, tunnelUp: this._tunnelUp() });
     let next;
     if (way === 'home') {
       const bind = L.lanBinding(host, this._ifaces());

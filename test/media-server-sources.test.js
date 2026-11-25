@@ -297,6 +297,13 @@ describe('MediaServerSources', () => {
     assert.equal(away.link.via, 'direct');
     assert.equal(hotel.media._client('jf-1').base, 'https://jellyfin.example.test');
     assert.equal(hotel.media.status().sources[0].link.way, 'direct');
+
+    // a share with SMB alone: the exception is a WebDAV address — away only through the VPN (none here: blocked)
+    const smbOnly = listOf(jf.base);
+    smbOnly.sources = [{ ...smbOnly.sources[1], webdav: null, away: { mode: 'direct', address: 'https://nas.example.test/filme' } }];
+    const s2 = setup({ jf, net: hotelNet, ifaces: lan, tunnel: { up: () => false, connect: async () => false }, handlers: { [`GET ${P('v1/sources')}`]: () => smbOnly } });
+    await s2.ss.refresh();
+    assert.equal((await s2.media.check('sh-1')).link.blocked, true);
   });
 
   it('SMB error 1219 → WebDAV at once (no question); "SMB geprüft" told once', async () => {
