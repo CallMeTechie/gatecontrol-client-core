@@ -459,6 +459,8 @@ class MediaServerSources extends EventEmitter {
       if (!now) return no('not_found');
       this.store.update(id, { token: a.value.token, userId: a.value.userId, userName: a.value.userName, pairedUserId: now.mapUserId || a.value.userId });
       this.media.sourcesChanged([id]);
+      // signed in: the way once more (away the line is measured now, with the access)
+      if (this.media.link(id).atHome === false) this._job(this.media.check(id, { force: true }));
       this.log.info(`Medien: signed in at Jellyfin (${src.sid}) as the linked user`);
       try {
         await this.api._call('POST', `${MSV.API_BASE}v1/jellyfin/paired`, { body: { sourceId: src.sid, jellyfinDeviceId: src.jfDeviceId } });
