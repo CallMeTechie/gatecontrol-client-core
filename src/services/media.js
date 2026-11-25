@@ -16,6 +16,13 @@
  * the route is checked and, where the tunnel would carry the NAS, a host route through the LAN set (Plan B,
  * services/media-lan-route.js). Away: through the tunnel, the bandwidth measured (every 5 minutes at most).
  *
+ * Shares (Stufe 4h): the rows, grids, detail and play of Jellyfin take a share's id as well — its films and series
+ * come from the folders (services/media-share-library.js: the file names and the pictures beside them), always the
+ * original, the progress on this PC; ids `f:<path>` (a file), `s:<key>` (a series), `s:<key>:<n>` (a season). Every
+ * title carries `key` / `sortKey` (utils/media-share-names.js) so the page can show a title Jellyfin has too once and
+ * mix the sources A–Z. Before a file plays, its start is read (`check`: what Chromium plays, utils/media-playable.js);
+ * what it cannot goes to VLC (a loopback address, services/media-external.js) or Windows' app for the file.
+ *
  * Every method resolves { ok: true, … } or { ok: false, code, … }; nothing throws to the IPC.
  */
 
@@ -28,6 +35,8 @@ const MQ = require('../utils/media-quality');
 const MT = require('../utils/media-tracks');
 const MS = require('../utils/media-sources');
 const MSH = require('../utils/media-share');
+const N = require('../utils/media-share-names');
+const SI = require('../utils/media-share-index');
 const MP = require('../utils/media-playable');
 const L = require('../utils/media-lan');
 const { normalizeFingerprint } = require('../utils/home-cache');
@@ -37,12 +46,15 @@ const MediaLanRoute = require('./media-lan-route');
 const MediaStreamService = require('./media-stream');
 const { JellyfinClient, JellyfinLibrary, JellyfinSignIn, idOk } = require('./media-jellyfin');
 const { SmbShare, WebDavShare } = require('./media-share');
+const ShareLibrary = require('./media-share-library');
+const MediaExternal = require('./media-external');
 
 const DEFAULT_TIMING = Object.freeze({
   measureEveryMs: 5 * 60 * 1000, homeProbeMs: 2500, quickConnectMs: 10 * 60 * 1000, sniffBytes: 2 * 1024 * 1024, moovBytes: 8 * 1024 * 1024,
 });
 const MAX_FLOWS = 4;
 const MAX_PLAYS = 8;
+const MAX_CHECKS = 200;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 const no = (code, extra = {}) => ({ ok: false, code, ...extra });
@@ -59,13 +71,15 @@ class MediaService extends EventEmitter {
    * @param {object} [opts.discovery] - MediaDiscovery
    * @param {object} [opts.lanRoute] - MediaLanRoute (Windows: GetBestRoute2, host routes)
    * @param {object} [opts.shares] - { smb(source) → SmbShare, webdav(source, way) → WebDavShare } (tests)
+   * @param {(target: string) => Promise<string>} [opts.openPath] - Electron's shell.openPath ("In anderer App öffnen")
+   * @param {object} [opts.external] - MediaExternal (tests)
    * @param {object} [opts.log]
    * @param {() => number} [opts.now]
    * @param {object} [opts.timing]
    */
   constructor({
     store, client = 'GateControl Pro', version = '0.0.0', deviceName = null, networkInterfaces = os.networkInterfaces,
-    net = null, discovery = null, lanRoute = null, shares = null, log = null, now = Date.now, timing = {},
+    net = null, discovery = null, lanRoute = null, shares = null, openPath = null, external = null, log = null, now = Date.now, timing = {},
   }) {
     super();
     this.store = store;
@@ -96,6 +110,9 @@ class MediaService extends EventEmitter {
       log: this.log,
       now,
     });
+    this.external = external || new MediaExternal({ stream: this.stream, openPath, log: this.log });
+    this._libs = new Map();    // share id → ShareLibrary (its index of films and series)
+    this._checks = new Map();  // `${id}|${path}|${size}` → the format check of a file
   }
 
   // ── who and how ─────────────────────────────────────────────
@@ -413,6 +430,7 @@ class MediaService extends EventEmitter {
     let saved;
     try { saved = this.store.save(candidate); } catch (err) { return no(err.code || 'failed'); }
     this._dropShares(saved.id);
+    this._libs.clear();
     this._emitState();
     return { ok: true, source: this._publicSource(saved) };
   }
@@ -427,6 +445,7 @@ class MediaService extends EventEmitter {
     }
     this.stream.revokeSource(id);
     this._dropShares(id);
+    this._libs.clear();
     for (const [k, p] of this._plays) if (p.sourceId === id) this._plays.delete(k);
     try { this.store.remove(id); } catch (err) { return no(err.code || 'failed'); }
     this._links.delete(id);
@@ -455,17 +474,49 @@ class MediaService extends EventEmitter {
   }
 
   _decorate(t) {
+    const share = t.fromShare === true;
     return {
       ...t,
-      poster: this.stream.imageUrl(t.sourceId, J.imagePath(t, false, 450)),
-      backdrop: this.stream.imageUrl(t.sourceId, J.imagePath(t, true, 720)),
+      poster: share ? (t.posterId ? this.stream.shareImageUrl(t.sourceId, t.posterId) : null) : this.stream.imageUrl(t.sourceId, J.imagePath(t, false, 450)),
+      backdrop: share ? (t.backdropId ? this.stream.shareImageUrl(t.sourceId, t.backdropId) : null) : this.stream.imageUrl(t.sourceId, J.imagePath(t, true, 720)),
+      key: N.key(t.kind === 'episode' ? t.seriesName || t.name : t.name),
+      sortKey: N.sortKey(t.name),
       resumable: J.resumable(t),
       leftMs: J.leftMs(t),
       progress: J.progressOf(t),
     };
   }
 
-  async _rows(id, fn) {
+  /** The library of a share's films and series (of a pair the one under its visible id). */
+  _shareLib(id) {
+    const src = this.store.source(id);
+    if (!src || !MS.isShare(src.kind)) return null;
+    let lib = this._libs.get(id);
+    if (!lib) {
+      lib = new ShareLibrary({ sourceId: id, fs: () => this._shareFor(id), store: this.store, now: this.now });
+      this._libs.set(id, lib);
+    }
+    return lib;
+  }
+
+  _isShare(id) {
+    const src = this.store.source(id);
+    return !!src && MS.isShare(src.kind);
+  }
+
+  async _shareRows(id, fn) {
+    const lib = this._shareLib(id);
+    if (!lib) return no('not_found');
+    if (!this.link(id).checkedAt) await this.check(id);
+    const r = await fn(lib);
+    if (!r.ok) return no(r.code, r.winError !== undefined ? { winError: r.winError } : {});
+    const v = r.value;
+    if (Array.isArray(v)) return { ok: true, items: v.map((t) => this._decorate(t)) };
+    return { ok: true, ...v, items: v.items.map((t) => this._decorate(t)) };
+  }
+
+  async _rows(id, fn, shareFn = null) {
+    if (shareFn && this._isShare(id)) return this._shareRows(id, shareFn);
     const lib = this._library(id);
     if (!lib) return no(this.store.source(id) ? 'signed_out' : 'not_found');
     if (!this.link(id).checkedAt) await this.check(id);
@@ -476,22 +527,46 @@ class MediaService extends EventEmitter {
     return { ok: true, ...v, items: v.items.map((t) => this._decorate(t)) };
   }
 
-  resume(id, limit = 12) { return this._rows(id, (l) => l.resume(clampInt(limit, 1, 50, 12))); }
+  resume(id, limit = 12) { const n = clampInt(limit, 1, 50, 12); return this._rows(id, (l) => l.resume(n), (l) => l.resume(n)); }
 
-  latest(id, limit = 16) { return this._rows(id, (l) => l.latest(clampInt(limit, 1, 50, 16))); }
+  latest(id, limit = 16) { const n = clampInt(limit, 1, 50, 16); return this._rows(id, (l) => l.latest(n), (l) => l.latest(n)); }
 
-  movies(id, o = {}) { return this._rows(id, (l) => l.movies(clampInt(o.start, 0, 1e6, 0), clampInt(o.limit, 1, 200, 60), pageOpts(o))); }
+  movies(id, o = {}) {
+    const [start, limit] = [clampInt(o.start, 0, 1e6, 0), clampInt(o.limit, 1, 200, 60)];
+    return this._rows(id, (l) => l.movies(start, limit, pageOpts(o)), (l) => l.movies(start, limit, pageOpts(o)));
+  }
 
-  series(id, o = {}) { return this._rows(id, (l) => l.series(clampInt(o.start, 0, 1e6, 0), clampInt(o.limit, 1, 200, 60), pageOpts(o))); }
+  series(id, o = {}) {
+    const [start, limit] = [clampInt(o.start, 0, 1e6, 0), clampInt(o.limit, 1, 200, 60)];
+    return this._rows(id, (l) => l.series(start, limit, pageOpts(o)), (l) => l.series(start, limit, pageOpts(o)));
+  }
 
-  seasons(id, seriesId) { return this._rows(id, (l) => l.seasons(seriesId)); }
+  seasons(id, seriesId) { return this._rows(id, (l) => l.seasons(seriesId), (l) => l.seasons(seriesId)); }
 
-  episodes(id, seriesId, seasonId = null) { return this._rows(id, (l) => l.episodes(seriesId, seasonId)); }
+  episodes(id, seriesId, seasonId = null) { return this._rows(id, (l) => l.episodes(seriesId, seasonId), (l) => l.episodes(seriesId, seasonId)); }
 
-  search(id, q) { return this._rows(id, (l) => l.search(q)); }
+  search(id, q) { return this._rows(id, (l) => l.search(q), (l) => l.search(q)); }
+
+  /** A share's title: its one version (the file as it is) and, when read before, what Chromium does with it. */
+  async _shareDetail(id, itemId) {
+    const lib = this._shareLib(id);
+    if (!lib) return no('not_found');
+    if (!this.link(id).checkedAt) await this.check(id);
+    const r = await lib.detail(itemId);
+    if (!r.ok) return no(r.code);
+    const { title, path, size, container } = r.value;
+    const versions = path ? [{
+      id: itemId, container, bitrate: null, runtimeMs: title.runtimeMs, supportsDirectPlay: true, supportsDirectStream: false, supportsTranscoding: false,
+      video: null, videoLabel: null, hdr: null, audio: [], subtitles: [], pick: { audioIndex: null, subtitleIndex: null }, quality: null,
+    }] : [];
+    const check = path ? this._checks.get(`${id}|${path}|${size}`) || null : null;
+    const fsx = this._shareFor(id);
+    return { ok: true, title: this._decorate(title), versions, link: this.link(id), share: path ? { path, size, via: fsx ? fsx.kind : null, check } : null };
+  }
 
   /** The detail: the title, its versions, what Chromium does with each sound, the quality on this line, the tracks. */
   async detail(id, itemId) {
+    if (this._isShare(id)) return this._shareDetail(id, itemId);
     const lib = this._library(id);
     if (!lib) return no(this.store.source(id) ? 'signed_out' : 'not_found');
     if (!this.link(id).checkedAt) await this.check(id);
@@ -526,7 +601,7 @@ class MediaService extends EventEmitter {
     const id = o.sourceId;
     const src = this.store.source(id);
     if (!src) return no('not_found');
-    if (src.kind !== 'jellyfin') return this.shareOpen({ sourceId: id, path: o.path });
+    if (src.kind !== 'jellyfin') return this.shareOpen({ sourceId: id, path: o.path || SI.pathOf(o.itemId) });
     const lib = this._library(id);
     if (!lib) return no('signed_out');
     if (!this.link(id).checkedAt) await this.check(id);
@@ -573,9 +648,12 @@ class MediaService extends EventEmitter {
     if (!p) return no('not_found');
     const pos = clampInt(positionMs, 0, 1e10, 0);
     if (p.kind === 'share') {
-      const dur = clampInt(durationMs, 0, 1e10, 0);
-      const played = dur > 0 && pos >= dur * 0.9;
-      this.store.setProgress(p.key, { positionMs: played ? 0 : pos, durationMs: dur, played });
+      // a play given up before it started (another one asked meanwhile) keeps the place it had
+      if (event === 'start') p.started = true;
+      if (p.started || pos > 0) {
+        const lib = this._shareLib(p.sourceId);
+        if (lib) lib.keep(p.path, pos, clampInt(durationMs, 0, 1e10, 0));
+      }
     } else {
       const lib = this._library(p.sourceId);
       if (lib) {
@@ -592,6 +670,17 @@ class MediaService extends EventEmitter {
   }
 
   async setPlayed(id, itemId, played) {
+    if (this._isShare(id)) {
+      const lib = this._shareLib(id);
+      const path = SI.pathOf(itemId);
+      if (lib && path) return lib.setPlayed(path, played === true).ok ? { ok: true } : no('failed');
+      if (!lib) return no('not_found');
+      // a series or season: all its episodes
+      const eps = await lib.episodes(itemId.replace(/:\d{1,3}$/, ''), /:\d{1,3}$/.test(itemId) ? itemId : null);
+      if (!eps.ok) return no(eps.code);
+      for (const e of eps.value) lib.setPlayed(SI.pathOf(e.id), played === true);
+      return { ok: true };
+    }
     const lib = this._library(id);
     if (!lib) return no('not_found');
     const r = await lib.setPlayed(itemId, played === true);
@@ -609,18 +698,39 @@ class MediaService extends EventEmitter {
 
   _progressKey(id, path) { return `${id}|${path}`; }
 
-  /** The entries of folder `dir` ("" the root), the files with their progress on this PC. */
+  /**
+   * The entries of folder `dir` ("" the root), the files with their progress on this PC; a video with what its name
+   * says (title, year, season, episode: utils/media-share-names.js), its picture beside it (gcmedia://image/…) and
+   * its id for detail / play (`itemId`: f:<path>).
+   */
   async shareList({ sourceId, dir = '' }) {
     const src = this.store.source(sourceId);
     if (!src || !MS.isShare(src.kind)) return no('not_found');
+    const clean = MSH.clean(dir);
+    if (clean === null) return no('not_found');
     if (!this.link(sourceId).checkedAt) await this.check(sourceId);
     const fsx = this._shareFor(sourceId);
-    const r = await fsx.list(dir);
+    const r = await fsx.list(clean);
     if (!r.ok) return no(r.code, r.winError !== undefined ? { winError: r.winError } : {});
     const progress = this.store.all(`${sourceId}|`);
-    const items = r.value.map((e) => ({ ...e, progress: e.directory ? null : progress[this._progressKey(sourceId, e.path)] || null }));
+    const names = clean ? clean.split('/') : [];
+    const above = names.length && N.seasonOfDir(names[names.length - 1]) !== null ? await fsx.list(MSH.parent(clean)).catch(() => null) : null;
+    const videos = new Map(SI.videosOf(names, r.value, above && above.ok ? SI.imagesOf(above.value) : null).map((v) => [v.path, v]));
+    const items = r.value.map((e) => {
+      const out = { ...e, progress: e.directory ? null : progress[this._progressKey(sourceId, e.path)] || null };
+      const v = videos.get(e.path);
+      if (v) {
+        const pic = v.poster || v.seriesPoster;
+        Object.assign(out, {
+          itemId: SI.fileId(e.path), title: v.parsed.isEpisode ? v.parsed.episodeName || v.parsed.title : v.parsed.title,
+          seriesName: v.parsed.isEpisode ? v.parsed.title : null, year: v.parsed.year, season: v.parsed.season, episode: v.parsed.episode,
+          poster: pic ? this.stream.shareImageUrl(sourceId, pic) : null,
+        });
+      }
+      return out;
+    });
     items.sort((a, b) => (a.directory === b.directory ? a.name.localeCompare(b.name, 'de', { numeric: true, sensitivity: 'base' }) : a.directory ? -1 : 1));
-    return { ok: true, dir: MSH.clean(dir), via: fsx.kind, items, link: this.link(sourceId) };
+    return { ok: true, dir: clean, via: fsx.kind, items, link: this.link(sourceId) };
   }
 
   /** The start of a file read for the check: what it says (Matroska / MP4) and whether Chromium can play it. */
@@ -647,13 +757,70 @@ class MediaService extends EventEmitter {
     const fsx = this._shareFor(sourceId);
     const st = await fsx.stat(clean);
     if (!st.ok) return no(st.code);
-    const check = await this.shareCheck(fsx, clean, st.value.size);
+    const check = await this._checked(sourceId, fsx, clean, st.value.size);
     const playId = crypto.randomBytes(12).toString('base64url');
     const mime = MSH.mimeOf(clean);
     const url = this.stream.openShare(sourceId, clean, { mime, play: playId });
     const key = this._progressKey(sourceId, clean);
-    this._remember({ playId, sourceId, kind: 'share', path: clean, key });
-    return { ok: true, playId, url, mime, size: st.value.size, via: fsx.kind, check, progress: this.store.progress(key) };
+    this._remember({ playId, sourceId, kind: 'share', path: clean, key, started: false });
+    return {
+      ok: true, playId, url, mime, size: st.value.size, via: fsx.kind, check, progress: this.store.progress(key),
+      // as media:play answers for Jellyfin: always the original, no converting, no tracks to choose
+      itemId: SI.fileId(clean), hls: false, method: 'direct', converted: false, bitrate: null, audioIndex: null, subtitleIndex: null,
+      subtitles: [], transcodeReasons: [], link: this.link(sourceId),
+    };
+  }
+
+  /** The check of a file, read once per size (a file replaced on the NAS is read again). */
+  async _checked(sourceId, fsx, path, size) {
+    const k = `${sourceId}|${path}|${size}`;
+    if (this._checks.has(k)) return this._checks.get(k);
+    const check = await this.shareCheck(fsx, path, size);
+    this._checks.set(k, check);
+    while (this._checks.size > MAX_CHECKS) this._checks.delete(this._checks.keys().next().value);
+    return check;
+  }
+
+  _sharePath(sourceId, o) {
+    const src = this.store.source(sourceId);
+    if (!src || !MS.isShare(src.kind)) return null;
+    return MSH.clean(o.path || SI.pathOf(o.itemId)) || null;
+  }
+
+  /** "Prüfung vor dem Start" without playing: { ok, check, size, via } (the detail column marks the file with it). */
+  async shareInspect({ sourceId, path = null, itemId = null }) {
+    const clean = this._sharePath(sourceId, { path, itemId });
+    if (!clean) return no('not_found');
+    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
+    const fsx = this._shareFor(sourceId);
+    const st = await fsx.stat(clean);
+    if (!st.ok) return no(st.code);
+    return { ok: true, check: await this._checked(sourceId, fsx, clean, st.value.size), size: st.value.size, via: fsx.kind };
+  }
+
+  /** VLC there? ("In VLC öffnen" / "In anderer App öffnen") */
+  externalInfo() { return this.external.info(); }
+
+  /**
+   * A share's file in another app: `app` 'vlc' (a loopback address of this PC, works for SMB and WebDAV) or 'default'
+   * (Windows' app for the file type, with the UNC path: SMB only) → { ok, app } | { ok: false, code: 'no_vlc' |
+   * 'unsupported' | … }.
+   */
+  async shareExternal({ sourceId, path = null, itemId = null, app = 'vlc', title = null }) {
+    const clean = this._sharePath(sourceId, { path, itemId });
+    if (!clean) return no('not_found');
+    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
+    const fsx = this._shareFor(sourceId);
+    if (app === 'default') {
+      const unc = fsx && fsx.kind === 'smb' && typeof fsx.uncOf === 'function' ? fsx.uncOf(clean) : null;
+      if (!unc) return no('unsupported');
+      const c = await fsx.connect();
+      if (!c.ok) return no(c.code);
+      return this.external.openWithDefault(unc);
+    }
+    const url = this.stream.openShare(sourceId, clean, { mime: MSH.mimeOf(clean), play: `x${crypto.randomBytes(9).toString('base64url')}` });
+    if (!url) return no('not_found');
+    return this.external.openInVlc(url, { title: typeof title === 'string' ? title : MSH.baseName(clean) });
   }
 
   // ── the end ─────────────────────────────────────────────────
@@ -666,6 +833,9 @@ class MediaService extends EventEmitter {
     this._pins.clear();
     this._links.clear();
     this._dropShares();
+    this._libs.clear();
+    this._checks.clear();
+    this.external.forget();
     this.store.forgetAll();
     await this.lanRoute.removeHostRoutes().catch(() => {});
     this._emitState();
@@ -675,6 +845,7 @@ class MediaService extends EventEmitter {
   /** The app quits: the host routes and the SMB connections of this session go. */
   async close() {
     this._dropShares();
+    this.external.close();
     this.net.reset();
     await this.lanRoute.removeHostRoutes().catch(() => {});
   }

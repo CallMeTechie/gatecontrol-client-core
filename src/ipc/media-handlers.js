@@ -49,20 +49,29 @@
  *                         modifiedAt, kind, progress }], link }
  *   media:share:open      ({ id, path }) → { ok, playId, url, mime, size, via, check: { verdict: 'yes' | 'partial' |
  *                         'no' | 'unknown', video, audio, reasons, external, streams }, progress }
+ *   media:share:check     ({ id, path | itemId }) → { ok, check, size, via }   the format check before the start (4h)
+ *   media:share:external  ({ id, path | itemId, app: 'vlc' | 'default', title? }) → { ok, app } | { ok: false, code:
+ *                         'no_vlc' | 'unsupported' (WebDAV has no path for Windows' app) | … }   "In VLC öffnen" /
+ *                         "In anderer App öffnen" (4h)
+ *   media:external:info   () → { ok, vlc, openPath }
  *   media:tracks          ({ seriesId }) → { ok, choice }
  *   media:tracks:set      ({ seriesId, choice: { audioLanguage, subtitleLanguage, subtitlesOff } }) → { ok }
+ *
+ * Shares (4h): resume, latest, movies, series, seasons, episodes, search, detail, play and played take a share's id as
+ * well; its item ids are `f:<path>` (a file), `s:<key>` (a series) and `s:<key>:<n>` (a season).
  *
  * Events to the main window: media:state (status()), media:link ({ sourceId, link }).
  */
 
 const J = require('../utils/media-jellyfin');
 const MS = require('../utils/media-sources');
+const SI = require('../utils/media-share-index');
 
 const MEDIA_EVENTS = { state: 'media:state', link: 'media:link' };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const isId = (v) => typeof v === 'string' && MS.ID_RE.test(v);
-const isItem = (v) => typeof v === 'string' && J.ID_RE.test(v);
+const isItem = (v) => typeof v === 'string' && (J.ID_RE.test(v) || SI.isItemId(v));
 const isStr = (v, max) => typeof v === 'string' && v.length <= max;
 const optInt = (v) => (Number.isInteger(v) ? v : undefined);
 
@@ -139,6 +148,17 @@ function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
   }));
   handle('media:share:list', wrap(async (a) => (isId(a.id) && (a.dir == null || isStr(a.dir, 1024)) ? m.shareList({ sourceId: a.id, dir: a.dir || '' }) : invalid())));
   handle('media:share:open', wrap(async (a) => (isId(a.id) && isStr(a.path, 1024) && a.path ? m.shareOpen({ sourceId: a.id, path: a.path }) : invalid())));
+  const sharePath = (a) => (isStr(a.path, 1024) && a.path ? { path: a.path } : isItem(a.itemId) && a.itemId.startsWith('f:') ? { itemId: a.itemId } : null);
+  handle('media:share:check', wrap(async (a) => {
+    const p = isId(a.id) ? sharePath(a) : null;
+    return p ? m.shareInspect({ sourceId: a.id, ...p }) : invalid();
+  }));
+  handle('media:share:external', wrap(async (a) => {
+    const p = isId(a.id) ? sharePath(a) : null;
+    if (!p || (a.app !== 'vlc' && a.app !== 'default') || (a.title != null && !isStr(a.title, 200))) return invalid();
+    return m.shareExternal({ sourceId: a.id, ...p, app: a.app, title: a.title || null });
+  }));
+  handle('media:external:info', wrap(async () => m.externalInfo()));
   handle('media:tracks', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.trackChoice(a.seriesId) : invalid())));
   handle('media:tracks:set', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.setTrackChoice(a.seriesId, obj(a.choice)) : invalid())));
 

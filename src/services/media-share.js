@@ -129,6 +129,14 @@ class SmbShare {
     return S.uncPath(this.remote, inside.filter(Boolean).join('/'));
   }
 
+  /** The UNC path of a file of the share (`\\nas\filme\Neu\a.mkv`) for another app; null when it would leave it. */
+  uncOf(rel) {
+    if (!this.smb) return null;
+    const c = S.clean(rel);
+    if (c === null) return null;
+    return S.uncPath(this.remote, [this.smb.path, c].filter(Boolean).join('/'));
+  }
+
   /** Windows knows the access (once per app session). */
   async connect() {
     if (!this.smb) return no('invalid');

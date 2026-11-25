@@ -1193,6 +1193,10 @@ function createMediaBridge(ipcRenderer) {
     endStream:     (urlOrPlayId) => inv('media:stream:end', String(urlOrPlayId || '').startsWith('gcmedia:') ? { url: urlOrPlayId } : { playId: urlOrPlayId }),
     shareList:     (id, dir) => inv('media:share:list', { id, dir: dir || '' }),
     shareOpen:     (id, path) => inv('media:share:open', { id, path }),
+    // 4h: the format check before the start, "In VLC öffnen" / "In anderer App öffnen" (app 'vlc' | 'default')
+    shareCheck:    (id, itemId) => inv('media:share:check', { id, itemId }),
+    shareExternal: (id, itemId, app, title) => inv('media:share:external', { id, itemId, app, title: title || null }),
+    externalInfo:  () => inv('media:external:info'),
     tracks:        (seriesId) => inv('media:tracks', { seriesId }),
     setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
     onState:       (cb) => subscribe('media:state', cb),
