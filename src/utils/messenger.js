@@ -41,6 +41,9 @@ const KNOWN_FEATURES = Object.freeze([
   'video_meta', 'file_thumbs',
   // Messenger 1.4.0 (only true keys are present)
   'status', 'stories', 'polls', 'events', 'arrival', 'actions', 'msg_tools', 'privacy2',
+  // Messenger 1.5.0: requesting home actions (approvers) and „Am Ende ausschalten“ — parts of `actions`, which this
+  // client only shows as messages; no newer Windows version offers them, so they must not raise the update hint
+  'action_requests', 'grant_off',
   // Messenger 1.4.1
   'story_duration',
   // Messenger 1.6: GateControl's notifications in chats (notice channels and
