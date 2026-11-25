@@ -127,10 +127,15 @@ plugin's ids `jf-<n>` / `sh-<n>`; a share's WebDAV half is `sh-<n>_w`).
 | Taken over | a source set up on this PC with the same Jellyfin `serverId` / the same share address → the server's (progress of share files moved, the old Jellyfin access signed out); the rest removed, named in `status().server.notice` |
 | SMB 1219 | the WebDAV half at once, no question |
 
-**The network rule (binding):** at home — one of the plugin's `network.home.probes` answers over the LAN, bound to a
-real LAN adapter (Jellyfin with its server id within 1.5 s, a TLS server with its certificate's SHA-256; a private
-address alone is no proof) — every connection goes straight to the home address bound to the LAN, never through the
-tunnel, also with the VPN on. Away with `away.mode = vpn` only through the own tunnel: opening or playing a title
+**The network rule (binding):** at home — GateControl's own home-network detection says so (the server's
+`GET /api/v1/client/home-network?local=<the PC's LAN addresses>`, services/homeNetwork.js on the server: the same as
+the trusted network, Familie's presence and the home cache): `same_lan: true` with a site — its own LAN only for a
+request through the tunnel (the peer's WireGuard endpoint in the server's LAN), a gateway site also directly (the PC's
+public address is an online gateway's and a LAN address lies in a subnet it reports). With the VPN off only a gateway
+site can be confirmed; otherwise the source counts as away, opening it starts the tunnel and the server is asked again
+through it. A private address alone is no proof, the plugin's `network.home.probes` never decide it (a `tcp` probe
+least of all); an error or an old server: away. At home every connection goes straight to the home address bound to
+the LAN, never through the tunnel, also with the VPN on. Away with `away.mode = vpn` only through the own tunnel: opening or playing a title
 starts it (`tunnel.connect()` of the app, event `media:vpn`: connecting / up / failed); without it nothing is sent
 (`vpn_required`, MediaNet refuses before a byte leaves). Away with `away.mode = direct` (the admin's exception) over the
 source's `https://` address with the usual TLS check. `link.way` per source: `home` | `vpn` | `direct` | `blocked`; a

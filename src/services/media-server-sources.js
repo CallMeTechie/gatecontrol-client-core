@@ -12,6 +12,7 @@
  *   POST …/v1/shares/{id}/checked { protocol: 'smb', ok, problem? }
  *   POST …/v1/sources/{id}/report { way, ok, problem? }   the way to a source (only on a change)
  *   DELETE …/v1/jellyfin/device                           this PC signed out of Jellyfin ("Medien zurücksetzen")
+ *   GET  /api/v1/client/home-network?local=…              at home? GateControl's home-network detection (homeNetwork())
  *
  * - When: at start, after a push reconnect, after the event `media.changed` (event `plugin` of the push stream), after
  *   the silent signal `media.revoke`, when Medien is opened (refresh()), else every 15 minutes — with `?since=<rev>`.
@@ -161,7 +162,23 @@ class MediaServerSources extends EventEmitter {
     try { this.store.setServerCache(this._cache); } catch (err) { this.log.warn(`Medien: server list not kept (${err.message})`); }
   }
 
-  /** The plugin's home probes (MediaService._home). */
+  /**
+   * At home? (MediaService._home) GateControl's own home-network detection, asked now: GET /api/v1/client/home-network
+   * with this PC's private LAN addresses (`local`, at most four, never the VPN adapter's) → true / false
+   * (utils/media-server.js homeNetworkOf; any failure: false).
+   */
+  async homeNetwork({ local = [], tunnelUp = false } = {}) {
+    const list = Array.isArray(local) ? local.filter((a) => typeof a === 'string' && a).slice(0, 4) : [];
+    try {
+      const raw = await this.api._call('GET', MSV.HOME_NETWORK_PATH, { params: list.length ? { local: list.join(',') } : undefined, timeout: 5000 });
+      return MSV.homeNetworkOf(raw, { tunnelUp });
+    } catch (err) {
+      this.log.debug(`Medien: home network not known (${(err && (err.code || err.status)) || 'failed'})`);
+      return false;
+    }
+  }
+
+  /** The plugin's home probes (kept with the list; they do not decide "at home": homeNetwork()). */
   probes() {
     const n = this.cache().network;
     return n && Array.isArray(n.probes) ? n.probes : [];

@@ -12,6 +12,7 @@
  *                           from the sources set up on this PC before (decision 33 a)
  *   offline(…)              30 / 90 days without the server (decision 36 a)
  *   wayOf(…)                the network rule: home direct, away only through the VPN (or the admin's HTTPS exception)
+ *   homeNetworkOf(raw, …)   GET /api/v1/client/home-network → at home or not (GateControl's own home-network detection)
  *   revokeOf(data)          the silent signal media.revoke
  *
  * An entry of a server source carries `managed: true`, `sid` (the plugin's source id, the same on every device of every
@@ -273,6 +274,30 @@ function wayOf({ atHome, awayMode, tunnelUp }) {
   return tunnelUp ? 'vpn' : 'blocked';
 }
 
+const HOME_NETWORK_PATH = '/api/v1/client/home-network';
+
+/**
+ * "At home?" for Medien is GateControl's own home-network detection — the server's (services/homeNetwork.js, the same
+ * one the trusted-network check of the apps, Familie's presence and the home cache use), never a guess of this PC:
+ * GET /api/v1/client/home-network?local=<the PC's LAN addresses> →
+ *   { ok: true, same_lan, via: 'tunnel' | 'direct', site: null | { type: 'server' } | { type: 'gateway', gatewayId, name } }
+ * The server says `same_lan: true` for its own LAN only for a request through the tunnel of this device's own peer
+ * whose WireGuard endpoint lies in that LAN; for a gateway site (same public address as an online gateway and a `local`
+ * address in a LAN subnet that gateway reports) through the tunnel and directly.
+ *
+ * → true only when `same_lan` is true with a site, and — asked without the tunnel or answered `via: 'direct'` — only for
+ * a gateway site (a direct "server" answer would be a LAN reverse proxy or a SNAT router in between). Everything else
+ * (an error, an old server without the route, a broken answer): not at home. The plugin's `network.home.probes` never
+ * decide it, a `tcp` probe least of all (any device at 192.168.1.30:445 in a foreign network answers it).
+ */
+function homeNetworkOf(raw, { tunnelUp = false } = {}) {
+  if (!isObj(raw) || raw.ok !== true || raw.same_lan !== true || !isObj(raw.site)) return false;
+  const type = raw.site.type;
+  if (type !== 'server' && type !== 'gateway') return false;
+  if (type === 'gateway') return true;
+  return tunnelUp === true && raw.via === 'tunnel';
+}
+
 /** The silent signal (topic media_signal, kind data): { sourceIds: [..] | null (all), reason } or null. */
 function revokeOf(data) {
   if (!isObj(data) || data.kind !== 'media.revoke') return null;
@@ -313,5 +338,5 @@ function refusalOf(err) {
 
 module.exports = {
   PLUGIN_ID, API_BASE, SIGNAL_TOPIC, SOURCE_RE, WEBDAV_SUFFIX, DAY_MS, UNAVAILABLE_GRACE_MS, DEFAULT_MAX_OFFLINE_DAYS, DEFAULT_HINT_DAYS,
-  httpsBase, awayOf, probeOf, normalizeList, entryIds, visibleId, entriesOf, merge, offline, wayOf, revokeOf, isSignal, pluginOf, refusalOf,
+  httpsBase, awayOf, probeOf, normalizeList, entryIds, visibleId, entriesOf, merge, offline, wayOf, HOME_NETWORK_PATH, homeNetworkOf, revokeOf, isSignal, pluginOf, refusalOf,
 };

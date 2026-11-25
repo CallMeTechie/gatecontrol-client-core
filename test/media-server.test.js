@@ -142,6 +142,25 @@ describe('times, the network rule, signals', () => {
     assert.equal(MSV.wayOf({ atHome: false, awayMode: 'direct', tunnelUp: false }), 'direct');
   });
 
+  it('at home only by GateControl\'s home network: same_lan with a site; directly only a gateway site; probes never', () => {
+    const own = { ok: true, same_lan: true, via: 'tunnel', site: { type: 'server' } };
+    const gw = { ok: true, same_lan: true, via: 'direct', site: { type: 'gateway', gatewayId: 3, name: 'NAS' } };
+    assert.equal(MSV.homeNetworkOf(own, { tunnelUp: true }), true);
+    assert.equal(MSV.homeNetworkOf(own, { tunnelUp: false }), false, 'asked without the tunnel');
+    assert.equal(MSV.homeNetworkOf({ ...own, via: 'direct' }, { tunnelUp: true }), false, 'a direct "own LAN"');
+    assert.equal(MSV.homeNetworkOf(gw, { tunnelUp: false }), true);
+    assert.equal(MSV.homeNetworkOf({ ...gw, via: 'tunnel' }, { tunnelUp: true }), true);
+    assert.equal(MSV.homeNetworkOf({ ...own, same_lan: false }, { tunnelUp: true }), false);
+    assert.equal(MSV.homeNetworkOf({ ...own, site: null }, { tunnelUp: true }), false);
+    assert.equal(MSV.homeNetworkOf({ ...own, site: { type: 'other' } }, { tunnelUp: true }), false);
+    assert.equal(MSV.homeNetworkOf({ ...own, ok: false }, { tunnelUp: true }), false);
+    assert.equal(MSV.homeNetworkOf({ ...own, same_lan: 'true' }, { tunnelUp: true }), false);
+    assert.equal(MSV.homeNetworkOf(null), false);
+    // a tcp probe of the plugin (1.0.1) is no proof of anything: dropped from the list
+    assert.equal(MSV.probeOf({ kind: 'tcp', host: '192.168.1.30', port: 445, sourceId: 'sh-2', unique: false }), null);
+    assert.equal(MSV.probeOf({ kind: 'tcp', url: 'http://192.168.1.30:445/', unique: false }), null);
+  });
+
   it('media.revoke, the plugin list, the refusals', () => {
     assert.deepEqual(MSV.revokeOf({ kind: 'media.revoke', sourceIds: null, reason: 'device_removed' }), { sourceIds: null, reason: 'device_removed' });
     assert.deepEqual(MSV.revokeOf({ kind: 'media.revoke', sourceIds: ['jf-1', 'x'], reason: 'odd' }), { sourceIds: ['jf-1'], reason: 'admin' });

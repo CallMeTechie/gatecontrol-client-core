@@ -25,9 +25,10 @@
  *
  * Medien-Plugin (W1): the sources come from the GateControl server (services/media-server-sources.js, `managed`). For
  * them the network rule of the plugin is binding (utils/media-server.js wayOf):
- *   - at home (one of the plugin's `network.home.probes` answers over the LAN, bound to a real LAN adapter — never
- *     through the tunnel; a private address alone is no proof): straight to the home address, bound to the LAN, the
- *     host route for SMB where the tunnel would carry the NAS (Plan B) — also with the VPN on;
+ *   - at home (GateControl's own home-network detection says so: the server's GET /api/v1/client/home-network, see
+ *     _home(); a private address alone is no proof, the plugin's `network.home.probes` never decide it): straight to
+ *     the home address, bound to the LAN, the host route for SMB where the tunnel would carry the NAS (Plan B) — also
+ *     with the VPN on;
  *   - away, `awayMode` 'vpn': only through the own tunnel. Is it down, opening or playing a title starts it
  *     (`tunnel.connect()`, event 'vpn': connecting / up / failed); without it nothing is sent (code 'vpn_required',
  *     every connection refused before a byte leaves: MediaNet `blocked`);
@@ -52,7 +53,7 @@ const SI = require('../utils/media-share-index');
 const MP = require('../utils/media-playable');
 const L = require('../utils/media-lan');
 const MSV = require('../utils/media-server');
-const { normalizeFingerprint } = require('../utils/home-cache');
+const { normalizeFingerprint, localAddresses } = require('../utils/home-cache');
 const MediaNet = require('./media-net');
 const MediaDiscovery = require('./media-discovery');
 const MediaLanRoute = require('./media-lan-route');
@@ -68,7 +69,6 @@ const DEFAULT_TIMING = Object.freeze({
 const MAX_FLOWS = 4;
 const MAX_PLAYS = 8;
 const MAX_CHECKS = 200;
-const PROBE_MS = 1500; // the plugin's home probes: an answer within 1.5 s
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 const no = (code, extra = {}) => ({ ok: false, code, ...extra });
@@ -100,8 +100,8 @@ class MediaService extends EventEmitter {
   }) {
     super();
     this.tunnel = tunnel;
-    this._server = null;   // MediaServerSources (setServerSources): probes, pair, report, smbChecked, status
-    this._homeCache = null; // the plugin's home probes, until the network changes: Promise<{ atHome, localAddress }>
+    this._server = null;   // MediaServerSources (setServerSources): home network, pair, report, smbChecked, status
+    this._homeCache = null; // GateControl's home-network answer: { key (tunnel, LAN addresses), p: Promise<{ atHome, localAddress }> }
     this._vpn = null;      // the tunnel being started for Medien
     this.store = store;
     this.appName = client;
@@ -166,7 +166,7 @@ class MediaService extends EventEmitter {
     return { ok: true, server: this._server.status ? this._server.status() : server };
   }
 
-  /** The server's sources (services/media-server-sources.js): its probes, the sign-in, the reports to the plugin. */
+  /** The server's sources (services/media-server-sources.js): at home or not, the sign-in, the reports to the plugin. */
   setServerSources(ss) {
     this._server = ss || null;
     this._homeCache = null;
@@ -397,48 +397,32 @@ class MediaService extends EventEmitter {
   }
 
   /**
-   * At home? One of the plugin's probes answers over the LAN — bound to a real LAN adapter (the one of the probe's
-   * subnet, else the first one: a NAS routed by the home router), never through the tunnel: Jellyfin with its server
-   * id (≤ 1.5 s), a TLS server with its certificate's SHA-256. Kept until the network changes. No probe: away.
+   * At home? GateControl's own home-network detection decides it — the server's (GET /api/v1/client/home-network with
+   * this PC's LAN addresses, MediaServerSources.homeNetwork, utils/media-server.js homeNetworkOf): the same one as for
+   * the trusted network, Familie's presence and the home cache. With the VPN off the server can confirm only a gateway
+   * site (the PC's public address is an online gateway's and a LAN address lies in a subnet it reports); else "away"
+   * — opening Medien then starts the tunnel and asks again through it (its own LAN: the peer's WireGuard endpoint in
+   * the server's LAN). The plugin's probes never decide it. No real LAN adapter: away, nothing asked. Kept until the
+   * network changes, the tunnel goes up or down or the LAN addresses change.
    */
   _home() {
-    if (!this._homeCache) {
-      const p = this._probeHomeNow().catch(() => ({ atHome: false, localAddress: null }));
-      this._homeCache = p;
-      p.then((r) => { if (this._homeCache === p) this.emit('home', r); });
-    }
-    return this._homeCache;
-  }
-
-  async _probeHomeNow() {
-    const probes = this._server && typeof this._server.probes === 'function' ? this._server.probes() || [] : [];
     const ifaces = this._ifaces();
     const links = L.lanLinks(ifaces);
-    if (!probes.length || !links.length) return { atHome: false, localAddress: null };
-    const one = async (pr) => {
-      let host;
-      try { host = new URL(pr.url).hostname; } catch { return null; }
-      const bind = L.lanBinding(host, ifaces);
-      const localAddress = bind ? bind.localAddress : links[0].address;
-      if (pr.kind === 'jellyfin') {
-        try {
-          const res = await this.net.request({ method: 'GET', url: pr.url, headers: { Accept: 'application/json' }, responseType: 'text', timeout: PROBE_MS, localAddress, maxBytes: 64 * 1024 });
-          if (res.status !== 200) return null;
-          const o = JSON.parse(typeof res.data === 'string' ? res.data : '');
-          return o && typeof o.Id === 'string' && o.Id.toLowerCase() === pr.serverId ? localAddress : null;
-        } catch { return null; }
-      }
-      if (pr.kind === 'tls') {
-        try {
-          const c = await this.net.certificate(pr.url, { localAddress, timeoutMs: PROBE_MS });
-          return c && normalizeFingerprint(c.fingerprint) === pr.certSha256 ? localAddress : null;
-        } catch { return null; }
-      }
-      return null;
-    };
-    const hits = await Promise.all(probes.map(one));
-    const hit = hits.find(Boolean);
-    return hit ? { atHome: true, localAddress: hit } : { atHome: false, localAddress: null };
+    const local = localAddresses(ifaces);
+    const tunnelUp = this._tunnelUp();
+    const key = `${tunnelUp}|${local.join(',')}`;
+    if (!this._homeCache || this._homeCache.key !== key) {
+      const p = this._askHome({ links, local, tunnelUp }).catch(() => ({ atHome: false, localAddress: null }));
+      this._homeCache = { key, p };
+      p.then((r) => { if (this._homeCache && this._homeCache.p === p) this.emit('home', r); });
+    }
+    return this._homeCache.p;
+  }
+
+  async _askHome({ links, local, tunnelUp }) {
+    if (!links.length || !local.length || !this._server || typeof this._server.homeNetwork !== 'function') return { atHome: false, localAddress: null };
+    const atHome = (await this._server.homeNetwork({ local, tunnelUp })) === true;
+    return atHome ? { atHome: true, localAddress: links[0].address } : { atHome: false, localAddress: null };
   }
 
   /**

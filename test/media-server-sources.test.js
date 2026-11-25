@@ -4,7 +4,7 @@
 // merged and kept encrypted, the entry "Medien" only with the plugin's tab, a share's password per secretRev, the
 // invisible sign-in (Quick Connect with the plugin's device id, URL-encoded header, the code to the plugin, again after
 // a 401), the network rule (away only through the VPN: started on opening, without it nothing sent; the admin's
-// exception; home by the plugin's probes over the LAN), SMB error 1219 → WebDAV, media.revoke, no_access, the plugin
+// exception; home by GateControl's home-network detection, never by the plugin's probes), SMB error 1219 → WebDAV, media.revoke, no_access, the plugin
 // gone for 24 h, 30 / 90 days offline, sources of this PC taken over.
 
 const { describe, it, beforeEach, afterEach } = require('node:test');
@@ -73,6 +73,8 @@ function fakeApi(handlers) {
 
 const refusal = (status, code, body = {}) => new MessengerError(code, { status, code, body: { ok: false, code, ...body } });
 const P = (x) => `/api/v1/client/plugins/gatecontrol-medien/api/${x}`;
+const HN = '/api/v1/client/home-network';
+const HOME = { [`GET ${HN}`]: () => ({ ok: true, same_lan: true, via: 'tunnel', site: { type: 'server' } }) };
 
 function listOf(jfBase, over = {}) {
   return {
@@ -273,19 +275,25 @@ describe('MediaServerSources', () => {
         return { status: 200, data: JSON.stringify({ Items: [] }) };
       },
     };
-    const home = setup({ jf, tunnel: { up: () => true, connect: async () => true }, net, ifaces: lan });
+    const homeNet = { [`GET ${HN}`]: () => ({ ok: true, lan: ['192.168.1.2'], same_lan: true, via: 'tunnel', site: { type: 'server' } }) };
+    const home = setup({ jf, tunnel: { up: () => true, connect: async () => true }, net, ifaces: lan, handlers: homeNet });
     await home.ss.refresh();
     home.store.update('jf-1', { token: 't', pairedUserId: 'a71e' });
     const c = await home.media.check('jf-1');
     assert.equal(c.link.atHome, true);
     assert.equal(c.link.localAddress, '192.168.1.37', 'bound to the LAN, also with the VPN on');
-    const probe = asked.find((o) => o.url.includes('/System/Info/Public'));
-    assert.equal(probe.localAddress, '192.168.1.37');
-    assert.ok(probe.timeout <= 1500);
+    const q = home.api.calls.filter((x) => x.path === HN);
+    assert.equal(q.length, 1);
+    assert.deepEqual(q[0].opts.params, { local: '192.168.1.37' }, 'the LAN addresses of this PC, never the tunnel\'s');
     assert.equal(home.media.status().sources[0].link.way, 'home');
+    await home.media.check('jf-1');
+    assert.equal(home.api.calls.filter((x) => x.path === HN).length, 1, 'kept until the network changes');
+    home.media.networkChanged();
+    await home.media.check('jf-1');
+    assert.equal(home.api.calls.filter((x) => x.path === HN).length, 2);
 
-    // another server answers at that address (a hotel's 192.168.1.20): away
-    const hotelNet = { ...net, request: async (o) => (o.url.includes('/System/Info/Public') ? { status: 200, data: JSON.stringify({ Id: 'other' }) } : net.request(o)) };
+    // the plugin's probe answers (a hotel's 192.168.1.20 with the same server id) but GateControl says no: away
+    const hotelNet = net;
     const direct = listOf(jf.base);
     direct.sources[0].away = { mode: 'direct', address: 'https://jellyfin.example.test' };
     const hotel = setup({ jf, net: hotelNet, ifaces: lan, tunnel: { up: () => false, connect: async () => false }, handlers: { [`GET ${P('v1/sources')}`]: () => direct } });
@@ -306,6 +314,65 @@ describe('MediaServerSources', () => {
     assert.equal((await s2.media.check('sh-1')).link.blocked, true);
   });
 
+  it('at home only by GateControl\'s home-network detection: a tcp probe alone never; VPN off only a gateway site', async () => {
+    const lan = () => ({ 'WLAN': [{ address: '192.168.1.37', family: 'IPv4', internal: false, cidr: '192.168.1.37/24' }], 'GateControl': [{ address: '10.8.0.5', family: 'IPv4', internal: false, cidr: '10.8.0.5/32' }] });
+    const net = { reset() {}, reachable: async () => true, certificate: async () => null, request: async () => ({ status: 200, data: JSON.stringify({ Id: '4f1ca9', Items: [] }) }) };
+    const tcpOnly = listOf(jf.base);
+    tcpOnly.network = { ...tcpOnly.network, home: { probes: [
+      { kind: 'tcp', host: '192.168.1.20', port: 445, sourceId: 'sh-1', unique: false },
+      { kind: 'tcp', host: '192.168.1.20', port: 8096, sourceId: 'jf-1', unique: false },
+    ] } };
+    const off = () => ({ up: () => false, connect: async () => false });
+
+    // a foreign network with the same addresses: every tcp probe would connect, the server says no → away (blocked)
+    const a = setup({ jf, net, ifaces: lan, tunnel: off(), handlers: {
+      [`GET ${P('v1/sources')}`]: () => tcpOnly,
+      [`GET ${HN}`]: () => ({ ok: true, lan: [], same_lan: false, via: 'direct', site: null }),
+    } });
+    await a.ss.refresh();
+    const r = await a.media.check('sh-1');
+    assert.equal(r.link.atHome, false);
+    assert.equal(r.link.blocked, true);
+    assert.equal((await a.media.shareList({ sourceId: 'sh-1' })).code, 'vpn_required', 'no password to a foreign device');
+    assert.deepEqual(a.api.calls.find((x) => x.path === HN).opts.params, { local: '192.168.1.37' });
+
+    // the server cannot be asked (old server, offline): away as well
+    const b = setup({ jf, net, ifaces: lan, tunnel: off(), handlers: { [`GET ${P('v1/sources')}`]: () => tcpOnly } });
+    await b.ss.refresh();
+    assert.equal((await b.media.check('sh-1')).link.atHome, false);
+
+    // VPN off: a direct "own LAN" answer is not taken (a reverse proxy in between) …
+    const c = setup({ jf, net, ifaces: lan, tunnel: off(), handlers: { [`GET ${HN}`]: () => ({ ok: true, same_lan: true, via: 'direct', site: { type: 'server' } }) } });
+    await c.ss.refresh();
+    assert.equal((await c.media.check('sh-1')).link.atHome, false);
+    // … a gateway site is (the server compared the public address and the gateway's LAN)
+    const d = setup({ jf, net, ifaces: lan, tunnel: off(), handlers: { [`GET ${HN}`]: () => ({ ok: true, same_lan: true, via: 'direct', site: { type: 'gateway', gatewayId: 7, name: 'NAS' } }) } });
+    await d.ss.refresh();
+    const dl = await d.media.check('sh-1');
+    assert.equal(dl.link.atHome, true);
+    assert.equal(dl.link.localAddress, '192.168.1.37');
+  });
+
+  it('VPN off at home without a gateway: away first, the VPN started, asked again through it → home, bound to the LAN', async () => {
+    const lan = () => ({ Ethernet: [{ address: '192.168.1.37', family: 'IPv4', internal: false, cidr: '192.168.1.37/24' }] });
+    const net = { reset() {}, request: async () => ({ status: 200, data: JSON.stringify({ Items: [] }) }) };
+    const tunnel = { isUp: false, connects: 0, up() { return this.isUp; }, async connect() { this.connects++; this.isUp = true; return true; } };
+    const seen = [];
+    const s = setup({ jf, net, ifaces: lan, tunnel, handlers: {
+      [`GET ${HN}`]: () => { seen.push(tunnel.isUp); return tunnel.isUp ? { ok: true, same_lan: true, via: 'tunnel', site: { type: 'server' } } : { ok: true, same_lan: false, via: 'direct', site: null }; },
+    } });
+    await s.ss.refresh();
+    s.store.update('jf-1', { token: 't', pairedUserId: 'a71e' });
+    const rows = await s.media.resume('jf-1');
+    assert.equal(rows.ok, true, JSON.stringify(rows));
+    assert.equal(tunnel.connects, 1);
+    assert.deepEqual(seen, [false, true]);
+    const l = s.media.link('jf-1');
+    assert.equal(l.atHome, true);
+    assert.equal(l.localAddress, '192.168.1.37');
+    assert.equal(s.media.status().sources[0].link.way, 'home');
+  });
+
   it('SMB error 1219 → WebDAV at once (no question); "SMB geprüft" told once', async () => {
     const lan = () => ({ Ethernet: [{ address: '192.168.1.37', family: 'IPv4', internal: false, cidr: '192.168.1.37/24' }] });
     const net = { reset() {}, request: async () => ({ status: 200, data: JSON.stringify({ Id: '4f1ca9' }) }), certificate: async () => null };
@@ -313,7 +380,7 @@ describe('MediaServerSources', () => {
     const fake = (kind, answer) => (source) => ({ kind, source, list: async () => { used.push(kind); return answer(); }, close: async () => {}, stat: async () => ({ ok: false, code: 'not_found' }) });
     let smb = () => ({ ok: false, code: 'smb_conflict', winError: 1219 });
     const shares = { smb: fake('smb', () => smb()), webdav: fake('webdav', () => ({ ok: true, value: [] })) };
-    const s = setup({ jf, net, ifaces: lan, shares, tunnel: { up: () => true, connect: async () => true } });
+    const s = setup({ jf, net, ifaces: lan, shares, tunnel: { up: () => true, connect: async () => true }, handlers: HOME });
     await s.ss.refresh();
     const r = await s.media.shareList({ sourceId: 'sh-1' });
     assert.equal(r.ok, true, JSON.stringify(r));
@@ -324,7 +391,7 @@ describe('MediaServerSources', () => {
     assert.equal(s.media.status().sources[1].link.smbConflict, true);
 
     // another PC without the conflict: SMB, checked once
-    const t = setup({ jf, net, ifaces: lan, shares: { ...shares, smb: fake('smb', () => ({ ok: true, value: [] })) }, tunnel: { up: () => true, connect: async () => true } });
+    const t = setup({ jf, net, ifaces: lan, shares: { ...shares, smb: fake('smb', () => ({ ok: true, value: [] })) }, tunnel: { up: () => true, connect: async () => true }, handlers: HOME });
     await t.ss.refresh();
     await t.media.shareList({ sourceId: 'sh-1' });
     await t.media.shareList({ sourceId: 'sh-1' });
