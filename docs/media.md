@@ -16,11 +16,15 @@ Android's `:core:media`.
 | `src/utils/media-sources.js` | the stored list: replacing a source signed in again, the SMB ↔ WebDAV pair, `shareFor(atHome)`, `publicSource` (no secrets) |
 | `src/utils/media-share.js` | share paths, UNC paths (no ADS, no devices), Range, Basic/Digest (RFC 7616), a small XML reader for `207 Multi-Status` (no DTD, no entities) |
 | `src/utils/media-playable.js` | "can Chromium play this NAS file?": `sniff` (Matroska CodecIDs, MP4 sample entries, moov at the end) and `verdict` (yes / partial / no / unknown, `external` → "In VLC öffnen", 4h) |
+| `src/utils/media-share-names.js` | 4h: what a file name says (film / episode, title, year, `S01E02`, a season folder), `key` / `sortKey` to compare and sort titles of different sources (Android's `ShareNames`) |
+| `src/utils/media-share-index.js` | 4h: the films and series of a share from its folders with the pictures beside the videos (`poster.jpg`, `<film>-poster.png`, `fanart.jpg`), ids `f:<path>` / `s:<key>` / `s:<key>:<n>` (Android's `ShareIndex`) |
 | `src/utils/media-lan.js` | the LAN adapter to bind to (`lanBinding`, never the VPN), the tunnel address away, the route verdict |
 | `src/services/media-net.js` | axios with the LAN binding (`localAddress`), pinned self-signed certificates, `certificate()` for "einmal bestätigen", no proxy, no redirects |
 | `src/services/media-jellyfin.js` | `JellyfinClient`, `JellyfinLibrary` (rows, detail, PlaybackInfo, progress, played, bandwidth, `authorize` code), `JellyfinSignIn` (Quick Connect, name and password) |
 | `src/services/media-discovery.js` | Jellyfin search: UDP 7359, one socket per real LAN address |
 | `src/services/media-share.js` | `SmbShare` (UNC + `WNetAddConnection2W` via koffi, no drive letter, 1219 → `smb_conflict`, `useExisting`), `WebDavShare` (PROPFIND, GET with Range, Basic/Digest, pin) |
+| `src/services/media-share-library.js` | 4h: a share as a library: rows, grids (A–Z, added, year; unwatched), seasons, episodes, search, detail; the progress on this PC (90 % = gesehen, under 30 s no place, read again after 10 minutes) |
+| `src/services/media-external.js` | 4h: "In VLC öffnen" (VLC from the registry or the usual folders, a loopback address `http://127.0.0.1:<port>/<token>/<name>` — only that Host, only tokens made for it, Range — never the access), "In anderer App öffnen" (Windows' app with the UNC path of an SMB file) |
 | `src/services/media-lan-route.js` | Windows: `GetBestRoute2` diagnosis, Plan B host route (`netsh … <nas>/32 … metric=1 store=active`), removed again |
 | `src/services/media-store.js` | electron-store: sources as one safeStorage blob, device id, track choice per series, share progress (newest 500), quality |
 | `src/services/media-stream.js` | the scheme `gcmedia:` (token only in the page, HLS playlists without `api_key`, Range, CORS only for the app page) |
@@ -45,6 +49,24 @@ app.on('before-quit', () => media.close());          // host routes and SMB conn
 The page's CSP needs `gcmedia:` in `img-src`, `media-src` and `connect-src` (hls.js loads by fetch/XHR). The player tells
 the core what Chromium plays: `media.setCaps({ hevc, av1, vp9, mkv, hdr, ac3, eac3, maxAudioChannels })` from
 `canPlayType` / `MediaCapabilities.decodingInfo` / `matchMedia('(dynamic-range: high)')`.
+
+## The folders of a share (4h)
+
+- The rows and grids of Medien take a share's id like a Jellyfin one: `media:resume`, `media:latest`, `media:movies`,
+  `media:series`, `media:seasons`, `media:episodes`, `media:search`, `media:detail`, `media:play`, `media:played`. Every
+  title (Jellyfin's too) carries `key` and `sortKey`: the page shows a title that Jellyfin and a share both have once
+  (Jellyfin wins) and mixes the sources A–Z — as Android's `MediaLogic`.
+- `media:share:list` gives each video its title from the name and the picture beside it (`gcmedia://image/<token>/<path>`,
+  one token per share, jpg/png/webp up to 4 MB), and its `itemId` for detail and play.
+- Before a file plays its start is read once (`check`, kept per size): `media:share:check` for the detail column,
+  `media:play` / `media:share:open` carry it as well. `check.external`: "In VLC öffnen" (`media:share:external`, app
+  `vlc`) when `media:external:info` finds VLC, else "In anderer App öffnen" (app `default`, SMB only: WebDAV has no path
+  Windows' apps could open).
+- A play given up before it started (another one asked meanwhile, 'stop' at 0) does not overwrite the place of a file.
+
+```js
+const media = new MediaService({ store, client: 'GateControl Pro', version, log, openPath: (p) => shell.openPath(p) });
+```
 
 ## The way to the NAS with the VPN on (spike, Risiko 6)
 

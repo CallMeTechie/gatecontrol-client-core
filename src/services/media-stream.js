@@ -14,6 +14,8 @@
  *     the Range passed on).
  *   gcmedia://image/<token>/Items/<id>/Images/<Primary|Backdrop|Thumb>?maxHeight&quality&tag   a poster or backdrop
  *     of a Jellyfin source (one token per source).
+ *   gcmedia://image/<token>/<path in the share>   a picture beside a share's video (poster.jpg, Film-fanart.jpg:
+ *     Stufe 4h; one token per share; only jpg/png/webp, at most 4 MB).
  *
  * Answers: the type of the file (video/audio/image/text/vtt, an HLS playlist — never a type a page could run),
  * Content-Length / Content-Range / Accept-Ranges, nothing cached, Access-Control-Allow-Origin only for the app's page
@@ -36,6 +38,8 @@ const PLAYLIST_RE = /^(?:application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|audio\/(
 const DEFAULT_TIMING = Object.freeze({ ttlMs: 6 * 60 * 60 * 1000, headerMs: 15000, idleMs: 30000 });
 const MAX_TOKENS = 200;
 const MAX_PLAYLIST = 4 * 1024 * 1024;
+const MAX_PICTURE = 4 * 1024 * 1024;
+const PICTURE_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -176,6 +180,16 @@ class MediaStreamService {
     return pathAndQuery ? this.imageBase(sourceId) + pathAndQuery : null;
   }
 
+  /** A picture in a share (Stufe 4h): one token per share; shareImageUrl(sourceId, 'Filme/poster.jpg') → gcmedia://image/… */
+  shareImageUrl(sourceId, path) {
+    const clean = S.clean(path);
+    if (!clean || !Object.prototype.hasOwnProperty.call(PICTURE_TYPES, S.extension(clean))) return null;
+    let base = null;
+    for (const [t, e] of this._tokens) if (e.kind === 'shareimage' && e.sourceId === sourceId && e.exp > this.now() + 60000) { base = t; break; }
+    if (!base) base = this._token({ kind: 'shareimage', sourceId });
+    return `${SCHEME}://image/${base}/${clean.split('/').map((x) => encodeURIComponent(x)).join('/')}`;
+  }
+
   /** The play ended / the page moved on: its addresses stop working (all of `play` when given). */
   revoke(urlOrPlay) {
     const p = parseUrl(String(urlOrPlay || ''));
@@ -218,6 +232,7 @@ class MediaStreamService {
     const range = rangeOf(headerOf(request, 'range'));
     try {
       if (p.host === 'image' && entry.kind === 'image') return await this._image(entry, p, method, origin);
+      if (p.host === 'image' && entry.kind === 'shareimage') return await this._shareImage(entry, p, method, origin);
       if (p.host === 'media' && entry.kind === 'jellyfin') return await this._jellyfin(entry, p, method, range, origin);
       if (p.host === 'media' && entry.kind === 'share') return await this._share(entry, p, method, range, origin);
     } catch (err) {
@@ -300,6 +315,20 @@ class MediaStreamService {
     const out = this._out(type, origin, { 'content-length': (res.headers || {})['content-length'] });
     if (method === 'HEAD') { try { res.data.destroy(); } catch { /* ignore */ } return new Response(null, { status: 200, headers: out }); }
     return new Response(Readable.toWeb(res.data), { status: 200, headers: out });
+  }
+
+  async _shareImage(entry, p, method, origin) {
+    const path = S.clean(p.rest.join('/'));
+    const ext = path ? S.extension(path) : '';
+    if (!path || p.rest.length > 32 || !Object.prototype.hasOwnProperty.call(PICTURE_TYPES, ext) || S.hidden(S.baseName(path))) {
+      return new Response(null, { status: 404, headers: plainHeaders(origin) });
+    }
+    const fsx = await this.share(entry.sourceId);
+    if (!fsx) return new Response(null, { status: 503, headers: plainHeaders(origin) });
+    const buf = await fsx.bytes(path, MAX_PICTURE);
+    if (!buf) return new Response(null, { status: 404, headers: plainHeaders(origin) });
+    const out = this._out(PICTURE_TYPES[ext], origin, { 'content-length': buf.length });
+    return new Response(method === 'HEAD' ? null : buf, { status: 200, headers: out });
   }
 
   async _share(entry, p, method, range, origin) {
