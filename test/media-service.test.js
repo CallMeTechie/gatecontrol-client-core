@@ -107,7 +107,7 @@ describe('MediaService with a fake Jellyfin', () => {
     assert.equal(status.deviceName, 'Büro-PC');
     assert.equal((await media.quickConnectPoll(start.flow)).code, 'not_found', 'a flow once');
     const auth = srv.requests[0].headers.authorization;
-    assert.ok(auth.includes('Device="Büro-PC"'));
+    assert.ok(auth.includes('Device="B%C3%BCro-PC"'));
     assert.ok(auth.includes(`DeviceId="${media.store.deviceId()}"`), 'its own device id');
   });
 

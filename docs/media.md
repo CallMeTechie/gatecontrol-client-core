@@ -105,3 +105,44 @@ connect only (no identity: SMB answers with a challenge-response, WebDAV over HT
 6. SMB with the Explorer already connected to the NAS under another user → message 1219 and "Mit dem Explorer-Zugang
    verwenden".
 7. Away (mobile hotspot): Jellyfin through the tunnel with the measured bandwidth; WebDAV instead of SMB for a pair.
+
+## The sources from the server (Medien-Plugin, Teilstufe W1)
+
+Since the plugin `gatecontrol-medien` (app API v1, its README "App-API v1") the sources are set up once in the
+GateControl server — nothing on the PC. `MediaServerSources` (`src/services/media-server-sources.js`, pure parts in
+`src/utils/media-server.js`) asks `GET …/gatecontrol-medien/api/v1/sources[?since=rev]` at start, after a push
+reconnect, after the event `media.changed`, after the signal `media.revoke`, when Medien is opened
+(`media:sources:refresh`) and else every 15 minutes, and merges the list into MediaStore (`managed: true`, the
+plugin's ids `jf-<n>` / `sh-<n>`; a share's WebDAV half is `sh-<n>_w`).
+
+| What | How |
+|---|---|
+| Entry "Medien" | only while `GET /api/v1/client/plugins` gives the plugin's `tab` (`status().server.visible`) |
+| Jellyfin access | made on this PC: Quick Connect with `device.id` / `device.name` of the list (header values URL-encoded), the code to `v1/jellyfin/pair` (never shown), then Connect / AuthenticateWithQuickConnect, `v1/jellyfin/paired`; Jellyfin's 401 or another linked user → again without asking; `code_invalid` / `device_mismatch` once more |
+| A share's password | `v1/sources/{id}/secret` when `secretRev` is newer; the first SMB sign-in → `v1/shares/{id}/checked` |
+| Kept | the list and the plugin's last answer encrypted (safeStorage / DPAPI, `serverCache`); without the server the last list counts |
+| Offline | 30 days without the list → `offline.hint`; 90 days (`maxOfflineDays`) → the NAS passwords are deleted |
+| Widerruf | `media.revoke` (silent, topic `plugin:gatecontrol-medien:media_signal`) or 403 `no_access` → access and passwords of those sources go, then the whole list |
+| Plugin gone | 404 `plugin_unavailable` / 403 `license_required`: hidden at once, the server's sources deleted after 24 h |
+| Taken over | a source set up on this PC with the same Jellyfin `serverId` / the same share address → the server's (progress of share files moved, the old Jellyfin access signed out); the rest removed, named in `status().server.notice` |
+| SMB 1219 | the WebDAV half at once, no question |
+
+**The network rule (binding):** at home — one of the plugin's `network.home.probes` answers over the LAN, bound to a
+real LAN adapter (Jellyfin with its server id within 1.5 s, a TLS server with its certificate's SHA-256; a private
+address alone is no proof) — every connection goes straight to the home address bound to the LAN, never through the
+tunnel, also with the VPN on. Away with `away.mode = vpn` only through the own tunnel: opening or playing a title
+starts it (`tunnel.connect()` of the app, event `media:vpn`: connecting / up / failed); without it nothing is sent
+(`vpn_required`, MediaNet refuses before a byte leaves). Away with `away.mode = direct` (the admin's exception) over the
+source's `https://` address with the usual TLS check. `link.way` per source: `home` | `vpn` | `direct` | `blocked`; a
+failure of the way goes to the plugin once per change (`v1/sources/{id}/report`, e.g. `tunnel_unreachable`).
+
+IPC (read only): `media:sources:status`, `media:sources:refresh`; events `media:sources:state`, `media:vpn`. The
+channels of the old setup (`media:discover`, `media:server`, `media:trust`, `media:qc:*`, `media:signin`,
+`media:authorize`, `media:share:add`, `media:source:remove`) are gone; the core's methods stay (tests).
+
+```js
+const media = new MediaService({ store, client: 'GateControl Pro', version, log,
+  tunnel: { up: () => tunnelState.connected, connect: async () => { await connectTunnel(); return tunnelState.connected; } } });
+const mediaSources = new MediaServerSources({ media, apiClient, pushClient, notificationCenter, log });
+mediaSources.start();
+```

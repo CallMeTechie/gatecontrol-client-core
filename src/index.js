@@ -54,6 +54,9 @@ const MediaService = require('./services/media');
 const MediaStore = require('./services/media-store');
 const MediaStreamService = require('./services/media-stream');
 const MediaLanRoute = require('./services/media-lan-route');
+// Medien-Plugin (W1): the sources from the server (plugin gatecontrol-medien, app API v1), the network rule
+const MediaServerSources = require('./services/media-server-sources');
+const mediaServerUtil = require('./utils/media-server');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
 const NotesService = require('./services/notes');
@@ -174,6 +177,8 @@ module.exports = {
   MediaStore,
   MediaStreamService,
   MediaLanRoute,
+  MediaServerSources,
+  mediaServerUtil,
   MailService,
   MailApi,
   // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)

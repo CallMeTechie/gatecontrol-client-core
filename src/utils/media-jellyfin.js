@@ -102,10 +102,12 @@ function versionAtLeast(version, major, minor) {
 
 /**
  * The header of every call: who asks (`info`: { client, device, deviceId, version }) and, once signed in, with which
- * access. The token goes here, never in a URL.
+ * access. The token goes here, never in a URL. The values are URL-encoded (encodeURIComponent, as Jellyfin's own
+ * clients do; Jellyfin decodes them): a device name such as "GateControl · Büro-PC" sent raw is refused with 400
+ * (Medien-Plugin, spike M0).
  */
 function authorization(info, token = null) {
-  const q = (s) => String(s == null ? '' : s).replace(/"/g, '').replace(/,/g, ' ').replace(ALL_CONTROL_RE, '');
+  const q = (s) => encodeURIComponent(String(s == null ? '' : s).replace(ALL_CONTROL_RE, '').slice(0, 200));
   const i = info || {};
   const parts = [`Client="${q(i.client)}"`, `Device="${q(i.device)}"`, `DeviceId="${q(i.deviceId)}"`, `Version="${q(i.version)}"`];
   if (token) parts.push(`Token="${q(token)}"`);

@@ -14,20 +14,11 @@
  *   media:quality:set     ({ quality: 'auto' | 'original' | '20' | '12' | '8' | '4' | '2' }) → { ok, quality }
  *   media:check           ({ id, force? }) → { ok, link }   home or away now, away the bandwidth
  *   media:network         () → { ok }   the network changed (Wi-Fi, tunnel up/down): home/away found again
- *   media:discover        () → { ok, servers: [{ address, id, name }] }   Jellyfin in the LAN (UDP 7359, never the VPN)
- *   media:server          ({ address }) → { ok, address, server: { name, version, id, supported }, quickConnect }
- *                         | { ok: false, code: 'cert_untrusted', address, certificate: { fingerprint, subject, issuer,
- *                         validTo, selfSigned } } | 'unsupported_version' | 'offline' | 'invalid'
- *   media:trust           ({ address, fingerprint }) → { ok }   the certificate the person confirmed (pinned)
- *   media:qc:start        ({ address }) → { ok, flow, code, server }   Quick Connect of this PC (code to confirm)
- *   media:qc:poll         ({ flow }) → { ok, state: 'waiting' } | { ok, state: 'done', source } | { ok: false, code: 'expired' }
- *   media:qc:cancel       ({ flow }) → { ok }
- *   media:signin          ({ address, user, password }) → { ok, source }   (the password goes to Jellyfin once)
- *   media:authorize       ({ id, code }) → { ok }   "Gerät anmelden": a TV's / PC's Quick Connect code confirmed
- *   media:share:add       ({ kind: 'smb' | 'webdav', address, user?, password?, useExisting? }) → { ok, source }
- *                         | { ok: false, code: 'smb_conflict' (Windows error 1219: offer useExisting) | 'unauthorized' |
- *                         'not_found' | 'offline' | 'unsupported' | 'cert_untrusted' (+ certificate) }
- *   media:source:remove   ({ id }) → { ok }   (Jellyfin: this device signed out of the server first)
+ *   media:sources:status  () → { ok, server: { state, reason, visible, tab, media, rev, fetchedAt, lastContactAt,
+ *                         offline: { days, hint, expired }, unavailableSince, network, cast, notice } | null }
+ *   media:sources:refresh () → the same, the plugin asked now (opening Medien)
+ *                         Medien-Plugin (W1): the sources come from the server only — reading here, no channel sets one
+ *                         up, signs in, removes one or confirms a code (the core's setup methods stay for the tests).
  *   media:source:original ({ id, on }) → { ok }   "Immer Original"
  *   media:resume | media:latest ({ id, limit? }) → { ok, items }   titles with poster/backdrop gcmedia:// URLs,
  *                         resumable, leftMs, progress
@@ -60,14 +51,15 @@
  * Shares (4h): resume, latest, movies, series, seasons, episodes, search, detail, play and played take a share's id as
  * well; its item ids are `f:<path>` (a file), `s:<key>` (a series) and `s:<key>:<n>` (a season).
  *
- * Events to the main window: media:state (status()), media:link ({ sourceId, link }).
+ * Events to the main window: media:state (status()), media:link ({ sourceId, link }), media:vpn ({ state: 'connecting' |
+ * 'up' | 'failed' }: the tunnel started for Medien, the network rule), media:sources:state (the server's list).
  */
 
 const J = require('../utils/media-jellyfin');
 const MS = require('../utils/media-sources');
 const SI = require('../utils/media-share-index');
 
-const MEDIA_EVENTS = { state: 'media:state', link: 'media:link' };
+const MEDIA_EVENTS = { state: 'media:state', link: 'media:link', vpn: 'media:vpn' };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const isId = (v) => typeof v === 'string' && MS.ID_RE.test(v);
@@ -101,21 +93,8 @@ function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
   handle('media:quality:set', wrap(async (a) => m.setQuality(a.quality)));
   handle('media:check', wrap(async (a) => (isId(a.id) ? m.check(a.id, { force: a.force === true }) : invalid())));
   handle('media:network', wrap(async () => m.networkChanged()));
-  handle('media:discover', wrap(async () => m.discover()));
-  handle('media:server', wrap(async (a) => (isStr(a.address, 512) ? m.server(a.address) : invalid())));
-  handle('media:trust', wrap(async (a) => (isStr(a.address, 512) && isStr(a.fingerprint, 128) ? m.trust({ address: a.address, fingerprint: a.fingerprint }) : invalid())));
-  handle('media:qc:start', wrap(async (a) => (isStr(a.address, 512) ? m.quickConnectStart(a.address) : invalid())));
-  handle('media:qc:poll', wrap(async (a) => (isStr(a.flow, 64) ? m.quickConnectPoll(a.flow) : invalid())));
-  handle('media:qc:cancel', wrap(async (a) => m.quickConnectCancel(isStr(a.flow, 64) ? a.flow : null)));
-  handle('media:signin', wrap(async (a) => (isStr(a.address, 512) && isStr(a.user, 128) && isStr(a.password, 512)
-    ? m.signIn({ address: a.address, user: a.user, password: a.password }) : invalid())));
-  handle('media:authorize', wrap(async (a) => (isId(a.id) && isStr(a.code, 16) ? m.authorizeDevice({ sourceId: a.id, code: a.code }) : invalid())));
-  handle('media:share:add', wrap(async (a) => {
-    if ((a.kind !== 'smb' && a.kind !== 'webdav') || !isStr(a.address, 512)) return invalid();
-    if ((a.user != null && !isStr(a.user, 128)) || (a.password != null && !isStr(a.password, 512))) return invalid();
-    return m.addShare({ kind: a.kind, address: a.address, user: a.user || null, password: a.user ? (a.password || '') : null, useExisting: a.useExisting === true });
-  }));
-  handle('media:source:remove', wrap(async (a) => (isId(a.id) ? m.removeSource(a.id) : invalid())));
+  handle('media:sources:status', wrap(async () => m.serverStatus()));
+  handle('media:sources:refresh', wrap(async () => m.serverRefresh()));
   handle('media:source:original', wrap(async (a) => (isId(a.id) && typeof a.on === 'boolean' ? m.setAlwaysOriginal(a.id, a.on) : invalid())));
   handle('media:resume', wrap(async (a) => (isId(a.id) ? m.resume(a.id, a.limit) : invalid())));
   handle('media:latest', wrap(async (a) => (isId(a.id) ? m.latest(a.id, a.limit) : invalid())));
@@ -168,6 +147,7 @@ function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
     try { win.webContents.send(channel, payload); } catch (err) { log.debug(`${channel} not delivered: ${err.message}`); }
   };
   for (const [event, channel] of Object.entries(MEDIA_EVENTS)) m.on(event, (payload) => send(channel, payload));
+  m.on('server', (payload) => send('media:sources:state', payload));
 }
 
 module.exports = { registerMediaHandlers, MEDIA_EVENTS };

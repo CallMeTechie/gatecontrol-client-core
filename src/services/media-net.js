@@ -13,7 +13,8 @@
  *
  * request(opts) → the axios answer (validateStatus: any status); failures are MediaNetError with code 'offline',
  * 'timeout', 'cert_untrusted' (a certificate Node does not trust: the page asks the person, certificate()),
- * 'cert_changed' (not the pinned one any more) or 'failed'.
+ * 'cert_changed' (not the pinned one any more), 'vpn_required' (`blocked`: away only through the VPN, none up) or
+ * 'failed'.
  */
 
 const crypto = require('crypto');
@@ -132,7 +133,10 @@ class MediaNet {
    * One request. opts: { method, url, headers, data, responseType ('json' | 'stream' | 'text' | 'arraybuffer'),
    * localAddress, pin, timeout, signal, maxBytes }. → the axios answer (any status).
    */
-  async request({ method = 'GET', url, headers = {}, data, responseType = 'json', localAddress = null, pin = null, timeout = 15000, signal, maxBytes } = {}) {
+  async request({ method = 'GET', url, headers = {}, data, responseType = 'json', localAddress = null, pin = null, timeout = 15000, signal, maxBytes, blocked = false } = {}) {
+    // the network rule (Medien-Plugin): away a source that goes only through the VPN while no tunnel is up — nothing
+    // leaves this PC (a hotel's 192.168.1.x must never get the access)
+    if (blocked) throw new MediaNetError('only through the VPN', 'vpn_required');
     let u;
     try { u = new URL(url); } catch { throw new MediaNetError('bad url', 'failed'); }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new MediaNetError('bad url', 'failed');

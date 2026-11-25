@@ -57,7 +57,7 @@ class JellyfinClient {
 
   _way() {
     const w = this.way() || {};
-    return { localAddress: w.localAddress || null, pin: w.pin || null };
+    return { localAddress: w.localAddress || null, pin: w.pin || null, blocked: w.blocked === true };
   }
 
   async call(method, path, query = {}, body = undefined, { timeout = 15000 } = {}) {

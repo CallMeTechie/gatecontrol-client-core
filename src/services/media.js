@@ -23,6 +23,18 @@
  * mix the sources A–Z. Before a file plays, its start is read (`check`: what Chromium plays, utils/media-playable.js);
  * what it cannot goes to VLC (a loopback address, services/media-external.js) or Windows' app for the file.
  *
+ * Medien-Plugin (W1): the sources come from the GateControl server (services/media-server-sources.js, `managed`). For
+ * them the network rule of the plugin is binding (utils/media-server.js wayOf):
+ *   - at home (one of the plugin's `network.home.probes` answers over the LAN, bound to a real LAN adapter — never
+ *     through the tunnel; a private address alone is no proof): straight to the home address, bound to the LAN, the
+ *     host route for SMB where the tunnel would carry the NAS (Plan B) — also with the VPN on;
+ *   - away, `awayMode` 'vpn': only through the own tunnel. Is it down, opening or playing a title starts it
+ *     (`tunnel.connect()`, event 'vpn': connecting / up / failed); without it nothing is sent (code 'vpn_required',
+ *     every connection refused before a byte leaves: MediaNet `blocked`);
+ *   - away, `awayMode` 'direct' (the admin allowed it for this source): over its https:// address, the usual TLS check.
+ * A Jellyfin source without access signs in on its own (Quick Connect confirmed by the plugin, `pair`); a 401 signs in
+ * again without asking. SMB error 1219 (the Explorer is connected with another user) takes the WebDAV half at once.
+ *
  * Every method resolves { ok: true, … } or { ok: false, code, … }; nothing throws to the IPC.
  */
 
@@ -39,6 +51,7 @@ const N = require('../utils/media-share-names');
 const SI = require('../utils/media-share-index');
 const MP = require('../utils/media-playable');
 const L = require('../utils/media-lan');
+const MSV = require('../utils/media-server');
 const { normalizeFingerprint } = require('../utils/home-cache');
 const MediaNet = require('./media-net');
 const MediaDiscovery = require('./media-discovery');
@@ -55,6 +68,7 @@ const DEFAULT_TIMING = Object.freeze({
 const MAX_FLOWS = 4;
 const MAX_PLAYS = 8;
 const MAX_CHECKS = 200;
+const PROBE_MS = 1500; // the plugin's home probes: an answer within 1.5 s
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 const no = (code, extra = {}) => ({ ok: false, code, ...extra });
@@ -76,12 +90,19 @@ class MediaService extends EventEmitter {
    * @param {object} [opts.log]
    * @param {() => number} [opts.now]
    * @param {object} [opts.timing]
+   * @param {object} [opts.tunnel] - the app's GateControl tunnel: { up() → boolean, connect() → Promise<boolean> }
+   *   (the network rule: away a server source goes only through it; opening Medien starts it)
    */
   constructor({
     store, client = 'GateControl Pro', version = '0.0.0', deviceName = null, networkInterfaces = os.networkInterfaces,
     net = null, discovery = null, lanRoute = null, shares = null, openPath = null, external = null, log = null, now = Date.now, timing = {},
+    tunnel = null,
   }) {
     super();
+    this.tunnel = tunnel;
+    this._server = null;   // MediaServerSources (setServerSources): probes, pair, report, smbChecked, status
+    this._homeCache = null; // the plugin's home probes, until the network changes: Promise<{ atHome, localAddress }>
+    this._vpn = null;      // the tunnel being started for Medien
     this.store = store;
     this.appName = client;
     this.version = version;
@@ -127,7 +148,49 @@ class MediaService extends EventEmitter {
     try { return this.networkInterfaces() || {}; } catch { return {}; }
   }
 
-  link(id) { return this._links.get(id) || { atHome: null, via: null, localAddress: null, bps: null, measuredAt: 0, checkedAt: 0, route: null }; }
+  link(id) { return this._links.get(id) || { atHome: null, via: null, localAddress: null, bps: null, measuredAt: 0, checkedAt: 0, route: null, blocked: false }; }
+
+  /** media:sources:status — the server's list (services/media-server-sources.js status()), null without one. */
+  serverStatus() {
+    return { ok: true, server: this._server ? this._server.status() : null };
+  }
+
+  /**
+   * media:sources:refresh — opening Medien: the server's list asked now, then a Jellyfin source without access signed
+   * in (away the VPN started for it: the network rule). Reads only, sets nothing up.
+   */
+  async serverRefresh() {
+    if (!this._server) return { ok: true, server: null };
+    const server = await this._server.refresh();
+    if (typeof this._server.pairPending === 'function') await this._server.pairPending({ startVpn: true });
+    return { ok: true, server: this._server.status ? this._server.status() : server };
+  }
+
+  /** The server's sources (services/media-server-sources.js): its probes, the sign-in, the reports to the plugin. */
+  setServerSources(ss) {
+    this._server = ss || null;
+    this._homeCache = null;
+  }
+
+  _tunnelUp() {
+    if (this.tunnel && typeof this.tunnel.up === 'function') {
+      try { return !!this.tunnel.up(); } catch { return false; }
+    }
+    return !!L.tunnelAddress(this._ifaces());
+  }
+
+  /** Who asks Jellyfin: for a server source the device id and name the plugin gives (its device list shows them). */
+  _infoOf(src) {
+    const i = this.info();
+    if (src && src.managed && src.jfDeviceId) return { client: 'GateControl', device: src.jfDeviceName || i.device, deviceId: src.jfDeviceId, version: this.version };
+    return i;
+  }
+
+  /** The base of a source now: away with the admin's exception its https:// address, else its home address. */
+  _base(src) {
+    if (src && src.managed && src.id && this.link(src.id).via === 'direct' && src.awayAddress) return src.awayAddress;
+    return src.address;
+  }
 
   /**
    * The way of a source's connections now: at home bound to the LAN address (found by check()), away bound to the
@@ -135,12 +198,26 @@ class MediaService extends EventEmitter {
    * up (no id yet) the LAN when its host is in it.
    */
   _way(src) {
+    if (src.managed) return this._managedWay(src);
     const pin = src.tlsPin || this._pinOf(src.address);
     const l = src.id ? this.link(src.id) : { atHome: null };
     if (l.atHome === true) return { localAddress: l.localAddress, pin };
     if (l.atHome === false) return { localAddress: L.tunnelAddress(this._ifaces()), pin };
     const b = src.id ? null : L.lanBinding(MA.host(src.address), this._ifaces());
     return { localAddress: b ? b.localAddress : null, pin };
+  }
+
+  /**
+   * The network rule for a server source: at home bound to the LAN; away through the tunnel (bound to its address) or
+   * over the admin's https:// address (no pin: the usual TLS check); else nothing goes out (blocked) — also while the
+   * way is not known yet.
+   */
+  _managedWay(src) {
+    const l = this.link(src.id);
+    if (l.atHome === true) return { localAddress: l.localAddress, pin: src.tlsPin || null };
+    if (l.atHome === false && l.via === 'direct') return { localAddress: null, pin: null };
+    if (l.atHome === false && l.via === 'tunnel' && this._tunnelUp()) return { localAddress: L.tunnelAddress(this._ifaces()), pin: src.tlsPin || null };
+    return { localAddress: null, pin: null, blocked: true };
   }
 
   _pinOf(address) {
@@ -150,7 +227,14 @@ class MediaService extends EventEmitter {
   _client(id, { token = true } = {}) {
     const src = this.store.source(id);
     if (!src || src.kind !== 'jellyfin') return null;
-    return new JellyfinClient({ base: src.address, info: this.info(), token: token ? src.token : null, net: this.net, way: () => this._way(src), log: this.log });
+    return new JellyfinClient({ base: this._base(src), info: this._infoOf(src), token: token ? src.token : null, net: this.net, way: () => this._way(src), log: this.log });
+  }
+
+  /** Quick Connect of a server source (its own device id, the way of the network rule): media-server-sources.js pair. */
+  signInClient(id) {
+    const src = this.store.source(id);
+    if (!src || src.kind !== 'jellyfin') return null;
+    return new JellyfinSignIn({ client: this._client(id, { token: false }) });
   }
 
   _library(id) {
@@ -169,12 +253,21 @@ class MediaService extends EventEmitter {
     const src = this.store.source(id);
     if (!src || !MS.isShare(src.kind)) return null;
     const pair = MS.pairOf(src, this.store.sources());
-    const atHome = this.link(id).atHome;
-    const use = MS.shareFor(pair.smb, pair.webdav, atHome) || src;
+    const l = this.link(id);
+    const atHome = l.atHome;
+    let use = MS.shareFor(pair.smb, pair.webdav, atHome) || src;
+    // SMB error 1219 (the Explorer is connected to the NAS with another user): the WebDAV half instead, no question
+    if (use.kind === 'smb' && l.smbConflict && pair.webdav) use = pair.webdav;
+    // away with the admin's exception: the WebDAV half over its https:// address (same path below it)
+    if (use.managed && l.via === 'direct') {
+      const dav = pair.webdav || (use.kind === 'webdav' ? use : null);
+      if (dav && dav.awayAddress) use = { ...dav, address: dav.awayAddress, tlsPin: null };
+    }
     const key = `${use.id}|${use.address}|${use.userName || ''}|${crypto.createHash('sha256').update(String(use.password || '')).digest('hex').slice(0, 16)}|${use.tlsPin || ''}|${atHome}`;
     let s = this._shares.get(key);
     if (!s) {
-      s = use.kind === 'smb' ? this.shareFactory.smb(use) : this.shareFactory.webdav(use, () => this._way(use));
+      const ref = use;
+      s = use.kind === 'smb' ? this.shareFactory.smb(use) : this.shareFactory.webdav(use, () => this._way(ref));
       this._shares.set(key, s);
     }
     return s;
@@ -190,7 +283,11 @@ class MediaService extends EventEmitter {
 
   _publicSource(s) {
     const l = this.link(s.id);
-    return { ...MS.publicSource(s), link: { atHome: l.atHome, via: l.via, bps: l.bps, measuredAt: l.measuredAt || null, route: l.route } };
+    const way = s.managed && l.checkedAt ? (l.blocked ? 'blocked' : l.atHome ? 'home' : l.via === 'direct' ? 'direct' : 'vpn') : null;
+    return {
+      ...MS.publicSource(s),
+      link: { atHome: l.atHome, via: l.via, bps: l.bps, measuredAt: l.measuredAt || null, route: l.route, blocked: l.blocked === true, way, smbConflict: l.smbConflict === true },
+    };
   }
 
   status() {
@@ -203,6 +300,7 @@ class MediaService extends EventEmitter {
       quality: this.store.quality(),
       caps: this._caps,
       sources: visible.map((s) => this._publicSource(s)),
+      server: this._server && typeof this._server.status === 'function' ? this._server.status() : null,
     };
   }
 
@@ -229,6 +327,7 @@ class MediaService extends EventEmitter {
   async _check(id, force) {
     const src = this.store.source(id);
     if (!src) return no('not_found');
+    if (src.managed) return this._checkManaged(id, src, force);
     const pair = MS.isShare(src.kind) ? MS.pairOf(src, this.store.sources()) : null;
     const homeSrc = pair ? (pair.smb || pair.webdav) : src;
     const host = MA.host(homeSrc.address);
@@ -258,6 +357,183 @@ class MediaService extends EventEmitter {
     return { ok: true, link: next };
   }
 
+  /** The network rule for a server source (utils/media-server.js wayOf): home, away through the VPN, direct, blocked. */
+  async _checkManaged(id, src, force) {
+    const pair = MS.isShare(src.kind) ? MS.pairOf(src, this.store.sources()) : null;
+    const homeSrc = pair ? (pair.smb || pair.webdav) : src;
+    const host = MA.host(homeSrc.address);
+    const old = this.link(id);
+    const home = await this._home();
+    const now = this.now();
+    // the admin's exception is a WebDAV address (https): a share with SMB alone goes away only through the VPN
+    const awayMode = pair && !pair.webdav ? 'vpn' : src.awayMode;
+    const way = MSV.wayOf({ atHome: home.atHome, awayMode, tunnelUp: this._tunnelUp() });
+    let next;
+    if (way === 'home') {
+      const bind = L.lanBinding(host, this._ifaces());
+      const localAddress = bind ? bind.localAddress : home.localAddress;
+      const route = await this._route(homeSrc, host, localAddress);
+      next = { atHome: true, via: 'lan', localAddress, bps: null, measuredAt: 0, checkedAt: now, route, blocked: false };
+    } else if (way === 'blocked') {
+      next = { atHome: false, via: null, localAddress: null, bps: null, measuredAt: 0, checkedAt: now, route: null, blocked: true };
+    } else {
+      const via = way === 'direct' ? 'direct' : 'tunnel';
+      const same = old.atHome === false && old.via === via;
+      const fresh = same && old.bps && now - old.measuredAt < this.timing.measureEveryMs;
+      let bps = same ? old.bps : null;
+      let measuredAt = same ? old.measuredAt : 0;
+      next = { atHome: false, via, localAddress: null, bps, measuredAt, checkedAt: now, route: null, blocked: false };
+      if ((force || !fresh) && src.kind === 'jellyfin' && src.token) {
+        this._links.set(id, next);
+        const m = await this._library(id).measure();
+        if (m) { bps = m; measuredAt = now; }
+        next = { ...next, bps, measuredAt };
+      }
+    }
+    if (old.atHome !== next.atHome || old.via !== next.via) { this._dropShares(id); this.net.reset(); } else if (old.smbConflict) next.smbConflict = true;
+    this._links.set(id, next);
+    this.emit('link', { sourceId: id, link: next });
+    return { ok: true, link: next };
+  }
+
+  /**
+   * At home? One of the plugin's probes answers over the LAN — bound to a real LAN adapter (the one of the probe's
+   * subnet, else the first one: a NAS routed by the home router), never through the tunnel: Jellyfin with its server
+   * id (≤ 1.5 s), a TLS server with its certificate's SHA-256. Kept until the network changes. No probe: away.
+   */
+  _home() {
+    if (!this._homeCache) {
+      const p = this._probeHomeNow().catch(() => ({ atHome: false, localAddress: null }));
+      this._homeCache = p;
+      p.then((r) => { if (this._homeCache === p) this.emit('home', r); });
+    }
+    return this._homeCache;
+  }
+
+  async _probeHomeNow() {
+    const probes = this._server && typeof this._server.probes === 'function' ? this._server.probes() || [] : [];
+    const ifaces = this._ifaces();
+    const links = L.lanLinks(ifaces);
+    if (!probes.length || !links.length) return { atHome: false, localAddress: null };
+    const one = async (pr) => {
+      let host;
+      try { host = new URL(pr.url).hostname; } catch { return null; }
+      const bind = L.lanBinding(host, ifaces);
+      const localAddress = bind ? bind.localAddress : links[0].address;
+      if (pr.kind === 'jellyfin') {
+        try {
+          const res = await this.net.request({ method: 'GET', url: pr.url, headers: { Accept: 'application/json' }, responseType: 'text', timeout: PROBE_MS, localAddress, maxBytes: 64 * 1024 });
+          if (res.status !== 200) return null;
+          const o = JSON.parse(typeof res.data === 'string' ? res.data : '');
+          return o && typeof o.Id === 'string' && o.Id.toLowerCase() === pr.serverId ? localAddress : null;
+        } catch { return null; }
+      }
+      if (pr.kind === 'tls') {
+        try {
+          const c = await this.net.certificate(pr.url, { localAddress, timeoutMs: PROBE_MS });
+          return c && normalizeFingerprint(c.fingerprint) === pr.certSha256 ? localAddress : null;
+        } catch { return null; }
+      }
+      return null;
+    };
+    const hits = await Promise.all(probes.map(one));
+    const hit = hits.find(Boolean);
+    return hit ? { atHome: true, localAddress: hit } : { atHome: false, localAddress: null };
+  }
+
+  /**
+   * Before a source is opened or played: the way known, and for a server source the network rule kept — away through
+   * the VPN only: is it down, it is started ("VPN wird verbunden …"); without it → { ok: false, code: 'vpn_required' }.
+   * → null when the source may be used now.
+   */
+  async _ready(id, { startVpn = true } = {}) {
+    let l = this.link(id);
+    if (!l.checkedAt) {
+      const c = await this.check(id);
+      if (!c.ok) return no(c.code);
+      l = c.link;
+    }
+    if (!l.blocked) return null;
+    if (!startVpn || !(await this._connectVpn())) return no('vpn_required');
+    this._links.delete(id);
+    const c = await this.check(id);
+    if (!c.ok) return no(c.code);
+    return c.link.blocked ? no('vpn_required') : null;
+  }
+
+  /** The tunnel started for Medien (one start for all who wait); events 'vpn' { state: connecting | up | failed }. */
+  _connectVpn() {
+    if (this._tunnelUp()) return Promise.resolve(true);
+    if (!this.tunnel || typeof this.tunnel.connect !== 'function') return Promise.resolve(false);
+    if (!this._vpn) {
+      this.emit('vpn', { state: 'connecting' });
+      this._vpn = Promise.resolve()
+        .then(() => this.tunnel.connect())
+        .then((r) => r !== false && this._tunnelUp(), (err) => { this.log.warn(`Medien: VPN not started (${(err && err.message) || 'failed'})`); return false; })
+        .then((up) => {
+          this._vpn = null;
+          this.emit('vpn', { state: up ? 'up' : 'failed' });
+          return up;
+        });
+    }
+    return this._vpn;
+  }
+
+  /** A server source's way told to the plugin (only on a change): "NAS durch den Tunnel nicht erreichbar". */
+  _report(id, r) {
+    const src = this.store.source(id);
+    if (!src || !src.managed || !this._server || typeof this._server.report !== 'function') return;
+    const l = this.link(id);
+    if (!l.checkedAt || l.blocked) return;
+    const way = l.atHome ? 'home' : 'away';
+    if (r.ok) this._server.report(src.sid || id, way, true);
+    else if (r.code === 'offline') this._server.report(src.sid || id, way, false, l.atHome ? 'home_unreachable' : l.via === 'direct' ? 'direct_unreachable' : 'tunnel_unreachable');
+  }
+
+  /**
+   * A call on a share: SMB error 1219 → the WebDAV half at once (when there is one) and the call again; the first SMB
+   * sign-in of a server share told to the plugin ("SMB geprüft").
+   */
+  async _viaShare(id, fn) {
+    let r = await fn();
+    const src = this.store.source(id);
+    if (!src) return r;
+    const pair = MS.pairOf(src, this.store.sources());
+    if (!r.ok && r.code === 'smb_conflict' && pair.webdav && !this.link(id).smbConflict) {
+      this.log.info('Medien: SMB in use with another Windows access (1219) — WebDAV instead');
+      if (pair.smb && pair.smb.managed && this._server) this._server.smbChecked(pair.smb.id, false, 'smb_conflict');
+      this._links.set(id, { ...this.link(id), smbConflict: true });
+      this._dropShares(id);
+      r = await fn();
+    } else if (pair.smb && pair.smb.managed && this._server) {
+      const fsx = this._shareFor(id);
+      if (fsx && fsx.kind === 'smb') {
+        if (r.ok) this._server.smbChecked(pair.smb.id, true);
+        else if (r.code === 'unauthorized' || r.code === 'smb_conflict') this._server.smbChecked(pair.smb.id, false, r.code);
+      }
+    }
+    this._report(id, r);
+    return r;
+  }
+
+  /**
+   * The library of a Jellyfin source, ready: the way kept (_ready); a server source without access signs in on its own
+   * (the plugin confirms its Quick Connect). → { lib } | { fail }.
+   */
+  async _jellyfin(id) {
+    const src = this.store.source(id);
+    if (!src) return { fail: no('not_found') };
+    const b = await this._ready(id);
+    if (b) return { fail: b };
+    let lib = this._library(id);
+    if (!lib && src.managed && this._server && typeof this._server.pair === 'function') {
+      const r = await this._server.pair(id);
+      lib = this._library(id);
+      if (!lib) return { fail: no((r && r.code) || 'signed_out') };
+    }
+    return lib ? { lib } : { fail: no('signed_out') };
+  }
+
   /** The source answers at its LAN address bound to this PC's LAN adapter (Jellyfin: the same server). */
   async _probeHome(src, localAddress) {
     const host = MA.host(src.address);
@@ -283,6 +559,7 @@ class MediaService extends EventEmitter {
   /** The network changed (another Wi-Fi, the tunnel up or down): home and away are found again. */
   networkChanged() {
     this._links.clear();
+    this._homeCache = null;
     this._dropShares();
     this.net.reset();
     this._emitState();
@@ -453,6 +730,38 @@ class MediaService extends EventEmitter {
     return { ok: true };
   }
 
+  /**
+   * The server's list changed these sources (gone, signed out, another password, taken over): their stream addresses,
+   * connections, indexes and plays end; the page hears it.
+   */
+  sourcesChanged(ids = []) {
+    for (const id of ids) {
+      this.stream.revokeSource(id);
+      this._dropShares(id);
+      this._libs.delete(id);
+      // the way stays known while the source does (a new password or access does not change it)
+      if (!this.store.source(id)) this._links.delete(id);
+      for (const [k, p] of this._plays) if (p.sourceId === id) this._plays.delete(k);
+    }
+    this._emitState();
+  }
+
+  /** The Jellyfin access of a source set up on this PC before, replaced by the server's: signed out (best effort). */
+  async logoutOld(src) {
+    if (!src || src.kind !== 'jellyfin' || !src.token) return { ok: true };
+    const way = { localAddress: null, pin: src.tlsPin || null };
+    const l = L.lanBinding(MA.host(src.address), this._ifaces());
+    if (l) way.localAddress = l.localAddress;
+    else if (this._tunnelUp()) way.localAddress = L.tunnelAddress(this._ifaces());
+    else return { ok: false, code: 'offline' }; // not through a hotel's network with the old access
+    // its own connections: a change of the way of the server's sources (net.reset) must not cut this one
+    const net = this.net instanceof MediaNet ? new MediaNet({ log: this.log }) : this.net;
+    const c = new JellyfinClient({ base: src.address, info: this.info(), token: src.token, net, way: () => way, log: this.log });
+    const r = await c.post('Sessions/Logout').catch(() => ({ ok: false }));
+    if (net !== this.net) net.reset();
+    return { ok: !!r.ok };
+  }
+
   setAlwaysOriginal(id, on) {
     if (!this.store.source(id)) return no('not_found');
     try { this.store.setAlwaysOriginal(id, on === true); } catch (err) { return no(err.code || 'failed'); }
@@ -465,11 +774,15 @@ class MediaService extends EventEmitter {
   /** A 401: the access is gone (signed out in Jellyfin) — the source stays to sign in again. */
   _fail(id, r) {
     if (r.code === 'unauthorized') {
+      const src = this.store.source(id);
       try { this.store.dropToken(id); } catch { /* kept */ }
       this.stream.revokeSource(id);
       this._emitState();
+      // a server source signs in again on its own, without asking (the plugin confirms)
+      if (src && src.managed && this._server && typeof this._server.pair === 'function') Promise.resolve(this._server.pair(id)).catch(() => {});
       return no('signed_out');
     }
+    this._report(id, r);
     return no(r.code, r.status ? { status: r.status } : {});
   }
 
@@ -507,8 +820,9 @@ class MediaService extends EventEmitter {
   async _shareRows(id, fn) {
     const lib = this._shareLib(id);
     if (!lib) return no('not_found');
-    if (!this.link(id).checkedAt) await this.check(id);
-    const r = await fn(lib);
+    const b = await this._ready(id);
+    if (b) return b;
+    const r = await this._viaShare(id, () => fn(lib));
     if (!r.ok) return no(r.code, r.winError !== undefined ? { winError: r.winError } : {});
     const v = r.value;
     if (Array.isArray(v)) return { ok: true, items: v.map((t) => this._decorate(t)) };
@@ -517,11 +831,20 @@ class MediaService extends EventEmitter {
 
   async _rows(id, fn, shareFn = null) {
     if (shareFn && this._isShare(id)) return this._shareRows(id, shareFn);
-    const lib = this._library(id);
-    if (!lib) return no(this.store.source(id) ? 'signed_out' : 'not_found');
-    if (!this.link(id).checkedAt) await this.check(id);
-    const r = await fn(lib);
+    const j = await this._jellyfin(id);
+    if (j.fail) return j.fail;
+    let r = await fn(j.lib);
+    const src = this.store.source(id);
+    if (!r.ok && r.code === 'unauthorized' && src && src.managed && this._server) {
+      // signed out in Jellyfin (the plugin made a new device, the access expired): signed in again once, silently
+      try { this.store.dropToken(id); } catch { /* kept */ }
+      this.stream.revokeSource(id);
+      const again = await this._jellyfin(id);
+      if (again.fail) return again.fail;
+      r = await fn(again.lib);
+    }
     if (!r.ok) return this._fail(id, r);
+    this._report(id, r);
     const v = r.value;
     if (Array.isArray(v)) return { ok: true, items: v.map((t) => this._decorate(t)) };
     return { ok: true, ...v, items: v.items.map((t) => this._decorate(t)) };
@@ -551,8 +874,9 @@ class MediaService extends EventEmitter {
   async _shareDetail(id, itemId) {
     const lib = this._shareLib(id);
     if (!lib) return no('not_found');
-    if (!this.link(id).checkedAt) await this.check(id);
-    const r = await lib.detail(itemId);
+    const b = await this._ready(id);
+    if (b) return b;
+    const r = await this._viaShare(id, () => lib.detail(itemId));
     if (!r.ok) return no(r.code);
     const { title, path, size, container } = r.value;
     const versions = path ? [{
@@ -567,9 +891,9 @@ class MediaService extends EventEmitter {
   /** The detail: the title, its versions, what Chromium does with each sound, the quality on this line, the tracks. */
   async detail(id, itemId) {
     if (this._isShare(id)) return this._shareDetail(id, itemId);
-    const lib = this._library(id);
-    if (!lib) return no(this.store.source(id) ? 'signed_out' : 'not_found');
-    if (!this.link(id).checkedAt) await this.check(id);
+    const j = await this._jellyfin(id);
+    if (j.fail) return j.fail;
+    const lib = j.lib;
     const r = await lib.detail(itemId);
     if (!r.ok) return this._fail(id, r);
     const src = this.store.source(id);
@@ -602,9 +926,9 @@ class MediaService extends EventEmitter {
     const src = this.store.source(id);
     if (!src) return no('not_found');
     if (src.kind !== 'jellyfin') return this.shareOpen({ sourceId: id, path: o.path || SI.pathOf(o.itemId) });
-    const lib = this._library(id);
-    if (!lib) return no('signed_out');
-    if (!this.link(id).checkedAt) await this.check(id);
+    const j = await this._jellyfin(id);
+    if (j.fail) return j.fail;
+    const lib = j.lib;
     const l = this.link(id);
     const audioIndex = Number.isInteger(o.audioIndex) ? o.audioIndex : undefined;
     const subtitleIndex = Number.isInteger(o.subtitleIndex) ? o.subtitleIndex : undefined;
@@ -708,9 +1032,10 @@ class MediaService extends EventEmitter {
     if (!src || !MS.isShare(src.kind)) return no('not_found');
     const clean = MSH.clean(dir);
     if (clean === null) return no('not_found');
-    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
+    const b = await this._ready(sourceId);
+    if (b) return b;
+    const r = await this._viaShare(sourceId, () => this._shareFor(sourceId).list(clean));
     const fsx = this._shareFor(sourceId);
-    const r = await fsx.list(clean);
     if (!r.ok) return no(r.code, r.winError !== undefined ? { winError: r.winError } : {});
     const progress = this.store.all(`${sourceId}|`);
     const names = clean ? clean.split('/') : [];
@@ -753,10 +1078,11 @@ class MediaService extends EventEmitter {
     const src = this.store.source(sourceId);
     const clean = MSH.clean(path);
     if (!src || !MS.isShare(src.kind) || !clean) return no('not_found');
-    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
-    const fsx = this._shareFor(sourceId);
-    const st = await fsx.stat(clean);
+    const b = await this._ready(sourceId);
+    if (b) return b;
+    const st = await this._viaShare(sourceId, () => this._shareFor(sourceId).stat(clean));
     if (!st.ok) return no(st.code);
+    const fsx = this._shareFor(sourceId);
     const check = await this._checked(sourceId, fsx, clean, st.value.size);
     const playId = crypto.randomBytes(12).toString('base64url');
     const mime = MSH.mimeOf(clean);
@@ -791,10 +1117,11 @@ class MediaService extends EventEmitter {
   async shareInspect({ sourceId, path = null, itemId = null }) {
     const clean = this._sharePath(sourceId, { path, itemId });
     if (!clean) return no('not_found');
-    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
-    const fsx = this._shareFor(sourceId);
-    const st = await fsx.stat(clean);
+    const b = await this._ready(sourceId);
+    if (b) return b;
+    const st = await this._viaShare(sourceId, () => this._shareFor(sourceId).stat(clean));
     if (!st.ok) return no(st.code);
+    const fsx = this._shareFor(sourceId);
     return { ok: true, check: await this._checked(sourceId, fsx, clean, st.value.size), size: st.value.size, via: fsx.kind };
   }
 
@@ -809,7 +1136,8 @@ class MediaService extends EventEmitter {
   async shareExternal({ sourceId, path = null, itemId = null, app = 'vlc', title = null }) {
     const clean = this._sharePath(sourceId, { path, itemId });
     if (!clean) return no('not_found');
-    if (!this.link(sourceId).checkedAt) await this.check(sourceId);
+    const b = await this._ready(sourceId);
+    if (b) return b;
     const fsx = this._shareFor(sourceId);
     if (app === 'default') {
       const unc = fsx && fsx.kind === 'smb' && typeof fsx.uncOf === 'function' ? fsx.uncOf(clean) : null;
@@ -832,11 +1160,14 @@ class MediaService extends EventEmitter {
     this._flows.clear();
     this._pins.clear();
     this._links.clear();
+    this._homeCache = null;
     this._dropShares();
     this._libs.clear();
     this._checks.clear();
     this.external.forget();
     this.store.forgetAll();
+    // the server's list, its times and the plugin's state belong to the person signed in before
+    if (this._server && typeof this._server.reset === 'function') { try { this._server.reset(); } catch { /* gone */ } }
     await this.lanRoute.removeHostRoutes().catch(() => {});
     this._emitState();
     return { ok: true };

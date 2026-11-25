@@ -60,7 +60,7 @@ describe('JellyfinLibrary against a fake server', () => {
     assert.equal(req.query.get('userId'), 'u1');
     const auth = req.headers.authorization;
     assert.ok(auth.startsWith('MediaBrowser '), auth);
-    assert.ok(auth.includes('Client="GateControl Pro"'));
+    assert.ok(auth.includes('Client="GateControl%20Pro"'));
     assert.ok(auth.includes('DeviceId="dev-1234"'));
     assert.ok(auth.includes('Token="tok-secret"'));
     assert.ok(!req.url.includes('tok-secret'), 'the token never in the URL');
