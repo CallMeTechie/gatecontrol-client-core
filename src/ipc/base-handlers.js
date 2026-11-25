@@ -287,6 +287,14 @@ function registerBaseHandlers(ipcMain, ctx) {
   // A new server / token: the old server's policy and push state must not
   // stick. Drop them and ask the new server (best-effort, the policy answer
   // arrives via onChange, push reconnects on its own).
+  // Before apiClient.configure() changes the server / token: what must still reach the server signed in now is kept
+  // (Medien: the plugin there deletes this PC in its Jellyfin servers once resetForNewServer() forgets Medien).
+  function beforeServerChange() {
+    if (mediaSvc && typeof mediaSvc.serverChanging === 'function') {
+      try { mediaSvc.serverChanging(); } catch (err) { log.warn(`Medien: server change not noted (${err.message})`); }
+    }
+  }
+
   function resetForNewServer() {
     if (clientPolicy) {
       clientPolicy.reset();
@@ -453,6 +461,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       return { success: false, error: enrollErrorMessage(err) };
     }
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', data.token);
     apiClient.configure(serverUrl, data.token);
@@ -494,6 +503,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (typeof apiKey !== 'string' || !apiKey.trim()) return { success: false, error: t('server.urlAndKeyRequired') };
     apiKey = apiKey.trim();
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', apiKey);
     apiClient.configure(serverUrl, apiKey);

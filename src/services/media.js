@@ -1137,8 +1137,15 @@ class MediaService extends EventEmitter {
 
   // ── the end ─────────────────────────────────────────────────
 
+  /** Another server / token is about to be configured: the server signed in now is kept for forgetAll(). */
+  serverChanging() {
+    if (this._server && typeof this._server.serverChanging === 'function') { try { this._server.serverChanging(); } catch { /* gone */ } }
+  }
+
   /** Signed out of GateControl / another server: nothing of Medien is left on this PC. */
   async forgetAll() {
+    // first the plugin of the server signed in before deletes this PC in its Jellyfin servers (best effort, not awaited)
+    if (this._server && typeof this._server.signOutAll === 'function') { try { this._server.signOutAll(); } catch { /* gone */ } }
     this.stream.clear();
     this._plays.clear();
     this._flows.clear();
