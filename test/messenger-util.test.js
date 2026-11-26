@@ -222,6 +222,8 @@ describe('messenger util – update hint (unknown features)', () => {
     assert.deepEqual(u.unknownFeatures({ bridges: true, e2e: true }), [], 'known keys never count, whatever their value');
     assert.deepEqual(u.unknownFeatures({ weird: 'yes', other: 1 }), [], 'only true counts');
     assert.deepEqual(u.unknownFeatures(['video_meta', 'calls']), ['calls']);
+    // Messenger ≥ 1.5.0 with home actions: requests and „Am Ende ausschalten“ never raise the update hint on Windows
+    assert.deepEqual(u.unknownFeatures({ actions: true, action_requests: true, grant_off: true }), []);
     assert.deepEqual(u.unknownFeatures(null), []);
     assert.deepEqual(u.unknownFeatures({ 'bad key!': true }), []);
     for (const k of Object.keys(known)) assert.ok(u.KNOWN_FEATURES.includes(k), k);

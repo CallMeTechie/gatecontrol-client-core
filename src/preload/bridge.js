@@ -1152,4 +1152,62 @@ function createSubscriber(ipcRenderer) {
   };
 }
 
-module.exports = { createBridgeApi, createSubscriber };
+/**
+ * "Medien" (Stufe 4e, Pro only — decision 26 a): the app preload adds it as `api.media = createMediaBridge(ipcRenderer)`
+ * when the app passes a MediaService to registerBaseHandlers (ipc/media-handlers.js lists arguments and answers).
+ * Pictures and video are gcmedia:// addresses of the answers (no IPC, no access in the page).
+ */
+function createMediaBridge(ipcRenderer) {
+  const subscribe = createSubscriber(ipcRenderer);
+  const inv = (ch, arg) => ipcRenderer.invoke(ch, arg);
+  return {
+    status:        () => inv('media:status'),
+    setCaps:       (caps) => inv('media:caps:set', caps && typeof caps === 'object' ? caps : {}),
+    setQuality:    (quality) => inv('media:quality:set', { quality }),
+    check:         (id, opts) => inv('media:check', { id, force: !!(opts && opts.force) }),
+    networkChanged: () => inv('media:network'),
+    // Medien-Plugin (W1): the sources come from the server — read only
+    sources: {
+      status:  () => inv('media:sources:status'),
+      refresh: () => inv('media:sources:refresh'),
+      onState: (cb) => subscribe('media:sources:state', cb),
+    },
+    setAlwaysOriginal: (id, on) => inv('media:source:original', { id, on: on === true }),
+    resume:        (id, limit) => inv('media:resume', { id, limit }),
+    latest:        (id, limit) => inv('media:latest', { id, limit }),
+    movies:        (id, opts) => inv('media:movies', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    series:        (id, opts) => inv('media:series', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    seasons:       (id, seriesId) => inv('media:seasons', { id, seriesId }),
+    episodes:      (id, seriesId, seasonId) => inv('media:episodes', { id, seriesId, seasonId: seasonId || null }),
+    search:        (id, q) => inv('media:search', { id, q }),
+    detail:        (id, itemId) => inv('media:detail', { id, itemId }),
+    play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
+    report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),
+    setPlayed:     (id, itemId, played) => inv('media:played', { id, itemId, played: played === true }),
+    endStream:     (urlOrPlayId) => inv('media:stream:end', String(urlOrPlayId || '').startsWith('gcmedia:') ? { url: urlOrPlayId } : { playId: urlOrPlayId }),
+    shareList:     (id, dir) => inv('media:share:list', { id, dir: dir || '' }),
+    shareOpen:     (id, path) => inv('media:share:open', { id, path }),
+    // 4h: the format check before the start, "In VLC öffnen" / "In anderer App öffnen" (app 'vlc' | 'default')
+    shareCheck:    (id, itemId) => inv('media:share:check', { id, itemId }),
+    shareExternal: (id, itemId, app, title) => inv('media:share:external', { id, itemId, app, title: title || null }),
+    externalInfo:  () => inv('media:external:info'),
+    tracks:        (seriesId) => inv('media:tracks', { seriesId }),
+    setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
+    onState:       (cb) => subscribe('media:state', cb),
+    onLink:        (cb) => subscribe('media:link', cb),
+    // the tunnel started for Medien: { state: 'connecting' | 'up' | 'failed' }
+    onVpn:         (cb) => subscribe('media:vpn', cb),
+    // "Auf TV/PC abspielen": this PC as the receiver of the phone (services/media-cast.js)
+    cast: {
+      status:    () => inv('media:cast:status'),
+      opened:    (session) => inv('media:cast:opened', { session }),
+      state:     (session, st) => inv('media:cast:state', { ...(st && typeof st === 'object' ? st : {}), session }),
+      closed:    (session, o) => inv('media:cast:closed', { ...(o && typeof o === 'object' ? o : {}), session }),
+      onPlay:    (cb) => subscribe('media:cast:play', cb),
+      onCommand: (cb) => subscribe('media:cast:command', cb),
+      onSession: (cb) => subscribe('media:cast:session', cb),
+    },
+  };
+}
+
+module.exports = { createBridgeApi, createSubscriber, createMediaBridge };

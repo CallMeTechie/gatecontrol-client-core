@@ -32,6 +32,7 @@ const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
+const { registerMediaHandlers } = require('./media-handlers');
 const { registerMailHandlers } = require('./mail-handlers');
 const { registerNotesHandlers } = require('./notes-handlers');
 const { registerPlacesHandlers } = require('./places-handlers');
@@ -224,6 +225,11 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.quickActions] - QuickActionsService (opt-in, the plugins' quick actions):
  *   registers the quickactions:* channels (ipc/quick-actions-handlers.js) and drops
  *   the old server's actions after a successful server:setup.
+ * @param {object} [ctx.media] - MediaService (opt-in, "Medien" of Stufe 4: Jellyfin and NAS shares, the Pro client):
+ *   registers the media:* channels (ipc/media-handlers.js), forwards its events to the main window; after a
+ *   successful server:setup (another person may sign in) its sources and their access are forgotten.
+ * @param {object} [ctx.mediaCast] - MediaCastReceiver (with ctx.media): "Auf TV/PC abspielen", this PC as the
+ *   receiver — the media:cast:* channels and events (ipc/media-handlers.js).
  * @param {object} [ctx.places] - PlacesService (opt-in, „Mein Profil › Meine Orte“, GateControl ≥ 1.299.0):
  *   registers the places:* channels (ipc/places-handlers.js), forwards its events to the main window and resets it
  *   after a successful server:setup. Without its own `maps` it gets the map service below (the address search of
@@ -266,6 +272,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   const notesSvc = ctx.notes || null;
   const placesSvc = ctx.places || null;
   const quickActionsSvc = ctx.quickActions || null;
+  const mediaSvc = ctx.media || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
   const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
@@ -282,6 +289,14 @@ function registerBaseHandlers(ipcMain, ctx) {
   // A new server / token: the old server's policy and push state must not
   // stick. Drop them and ask the new server (best-effort, the policy answer
   // arrives via onChange, push reconnects on its own).
+  // Before apiClient.configure() changes the server / token: what must still reach the server signed in now is kept
+  // (Medien: the plugin there deletes this PC in its Jellyfin servers once resetForNewServer() forgets Medien).
+  function beforeServerChange() {
+    if (mediaSvc && typeof mediaSvc.serverChanging === 'function') {
+      try { mediaSvc.serverChanging(); } catch (err) { log.warn(`Medien: server change not noted (${err.message})`); }
+    }
+  }
+
   function resetForNewServer() {
     if (clientPolicy) {
       clientPolicy.reset();
@@ -348,6 +363,10 @@ function registerBaseHandlers(ipcMain, ctx) {
     // Schnellaktionen: the actions kept belong to the old server.
     if (quickActionsSvc) {
       try { quickActionsSvc.resetForNewServer(); } catch (err) { log.warn(`Quick actions reset failed: ${err.message}`); }
+    }
+    // Medien: the Jellyfin access and NAS passwords belong to the person signed in before.
+    if (mediaSvc) {
+      Promise.resolve().then(() => mediaSvc.forgetAll()).catch((err) => log.warn(`Medien reset failed: ${err.message}`));
     }
   }
 
@@ -444,6 +463,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       return { success: false, error: enrollErrorMessage(err) };
     }
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', data.token);
     apiClient.configure(serverUrl, data.token);
@@ -485,6 +505,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (typeof apiKey !== 'string' || !apiKey.trim()) return { success: false, error: t('server.urlAndKeyRequired') };
     apiKey = apiKey.trim();
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', apiKey);
     apiClient.configure(serverUrl, apiKey);
@@ -905,6 +926,9 @@ function registerBaseHandlers(ipcMain, ctx) {
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
   if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, stream: driveStream, getMainWindow, log });
+
+  // ── Medien (Jellyfin and NAS shares, Stufe 4e, opt-in) ───
+  if (mediaSvc) registerMediaHandlers(handle, { media: mediaSvc, cast: ctx.mediaCast || null, getMainWindow, log });
 
   // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
   if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });
