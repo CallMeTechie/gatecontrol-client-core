@@ -228,6 +228,8 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.media] - MediaService (opt-in, "Medien" of Stufe 4: Jellyfin and NAS shares, the Pro client):
  *   registers the media:* channels (ipc/media-handlers.js), forwards its events to the main window; after a
  *   successful server:setup (another person may sign in) its sources and their access are forgotten.
+ * @param {object} [ctx.mediaCast] - MediaCastReceiver (with ctx.media): "Auf TV/PC abspielen", this PC as the
+ *   receiver — the media:cast:* channels and events (ipc/media-handlers.js).
  * @param {object} [ctx.places] - PlacesService (opt-in, „Mein Profil › Meine Orte“, GateControl ≥ 1.299.0):
  *   registers the places:* channels (ipc/places-handlers.js), forwards its events to the main window and resets it
  *   after a successful server:setup. Without its own `maps` it gets the map service below (the address search of
@@ -926,7 +928,7 @@ function registerBaseHandlers(ipcMain, ctx) {
   if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, stream: driveStream, getMainWindow, log });
 
   // ── Medien (Jellyfin and NAS shares, Stufe 4e, opt-in) ───
-  if (mediaSvc) registerMediaHandlers(handle, { media: mediaSvc, getMainWindow, log });
+  if (mediaSvc) registerMediaHandlers(handle, { media: mediaSvc, cast: ctx.mediaCast || null, getMainWindow, log });
 
   // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
   if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });

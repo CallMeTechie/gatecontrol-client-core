@@ -56,6 +56,8 @@ const MediaStreamService = require('./services/media-stream');
 const MediaLanRoute = require('./services/media-lan-route');
 // Medien-Plugin (W1): the sources from the server (plugin gatecontrol-medien, app API v1), the network rule
 const MediaServerSources = require('./services/media-server-sources');
+const MediaCastReceiver = require('./services/media-cast');
+const mediaCastUtil = require('./utils/media-cast');
 const mediaServerUtil = require('./utils/media-server');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
@@ -179,6 +181,9 @@ module.exports = {
   MediaLanRoute,
   MediaServerSources,
   mediaServerUtil,
+  // "Auf TV/PC abspielen": this PC as the receiver of a cast from the phone (plugin Medien, cast contract v1)
+  MediaCastReceiver,
+  mediaCastUtil,
   MailService,
   MailApi,
   // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)

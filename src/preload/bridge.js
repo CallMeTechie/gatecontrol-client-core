@@ -1197,6 +1197,16 @@ function createMediaBridge(ipcRenderer) {
     onLink:        (cb) => subscribe('media:link', cb),
     // the tunnel started for Medien: { state: 'connecting' | 'up' | 'failed' }
     onVpn:         (cb) => subscribe('media:vpn', cb),
+    // "Auf TV/PC abspielen": this PC as the receiver of the phone (services/media-cast.js)
+    cast: {
+      status:    () => inv('media:cast:status'),
+      opened:    (session) => inv('media:cast:opened', { session }),
+      state:     (session, st) => inv('media:cast:state', { ...(st && typeof st === 'object' ? st : {}), session }),
+      closed:    (session, o) => inv('media:cast:closed', { ...(o && typeof o === 'object' ? o : {}), session }),
+      onPlay:    (cb) => subscribe('media:cast:play', cb),
+      onCommand: (cb) => subscribe('media:cast:command', cb),
+      onSession: (cb) => subscribe('media:cast:session', cb),
+    },
   };
 }
 
