@@ -174,6 +174,16 @@ class MediaStore {
     this._set('server', Buffer.from(this.protect.encrypt(Buffer.from(JSON.stringify(obj), 'utf8'))).toString('base64'));
   }
 
+  /** This PC's GateControl device id as the plugin's cast signal told it (`to`), null before (services/media-cast.js). */
+  castSelf() {
+    const id = this._get('castSelf', null);
+    return typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+  }
+
+  setCastSelf(id) {
+    if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)) this._set('castSelf', id);
+  }
+
   /** Signed out of GateControl / another server: nothing of Medien is left. */
   forgetAll() {
     this.store.delete(KEY);

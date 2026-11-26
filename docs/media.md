@@ -151,3 +151,26 @@ const media = new MediaService({ store, client: 'GateControl Pro', version, log,
 const mediaSources = new MediaServerSources({ media, apiClient, pushClient, notificationCenter, log });
 mediaSources.start();
 ```
+
+## "Auf TV/PC abspielen": this PC as the receiver
+
+The phone sends a title to "GateControl für Windows" as it does to GateControl TV: the same cast contract version 1
+(plugin README "Cast"), the same plugin routes. Nothing is set up for it: the plugin lists this PC in the phone's
+`GET v1/cast/targets` as `kind: "pc"` (every own Windows device, `platform: 'windows'`, online first).
+`MediaCastReceiver` (`src/services/media-cast.js`, pure parts in `src/utils/media-cast.js`, the logic of Android's
+`CastWire` / `CastInbox` / `CastReceiverRules` / `TvCast`):
+
+| What | How |
+|---|---|
+| In | the push stream's event `plugin` (`type: 'media.cast'`) and the silent signal (topic `media_signal`, `data.kind: 'media.cast'`); each message once (sender, session, seq). The signal goes to this PC alone: its `to` is this PC's GateControl id (kept in MediaStore `castSelf`); an event counts only with `to` == that id (before: only for the own session, never a start). |
+| Start | not older than 120 s; the own source with the plugin's id (`jf-<n>`, a share by its SMB half) → `MediaService.detail` (the network rule: home directly, away only through the VPN, started here; the sign-in) → event `play` to the page. A share's file Chromium cannot play at all (`verdict: 'no'`) → `unsupported`. |
+| Refusals | `source_missing`, `signed_out`, `not_found`, `offline` (also `vpn_required`), `unsupported`, `blocked` (the page did not open it within 15 s), `taken_over` (a new start, from any own device), `closed` (closed on this PC) |
+| Commands | only of the session's controller, newer seq, not older than 60 s → event `command` (`play`, `pause`, `seek`, `seekBy`, `audio` / `subtitle` as Jellyfin's stream index, `stop`, `status`; `volume` { volume 0–100, muted } is a proposal beyond version 1: the plugin forwards only the commands it knows) |
+| States | `cast.state` to the controller on a change of the phase, a track or the volume, a jump of more than 4 s, and every 5 minutes while it plays; `device` = this PC's name. Track ids `a<index>`, `s<index>`, `off`. The last state of a session that was rate limited goes once more after 61 s. |
+
+```js
+const mediaCast = new MediaCastReceiver({ media, apiClient, log,
+  pushClient: notifications.pushClient, notificationCenter: notifications.notificationCenter });
+mediaCast.start();
+registerBaseHandlers(ipcMain, { …, media, mediaCast });
+```

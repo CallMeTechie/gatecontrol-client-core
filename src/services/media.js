@@ -100,6 +100,7 @@ class MediaService extends EventEmitter {
   }) {
     super();
     this.tunnel = tunnel;
+    this._cast = null;     // MediaCastReceiver (setCastReceiver): this PC as the receiver of a cast
     this._server = null;   // MediaServerSources (setServerSources): home network, pair, report, smbChecked, status
     this._homeCache = null; // GateControl's home-network answer: { key (tunnel, LAN addresses), p: Promise<{ atHome, localAddress }> }
     this._vpn = null;      // the tunnel being started for Medien
@@ -170,6 +171,11 @@ class MediaService extends EventEmitter {
   setServerSources(ss) {
     this._server = ss || null;
     this._homeCache = null;
+  }
+
+  /** "Auf TV/PC abspielen" (services/media-cast.js): this PC as the receiver, reset with the rest of Medien. */
+  setCastReceiver(r) {
+    this._cast = r || null;
   }
 
   _tunnelUp() {
@@ -1157,6 +1163,8 @@ class MediaService extends EventEmitter {
     this._checks.clear();
     this.external.forget();
     this.store.forgetAll();
+    // a cast running here ends (the phone belongs to the person signed in before), this PC's id goes with the store
+    if (this._cast && typeof this._cast.reset === 'function') { try { this._cast.reset(); } catch { /* gone */ } }
     // the server's list, its times and the plugin's state belong to the person signed in before
     if (this._server && typeof this._server.reset === 'function') { try { this._server.reset(); } catch { /* gone */ } }
     await this.lanRoute.removeHostRoutes().catch(() => {});

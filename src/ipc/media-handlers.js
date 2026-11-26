@@ -51,6 +51,16 @@
  * Shares (4h): resume, latest, movies, series, seasons, episodes, search, detail, play and played take a share's id as
  * well; its item ids are `f:<path>` (a file), `s:<key>` (a series) and `s:<key>:<n>` (a season).
  *
+ * "Auf TV/PC abspielen" (with a MediaCastReceiver, services/media-cast.js: this PC as the receiver of the phone):
+ *   media:cast:status     () → { ok, session: { session, controllerName, opened } | null }
+ *   media:cast:opened     ({ session }) → { ok }   the player shows the cast's title
+ *   media:cast:state      ({ session, phase, positionMs, durationMs, title?, audio?, subtitles?, volume?, muted?, force? })
+ *                         → { ok, sent }   how it plays; told to the phone when it is worth a message
+ *   media:cast:closed     ({ session, positionMs, durationMs, byRemote?, ended?, failed? }) → { ok }
+ *   events media:cast:play ({ session, sourceId, itemId, item, detail, startMs, audioIndex, subtitleIndex,
+ *   controllerName }), media:cast:command ({ session, cmd, positionMs?, deltaMs?, audioIndex?, subtitleIndex?, volume?,
+ *   muted? }), media:cast:session (media:cast:status).
+ *
  * Events to the main window: media:state (status()), media:link ({ sourceId, link }), media:vpn ({ state: 'connecting' |
  * 'up' | 'failed' }: the tunnel started for Medien, the network rule), media:sources:state (the server's list).
  */
@@ -60,6 +70,7 @@ const MS = require('../utils/media-sources');
 const SI = require('../utils/media-share-index');
 
 const MEDIA_EVENTS = { state: 'media:state', link: 'media:link', vpn: 'media:vpn' };
+const CAST_EVENTS = { play: 'media:cast:play', command: 'media:cast:command', session: 'media:cast:session' };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const isId = (v) => typeof v === 'string' && MS.ID_RE.test(v);
@@ -75,10 +86,11 @@ function fail(err) {
  * @param {Function} handle - registerBaseHandlers' handle(channel, fn)
  * @param {object} deps
  * @param {object} deps.media - MediaService
+ * @param {object} [deps.cast] - MediaCastReceiver ("Auf TV/PC abspielen")
  * @param {Function} deps.getMainWindow
  * @param {object} deps.log
  */
-function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
+function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, log }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
       return await fn(obj(arg));
@@ -141,6 +153,26 @@ function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
   handle('media:tracks', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.trackChoice(a.seriesId) : invalid())));
   handle('media:tracks:set', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.setTrackChoice(a.seriesId, obj(a.choice)) : invalid())));
 
+  if (cast) {
+    const isSession = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{8,40}$/.test(v);
+    const num = (v) => (Number.isFinite(v) ? v : 0);
+    const tracks = (v) => (Array.isArray(v) ? v.slice(0, 40).filter((x) => x && typeof x.id === 'string' && typeof x.label === 'string')
+      .map((x) => ({ id: x.id.slice(0, 40), label: x.label.slice(0, 120), selected: x.selected === true })) : []);
+    handle('media:cast:status', wrap(async () => cast.status()));
+    handle('media:cast:opened', wrap(async (a) => (isSession(a.session) ? cast.opened(a.session) : invalid())));
+    handle('media:cast:state', wrap(async (a) => {
+      if (!isSession(a.session) || typeof a.phase !== 'string') return invalid();
+      return cast.state(a.session, {
+        phase: a.phase, positionMs: num(a.positionMs), durationMs: num(a.durationMs), title: isStr(a.title, 300) ? a.title : null,
+        audio: tracks(a.audio), subtitles: tracks(a.subtitles),
+        volume: Number.isFinite(a.volume) ? a.volume : null, muted: typeof a.muted === 'boolean' ? a.muted : null,
+      }, { force: a.force === true });
+    }));
+    handle('media:cast:closed', wrap(async (a) => (isSession(a.session)
+      ? cast.closed(a.session, { positionMs: num(a.positionMs), durationMs: num(a.durationMs), byRemote: a.byRemote === true, ended: a.ended === true, failed: a.failed === true })
+      : invalid())));
+  }
+
   const send = (channel, payload) => {
     const win = getMainWindow && getMainWindow();
     if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win.webContents) return;
@@ -148,6 +180,7 @@ function registerMediaHandlers(handle, { media: m, getMainWindow, log }) {
   };
   for (const [event, channel] of Object.entries(MEDIA_EVENTS)) m.on(event, (payload) => send(channel, payload));
   m.on('server', (payload) => send('media:sources:state', payload));
+  if (cast) for (const [event, channel] of Object.entries(CAST_EVENTS)) cast.on(event, (payload) => send(channel, payload));
 }
 
-module.exports = { registerMediaHandlers, MEDIA_EVENTS };
+module.exports = { registerMediaHandlers, MEDIA_EVENTS, CAST_EVENTS };

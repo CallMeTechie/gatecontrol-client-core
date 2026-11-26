@@ -32,11 +32,20 @@ function fakeMedia() {
   return m;
 }
 
-function register(media) {
+function fakeCast() {
+  const c = new EventEmitter();
+  c.calls = [];
+  const rec = (name) => (...args) => { c.calls.push([name, ...args]); return { ok: true, name }; };
+  for (const n of ['status', 'opened', 'state', 'closed']) c[n] = rec(n);
+  return c;
+}
+
+function register(media, cast = fakeCast()) {
   const handlers = {};
   const sent = [];
   registerMediaHandlers((c, fn) => { handlers[c] = fn; }, {
     media,
+    cast,
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send: (ch, p) => sent.push([ch, p]) } }),
     log: { debug() {} },
   });
@@ -93,6 +102,29 @@ describe('media-handlers', () => {
     assert.equal(new Set(invoked.map((c) => c[0])).size, Object.keys(handlers).length, 'and every channel has a bridge function');
     bridge.endStream('gcmedia://media/x/y');
     assert.deepEqual(invoked[invoked.length - 1], ['media:stream:end', { url: 'gcmedia://media/x/y' }]);
+  });
+
+  it('cast (this PC as the receiver): arguments checked, events to the main window, none without a receiver', async () => {
+    const c = fakeCast();
+    const { handlers: h, sent } = register(fakeMedia(), c);
+    const call = (ch, arg) => h[ch]({}, arg);
+    assert.equal((await call('media:cast:opened', { session: 'x' })).code, 'invalid');
+    assert.equal((await call('media:cast:state', { session: 'abcdefgh12', phase: 7 })).code, 'invalid');
+    assert.equal((await call('media:cast:closed', {})).code, 'invalid');
+    assert.equal(c.calls.length, 0);
+    await call('media:cast:state', { session: 'abcdefgh12', phase: 'playing', positionMs: 5000, durationMs: 'x', title: 'Kobaltnacht',
+      audio: [{ id: 'a1', label: 'Deutsch', selected: true }, { id: 2, label: 'kaputt' }], volume: 40, force: true });
+    assert.deepEqual(c.calls[0], ['state', 'abcdefgh12', { phase: 'playing', positionMs: 5000, durationMs: 0, title: 'Kobaltnacht',
+      audio: [{ id: 'a1', label: 'Deutsch', selected: true }], subtitles: [], volume: 40, muted: null }, { force: true }]);
+    await call('media:cast:closed', { session: 'abcdefgh12', positionMs: 9000, byRemote: true });
+    assert.deepEqual(c.calls[1], ['closed', 'abcdefgh12', { positionMs: 9000, durationMs: 0, byRemote: true, ended: false, failed: false }]);
+    c.emit('play', { session: 'abcdefgh12' });
+    c.emit('command', { session: 'abcdefgh12', cmd: 'pause' });
+    c.emit('session', { ok: true, session: null });
+    assert.deepEqual(sent, [['media:cast:play', { session: 'abcdefgh12' }], ['media:cast:command', { session: 'abcdefgh12', cmd: 'pause' }],
+      ['media:cast:session', { ok: true, session: null }]]);
+    const { handlers: none } = register(fakeMedia(), null);
+    assert.equal(none['media:cast:status'], undefined);
   });
 
   it('registerBaseHandlers: Medien only when the app passes a MediaService', async () => {
