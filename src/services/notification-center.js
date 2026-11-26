@@ -37,6 +37,9 @@
  *   'portal'   ({ path })                  portal path requested (when no openPortal is given)
  *   'action'   ({ id, seq, action, type }) an action was performed
  *   'data'     ({ topic, data })           a data push (`kind: "data"`) no handler took; never shown
+ *   'fallback' ({ title, body, route?, id? }) Windows refused the toast (notifications of the app
+ *                                          switched off, another Windows user, …): the app shows it
+ *                                          itself; status().toastsBlocked says so (see toastBlocked())
  *
  * Electron-free when `Notification` is injected (tests); otherwise Electron's
  * Notification is required lazily.
@@ -50,6 +53,8 @@ const { t } = require('../i18n');
 const { readNotificationSettings } = require('../utils/notify-schema');
 const { buildToastXml, parseActionUrl } = require('../utils/toast-xml');
 const notifyRoutes = require('../utils/notify-routes');
+const { isNotifyMediaPath } = require('../utils/messenger');
+const { portalTab } = require('../utils/portal');
 
 const PRIORITIES = ['info', 'normal', 'high', 'critical'];
 const APP_ROUTE_RE = /^(?:vpn|services|gateways|inbox|plg-[a-z0-9]+(?:-[a-z0-9]+)*)$/;
@@ -58,6 +63,19 @@ const TOPIC_RE = /^(?:security|devices|services|system|admin_notice|plugin:[a-z0
 const MAX_ITEMS = 100;
 const ACTION_TYPES = ['open_app_route', 'open_portal', 'mute_1h', 'ack', 'done', 'callback'];
 const ACTED_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
+// Windows refused a toast with E_ACCESSDENIED (0x80070005, HRESULT -2147024891): the app's notifications are off in
+// the Windows settings, or the app runs as another Windows user than the one signed in. For this long toasts are not
+// tried again (the app shows them itself), then once more.
+const TOAST_BLOCK_MS = 15 * 60 * 1000;
+// A local message the app shows itself (Windows refused the toast) is not shown a second time while the first one is
+// still on the screen: as a toast the same collapse key would have replaced it.
+const FALLBACK_REPEAT_MS = 10 * 1000;
+const DENIED_RE = /-2147024891|0x80070005|E_ACCESSDENIED|access is denied|zugriff verweigert/i;
+
+/** Is this 'failed' error of a toast Windows' refusal (E_ACCESSDENIED)? */
+function isToastDenied(error) {
+  return DENIED_RE.test(String((error && error.message) || error || ''));
+}
 const MUTE_MS = 60 * 60 * 1000;
 const MAX_TOASTS = 50; // toast references kept for close() (Action Center)
 const QUIET_PORTAL_TARGET = '/portal#benachrichtigungen'; // portal tab "Meine Benachrichtigungen"
@@ -95,6 +113,8 @@ function normalizeEntry(n, extra = {}) {
     via: (extra.via || n.via) === 'tunnel' ? 'tunnel' : (extra.via || n.via) === 'direct' ? 'direct' : null,
     // the answer given here (callback / ack button) — local only, the server inbox does not carry it
     acted: ACTED_RE.test(String(extra.acted || n.acted || '')) ? String(extra.acted || n.acted) : null,
+    // the push's picture (/notify-media/… of the own server, GateControl ≥ 1.169) — only when it has one
+    ...(isNotifyMediaPath(n.imageUrl || n.image_url) ? { image_url: n.imageUrl || n.image_url } : {}),
   };
 }
 
@@ -189,8 +209,12 @@ class NotificationCenter extends EventEmitter {
     this._chat = null;
     this._clickRoutes = new Map(); // app route → resolver(entry) (addClickRoute)
     this._pushHandlers = [];       // services that take over some pushes (addPushHandler, e.g. GateDrop)
+    this._toastImages = [];        // services that add a picture to some toasts (addToastImage, e.g. Kameras)
+    this.toastImageWaitMs = 5000;  // … the toast waits at most this long for it
     this._unsub = [];
     this._toasts = new Map();     // notification id → { notification, collapseKey }
+    this._toastBlock = null;      // { at, error } while Windows refuses the toasts (isToastDenied)
+    this._fallbackSeen = new Map(); // collapse_key of a local message → { text, at } (shown by the app, _fallbackToast)
     this._byCollapse = new Map(); // collapse_key → notification id
     this._nonces = new Map();     // nonce → { id, actionId }
     this._recentToasts = [];
@@ -198,6 +222,8 @@ class NotificationCenter extends EventEmitter {
     this._topics = [];
     this._quiet = { known: false, value: null, source: null, at: null };
     this._quietFetch = null;
+    this._email = null; // GET …/push/prefs e-mail channel (GateControl 1.225.0), null = unknown
+    this._emailSaving = null;
     this._items = this._loadInbox();
     this._lastUnread = this.unreadCount();
     this._dndTimer = null;
@@ -291,6 +317,7 @@ class NotificationCenter extends EventEmitter {
   clear() {
     for (const id of [...this._toasts.keys()]) this._closeToast(id);
     this._quiet = { known: false, value: null, source: null, at: null };
+    this._email = null;
     this._items = [];
     this._pendingRead.clear();
     this._nonces.clear();
@@ -348,7 +375,9 @@ class NotificationCenter extends EventEmitter {
     const decision = quiet ? { show: false, silent: true, reason: 'handled' } : toastDecision(entry, settings, now);
     const stale = entry.created_at && now - Date.parse(entry.created_at) > this.staleToastMs;
     if (decision.show && !stale && this._burstAllows(now)) {
-      this._showToast(entry, decision);
+      const picture = this._toastImageOf(entry);
+      if (picture) this._showToastWithImage(entry, decision, picture);
+      else this._showToast(entry, decision);
     } else if (entry.collapse_key && this._byCollapse.has(entry.collapse_key)) {
       // Silent update of a collapsed message: the old banner is outdated.
       this._closeToast(this._byCollapse.get(entry.collapse_key));
@@ -397,7 +426,49 @@ class NotificationCenter extends EventEmitter {
     }
     const r = await this._quietFetch;
     if (r.ok && r.hasQuiet !== false) this._setQuiet(r.quiet, 'prefs');
+    if (r.ok) this._email = r.email || null;
     return r.ok ? { ok: true, ...this.quietState() } : { ok: false, error: r.error, ...this.quietState() };
+  }
+
+  // ── „Auch per E-Mail“ of plugin topics (GateControl 1.225.0) ──
+
+  /**
+   * The person's e-mail channel for the settings page: { known, topics:
+   * [{ id, label, enabled }], to, ready } — known=false on servers before
+   * 1.225.0 (or not asked yet): the page shows no boxes. Per person, the same
+   * switches as „Auch per E-Mail an …“ in the portal.
+   */
+  emailState() {
+    const e = this._email;
+    if (!e) return { known: false, topics: [], to: null, ready: false };
+    return { known: true, topics: e.topics.map((t) => ({ ...t })), to: e.to, ready: e.ready };
+  }
+
+  /** Ask the server (GET …/push/prefs, the same answer as the quiet hours) → { ok, ...emailState() } | { ok: false, error, ... }. */
+  async refreshEmail() {
+    const r = await this.refreshQuiet();
+    return r.ok ? { ok: true, ...this.emailState() } : { ok: false, error: r.error, ...this.emailState() };
+  }
+
+  /**
+   * Switch the e-mail channel of one plugin topic for the person. One change
+   * at a time ('busy' otherwise); only topics the server listed with a
+   * channel ('unknown_topic'); on success the state holds the new choice.
+   */
+  async setEmailTopic(id, enabled) {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') return { ok: false, error: 'invalid', ...this.emailState() };
+    if (!this._email || !this._email.topics.some((t) => t.id === id)) return { ok: false, error: 'unknown_topic', ...this.emailState() };
+    if (!this.pushClient || typeof this.pushClient.setEmailTopics !== 'function') return { ok: false, error: 'not_attached', ...this.emailState() };
+    if (this._emailSaving) return { ok: false, error: 'busy', ...this.emailState() };
+    this._emailSaving = id;
+    try {
+      const r = await this.pushClient.setEmailTopics([{ id, enabled }]);
+      if (!r.ok) return { ok: false, error: r.error || 'failed', ...this.emailState() };
+      if (this._email) this._email = { ...this._email, topics: this._email.topics.map((t) => (t.id === id ? { ...t, enabled } : t)) };
+      return { ok: true, ...this.emailState() };
+    } finally {
+      this._emailSaving = null;
+    }
   }
 
   // ── Where notifications appear (core 1.191 push routes) ──
@@ -606,14 +677,31 @@ class NotificationCenter extends EventEmitter {
     const action = entryActions(entry).find((a) => a.id === actionId);
     if (!action) return { ok: false, error: 'unknown_action' };
     switch (action.type) {
-      case 'open_app_route':
+      case 'open_app_route': {
         this._show();
-        this.emit('navigate', { route: action.target, id: entry.id });
+        // A page of the app that claimed this entry (addClickRoute, e.g. Kameras on "Personen an der Kamera"):
+        // its button ("Ansehen") opens the same as a click on the toast — with the claimed context.
+        const target = this.clickTarget(entry, action);
+        this.emit('navigate', target && target.route === action.target
+          ? { route: target.route, id: entry.id, context: target.context }
+          : { route: action.target, id: entry.id });
         break;
-      case 'open_portal':
+      }
+      case 'open_portal': {
+        // A plugin without an app tab gets its buttons as a link to its portal tab. A page of the app that claimed
+        // the entry and answers this very button (context.action — Notizen & Aufgaben on „Gestern offen geblieben“:
+        // „Erledigt“ of several tasks, „Verschieben“; Drive on „Datei öffnen“ of a reminder of one of its deadlines,
+        // a link with the file as its query) opens instead of the portal.
+        const target = this.clickTarget(entry, action);
+        if (target && target.context && target.context.action === action.id && portalTab(action.target) === target.route) {
+          this._show();
+          this.emit('navigate', { route: target.route, id: entry.id, context: target.context });
+          break;
+        }
         // target goes to the portal as `next` (one-time login link, utils/portal.js).
         await this._openPortal(action.target);
         break;
+      }
       case 'mute_1h':
         if (entry.topic) this.muteTopic(entry.topic, MUTE_MS);
         break;
@@ -737,7 +825,47 @@ class NotificationCenter extends EventEmitter {
     return {
       ...push, unread: this.unreadCount(), dnd: this.dndState(), toasts: s.toasts, enabled: s.enabled,
       quiet: this._quiet.value ? { ...this._quiet.value } : null, quietKnown: this._quiet.known,
+      toastsBlocked: !!this._toastBlock,
     };
+  }
+
+  // ── Windows refuses the toasts ───────────────────────────
+
+  /** Does Windows refuse the toasts right now (E_ACCESSDENIED, less than TOAST_BLOCK_MS ago)? */
+  toastBlocked() {
+    return !!this._toastBlock && this.now() - this._toastBlock.at < TOAST_BLOCK_MS;
+  }
+
+  /**
+   * A toast failed (Electron 'failed'): Windows' refusal marks the toasts as blocked (status, log once) → true;
+   * any other error → false. Also for the toasts other services show themselves (GateDrop).
+   */
+  reportToastFailure(error) {
+    if (!isToastDenied(error)) return false;
+    const first = !this._toastBlock;
+    this._toastBlock = { at: this.now(), error: String((error && error.message) || error || '').slice(0, 200) };
+    if (first) {
+      this.log.warn('Windows refuses the notifications of this app (E_ACCESSDENIED): notifications are switched off for it in the Windows settings, or it runs as another Windows user – shown in the app instead');
+      this.emit('status', this.status());
+    }
+    return true;
+  }
+
+  /** A toast was shown: Windows takes them again. */
+  reportToastShown() {
+    if (!this._toastBlock) return;
+    this._toastBlock = null;
+    this.log.info('Windows shows the notifications of this app again');
+    this.emit('status', this.status());
+  }
+
+  /** The app shows what Windows refused ('fallback'). */
+  fallback({ title, body = '', route = null, id = null, context = null } = {}) {
+    if (!title) return;
+    this.emit('fallback', {
+      title: str(title, 120), body: str(body, 300),
+      ...(route ? { route } : {}), ...(Number.isSafeInteger(id) && id > 0 ? { id } : {}), ...(context ? { context } : {}),
+    });
   }
 
   // ── Chat messages ────────────────────────────────────────
@@ -829,9 +957,69 @@ class NotificationCenter extends EventEmitter {
     return this._Notification;
   }
 
-  _showToast(entry, decision, onClick = null, localActions = []) {
+  /**
+   * A service adds a picture to the toasts of its pushes (e.g. Kameras: the still of the push):
+   * `resolve(entry)` → null (not one of its pushes: the toast shows at once, as before) or a
+   * Promise of an absolute image file path (or null). The toast waits for it at most
+   * toastImageWaitMs and then shows without the picture.
+   * @returns {() => void} removes the resolver again
+   */
+  addToastImage(resolve) {
+    if (typeof resolve !== 'function') throw new TypeError('addToastImage: resolver required');
+    this._toastImages.push(resolve);
+    return () => { this._toastImages = this._toastImages.filter((r) => r !== resolve); };
+  }
+
+  _toastImageOf(entry) {
+    for (const resolve of this._toastImages) {
+      let r = null;
+      try { r = resolve(entry); } catch (err) { this.log.warn(`Toast picture failed: ${err.message}`); }
+      if (r) return Promise.resolve(r);
+    }
+    return null;
+  }
+
+  _showToastWithImage(entry, decision, picture) {
+    let timer = null;
+    const wait = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), this.toastImageWaitMs);
+      if (timer.unref) timer.unref();
+    });
+    return Promise.race([picture.catch(() => null), wait]).then((file) => {
+      clearTimeout(timer);
+      // read elsewhere / withdrawn / replaced meanwhile: no banner any more
+      const cur = this._items.find((e) => e.id === entry.id);
+      if (!cur || cur.state !== 'delivered' || cur.seq !== entry.seq) return null;
+      const image = typeof file === 'string' && file && require('path').isAbsolute(file) ? file : null;
+      return this._showToast(entry, decision, null, [], image);
+    });
+  }
+
+  /**
+   * The app shows a toast Windows refused. A local message with a collapse key (notify(), e.g. „Update bereit“) that
+   * comes again with the same text within FALLBACK_REPEAT_MS is not shown twice: as a toast it would have replaced the
+   * first one, in the app it would stand next to it (the updater tells a waiting update again 10 s after the start).
+   */
+  _fallbackToast(entry) {
+    const key = entry.id > 0 ? null : entry.collapse_key;
+    if (key) {
+      const text = `${entry.title}\n${entry.body}`;
+      const last = this._fallbackSeen.get(key);
+      const at = this.now();
+      if (last && last.text === text && at - last.at >= 0 && at - last.at < FALLBACK_REPEAT_MS) return;
+      this._fallbackSeen.set(key, { text, at });
+    }
+    this.fallback({ title: entry.title, body: entry.body, ...(entry.id > 0 ? { id: entry.id } : {}) });
+  }
+
+  _showToast(entry, decision, onClick = null, localActions = [], inlineImage = null) {
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
+    // Windows refuses them for now: the app shows it (the inbox has the entry anyway)
+    if (this.toastBlocked()) {
+      this._fallbackToast(entry);
+      return null;
+    }
 
     // Same collapse key (or same message, e.g. bundled update): replace.
     const key = entry.collapse_key;
@@ -864,7 +1052,7 @@ class NotificationCenter extends EventEmitter {
       options = {
         toastXml: buildToastXml({
           title, body, attribution, priority: entry.priority, silent: decision.silent,
-          buttons, scheme: this.protocol, imagePath: this.toastImagePath,
+          buttons, scheme: this.protocol, imagePath: this.toastImagePath, inlineImagePath: inlineImage,
         }),
       };
     } else {
@@ -899,7 +1087,9 @@ class NotificationCenter extends EventEmitter {
     n.on('failed', (_e, error) => {
       this.log.warn(`Toast failed: ${error}`);
       this._forgetToast(id, n);
+      if (this.reportToastFailure(error)) this._fallbackToast(entry);
     });
+    n.on('show', () => this.reportToastShown());
     try { n.show(); } catch (err) { this.log.warn(`Notification could not be shown: ${err.message}`); }
     this._recentToasts.push(this.now());
     return n;
@@ -924,10 +1114,13 @@ class NotificationCenter extends EventEmitter {
   /**
    * A click on the toast of an entry normally opens it in the inbox. An app
    * page with its own view of a plugin (e.g. Schule) can claim its entries:
-   * `resolve(entry)` → a context object (or true) when the page should open
-   * — navigate { route, id, context } — and null / false otherwise (the
+   * `resolve(entry, action)` → a context object (or true) when the page should
+   * open — navigate { route, id, context } — and null / false otherwise (the
    * page is not available, the entry is not one of its own; the inbox opens
-   * as before). The route must be an app route (`plg-<id>`, …).
+   * as before). The route must be an app route (`plg-<id>`, …). `action` is
+   * the button that was pressed ({ id, type, target }; null for a click on
+   * the toast itself): a context with `action` = that button's id makes an
+   * `open_portal` button on the route's own portal tab open the page.
    * @returns {() => void} removes the resolver again
    */
   addClickRoute(route, resolve) {
@@ -942,11 +1135,11 @@ class NotificationCenter extends EventEmitter {
    * Where a click on this entry leads: { route, context } of the first
    * resolver that claims it, or null (inbox). Resolver errors count as null.
    */
-  clickTarget(entry) {
+  clickTarget(entry, action = null) {
     if (!entry || !this._clickRoutes.size) return null;
     for (const [route, resolve] of this._clickRoutes) {
       let ctx = null;
-      try { ctx = resolve(entry); } catch (err) { this.log.warn(`Click route ${route} failed: ${err.message}`); }
+      try { ctx = resolve(entry, action); } catch (err) { this.log.warn(`Click route ${route} failed: ${err.message}`); }
       if (ctx) return { route, context: ctx && typeof ctx === 'object' ? ctx : null };
     }
     return null;
@@ -1091,5 +1284,9 @@ class NotificationCenter extends EventEmitter {
 NotificationCenter.toastDecision = toastDecision;
 NotificationCenter.normalizeEntry = normalizeEntry;
 NotificationCenter.entryActions = entryActions;
+
+NotificationCenter.isToastDenied = isToastDenied;
+NotificationCenter.TOAST_BLOCK_MS = TOAST_BLOCK_MS;
+NotificationCenter.FALLBACK_REPEAT_MS = FALLBACK_REPEAT_MS;
 
 module.exports = NotificationCenter;

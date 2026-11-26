@@ -19,9 +19,11 @@
 //   const srv = await gatedropServer({ targets, direct: (body, sendId) => [...] });
 //   (direct entries the test returns are registered as transfers of that send)
 //   srv.url, srv.state (requests, presence, sends, media, results, addItems, uploads),
-//   srv.addSend(send) → stored send (GET sends/<id>, items downloadable),
+//   srv.addSend(send) → stored send (GET sends/<id>, items downloadable; an item's `scan` (GateDrop 1.4) goes along,
+//     a blocked one without mediaId and not available — srv.state.sends.get(id).items[i].scan changes it later),
 //   srv.cutUploadAfter = n  → the next resumable part breaks off after n bytes (whole 64 KiB kept),
-//   srv.state.failCreate = { status, code } → POST sends answers with that error,
+//   srv.state.failCreate = { status, code, name?, retryAfter?, times? } → POST sends answers with that error (`times`:
+//     that often, then it is taken; GateDrop 1.4: 423 scan_pending + Retry-After, 422 infected { name }),
 //   srv.addSend(send, { pending: true }) → a `waiting` delivery to this device (GET pending lists it until POST opened),
 //   srv.state.pendingMode = 'ok' | 404 (older plugin) | 'no_device' (409),
 //   srv.state.mediaFail = Set of mediaIds whose download answers 500,
@@ -32,6 +34,15 @@
 //     (POST sends → 409 unavailable),
 //   srv.failTransfer(id, error) → the other end reported a failure (GET transfers/<id>: status failed, no key /
 //     ticket, peer { ok: false, error } as GateDrop 1.2.1 answers),
+//   GateDrop 1.5 (version ≥ 1.5.0): deliveries and sends carry `pickedAt` (null until confirmed), sends `removed` /
+//     `removedAt`, GET targets `limits.retention`; a direct transfer is picked up once both ends reported ok (the answer's
+//     `delivery` is the stored row with `picked_at`, as the plugin answers it); srv.state.receiverAfterOk = { ok, error? }
+//     plays the receiving end after the sender's ok (`receiverDelayMs` later): ok → picked up, else the delivery waits for
+//     the files (pending + direct_failed, the plugin's `fallback: 'upload'`); srv.removeSend(id) → "Vom Admin entfernt"
+//     (removed, deliveries not picked up expired with error 'removed'), srv.pick(id) → every delivery picked up,
+//   GateDrop 1.6 (version ≥ 1.6.0): the sender's ok leaves the delivery 'direct'; only the receiving end's ok
+//     (receiverAfterOk) makes it 'delivered' via direct with pickedAt; without it `confirmMs` (state, default 20 s) after
+//     the sender's ok GET sends/<id> of the sender takes the server way first (files only local → pending + direct_failed)
 //   srv.close()
 
 const http = require('node:http');
@@ -41,8 +52,23 @@ const PLUGIN = 'gatecontrol-gatedrop';
 const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
 const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
 
+/** '1.5.0' ≥ '1.5.0' */
+const atLeast = (v, min) => {
+  const a = String(v).split('.').map(Number);
+  const b = min.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i];
+  return true;
+};
+
 async function gatedropServer({ plugin = true, version = '1.0.0', targets = null, direct = null, inbox = null } = {}) {
+  const v15 = atLeast(version, '1.5.0');
+  const v16 = atLeast(version, '1.6.0');
   const state = {
+    v15,
+    v16,
+    confirmMs: 20000,
+    receiverAfterOk: null,
+    receiverDelayMs: 0,
     plugin,
     requests: [],
     presence: [],
@@ -71,7 +97,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       nas: [{ id: 1, label: 'Fotos', path: '/Familie/Fotos' }],
       links: { enabled: true },
       messenger: true,
-      limits: { maxItems: 20, maxBytes: 2147483648, types: ['image/*', 'video/*', 'audio/*', 'application/*', 'text/plain'], textMax: 20000, noteMax: 500, retentionDays: 7, linkExpires: ['1h', '1d', '7d', 'once'], directPort: 47731, presenceEveryS: 300, ticketS: 600 },
+      limits: { maxItems: 20, maxBytes: 2147483648, types: ['image/*', 'video/*', 'audio/*', 'application/*', 'text/plain'], textMax: 20000, noteMax: 500, retentionDays: 7, linkExpires: ['1h', '1d', '7d', 'once'], directPort: 47731, presenceEveryS: 300, ticketS: 600, ...(v15 ? { retention: { afterPickupDays: 7, unpickedDays: 7 } } : {}) },
       storage: { bytes: 0, quota: 10737418240 },
       serverTime: new Date().toISOString(),
     },
@@ -93,20 +119,54 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
   });
 
   const hex24 = () => crypto.randomBytes(12).toString('hex');
+  // GateDrop 1.4: an item the host's virus scan blocks → 423 scan_pending (Retry-After 5) | quarantined | scan_blocked
+  const blockedItem = (mediaId) => {
+    for (const st of state.sends.values()) {
+      const it = st.items.find((i) => i.mediaId === mediaId && i.scan && i.scan.blocked);
+      if (it) return it;
+    }
+    return null;
+  };
+  const refuseScan = (res, scan) => {
+    const code = scan.state === 'pending' ? 'scan_pending' : scan.state === 'infected' ? 'quarantined' : 'scan_blocked';
+    return json(res, 423, { ok: false, code, error: code, scan }, code === 'scan_pending' ? { 'Retry-After': '5', 'Cache-Control': 'no-store' } : { 'Cache-Control': 'no-store' });
+  };
   const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 
   /** A send as the plugin answers it (GET sends/<id>, inbox entries). */
   const view = (st, role = 'received') => ({
-    id: st.id, role, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + 7 * 86400000), expired: false,
+    id: st.id, role, createdAt: iso(st.createdAt), expiresAt: iso(st.createdAt + 7 * 86400000), expired: !!st.removedAt,
+    ...(v15 ? { removed: !!st.removedAt, removedAt: iso(st.removedAt), pickedAt: iso(st.pickedAt) } : {}),
     from: {
       userId: st.from && st.from.userId != null ? st.from.userId : 3, name: (st.from && st.from.name) || 'Anna', avatarUrl: null, deviceId: (st.from && st.from.deviceId) || '41', deviceName: (st.from && st.from.deviceName) || null,
       ...(st.from && typeof st.from.own === 'boolean' ? { own: st.from.own } : {}),
     },
     text: st.text || null, link: st.link || null, note: st.note || null,
-    items: st.items.map((i) => ({ index: i.idx, mediaId: i.mediaId || null, name: i.name, mime: i.mime || null, bytes: i.bytes, local: !!i.local && !i.mediaId, available: !!i.mediaId })),
-    deliveries: st.deliveries || [],
+    items: st.items.map((i) => {
+      // GateDrop 1.4: `scan` of an item (a blocked one: no mediaId, not available)
+      const blocked = !!(i.scan && i.scan.blocked);
+      return { index: i.idx, mediaId: (!blocked && i.mediaId) || null, name: i.name, mime: i.mime || null, bytes: i.bytes, local: !!i.local && !i.mediaId, available: !blocked && !!i.mediaId, ...(i.scan ? { scan: i.scan } : {}) };
+    }),
+    deliveries: (st.deliveries || []).map((d) => {
+      const { pickedAt, ...rest } = d;
+      return v15 ? { ...rest, pickedAt: iso(pickedAt) } : rest;
+    }),
   });
   srv.view = view;
+
+  /** GateDrop 1.5: an administrator removed the files ("Vom Admin entfernt"). */
+  srv.removeSend = (id) => {
+    const st = state.sends.get(id);
+    st.removedAt = Date.now();
+    for (const d of st.deliveries) if (!d.pickedAt) Object.assign(d, { status: 'expired', error: 'removed' });
+  };
+  /** GateDrop 1.5: every delivery of the send picked up. */
+  srv.pick = (id, at = Date.now()) => {
+    const st = state.sends.get(id);
+    for (const d of st.deliveries) d.pickedAt = d.pickedAt || at;
+    st.pickedAt = at;
+  };
+  const deviceDelivery = (st, deviceId) => st && st.deliveries.find((d) => d.kind === 'device' && String(d.target) === String(deviceId));
 
   srv.failTransfer = (id, error = 'failed') => {
     const tr = state.transfers.get(id);
@@ -121,7 +181,7 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     st.items = (send.items || []).map((it, idx) => {
       const mediaId = it.local ? null : (it.mediaId || crypto.randomBytes(16).toString('hex'));
       if (it.data && mediaId) state.media.set(mediaId, { data: it.data, mime: it.mime || 'application/octet-stream' });
-      return { idx, mediaId, name: it.name, mime: it.mime || 'application/octet-stream', bytes: it.data ? it.data.length : it.bytes, local: !!it.local };
+      return { idx, mediaId, name: it.name, mime: it.mime || 'application/octet-stream', bytes: it.data ? it.data.length : it.bytes, local: !!it.local, ...(it.scan ? { scan: it.scan } : {}) };
     });
     state.sends.set(st.id, st);
     return view(st);
@@ -185,6 +245,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     if (req.method === 'GET' && p.startsWith(`${MEDIA}/`)) {
       const md = state.media.get(p.slice(MEDIA.length + 1));
       if (state.mediaFail.has(p.slice(MEDIA.length + 1))) return json(res, 500, { ok: false, code: 'internal', error: 'broken' });
+      const scanned = blockedItem(p.slice(MEDIA.length + 1));
+      if (scanned) return refuseScan(res, scanned.scan);
       if (!md) return json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
       res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length });
       return res.end(md.data);
@@ -212,7 +274,12 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       return json(res, 200, { ok: true, presence: { lan: body.lan, port: body.port, listening: body.listening, everyS: 300, freshS: 900 } });
     }
     if (req.method === 'POST' && route === 'sends') {
-      if (state.failCreate) return json(res, state.failCreate.status, { error: state.failCreate.code, code: state.failCreate.code });
+      if (state.failCreate) {
+        // GateDrop 1.4 (virus scan): { status, code, name?, retryAfter?, times? } — `times`: refused that often, then taken
+        const f = state.failCreate;
+        if (Number.isInteger(f.times) && --f.times <= 0) state.failCreate = null;
+        return json(res, f.status, { ok: false, error: f.code, code: f.code, ...(f.name ? { name: f.name } : {}) }, f.retryAfter ? { 'Retry-After': String(f.retryAfter) } : {});
+      }
       if ((body.to.devices || []).some((d) => state.closed.has(String(d)))) return json(res, 409, { ok: false, code: 'unavailable', error: 'Das Gerät nimmt nichts mehr an.' });
       const id = hex24();
       const st = { id, createdAt: Date.now(), from: { userId: 2, name: 'Marc', deviceId: '42', deviceName: 'Laptop' }, text: body.text, link: body.link, note: body.note, to: body.to, deliveries: [] };
@@ -261,17 +328,30 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
         item.local = false;
       }
       state.addItems.push({ sendId: m[1], items: body.items });
+      if (v15 && st.items.every((i) => i.mediaId)) {
+        for (const d of st.deliveries) if (d.kind === 'device' && d.status === 'pending') Object.assign(d, { status: 'delivered', via: 'server', error: 'direct_failed' });
+      }
       return json(res, 200, { ok: true, send: view(st, 'sent') });
     }
     if (req.method === 'POST' && (m = /^sends\/([^/]+)\/opened$/.exec(route))) {
       state.opened.push(m[1]);
       const st = state.sends.get(m[1]);
       const own = st && st.deliveries.find((d) => d.kind === 'device' && d.target === String(state.targets.me.deviceId));
-      if (own) { own.status = 'opened'; own.openedAt = iso(Date.now()); }
+      if (own) { own.status = 'opened'; own.openedAt = iso(Date.now()); if (v15 && !own.pickedAt) own.pickedAt = Date.now(); }
       return st ? json(res, 200, { ok: true, send: view(st) }) : json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
     }
     if (req.method === 'GET' && (m = /^sends\/([^/]+)$/.exec(route))) {
       const st = state.sends.get(m[1]);
+      // GateDrop 1.6: a direct delivery not confirmed `confirmMs` after the sender's ok takes the server way (overdue)
+      if (v16 && st) {
+        for (const tr of state.transfers.values()) {
+          const dl = tr.sendId === st.id && tr.senderOkAt && tr.status === 'done' ? deviceDelivery(st, tr.toDevice) : null;
+          if (!dl || dl.status !== 'direct' || dl.pickedAt || Date.now() - tr.senderOkAt < state.confirmMs) continue;
+          tr.status = 'expired';
+          const missing = st.items.filter((i) => !i.mediaId).map((i) => i.idx);
+          Object.assign(dl, missing.length ? { status: 'pending', via: null, error: 'direct_failed' } : { status: 'delivered', via: 'server', error: 'direct_failed' });
+        }
+      }
       return st ? json(res, 200, { ok: true, send: view(st) }) : json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
     }
     if (req.method === 'POST' && (m = /^transfers\/([^/]+)\/result$/.exec(route))) {
@@ -279,6 +359,40 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
       const tr = state.transfers.get(m[1]);
       const st = tr && state.sends.get(tr.sendId);
       if (!tr || !st) return json(res, 404, { ok: false, code: 'not_found', error: 'not found' });
+      if (v15) {
+        // GateDrop 1.5: the stored delivery (its row, with picked_at) — the receiving end's ok is the pick-up
+        const dl = deviceDelivery(st, tr.toDevice);
+        const row = () => (dl ? { id: dl.id, send_id: st.id, kind: 'device', target: dl.target, status: dl.status, via: dl.via, error: dl.error, at: Date.now(), picked_at: dl.pickedAt || null } : null);
+        const fallBack = () => {
+          const missing = st.items.filter((i) => !i.mediaId).map((i) => i.idx);
+          if (dl) Object.assign(dl, missing.length ? { status: 'pending', via: null, error: 'direct_failed' } : { status: 'delivered', via: 'server', error: 'direct_failed' });
+          return missing;
+        };
+        if (body.ok) {
+          tr.status = 'done';
+          tr.oks = (tr.oks || 0) + 1;
+          tr.senderOkAt = tr.senderOkAt || Date.now();
+          if (v16) {
+            // only the receiving end's ok delivers: the sender's leaves the delivery 'direct'
+            if (dl && dl.status === 'pending' && dl.error !== 'direct_failed') Object.assign(dl, { status: 'direct', via: null, error: null });
+          } else if (dl && (dl.status === 'direct' || dl.status === 'pending') && !(dl.error === 'direct_failed')) Object.assign(dl, { status: 'delivered', via: 'direct', error: null });
+          if (v16 && dl && tr.oks >= 2 && dl.status === 'direct') Object.assign(dl, { status: 'delivered', via: 'direct', error: null });
+          if (dl && tr.oks >= 2 && dl.status === 'delivered' && dl.via === 'direct') dl.pickedAt = dl.pickedAt || Date.now();
+          const recv = state.receiverAfterOk;
+          if (recv && dl) {
+            state.receiverAfterOk = null;
+            setTimeout(() => {
+              state.results.push({ transferId: tr.id, side: 'receiver', ...recv });
+              if (recv.ok) Object.assign(dl, v16 ? { status: 'delivered', via: 'direct', error: null } : {}, { pickedAt: Date.now() });
+              else { tr.status = 'failed'; tr.peer = { ok: false, error: recv.error || 'failed' }; fallBack(); }
+            }, state.receiverDelayMs);
+          }
+          return json(res, 200, { ok: true, transfer: { id: tr.id, status: 'done', side: 'sender' }, delivery: row(), fallback: null });
+        }
+        tr.status = 'failed';
+        const missing = dl && dl.pickedAt ? [] : fallBack();
+        return json(res, 200, { ok: true, transfer: { id: tr.id, status: 'failed', side: 'sender' }, delivery: row(), fallback: missing.length ? 'upload' : 'server', ...(missing.length ? { missing } : {}) });
+      }
       const delivery = { id: 1, kind: 'device', target: tr.toDevice, status: body.ok ? 'delivered' : 'pending', via: body.ok ? 'direct' : null, error: body.ok ? null : 'direct_failed', at: iso(Date.now()) };
       if (body.ok) { tr.status = 'done'; return json(res, 200, { ok: true, transfer: { id: tr.id, status: 'done', side: 'sender' }, delivery, fallback: null }); }
       tr.status = 'failed';
@@ -306,6 +420,8 @@ async function gatedropServer({ plugin = true, version = '1.0.0', targets = null
     }
     if (req.method === 'DELETE' && (m = /^links\/([^/]+)$/.exec(route))) { state.endedLinks.push(m[1]); return json(res, 200, { ok: true, revoked: true }); }
     if (req.method === 'GET' && (m = /^items\/([^/]+)$/.exec(route))) {
+      const scanned = blockedItem(m[1]);
+      if (scanned) return refuseScan(res, scanned.scan);
       for (const st of state.sends.values()) {
         const item = st.items.find((i) => i.mediaId === m[1]);
         if (item) {

@@ -21,7 +21,9 @@
  *   - Network errors, timeouts, 5xx, 429: retried with backoff (2 s → 5 min)
  *     and right away on kick() (stream reconnect, "Erneut senden").
  *     Refusals (4xx: readonly, not_found, too_large, …) mark the entry
- *     `failed`; the UI offers retry / discard.
+ *     `failed`; the UI offers retry / discard. So do the refusals of a chat
+ *     over a bridge (Messenger 1.14: bridge_unreachable, bridge_unlinked, …):
+ *     the server keeps no queue for the other messenger.
  *
  * Events: 'sent' ({ entry, message, duplicate }), 'failed' ({ entry, error }),
  * 'change' ({ conversationId }) whenever the queue changed.
@@ -33,10 +35,14 @@ const path = require('path');
 const crypto = require('crypto');
 const { isClientId, posInt, baseMime, byteLength, toBuffer } = require('../utils/messenger');
 const { MessengerError } = require('./messenger-api');
+const SC = require('../utils/scan');
 
 const STORE_KEY = 'messengerOutbox';
 const MAX_ENTRIES = 200;
 const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000, 120000, 300000];
+// 423 scan_pending: asked again after Retry-After (default 5 s), this many times (~ 5 minutes), then „Nicht gesendet“.
+const SCAN_WAITS = 60;
+const SCAN_WAIT_S = 5;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
@@ -86,9 +92,12 @@ class MessengerOutbox extends EventEmitter {
   /**
    * Queue a message. `files.main` / `files.thumb`: { data, mime, name } —
    * kept until sent. Returns the entry (pending message view: toPending()).
-   * @param {object} req - { conversationId, clientId?, body (buildSendBody result), files? }
+   * @param {object} req - { conversationId, clientId?, body (buildSendBody result), files?, personId? }
+   *   personId (Messenger 1.21): a person's entry — sent through POST persons/:id/messages, the server picks the way;
+   *   wayId (Messenger 1.27): … but straight to this way of it (POST conversations/<wayId>/messages: what only
+   *   GateControl carries goes to the person's GateControl chat while the text goes over a bridge)
    */
-  async add({ conversationId, clientId, body, files = {} } = {}) {
+  async add({ conversationId, clientId, body, files = {}, personId = null, wayId = null } = {}) {
     const convId = posInt(conversationId);
     if (!convId || !body || typeof body !== 'object') throw new MessengerError('invalid message', { code: 'invalid' });
     const id = isClientId(clientId) ? clientId : crypto.randomUUID();
@@ -99,6 +108,8 @@ class MessengerOutbox extends EventEmitter {
     const entry = {
       clientId: id,
       conversationId: convId,
+      ...(posInt(personId) ? { personId: posInt(personId) } : {}),
+      ...(posInt(personId) && posInt(wayId) ? { wayId: posInt(wayId) } : {}),
       body: { ...body },
       files: {},
       mediaId: null,
@@ -144,6 +155,7 @@ class MessengerOutbox extends EventEmitter {
     e.state = 'queued';
     e.error = null;
     e.nextAt = 0;
+    e.scanWaits = 0;
     this._save();
     this._changed(e.conversationId);
     this.kick();
@@ -206,7 +218,7 @@ class MessengerOutbox extends EventEmitter {
       await this._uploadFiles(e);
       let res;
       try {
-        res = await this.api.send(e.conversationId, this._body(e));
+        res = await this._post(e);
       } catch (err) {
         if (err && err.code === 'media_invalid' && Object.keys(e.files).length && !e.reuploaded) {
           // The upload expired or got lost: upload again once.
@@ -214,7 +226,7 @@ class MessengerOutbox extends EventEmitter {
           e.mediaId = null;
           e.thumbMediaId = null;
           await this._uploadFiles(e);
-          res = await this.api.send(e.conversationId, this._body(e));
+          res = await this._post(e);
         } else {
           throw err;
         }
@@ -225,9 +237,30 @@ class MessengerOutbox extends EventEmitter {
       this._changed(e.conversationId);
     } catch (err) {
       if (!this._items.includes(e)) return;
-      const transient = err && typeof err.transient === 'boolean' ? err.transient : true;
+      // Messenger 1.14, a chat over a bridge: there is no queue — while the bridge is away (503 bridge_unreachable)
+      // or the account is not linked nothing is taken; the message shows why and „Erneut senden“ instead of waiting
+      const bridge = !!(err && typeof err.code === 'string' && err.code.startsWith('bridge_'));
+      const transient = bridge ? false : (err && typeof err.transient === 'boolean' ? err.transient : true);
       e.error = (err && err.code) || 'failed';
-      if (transient) {
+      // Messenger 1.11: the host's virus scan refused the file (422 infected { finding }, 423 scan_blocked) — never
+      // sent again by itself; the finding for „Nicht gesendet – Schadsoftware gefunden (<finding>)“
+      const finding = SC.refusalFields(err).finding;
+      if (finding) e.finding = finding;
+      else delete e.finding;
+      const reason = err && err.body && typeof err.body.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(err.body.reason) ? err.body.reason : null;
+      if (reason && e.error.startsWith('bridge_')) e.reason = reason;
+      else delete e.reason;
+      // Messenger 1.15: 423 scan_pending — the virus scan of the uploaded file is not finished (a chat over a bridge
+      // takes only checked files): the same entry (same clientId, no new upload) again after Retry-After, a while
+      const scanWait = !!(err && err.code === 'scan_pending') && (e.scanWaits || 0) < SCAN_WAITS;
+      if (scanWait) {
+        e.scanWaits = (e.scanWaits || 0) + 1;
+        e.attempts = Math.max(0, e.attempts - 1);
+        e.state = 'queued';
+        const ra = Number.isSafeInteger(err.retryAfter) && err.retryAfter > 0 ? Math.min(err.retryAfter, 60) : SCAN_WAIT_S;
+        e.nextAt = this.now() + ra * 1000;
+        this.log.debug(`Chat outbox: file still being checked, next attempt in ${ra} s`);
+      } else if (transient) {
         e.state = 'queued';
         const ms = this.backoffMs[Math.min(e.attempts - 1, this.backoffMs.length - 1)];
         e.nextAt = this.now() + ms;
@@ -261,6 +294,15 @@ class MessengerOutbox extends EventEmitter {
       }
       this._save();
     }
+  }
+
+  /**
+   * POST …/messages: the conversation's, or (Messenger 1.21) the person's — its server picks the way; 1.27: or the one
+   * way of the person the message must take (`wayId`).
+   */
+  _post(e) {
+    if (e.wayId) return this.api.send(e.wayId, this._body(e));
+    return e.personId ? this.api.personSend(e.personId, this._body(e)) : this.api.send(e.conversationId, this._body(e));
   }
 
   _body(e) {

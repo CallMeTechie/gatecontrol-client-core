@@ -1,0 +1,1255 @@
+'use strict';
+
+/**
+ * GateControl – Notizen & Aufgaben (Core service)
+ *
+ * The data side of the page "Notizen & Aufgaben" in the Windows Pro app (plugin `gatecontrol-notizen` 1.0.0, README
+ * "API"), over the device token of the existing ApiClient (services/notes-api.js):
+ *
+ * - Availability: the page exists only while GET /api/v1/client/plugins lists `gatecontrol-notizen` (a plugin that
+ *   needs a licence and has none is not listed) and `GET me` lets the person in (403 / 404 → no page). Asked at start,
+ *   every 30 min, after a push reconnect and on check(); network errors are retried (5 s … 5 min). status().features
+ *   are `me.features` of the plugin (tasks, notes, sources, vault, mstodo, dsnote, search, …); what the person may use
+ *   besides (vaults, imports) comes with me().
+ * - Tasks and items: the menu (nav), the views (Mein Tag, Wichtig, Geplant, Mir zugewiesen, a list, a source), the quick
+ *   entry (POST tasks { text } — the server reads it with the plugin's ui/quickparse.js), a task with its sub tasks,
+ *   ticking off (an item of another plugin is ticked off there), lists, groups, sharing, „Quellen“.
+ * - Notes: notebooks, notes (Markdown), check boxes, a line → a task, attachments (files of this PC, uploaded; pictures
+ *   of a note as bytes for the page; opened from %TEMP%\gatecontrol-notizen or saved where the person picks). A picture
+ *   gets the text Windows recognises in it (Windows.Media.Ocr, when an OCR language is there) for the search.
+ * - Tresor notebooks (services/notes-vault.js — Drive's vault format with "gcnotes-v1"): names, titles, texts and
+ *   attachments en- and decrypted here only; the lock (services/drive-vault-lock.js with its own settings
+ *   `notesVaultLock`): Windows Hello before the keys are unwrapped, locked after 15 minutes without use, when the window
+ *   is hidden, when Windows locks or sleeps, on a server change.
+ * - Moving over: Microsoft To Do through the Microsoft account of GateControl Mail (device code: the code is shown, the
+ *   page opens Microsoft's page in the browser), DS Note: the .nsx export read on this PC (services/notes-import.js).
+ * - Live: the plugin's realtime events `changed` { what } → 'changed', `vault` { vault, event } → 'vault'; a click on a
+ *   push of the plugin (topics reminders / shared / vault, data.notizen) opens the page (NotificationCenter.addClickRoute).
+ *   The buttons of a reminder (plugin 1.3.0: Erledigt, In 1 Std., Heute Abend) are callbacks the notification center
+ *   answers itself; the morning hint's „Erledigt“ (several tasks) and „Verschieben“ open „Mein Tag“ with the card.
+ * - Shopping lists (plugin 1.4.0, feature `shoppingLists`; utils/notes-shopping.js): the lists and their items are kept
+ *   between two calls and fetched with `since` after the first time. What the person changes (POST shopping/ops, ids
+ *   made here) shows at once and waits in a queue — in order, stored (`notesShopQueue`), sent again unchanged after a
+ *   network error or a reconnect; what the server rejects is not sent again. „Alles abgehakt“ comes back as
+ *   `completed` (the tasks the list completed; „Rückgängig“ is completeTask(id, false)). A task carries a list
+ *   (`attachedList`, feature `taskList`): `attach` of parse() and createTask(), attachedListId / attachedListUid when
+ *   writing; the reminder's button „Liste öffnen“ opens that list in the page. Without the words the calls are refused
+ *   with `unsupported` before the server is asked.
+ * - Places (plugin 1.5.0, features `places` / `placeSearch`): a task hangs on a place (`place`: one place or „Jeder
+ *   Lidl“, on arriving or leaving). The phone of the person the task belongs to watches the place and shows the
+ *   reminder — a Windows PC watches nothing (no geofences, no places/watch, no places/fired); it shows the place and
+ *   lets it be changed: `place` of parse() and createTask(), `place` when writing, „Meine Orte“ (places(), createPlace(),
+ *   updatePlace(), deletePlace(), setPlaceFav()), the search (searchPlaces() — only when the person asks for it, near one
+ *   of their places: this PC has no position and sends none; refused here while `me.places.search.state` is not `on`)
+ *   and the consent for a place someone else set (placeConsent(); the push's buttons are callbacks the notification
+ *   center answers itself). Without the words the calls — and a task body with `place` — are refused with `unsupported`.
+ *
+ * Events: 'state' (status()), 'changed' ({ what }), 'vault' ({ vault, event }), 'vaultLock' ({ locked, reason }),
+ * 'import' (the DS Note import: { state, done, total, notes, skipped, protectedSkipped, vault?, code? }).
+ */
+
+const EventEmitter = require('events');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const NotesApi = require('./notes-api');
+const NotesVault = require('./notes-vault');
+const DriveVaultLock = require('./drive-vault-lock');
+const MessengerApi = require('./messenger-api');
+const { openNsx, runImport, ImportError } = require('./notes-import');
+const N = require('../utils/notes');
+const Shop = require('../utils/notes-shopping');
+const { guessMime } = require('../utils/gatedrop');
+const { unsafeToOpen, safeFileName } = require('../utils/messenger');
+const { openExternalSafely } = require('../utils/external-url');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
+
+const { MessengerError: NotesError } = MessengerApi;
+const NV = NotesVault.crypto;
+
+const DEFAULT_TIMING = {
+  recheckMs: 30 * 60 * 1000,
+  retryMinMs: 5000,
+  retryMaxMs: 5 * 60 * 1000,
+  minuteMs: 60 * 1000,      // the vault lock's minutes
+};
+const MAX_PATHS = 20;
+const SHOP_QUEUE_KEY = 'notesShopQueue';
+const OCR_MAX_BYTES = 12 * 1024 * 1024;
+const OCR_MIME_RE = /^image\/(jpeg|png|bmp|gif|tiff)$/;
+// Microsoft's device-code pages (Mail 1.12.0 ms_tasks_consent): only these open in the browser
+const VERIFY_HOSTS = ['microsoft.com', 'www.microsoft.com', 'login.microsoft.com', 'login.microsoftonline.com', 'aka.ms', 'login.live.com'];
+const LOCK_TEXTS = Object.freeze({
+  label: 'Notizen vaults',
+  de: { unlock: 'GateControl Notizen: Tresor-Notizbücher entsperren', settings: 'GateControl Notizen: Tresore ohne Windows Hello öffnen' },
+  en: { unlock: 'GateControl Notes: unlock vault notebooks', settings: 'GateControl Notes: open vaults without Windows Hello' },
+});
+
+function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
+
+class NotesService extends EventEmitter {
+  /**
+   * @param {object} opts
+   * @param {object} opts.apiClient - ApiClient / ApiClientPro (configure() changes it in place)
+   * @param {object} [opts.log]
+   * @param {object} [opts.api] - NotesApi (tests)
+   * @param {object} [opts.store] - electron-store (the Tresor device keys under DPAPI, the lock's settings)
+   * @param {object} [opts.protect] - { available(), encrypt(buf), decrypt(buf) } (safeStorage); without it no Tresor here
+   * @param {object} [opts.shell] - Electron shell (open attachments, Microsoft's page)
+   * @param {object} [opts.dialog] - Electron dialog (pick files and the .nsx export, "Speichern unter")
+   * @param {() => object} [opts.getMainWindow]
+   * @param {() => string} [opts.tempDir] - opened attachments and the import's uploads (%TEMP%\gatecontrol-notizen)
+   * @param {() => string} [opts.getLang]
+   * @param {() => string} [opts.deviceName] - the name other devices see at a Tresor ("Desktop-PC")
+   * @param {object} [opts.pushClient] - live events; a reconnect asks for the plugin again
+   * @param {object} [opts.notificationCenter] - a click on a push of the plugin opens the page
+   * @param {object|null} [opts.consent] - Windows Hello as the confirmation before the Tresore unlock (createConsentVerifier)
+   * @param {object} [opts.powerMonitor] - the Tresore lock when Windows locks or sleeps
+   * @param {object|null} [opts.ocr] - the text recognition of Windows (windowsOcr.createWindowsOcr()) for pictures
+   * @param {Function} [opts.dialogPath] - utils/user-folders dialogPath
+   * @param {object} [opts.timing]
+   * @param {() => number} [opts.now]
+   */
+  constructor({
+    apiClient, log, api = null, store = null, protect = null, shell = null, dialog = null, getMainWindow = null, tempDir = null,
+    getLang = null, deviceName = null, pushClient = null, notificationCenter = null, consent, powerMonitor = null, ocr = null,
+    dialogPath = null, timing = {}, now = Date.now,
+  } = {}) {
+    super();
+    this.log = log || noopLog();
+    this.api = api || new NotesApi({ apiClient, log: this.log });
+    this.store = store && typeof store.get === 'function' && typeof store.set === 'function' ? store : null;
+    this.shell = shell;
+    this.dialog = dialog;
+    this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
+    this.tempDir = typeof tempDir === 'function' ? tempDir : () => path.join(os.tmpdir(), 'gatecontrol-notizen');
+    this.getLang = typeof getLang === 'function' ? getLang : () => 'de';
+    this.pushClient = pushClient;
+    this.notificationCenter = notificationCenter;
+    this.ocr = ocr && typeof ocr.recognize === 'function' ? ocr : null;
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : defaultDialogPath;
+    this.timing = { ...DEFAULT_TIMING, ...timing };
+    this.now = now;
+
+    this.vaultLock = new DriveVaultLock({
+      consent, store, powerMonitor, getWindow: () => { const w = this.getMainWindow(); return w && typeof w.getNativeWindowHandle === 'function' ? w.getNativeWindowHandle() : null; },
+      getLang: this.getLang, hasKeys: () => this.vault.hasKeys(), timing: { minuteMs: this.timing.minuteMs }, log: this.log,
+      storeKey: 'notesVaultLock', defaults: { hello: true, autoLockMinutes: 15, lockOnLeave: true }, texts: LOCK_TEXTS,
+    });
+    this.vaultLock.on('lock', (e) => this._onVaultLock(e));
+    this.vaultLock.on('unlock', () => this.emit('vaultLock', { locked: false, reason: null }));
+    this.vault = new NotesVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now, isUnlocked: () => this.vaultLock.isUnlocked() });
+
+    this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
+    this._me = null;
+    this._nbVault = new Map();   // notebook id → vault id (Tresor notebooks seen in nav / notebooks)
+    this._timer = null;
+    this._retry = 0;
+    this._checking = null;
+    this._started = false;
+    this._unsub = [];
+    this._nsx = null;            // the .nsx export picked: { archive, summary, close }
+    this._import = null;         // { signal } while an import runs
+    this._shop = Shop.newState(); // the shopping lists as the server said last (utils/notes-shopping.js)
+    this._shopQueue = null;      // operations not confirmed yet (null: not read from the store yet)
+    this._shopFlushing = null;
+    this._scope = this._scopeNow();
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────
+
+  start() {
+    if (this._started) return;
+    this._started = true;
+    this.vaultLock.start();
+    const pc = this.pushClient;
+    if (pc && typeof pc.on === 'function') {
+      const onHello = () => {
+        if (this._state.state !== 'available') { this.check().catch(() => {}); return; }
+        // what was ticked off without the server goes out first; the pages fetch again either way
+        if (this._queue().length) this._shopFlush().catch(() => {}).then(() => this.emit('changed', N.changedOf({})));
+        else this.emit('changed', N.changedOf({}));
+      };
+      const onEvent = (ev) => {
+        if (!ev || ev.event !== 'plugin' || !ev.data || ev.data.plugin !== N.PLUGIN_ID) return;
+        const d = ev.data.data && typeof ev.data.data === 'object' ? ev.data.data : {};
+        if (ev.data.type === 'changed') this.emit('changed', N.changedOf(d));
+        else if (ev.data.type === 'vault') {
+          const vid = N.vaultIdOf(d.vault);
+          if (!vid) return;
+          this.vault.onEvent({ vault: vid, event: d.event });
+          this.emit('vault', { vault: vid, event: d.event === 'request' || d.event === 'approved' ? d.event : null });
+        }
+      };
+      pc.on('hello', onHello);
+      pc.on('event', onEvent);
+      this._unsub.push(() => { pc.removeListener('hello', onHello); pc.removeListener('event', onEvent); });
+    }
+    const nc = this.notificationCenter;
+    if (nc && typeof nc.addClickRoute === 'function') {
+      this._unsub.push(nc.addClickRoute(N.APP_ROUTE, (entry, action) => this.clickContext(entry, action)));
+    }
+    this.check().catch(() => {});
+  }
+
+  stop() {
+    this._started = false;
+    clearTimeout(this._timer);
+    this._timer = null;
+    for (const off of this._unsub.splice(0)) { try { off(); } catch { /* gone */ } }
+    this.vaultLock.stop();
+    this.dsCancel();
+    this._closeNsx();
+  }
+
+  /**
+   * A click on a push of the plugin while the page exists → the target (utils/notes.js pushTarget) or null. `action`:
+   * the button that was pressed (NotificationCenter.performAction) — „Erledigt“ of several tasks and „Verschieben“ of
+   * the morning hint open „Mein Tag“ with the card instead of the portal. „Datei öffnen“ of the reminder of a deadline
+   * in Drive (plugin 1.7.0) is not this page's: the Drive page opens the file when it can (DriveService.clickContext),
+   * else the button stays the link to the portal the server sent.
+   */
+  clickContext(entry, action = null) {
+    if (!this.available() || !entry || typeof entry !== 'object') return null;
+    const id = action && typeof action === 'object' ? action.id : null;
+    if (N.pushFile(entry.topic, entry.data, id)) return null;
+    // „Liste öffnen“ of a reminder opens the list only while the plugin offers the lists; else the task as before
+    const lists = !!this._me && this._me.features.includes('shoppingLists') && this._me.features.includes('taskList');
+    return N.pushTarget(entry.topic, entry.data, id === 'open_list' && !lists ? null : id);
+  }
+
+  /** server:setup: the old server's state, its keys and the export picked go, the new one is asked. */
+  resetForNewServer() {
+    this.vaultLock.lock('server');
+    this.vault.clear();
+    this.dsCancel();
+    this._closeNsx();
+    this._me = null;
+    this._nbVault.clear();
+    this._shop = Shop.newState();
+    this._shopQueue = null;
+    this._retry = 0;
+    this._scope = this._scopeNow();
+    this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
+    if (this._started) return this.check().catch(() => this.status());
+    return Promise.resolve(this.status());
+  }
+
+  // ── Availability ─────────────────────────────────────────
+
+  /** { state: 'unknown'|'available'|'unavailable'|'error', reason, version, checkedAt, features, vaultSupported } */
+  status() {
+    return { ...this._state, features: this._me ? [...this._me.features] : [], vaultSupported: this.vault.supported() };
+  }
+
+  available() {
+    return this._state.state === 'available';
+  }
+
+  check() {
+    if (this._checking) return this._checking;
+    this._checking = this._check().finally(() => { this._checking = null; });
+    return this._checking;
+  }
+
+  async _check() {
+    this._ensureScope();
+    clearTimeout(this._timer);
+    this._timer = null;
+    let next = this.timing.recheckMs;
+    const gone = (reason) => {
+      this._retry = 0;
+      this._me = null;
+      this._setState({ state: 'unavailable', reason, version: null, checkedAt: this.now() });
+    };
+    try {
+      const p = await this.api.plugin();
+      if (!p) {
+        gone('not_installed');
+      } else {
+        const version = typeof p.version === 'string' ? p.version.slice(0, 40) : null;
+        try {
+          this._me = await this.api.me();
+          this._retry = 0;
+          this._setState({ state: 'available', reason: null, version, checkedAt: this.now() });
+        } catch (err) {
+          if (err && (err.status === 403 || err.status === 404)) gone(err.status === 403 ? 'forbidden' : 'not_found');
+          else throw err;
+        }
+      }
+    } catch (err) {
+      if (err && err.status === 404) gone('unsupported');
+      else if (err && err.status === 401) gone('auth');
+      else if (err && err.code === 'not_configured') gone('not_configured');
+      else {
+        const keep = this._state.state === 'available';
+        this._setState({ ...this._state, state: keep ? 'available' : 'error', reason: (err && err.code) || 'network', checkedAt: this.now() });
+        next = Math.min(this.timing.retryMaxMs, this.timing.retryMinMs * (2 ** this._retry));
+        this._retry = Math.min(this._retry + 1, 10);
+      }
+    }
+    if (this._started) {
+      this._timer = setTimeout(() => this.check().catch(() => {}), next);
+      if (this._timer.unref) this._timer.unref();
+    }
+    return this.status();
+  }
+
+  _setState(s) {
+    this._state = { state: s.state, reason: s.reason || null, version: s.version || null, checkedAt: s.checkedAt || null };
+    const k = JSON.stringify([this._state.state, this._state.reason, this._state.version, this._me ? this._me.features : null]);
+    if (k !== this._stateKey) {
+      this._stateKey = k;
+      this.emit('state', this.status());
+    }
+  }
+
+  _scopeNow() {
+    return typeof this.api.scope === 'function' ? this.api.scope() : '';
+  }
+
+  _ensureScope() {
+    const s = this._scopeNow();
+    if (s === this._scope) return;
+    this._scope = s;
+    this._me = null;
+    this._nbVault.clear();
+    this._shop = Shop.newState();
+    this._shopQueue = null;
+    this.vault.clear();
+    this.vaultLock.lock('server');
+  }
+
+  async _run(fn) {
+    if (!this.available() && this._state.state !== 'error') throw new NotesError('Notizen & Aufgaben is not available', { code: 'unavailable' });
+    this._ensureScope();
+    try {
+      return await fn();
+    } catch (err) {
+      const e = err instanceof NotesError ? err : (err instanceof ImportError || (err && err.name === 'DriveVaultError') ? new NotesError(err.message, { code: err.code }) : MessengerApi.toMessengerError(err));
+      if ((e.status === 404 && /^http_/.test(e.code)) || e.status === 401) this.check().catch(() => {});
+      throw e;
+    }
+  }
+
+  _feature(name) {
+    if (this._me && !this._me.features.includes(name)) throw new NotesError(`${name} is not offered by the plugin`, { code: 'unsupported' });
+  }
+
+  // ── the person, the menu, the views ──────────────────────
+
+  /** GET me (cached from the check; `refresh` asks again) → { ok, me } */
+  async me({ refresh = false } = {}) {
+    return this._run(async () => {
+      if (refresh || !this._me) this._me = await this.api.me();
+      return { ok: true, me: this._me, vaultSupported: this.vault.supported() };
+    });
+  }
+
+  /** Tresor notebooks of a list of notebooks: the vault map and their names when the keys are here. */
+  async _tresorNames(notebooks) {
+    const tresors = notebooks.filter((b) => b.vault);
+    for (const b of tresors) this._nbVault.set(b.id, b.vault.id);
+    if (tresors.length && this.vault.supported() && this.vaultLock.isUnlocked()) {
+      let dev = null;
+      try { dev = await this.vault.device({ create: false }); } catch { dev = null; }
+      if (dev) for (const b of tresors) await this.vault.tryOpen(b.vault.id);
+    }
+    for (const b of tresors) {
+      b.name = this.vault.notebookName(b);
+      b.locked = !this.vault.isOpen(b.vault.id);
+    }
+    return notebooks;
+  }
+
+  async nav({ area } = {}) {
+    return this._run(async () => {
+      const n = await this.api.nav(N.areaOf(area) || 'private');
+      await this._tresorNames(n.notes.notebooks);
+      return { ok: true, nav: n };
+    });
+  }
+
+  async view({ name, area } = {}) {
+    return this._run(async () => ({ ok: true, view: await this.api.view(name, N.areaOf(area) || undefined) }));
+  }
+
+  /**
+   * The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or
+   * null; `place`: the place it names (plugin 1.5.0, `places` — found by the server, not by the parser) or null.
+   */
+  async parse({ text, area, listId = null } = {}) {
+    return this._run(async () => {
+      // plugin 1.6.0: the list the line is typed in (only there the server reads „2 Sterne“); what it says about several
+      // people, „reihum“ / „wer zuerst“ and stars comes back in `parsed` (people, turn, stars) — never from an older plugin
+      const turns = this._offers('taskTurns');
+      const stars = this._offers('taskStars');
+      const r = await this.api.suggest(text, N.areaOf(area) || undefined, (turns || stars) && N.posId(listId) ? listId : null);
+      const parsed = { ...r.parsed, ...(turns ? {} : { people: [], turn: null }), ...(stars ? {} : { stars: null }) };
+      return { ok: true, parsed, attach: this._offers('taskList') ? r.attach : null, place: this._offers('places') ? r.place : null };
+    });
+  }
+
+  async people() {
+    return this._run(async () => ({ ok: true, people: await this.api.people() }));
+  }
+
+  async search({ q, area } = {}) {
+    return this._run(async () => {
+      this._feature('search');
+      const r = await this.api.search(q, N.areaOf(area) || undefined);
+      await this._noteTitles(r.notes);
+      return { ok: true, ...r };
+    });
+  }
+
+  async prefs() {
+    return this._run(async () => ({ ok: true, prefs: await this.api.prefs() }));
+  }
+
+  async setPrefs(patch) {
+    return this._run(async () => {
+      // plugin 1.5.0: the switches of places — an older plugin would pass them over in silence
+      if (patch && patch.places !== undefined) this._feature('places');
+      // plugin 1.6.0: the message to a parent when a child ticks off
+      if (patch && patch.feedback !== undefined) this._feature('doneFeedback');
+      const prefs = await this.api.setPrefs(patch);
+      if (this._me) this._me.prefs = prefs;
+      // … and `me.places` (is the search on for this person now?) follows them
+      if (patch && patch.places !== undefined) { try { this._me = await this.api.me(); } catch { /* the next me() brings it */ } }
+      return { ok: true, prefs };
+    });
+  }
+
+  async sources() {
+    return this._run(async () => ({ ok: true, sources: await this.api.sources() }));
+  }
+
+  async syncSource(plugin) {
+    return this._run(async () => ({ ok: true, ...(await this.api.syncSource(plugin)) }));
+  }
+
+  // ── lists and groups ─────────────────────────────────────
+
+  async lists({ area } = {}) { return this._run(async () => ({ ok: true, ...(await this.api.lists(N.areaOf(area) || undefined)) })); }
+
+  async createList(body) { return this._run(async () => ({ ok: true, list: await this.api.createList(body) })); }
+
+  async updateList(id, body) { return this._run(async () => ({ ok: true, list: await this.api.updateList(id, body) })); }
+
+  async deleteList(id) { return this._run(async () => ({ ok: true, ...(await this.api.deleteList(id)) })); }
+
+  async setListMembers(id, members) { return this._run(async () => ({ ok: true, list: await this.api.setListMembers(id, members) })); }
+
+  async createGroup(body) { return this._run(async () => ({ ok: true, group: await this.api.createGroup(body) })); }
+
+  async updateGroup(id, body) { return this._run(async () => { await this.api.updateGroup(id, body); return { ok: true }; }); }
+
+  async deleteGroup(id) { return this._run(async () => { await this.api.deleteGroup(id); return { ok: true }; }); }
+
+  // ── tasks and items ──────────────────────────────────────
+
+  async createTask(body) {
+    return this._run(async () => {
+      this._listFields(body);
+      const r = await this.api.createTask(body);
+      return { ok: true, ...r, place: this._offers('places') ? r.place : null };
+    });
+  }
+
+  async task(id) { return this._run(async () => ({ ok: true, task: await this.api.task(id) })); }
+
+  async updateTask(id, body) { return this._run(async () => { this._listFields(body); return { ok: true, task: await this.api.updateTask(id, body) }; }); }
+
+  /**
+   * Ticked off (or back). `userId` (plugin 1.6.0, `familyTasks`): a parent ticks a task of the family's list off for
+   * this member of the family — an older plugin would tick it off for the parent, so it is refused here.
+   */
+  async completeTask(id, done, userId = null) {
+    return this._run(async () => {
+      if (userId) this._feature('familyTasks');
+      return { ok: true, ...(await this.api.completeTask(id, done, userId || null)) };
+    });
+  }
+
+  /** The note „Umzug abgeschlossen“ was read (once per person) → { ok }; `me.familyTasks.moved.seen` follows. */
+  async familySeen() {
+    return this._run(async () => {
+      this._feature('familyTasks');
+      await this.api.familySeen();
+      if (this._me && this._me.familyTasks && this._me.familyTasks.moved) this._me.familyTasks.moved.seen = true;
+      return { ok: true };
+    });
+  }
+
+  async deleteTask(id) { return this._run(async () => { await this.api.deleteTask(id); return { ok: true }; }); }
+
+  // „Gestern offen geblieben“ (plugin 1.3.0, feature `yesterdayOpen`)
+
+  async moveTask(id, to) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, task: await this.api.moveTask(id, to) }; }); }
+
+  async yesterday({ area } = {}) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, yesterday: await this.api.yesterday(N.areaOf(area) || undefined) }; }); }
+
+  async decideYesterday(body) { return this._run(async () => { this._feature('yesterdayOpen'); return { ok: true, ...(await this.api.decideYesterday(body)) }; }); }
+
+  // ── shopping lists, a list at a task (plugin 1.4.0) ──────
+
+  _offers(name) {
+    return !!this._me && this._me.features.includes(name);
+  }
+
+  /** attachedListId / attachedListUid / attach of a task: an older plugin would pass them over in silence — refused here. */
+  _listFields(body) {
+    const b = body && typeof body === 'object' ? body : {};
+    if (b.attachedListId !== undefined || b.attachedListUid !== undefined || b.attach !== undefined) this._feature('taskList');
+    // plugin 1.5.0: `place` likewise — an older plugin would make the task and say nothing about the place
+    if (b.place !== undefined) this._feature('places');
+    // plugin 1.6.0: whose turn and the stars likewise — an older plugin would make a task for one person without stars
+    if (b.turn !== undefined || b.people !== undefined) this._feature('taskTurns');
+    if (b.stars !== undefined) this._feature('taskStars');
+  }
+
+  // ── places (plugin 1.5.0) ────────────────────────────────
+
+  /** „Meine Orte“, the places of the family and the remembered place per kind / name → { ok, places, family, favs } */
+  async places() { return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.places()) }; }); }
+
+  async createPlace(body) { return this._run(async () => { this._feature('places'); return { ok: true, place: await this.api.createPlace(body) }; }); }
+
+  async updatePlace(id, body) { return this._run(async () => { this._feature('places'); return { ok: true, place: await this.api.updatePlace(id, body) }; }); }
+
+  async deletePlace(id, { force = false } = {}) {
+    return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.deletePlace(id, { force: force === true })) }; });
+  }
+
+  /** The remembered place for a kind or a name ({ key, placeId | null }) → { ok, favs } */
+  async setPlaceFav(body) { return this._run(async () => { this._feature('places'); return { ok: true, favs: await this.api.setPlaceFav(body) }; }); }
+
+  /**
+   * The places near one of the person's places (utils/notes.js placeSearchArg) → { ok, key, label, kind, radiusKm, results,
+   * any, approx, attribution }. Only ever called because the person asked (a button, Enter) — never while typing, never
+   * on a timer. While the search is off (the administrator, the person) or not set up, the server is not asked at all:
+   * `module_off` / `unavailable`.
+   */
+  async searchPlaces(body) {
+    return this._run(async () => {
+      this._feature('places');
+      this._feature('placeSearch');
+      const st = this._me && this._me.places ? this._me.places.search.state : 'off';
+      if (st === 'off') throw new NotesError('the place search is switched off', { code: 'module_off' });
+      if (st !== 'on') throw new NotesError('the place search is not set up', { code: 'unavailable' });
+      return { ok: true, ...(await this.api.searchPlaces(body)) };
+    });
+  }
+
+  /** A place someone else set at the person's task: accepted (their phone watches it from now on) or declined → { ok, consent } */
+  async placeConsent(id, accept) {
+    return this._run(async () => { this._feature('places'); return { ok: true, consent: await this.api.placeConsent(id, accept) }; });
+  }
+
+  /** The operations not confirmed yet (read once from the store: those of this server and person). */
+  _queue() {
+    if (!this._shopQueue) {
+      let stored = null;
+      try { stored = this.store ? this.store.get(SHOP_QUEUE_KEY) : null; } catch { stored = null; }
+      this._shopQueue = Shop.storedQueue(stored, this._scopeNow());
+    }
+    return this._shopQueue;
+  }
+
+  _saveQueue() {
+    if (!this.store) return;
+    try { this.store.set(SHOP_QUEUE_KEY, { scope: this._scopeNow(), ops: this._queue().slice(0, Shop.QUEUE_MAX) }); } catch (err) { this.log.warn(`Notizen: shopping queue not stored: ${err.message}`); }
+  }
+
+  _shopCtx() {
+    return { userId: this._me ? this._me.user.id : null };
+  }
+
+  /**
+   * Sends the queue in order, 200 operations a call. A network error keeps it (sent again unchanged later — the ids
+   * are the device's, nothing is made twice); what the server refuses is dropped and never sent again.
+   * @returns {Promise<{ applied, rejected: [{ op, id, listId, code }], completed, offline, dropped }>}
+   */
+  _shopFlush() {
+    // one after the other: every caller gets its own answer, and what an earlier run sent is not told twice
+    const run = (this._shopFlushing || Promise.resolve()).catch(() => {}).then(() => this._shopFlushNow());
+    this._shopFlushing = run;
+    run.catch(() => {}).then(() => { if (this._shopFlushing === run) this._shopFlushing = null; });
+    return run;
+  }
+
+  async _shopFlushNow() {
+    const out = { applied: 0, rejected: [], completed: [], offline: false, dropped: false, added: false };
+    const scope = this._scopeNow();
+    // another server or person since the last call: nothing of the old one goes out (the next call starts anew)
+    if (scope !== this._scope) return out;
+    const queue = this._queue();
+    while (queue.length) {
+      const batch = queue.slice(0, N.SHOP_OPS_MAX);
+      let r = null;
+      try {
+        r = await this.api.shoppingOps(batch);
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (scope !== this._scopeNow()) break;
+        // the server cannot be reached, is busy or wants a new sign-in: the batch stays as it is
+        if (!e.status || e.status >= 500 || e.status === 401 || e.status === 429) { out.offline = true; break; }
+        // refused as a whole (an older plugin, a broken batch): never sent again
+        queue.splice(0, batch.length);
+        this._saveQueue();
+        out.dropped = true;
+        for (const op of batch) out.rejected.push({ op: op.op, id: op.id || null, listId: op.listId || null, code: N.errorCode(e) });
+        this._shop.loaded = false;
+        continue;
+      }
+      if (scope !== this._scopeNow()) break;
+      queue.splice(0, batch.length);
+      this._saveQueue();
+      Shop.confirm(this._shop, batch, r.rejected, this._shopCtx());
+      out.applied += r.applied;
+      if (batch.some((op, i) => op.op === 'list_add' && !r.rejected.some((x) => x.index === i))) out.added = true;
+      for (const x of r.rejected) { const op = batch[x.index]; if (op) out.rejected.push({ op: op.op, id: op.id || null, listId: op.listId || null, code: x.code }); }
+      out.completed.push(...r.completed);
+      // the device guessed what the server then refused: the next answer is taken whole
+      if (r.rejected.length) this._shop.loaded = false;
+    }
+    return out;
+  }
+
+  _shopView(extra = {}) {
+    return { ok: true, ...Shop.view(this._shop, this._queue(), this._shopCtx()), pending: this._queue().length, ...extra };
+  }
+
+  /**
+   * Every shopping list the person sees and their items → { ok, lists, items, pending, stale, completed }. Asked with
+   * `since` after the first time (`full`: without); `stale: true` — the server could not be reached, the last copy
+   * with what waits in the queue. `completed`: tasks a batch sent late has completed („Alles abgehakt“).
+   */
+  async shopping({ full = false } = {}) {
+    return this._run(async () => {
+      this._feature('shoppingLists');
+      const sent = await this._shopFlush();
+      try {
+        await this._shopFetch(full);
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (e.status || !this._shop.loaded) throw e;
+        return this._shopView({ stale: true, completed: sent.completed });
+      }
+      return this._shopView({ stale: false, completed: sent.completed });
+    });
+  }
+
+  /** GET shopping into what the service holds: with `since` after the first time, whole when asked or when a list is new. */
+  async _shopFetch(full = false) {
+    const st = this._shop;
+    const whole = full || !st.loaded;
+    const r = await this.api.shopping(whole ? null : st.since);
+    if (st !== this._shop) return;
+    if (Shop.merge(st, r, { full: whole }).needFull) Shop.merge(st, await this.api.shopping(null), { full: true });
+  }
+
+  /**
+   * Operations on the shopping lists (utils/notes.js shopOps — checked by the IPC): shown at once, queued, sent in
+   * order → { ok, lists, items, pending, offline, applied, rejected: [{ op, id, listId, code }], completed, ids }.
+   * `offline: true`: they wait for the server. `ids`: the id of each operation (those made here for new rows).
+   */
+  async shoppingOps(ops) {
+    return this._run(async () => {
+      this._feature('shoppingLists');
+      const queue = this._queue();
+      if (queue.length + ops.length > Shop.QUEUE_MAX) throw new NotesError('too many changes are waiting', { code: 'too_many' });
+      queue.push(...ops);
+      this._saveQueue();
+      const sent = await this._shopFlush();
+      // a list made here has its number (listId: sharing, attaching, restoring) only in the server's answer
+      if (sent.added) { try { await this._shopFetch(); } catch { /* the next shopping() brings it */ } }
+      return this._shopView({ offline: sent.offline, applied: sent.applied, rejected: sent.rejected, completed: sent.completed, ids: ops.map((o) => o.id || null) });
+    });
+  }
+
+  /** A shopping list deleted by mistake comes back (its number; the owner, within 30 days) — the next answer is taken whole. */
+  async shoppingRestore(listId) {
+    return this._run(async () => { this._feature('shoppingLists'); await this.api.restoreList(listId); this._shop.loaded = false; return { ok: true }; });
+  }
+
+  /** A shopping list shared with the whole family or not any more (feature `familyShopping`; parents only). */
+  async shoppingFamily(uid, on) {
+    return this._run(async () => { this._feature('familyShopping'); const r = await this.api.shoppingFamily(uid, on); this._shopPut(r.list); return { ok: true, list: r.list }; });
+  }
+
+  /** „Ich gehe einkaufen“ of a family list — Familie tells the others. */
+  async shoppingGoing(uid) {
+    return this._run(async () => { this._feature('familyShopping'); return { ok: true, ...(await this.api.shoppingGoing(uid)) }; });
+  }
+
+  /** „Kannst du einkaufen gehen?“ of a family list ({ userId | null, dueAt?, notify? }) — Familie sends the card. */
+  async shoppingAssign(uid, body) {
+    return this._run(async () => { this._feature('familyShopping'); const r = await this.api.shoppingAssign(uid, body); this._shopPut(r.list); return { ok: true, ...r }; });
+  }
+
+  _shopPut(list) {
+    if (list && !list.deleted && this._shop.loaded) this._shop.lists.set(list.id, list);
+  }
+
+  async item(id) { return this._run(async () => ({ ok: true, ...(await this.api.item(id)) })); }
+
+  async completeItem(id, done) { return this._run(async () => ({ ok: true, ...(await this.api.completeItem(id, done)) })); }
+
+  async carryItem(id) { return this._run(async () => ({ ok: true, task: await this.api.carryItem(id) })); }
+
+  // ── notebooks ────────────────────────────────────────────
+
+  async notebooks({ area } = {}) {
+    return this._run(async () => {
+      const r = await this.api.notebooks(N.areaOf(area) || undefined);
+      await this._tresorNames(r.notebooks);
+      return { ok: true, ...r };
+    });
+  }
+
+  /** A new notebook; `vault: true` makes a Tresor notebook here → { ok, notebook, recoveryKey? } (the key shown once). */
+  async createNotebook({ name, area, color, vault = false } = {}) {
+    return this._run(async () => {
+      const a = N.areaOf(area) || 'private';
+      if (vault) {
+        this._feature('vault');
+        if (this._me && this._me.vaults === false) throw new NotesError('vaults are switched off', { code: 'forbidden' });
+        if (!this.vault.supported()) throw new NotesError('no protected key storage', { code: 'vault_unsupported' });
+        const r = await this.vault.create(a, name);
+        this._nbVault.set(r.notebook.id, r.vault.id);
+        this.vaultLock.touch();
+        return { ok: true, notebook: { ...r.notebook, locked: false }, vault: r.vault, recoveryKey: r.recoveryKey };
+      }
+      return { ok: true, notebook: await this.api.createNotebook({ name, area: a, ...(color ? { color } : {}) }) };
+    });
+  }
+
+  /** { name?, color?, area?, position? } — a Tresor notebook's new name is encrypted here (nameCipher). */
+  async updateNotebook(id, patch = {}) {
+    return this._run(async () => {
+      const vid = await this._vaultOfNotebook(id);
+      const body = {};
+      if (patch.color !== undefined) body.color = patch.color;
+      if (patch.area !== undefined) body.area = patch.area;
+      if (patch.position !== undefined) body.position = patch.position;
+      if (patch.name !== undefined) {
+        if (vid) {
+          const c = this.vault.encryptName(vid, patch.name);
+          body.nameCipher = c.nameCipher;
+          this.vaultLock.touch();
+        } else body.name = patch.name;
+      }
+      const nb = await this.api.updateNotebook(id, body);
+      if (nb) await this._tresorNames([nb]);
+      return { ok: true, notebook: nb };
+    });
+  }
+
+  async deleteNotebook(id) { return this._run(async () => ({ ok: true, ...(await this.api.deleteNotebook(id)) })); }
+
+  async setNotebookMembers(id, members) { return this._run(async () => ({ ok: true, notebook: await this.api.setNotebookMembers(id, members) })); }
+
+  /** The vault id of a Tresor notebook (null for a plain one); unknown notebooks: both areas are asked once. */
+  async _vaultOfNotebook(notebookId) {
+    const id = N.posId(notebookId);
+    if (!id) return null;
+    if (this._nbVault.has(id)) return this._nbVault.get(id);
+    if (!this._nbSeen || !this._nbSeen.has(id)) {
+      for (const area of N.AREAS) {
+        const r = await this.api.notebooks(area);
+        this._nbSeen = this._nbSeen || new Set();
+        for (const b of r.notebooks) {
+          this._nbSeen.add(b.id);
+          if (b.vault) this._nbVault.set(b.id, b.vault.id);
+        }
+      }
+    }
+    return this._nbVault.get(id) || null;
+  }
+
+  // ── notes ────────────────────────────────────────────────
+
+  /** The keys of a Tresor here — opened quietly when this PC has a key and the Tresore are unlocked — or null. */
+  async _keysOf(vid) {
+    if (!vid) return null;
+    const have = this.vault.keysOf(vid);
+    if (have || !this.vault.supported() || !this.vaultLock.isUnlocked()) return have;
+    await this.vault.tryOpen(vid);
+    return this.vault.keysOf(vid);
+  }
+
+  /** The titles of Tresor notes decrypted when their keys are here (`locked` otherwise). */
+  async _noteTitles(list) {
+    for (const n of list) {
+      if (!n.encrypted) continue;
+      const vid = await this._vaultOfNotebook(n.notebookId);
+      const keys = await this._keysOf(vid);
+      n.vaultId = vid;
+      n.locked = !keys;
+      if (keys && n.titleCipher) { try { n.title = NV.decryptName(keys, vid, n.titleCipher); } catch { n.title = null; } }
+    }
+    return list;
+  }
+
+  async notes(query = {}) {
+    return this._run(async () => {
+      const r = await this.api.notes(query);
+      if (query.notebook) {
+        const vid = await this._vaultOfNotebook(query.notebook);
+        if (vid && this.vault.keysOf(vid)) this.vaultLock.touch();
+      }
+      await this._noteTitles(r.notes);
+      return { ok: true, ...r };
+    });
+  }
+
+  /** A note; a Tresor note decrypted (title, body, attachment names) when its keys are here, else `locked`. */
+  async _plain(n) {
+    if (!n.encrypted) return n;
+    const vid = await this._vaultOfNotebook(n.notebookId);
+    const keys = await this._keysOf(vid);
+    n.vaultId = vid;
+    n.locked = !keys;
+    if (!keys) return n;
+    this.vaultLock.touch();
+    n.title = n.titleCipher ? NV.decryptName(keys, vid, n.titleCipher) : '';
+    n.body = n.cipher ? NV.decryptBuffer(keys, vid, Buffer.from(n.cipher, 'base64url')).toString('utf8') : '';
+    n.cipher = null;
+    for (const a of n.attachments) {
+      if (a.encrypted && a.nameCipher) { try { a.name = NV.decryptName(keys, vid, a.nameCipher); } catch { a.name = null; } }
+      if (a.encrypted && a.name) a.mime = guessMime(a.name);
+    }
+    return n;
+  }
+
+  async note(id) {
+    return this._run(async () => ({ ok: true, note: await this._plain(await this.api.note(id)) }));
+  }
+
+  /** { titleCipher, cipher, keyVersion } of a Tresor note's title and Markdown under the current key. */
+  _sealNote(vid, cur, title, body) {
+    return {
+      titleCipher: NV.encryptName(cur.tk, vid, cur.keyVersion, String(title || '').trim().slice(0, 300) || (this.getLang() === 'en' ? 'Untitled' : 'Ohne Titel')),
+      cipher: NV.encryptBuffer(cur.tk, vid, cur.keyVersion, Buffer.from(String(body || ''), 'utf8')).toString('base64url'),
+      keyVersion: cur.keyVersion,
+    };
+  }
+
+  /** POST notes { notebookId?, area?, title?, body?, pinned?, color? } (a Tresor notebook: encrypted here). */
+  async createNote(input = {}) {
+    return this._run(async () => {
+      const vid = await this._vaultOfNotebook(input.notebookId);
+      if (vid) {
+        this.vault.keys(vid);
+        const n = await this.vault.withCurrent(vid, (cur) => this.api.createNote({ notebookId: input.notebookId, ...this._sealNote(vid, cur, input.title, input.body) }));
+        return { ok: true, note: await this._plain(n) };
+      }
+      const body = { title: input.title || '', body: input.body || '' };
+      if (input.notebookId) body.notebookId = input.notebookId;
+      else body.area = N.areaOf(input.area) || 'private';
+      if (input.pinned === true) body.pinned = true;
+      if (input.color) body.color = input.color;
+      return { ok: true, note: await this.api.createNote(body) };
+    });
+  }
+
+  /**
+   * PATCH notes/<id> — a plain note: { title?, body?, pinned?, color?, due?, expiresAt?, notebookId?, rev? } (a stale
+   * rev → 409 conflict); a Tresor note: title and body encrypted here (the other one kept), pinned / color as they are.
+   */
+  async updateNote(id, patch = {}) {
+    return this._run(async () => {
+      const cur0 = await this.api.note(id);
+      if (!cur0.encrypted) return { ok: true, note: await this.api.updateNote(id, patch) };
+      const n = await this._plain(cur0);
+      if (n.locked) throw new NotesError('vault is locked', { code: 'vault_locked' });
+      const body = {};
+      if (patch.pinned !== undefined) body.pinned = patch.pinned;
+      if (patch.color !== undefined) body.color = patch.color;
+      const title = patch.title !== undefined ? patch.title : n.title;
+      const text = patch.body !== undefined ? patch.body : n.body;
+      const out = await this.vault.withCurrent(n.vaultId, (cur) => this.api.updateNote(id, { ...body, ...this._sealNote(n.vaultId, cur, title, text) }));
+      return { ok: true, note: await this._plain(out) };
+    });
+  }
+
+  async deleteNote(id) { return this._run(async () => { await this.api.deleteNote(id); return { ok: true }; }); }
+
+  /** A check box of the text (a Tresor note: changed and encrypted here). */
+  async checkNote(id, line, done) {
+    return this._run(async () => {
+      const n0 = await this.api.note(id);
+      if (!n0.encrypted) return { ok: true, note: await this.api.checkNote(id, line, done) };
+      const n = await this._plain(n0);
+      if (n.locked) throw new NotesError('vault is locked', { code: 'vault_locked' });
+      const md = N.toggleCheck(n.body, line, done);
+      if (md === null) throw new NotesError('no check box on that line', { code: 'invalid' });
+      const out = await this.vault.withCurrent(n.vaultId, (cur) => this.api.updateNote(id, this._sealNote(n.vaultId, cur, n.title, md)));
+      return { ok: true, note: await this._plain(out) };
+    });
+  }
+
+  async noteToTask(id, body) { return this._run(async () => ({ ok: true, ...(await this.api.noteToTask(id, body)) })); }
+
+  // ── attachments ──────────────────────────────────────────
+
+  /** File dialog → { ok, paths } | { ok: false, code: 'cancelled' } */
+  async pickFiles({ images = false } = {}) {
+    if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new NotesError('no dialog', { code: 'unsupported' });
+    const win = this.getMainWindow();
+    const start = this.dialogPath(images ? 'pictures' : 'documents');
+    const opts = { properties: ['openFile', 'multiSelections'], ...(start ? { defaultPath: start } : {}), ...(images ? { filters: [{ name: 'Bilder', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp'] }] } : {}) };
+    const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
+    if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
+    return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
+  }
+
+  /**
+   * Files of this PC to a note or a task → { ok, attachments, rejected: [{ name, code }] }. Without `paths` the file
+   * dialog asks (`images`: pictures only). A Tresor note's files are encrypted here first (their name too).
+   */
+  async addAttachments({ kind, refId, paths = null, images = false } = {}) {
+    return this._run(async () => {
+      this._feature('attachments');
+      let list = paths;
+      if (!list) {
+        const p = await this.pickFiles({ images });
+        if (!p.ok) return p;
+        list = p.paths;
+      }
+      const me = this._me || (await this.me()).me;
+      const maxBytes = me.attachMB * 1048576;
+      let vid = null;
+      if (kind === 'note') {
+        const n = await this.api.note(refId);
+        vid = n.encrypted ? await this._vaultOfNotebook(n.notebookId) : null;
+        if (vid) this.vault.keys(vid);
+      }
+      const attachments = [];
+      const rejected = [];
+      for (const p of list.slice(0, MAX_PATHS)) {
+        if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
+        const name = safeFileName(path.basename(p), 'Datei');
+        let st;
+        try { st = await fs.promises.stat(p); } catch { rejected.push({ name, code: 'missing' }); continue; }
+        if (!st.isFile()) { rejected.push({ name, code: 'missing' }); continue; }
+        if (st.size <= 0) { rejected.push({ name, code: 'empty' }); continue; }
+        if (st.size > maxBytes) { rejected.push({ name, code: 'too_large' }); continue; }
+        try {
+          if (vid) {
+            const a = await this.vault.withCurrent(vid, async (cur) => {
+              const tmp = path.join(this.tempDir(), 'up', crypto.randomBytes(8).toString('hex'));
+              await fs.promises.mkdir(path.dirname(tmp), { recursive: true });
+              try {
+                const enc = await NV.encryptFile(cur.tk, vid, cur.keyVersion, p, tmp);
+                const up = await this.api.upload({ path: tmp, size: enc.cipherSize, mime: 'application/octet-stream' });
+                return this.api.addAttachment({ kind, refId, mediaId: up.mediaId, nameCipher: NV.encryptName(cur.tk, vid, cur.keyVersion, name) });
+              } finally {
+                await fs.promises.rm(tmp, { force: true }).catch(() => {});
+              }
+            });
+            attachments.push({ ...a, name, mime: guessMime(name) });
+            this.vaultLock.touch();
+          } else {
+            const mime = guessMime(name);
+            const up = await this.api.upload({ path: p, size: st.size, mime });
+            const a = await this.api.addAttachment({ kind, refId, mediaId: up.mediaId, name });
+            attachments.push(a);
+            this._ocrLater(a, p, mime, st.size);
+          }
+        } catch (err) {
+          rejected.push({ name, code: N.errorCode(err) });
+        }
+      }
+      return { ok: true, attachments, rejected };
+    });
+  }
+
+  /** The text Windows reads in a picture → PUT attachments/<id>/text (for the search; best effort, in the background). */
+  _ocrLater(a, file, mime, size) {
+    if (!this.ocr || !a || !OCR_MIME_RE.test(mime) || size > OCR_MAX_BYTES || (this._me && !this._me.features.includes('ocrText'))) return;
+    (async () => {
+      const av = await Promise.resolve(this.ocr.available()).catch(() => null);
+      if (!av || !av.available) return;
+      const r = await this.ocr.recognize(await fs.promises.readFile(file));
+      const text = r && typeof r.text === 'string' ? r.text.trim() : '';
+      if (text) await this.api.setAttachmentText(a.id, text.slice(0, 100000));
+    })().catch((err) => this.log.debug(`Notizen OCR: ${err && (err.code || err.message)}`));
+  }
+
+  /** A fresh attachment (its signed url) and, for a Tresor's, its keys → { a, vid, keys } */
+  async _attachment(id, vaultId) {
+    const a = await this.api.attachment(id);
+    if (!a || !a.url) throw new NotesError('attachment not available', { code: 'not_found' });
+    if (!a.encrypted) return { a, vid: null, keys: null };
+    const vid = N.vaultIdOf(vaultId);
+    if (!vid) throw new NotesError('vault needed', { code: 'invalid' });
+    const keys = this.vault.keys(vid);
+    a.name = a.nameCipher ? NV.decryptName(keys, vid, a.nameCipher) : null;
+    a.mime = guessMime(a.name || '');
+    this.vaultLock.touch();
+    return { a, vid, keys };
+  }
+
+  /** A picture of a note → { ok, mime, data } (a Tresor's decrypted here; ≤ 16 MB). */
+  async attachmentImage(id, { vaultId = null } = {}) {
+    return this._run(async () => {
+      const { a, vid, keys } = await this._attachment(id, vaultId);
+      const r = await this.api.mediaBytes(a.url);
+      let data = r.data;
+      let mime = r.mime;
+      if (vid) { data = NV.decryptBuffer(keys, vid, data); mime = a.mime; }
+      if (!/^image\/(jpeg|png|gif|webp|bmp)$/.test(mime)) throw new NotesError('not a picture', { code: 'not_picture' });
+      return { ok: true, mime, data };
+    });
+  }
+
+  /** Writes an attachment (decrypted) to `dest`. */
+  async _attachmentFile(a, vid, keys, dest) {
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    if (!vid) {
+      const out = fs.createWriteStream(dest);
+      try {
+        await this.api.streamMedia(a.url, out);
+      } catch (err) {
+        out.destroy();
+        await fs.promises.rm(dest, { force: true }).catch(() => {});
+        throw err;
+      }
+      return;
+    }
+    const tmp = `${dest}.gcv`;
+    const out = fs.createWriteStream(tmp);
+    try {
+      await this.api.streamMedia(a.url, out);
+      await NV.decryptFile(keys, vid, tmp, dest);
+    } catch (err) {
+      out.destroy();
+      await fs.promises.rm(dest, { force: true }).catch(() => {});
+      throw err;
+    } finally {
+      await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    }
+  }
+
+  /** Opens an attachment in its program (from %TEMP%\gatecontrol-notizen; executables are never opened). */
+  async openAttachment(id, { vaultId = null } = {}) {
+    if (!this.shell || typeof this.shell.openPath !== 'function') throw new NotesError('no shell', { code: 'unsupported' });
+    return this._run(async () => {
+      const { a, vid, keys } = await this._attachment(id, vaultId);
+      const fname = safeFileName(a.name || 'Anhang', 'Anhang');
+      if (unsafeToOpen(fname, a.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
+      const file = path.join(this.tempDir(), `a${N.posId(id)}-${crypto.randomBytes(4).toString('hex')}`, fname);
+      await this._attachmentFile(a, vid, keys, file);
+      const err = await this.shell.openPath(file);
+      if (err) return { ok: false, code: 'open_failed', error: String(err) };
+      return { ok: true, path: file };
+    });
+  }
+
+  /** "Speichern unter …" of an attachment. */
+  async saveAttachment(id, { vaultId = null } = {}) {
+    if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new NotesError('no dialog', { code: 'unsupported' });
+    return this._run(async () => {
+      const { a, vid, keys } = await this._attachment(id, vaultId);
+      const win = this.getMainWindow();
+      const opts = { defaultPath: this.dialogPath('downloads', safeFileName(a.name || 'Anhang', 'Anhang')) };
+      const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
+      if (!res || res.canceled || !res.filePath) return { ok: false, code: 'cancelled', cancelled: true };
+      await this._attachmentFile(a, vid, keys, res.filePath);
+      return { ok: true, path: res.filePath };
+    });
+  }
+
+  async deleteAttachment(id) { return this._run(async () => { await this.api.deleteAttachment(id); return { ok: true }; }); }
+
+  // ── Tresor notebooks ─────────────────────────────────────
+
+  /** { ok, supported, device: { id, safetyNumber } | null, lock: { enforced, unlocked, settings, hello, choices, lastLock } } */
+  async vaultStatus() {
+    let device = null;
+    if (this.vault.supported()) { try { device = await this.vault.device({ create: false }); } catch { device = null; } }
+    return { ok: true, supported: this.vault.supported(), device: device ? { id: device.id, safetyNumber: device.safetyNumber } : null, lock: await this.vaultLock.status() };
+  }
+
+  /** Windows Hello, then the Tresore of this PC unlock; with `vaultId` that one opens → { ok, unlocked, state? } */
+  async vaultUnlock(vaultId = null) {
+    return this._run(async () => {
+      await this.vaultLock.unlock();
+      if (!vaultId) return { ok: true, unlocked: true };
+      const r = await this.vault.open(vaultId, { fresh: true });
+      return { ok: true, unlocked: true, state: r.state };
+    });
+  }
+
+  vaultLockNow() {
+    this.vaultLock.lock('manual');
+    return { ok: true };
+  }
+
+  async vaultLockSettings(patch) {
+    return { ok: true, ...(await this.vaultLock.setSettings(patch)) };
+  }
+
+  /** The window was hidden / minimized: "Beim Verlassen sperren". */
+  windowHidden() {
+    this.vaultLock.windowHidden();
+  }
+
+  _onVaultLock({ reason = 'manual' } = {}) {
+    this.vault.forget();
+    this.emit('vaultLock', { locked: true, reason });
+  }
+
+  /** A Tresor as the page shows it (its state on this PC, pending requests, a new key needed). */
+  async vaultInfo(vaultId) {
+    return this._run(async () => ({ ok: true, vault: this.vault.view(await this.api.vault(vaultId)) }));
+  }
+
+  /** Opens a Tresor on this PC → { ok, state: 'open' | 'locked' | 'pending' | 'none' | 'revoked' } */
+  async vaultOpen(vaultId) {
+    return this._run(async () => {
+      if (!this.vault.supported()) return { ok: true, state: 'unsupported' };
+      const r = await this.vault.open(vaultId);
+      if (r.state === 'open') this.vaultLock.touch();
+      return { ok: true, state: r.state };
+    });
+  }
+
+  async vaultRequest(vaultId) { return this._run(async () => ({ ok: true, ...(await this.vault.request(vaultId)) })); }
+
+  async vaultDevices(vaultId) { return this._run(async () => ({ ok: true, devices: await this.vault.devices(vaultId) })); }
+
+  async vaultApprove(vaultId, deviceId, safetyNumber) {
+    return this._run(async () => ({ ok: true, device: await this.vault.approve(vaultId, deviceId, safetyNumber) }));
+  }
+
+  async vaultDecline(vaultId, deviceId) { return this._run(async () => ({ ok: true, device: await this.vault.decline(vaultId, deviceId) })); }
+
+  async vaultRecover(vaultId, text) {
+    return this._run(async () => {
+      const r = await this.vault.recover(vaultId, text);
+      this.vaultLock.touch();
+      return { ok: true, ...r };
+    });
+  }
+
+  async vaultRotate(vaultId) { return this._run(async () => ({ ok: true, ...(await this.vault.rotate(vaultId)) })); }
+
+  // ── Microsoft To Do ──────────────────────────────────────
+
+  async msAccounts() { return this._run(async () => ({ ok: true, ...(await this.api.msAccounts()) })); }
+
+  /** Microsoft's device code for the consent to To Do → { ok, deviceId, userCode, verificationUri, expiresIn, interval } */
+  async msConsent(accountId) { return this._run(async () => ({ ok: true, ...(await this.api.msConsent(accountId)) })); }
+
+  /** One poll of the consent → { ok, status: 'pending' | 'done' | 'expired' | 'denied' | 'failed' } */
+  async msConsentPoll(accountId, deviceId) {
+    return this._run(async () => {
+      const r = await this.api.msConsent(accountId, deviceId);
+      return { ok: true, status: r.status || 'pending' };
+    });
+  }
+
+  /** Microsoft's device-code page in the default browser (only its own hosts). */
+  async openVerification(uri) {
+    let u;
+    try { u = new URL(uri); } catch { return { ok: false, code: 'invalid' }; }
+    if (u.protocol !== 'https:' || !VERIFY_HOSTS.includes(u.hostname.toLowerCase())) return { ok: false, code: 'invalid' };
+    if (!this.shell || typeof this.shell.openExternal !== 'function') return { ok: false, code: 'unsupported' };
+    const ok = await openExternalSafely(this.shell, u.href, { log: this.log, label: 'Notizen consent' });
+    return ok ? { ok: true } : { ok: false, code: 'open_failed' };
+  }
+
+  async msPreview(accountId) { return this._run(async () => ({ ok: true, ...(await this.api.msPreview(accountId)) })); }
+
+  async msStart(body) { return this._run(async () => ({ ok: true, job: await this.api.msStart(body) })); }
+
+  async job(id) { return this._run(async () => ({ ok: true, job: await this.api.job(id) })); }
+
+  async msLinks() { return this._run(async () => ({ ok: true, links: await this.api.msLinks() })); }
+
+  async msUnlink(id) { return this._run(async () => { await this.api.msUnlink(id); return { ok: true }; }); }
+
+  // ── DS Note ──────────────────────────────────────────────
+
+  _closeNsx() {
+    if (this._nsx) { this._nsx.close(); this._nsx = null; }
+  }
+
+  /**
+   * The .nsx export (file dialog without `path`), read on this PC → { ok, file, size, notebooks: [{ id, title, notes,
+   * protected }], notes, protectedNotes, attachments, bytes }.
+   */
+  async dsPick({ path: file = null } = {}) {
+    return this._run(async () => {
+      this._feature('dsnote');
+      if (this._import) throw new NotesError('an import is running', { code: 'busy' });
+      let p = file;
+      if (!p) {
+        if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new NotesError('no dialog', { code: 'unsupported' });
+        const win = this.getMainWindow();
+        const opts = { properties: ['openFile'], filters: [{ name: 'DS Note (.nsx)', extensions: ['nsx'] }], defaultPath: this.dialogPath('downloads') || undefined };
+        const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
+        if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', cancelled: true };
+        p = r.filePaths[0];
+      }
+      if (typeof p !== 'string' || !path.isAbsolute(p)) throw new NotesError('invalid path', { code: 'invalid' });
+      this._closeNsx();
+      this._nsx = await openNsx(p);
+      const s = this._nsx.summary;
+      return {
+        ok: true, file: s.file, size: s.size, notes: s.notes, protectedNotes: s.protectedNotes, attachments: s.attachments, bytes: s.bytes,
+        notebooks: s.notebooks.map((b) => ({ id: b.id, title: b.title, notes: b.notes, protected: b.protected })),
+      };
+    });
+  }
+
+  /**
+   * The import of the export picked, in the background → { ok, started } — progress, a Tresor made for protected notes
+   * (its recovery key, shown once) and the end come as 'import' events.
+   */
+  async dsImport({ password = '', area = 'private' } = {}) {
+    return this._run(async () => {
+      this._feature('dsnote');
+      if (!this._nsx) throw new NotesError('no export picked', { code: 'invalid' });
+      if (this._import) throw new NotesError('an import is running', { code: 'busy' });
+      const me = this._me || (await this.me()).me;
+      const signal = { aborted: false };
+      this._import = { signal };
+      const nsx = this._nsx;
+      const a = N.areaOf(area) || 'private';
+      const total = nsx.summary.notes;
+      this.emit('import', { state: 'running', done: 0, total, notes: 0, skipped: 0, protectedSkipped: 0 });
+      runImport({
+        archive: nsx.archive, summary: nsx.summary, api: this.api, area: a, password: typeof password === 'string' ? password : '',
+        vault: this.vault.supported() && me.vaults !== false && me.features.includes('vault') ? this.vault : null,
+        attachMB: me.attachMB, tmpDir: path.join(this.tempDir(), 'import'), signal,
+        untitled: () => (this.getLang() === 'en' ? 'Untitled' : 'Ohne Titel'),
+        onProgress: (p) => this.emit('import', { state: 'running', ...p }),
+        onVault: (v) => { this.vaultLock.touch(); this.emit('import', { state: 'running', vault: v, done: null, total }); },
+      }).then((r) => {
+        this.emit('import', { state: 'done', done: total, total, notes: r.notes, skipped: r.skipped, protectedSkipped: r.protectedSkipped, vaults: r.vaults });
+      }, (err) => {
+        this.log.warn(`DS Note import: ${err && (err.code || err.message)}`);
+        this.emit('import', { state: signal.aborted ? 'cancelled' : 'failed', code: N.errorCode(err) });
+      }).finally(() => {
+        if (this._import && this._import.signal === signal) this._import = null;
+      });
+      return { ok: true, started: true, total };
+    });
+  }
+
+  dsCancel() {
+    if (this._import) this._import.signal.aborted = true;
+    return { ok: true };
+  }
+}
+
+NotesService.DEFAULT_TIMING = DEFAULT_TIMING;
+NotesService.VERIFY_HOSTS = VERIFY_HOSTS;
+
+module.exports = NotesService;

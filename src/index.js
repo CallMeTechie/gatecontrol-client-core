@@ -13,6 +13,15 @@ const ApiClient = require('./services/api-client');
 const KillSwitch = require('./services/killswitch');
 const editions = require('./services/editions');
 const RdpAllow = require('./services/rdp-allow');
+const RemoteHost = require('./services/remote-host');
+const RemoteHostApi = require('./services/remote-host-api');
+const RemoteTerm = require('./services/remote-term');
+const RdpSessionFirewall = require('./services/rdp-session-firewall');
+// Fernzugriff stage 7: "Bildschirm teilen" (capture, sender of gc-screen.v1, SendInput)
+const ScreenCapture = require('./services/screen-capture');
+const ScreenShare = require('./services/screen-share');
+const ScreenInput = require('./services/screen-input');
+const WindowsRdpInfo = require('./services/windows-rdp-info');
 const ConnectionMonitor = require('./services/connection-monitor');
 const Updater = require('./services/updater');
 const DnsPolicy = require('./services/dns-policy');
@@ -26,13 +35,35 @@ const MessengerOutbox = require('./services/messenger-outbox');
 const ChatNotifier = require('./services/chat-notifier');
 const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
+const FamilieService = require('./services/familie');
+const DnsProtectService = require('./services/dns-protect');
+const QuickActionsService = require('./services/quick-actions');
+const PrintService = require('./services/print');
+const CamerasService = require('./services/cameras');
 const GateDropService = require('./services/gatedrop');
 const GateDropApi = require('./services/gatedrop-api');
 const GateDropListener = require('./services/gatedrop-listener');
 const GateDropFirewall = require('./services/gatedrop-firewall');
 const DriveService = require('./services/drive');
+const DriveVaultViews = require('./services/drive-vault-view');
 const DriveApi = require('./services/drive-api');
+const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
+// Medien (Stufe 4e): Jellyfin and the NAS shares (SMB through Windows, WebDAV), the gcmedia: stream
+const MediaService = require('./services/media');
+const MediaStore = require('./services/media-store');
+const MediaStreamService = require('./services/media-stream');
+const MediaLanRoute = require('./services/media-lan-route');
+// Medien-Plugin (W1): the sources from the server (plugin gatecontrol-medien, app API v1), the network rule
+const MediaServerSources = require('./services/media-server-sources');
+const MediaCastReceiver = require('./services/media-cast');
+const mediaCastUtil = require('./utils/media-cast');
+const mediaServerUtil = require('./utils/media-server');
+const MailService = require('./services/mail');
+const MailApi = require('./services/mail-api');
+const NotesService = require('./services/notes');
+const NotesApi = require('./services/notes-api');
+const { PlacesService } = require('./services/places');
 const { AppSignin, SigninError } = require('./services/app-signin');
 const { startLoopbackListener } = require('./services/signin-loopback');
 
@@ -49,9 +80,12 @@ const E2EEHandler = require('./utils/e2ee');
 const enrollment = require('./utils/enrollment');
 const appSigninUtil = require('./utils/app-signin');
 const { isSafeExternalUrl, openExternalSafely } = require('./utils/external-url');
+const { revealItem, explorerShell } = require('./utils/reveal');
+const { runAs } = require('./utils/session-user');
+const userFolders = require('./utils/user-folders');
 const windowGuard = require('./utils/window-guard');
 const autostartTask = require('./utils/autostart-task');
-const { reconnectDelay, shouldOpenPortal } = require('./utils/tunnel-logic');
+const { reconnectDelay, shouldOpenPortal, connectSteps, waitForHandshake } = require('./utils/tunnel-logic');
 const { createPortalOpener, resolvePortalUrl, portalNext } = require('./utils/portal');
 const { loadUpdatePublicKey, updatePublicKeyPaths } = require('./utils/update-public-key');
 const { renderTrayIcon, createTrayIcon, formatBytesShort } = require('./utils/tray-icon');
@@ -60,12 +94,21 @@ const { createUpdateInstaller, installErrorText } = require('./utils/update-inst
 const clientPolicy = require('./utils/client-policy');
 const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
+const familieUtil = require('./utils/familie');
+const dnsProtectUtil = require('./utils/dns-protect');
+const quickActionsUtil = require('./utils/quick-actions');
+const printUtil = require('./utils/print');
+const camerasUtil = require('./utils/cameras');
 const notifyRoutes = require('./utils/notify-routes');
 const gatedropUtil = require('./utils/gatedrop');
 const gatedropShell = require('./utils/gatedrop-shell');
 const vaultUtil = require('./utils/vault');
 const driveUtil = require('./utils/drive');
 const driveSyncUtil = require('./utils/drive-sync');
+const mailUtil = require('./utils/mail');
+const notesUtil = require('./utils/notes');
+const placesUtil = require('./utils/places');
+const scanUtil = require('./utils/scan');
 
 // ── Shared validators ───────────────────────────────────────
 const { validateWgConfig } = require('@callmetechie/gatecontrol-config-hash');
@@ -86,7 +129,7 @@ const { setupAppLifecycle } = require('./lifecycle/app-events');
 const { recoverKillSwitch } = require('./lifecycle/killswitch-startup');
 
 // ── Preload ─────────────────────────────────────────────────
-const { createBridgeApi, createSubscriber } = require('./preload/bridge');
+const { createBridgeApi, createSubscriber, createMediaBridge } = require('./preload/bridge');
 
 module.exports = {
   // Services
@@ -95,6 +138,14 @@ module.exports = {
   KillSwitch,
   editions,
   RdpAllow,
+  RemoteHost,
+  RemoteHostApi,
+  RemoteTerm,
+  RdpSessionFirewall,
+  ScreenCapture,
+  ScreenShare,
+  ScreenInput,
+  WindowsRdpInfo,
   ConnectionMonitor,
   Updater,
   DnsPolicy,
@@ -108,13 +159,38 @@ module.exports = {
   ChatNotifier,
   MapService,
   SchoolService,
+  FamilieService,
+  DnsProtectService,
+  QuickActionsService,
+  PrintService,
+  CamerasService,
   GateDropService,
   GateDropApi,
   GateDropListener,
   GateDropFirewall,
   DriveService,
+  DriveStreamService,
+  // Drive plugin 1.22: the viewer of vault files (SCHEME 'gcvault', SCHEME_PRIVILEGES for registerSchemesAsPrivileged)
+  DriveVaultViews,
   DriveApi,
   DriveSync,
+  // Medien (Stufe 4e): MediaService (its .stream is the gcmedia: handler: SCHEME, SCHEME_PRIVILEGES), MediaStore
+  MediaService,
+  MediaStore,
+  MediaStreamService,
+  MediaLanRoute,
+  MediaServerSources,
+  mediaServerUtil,
+  // "Auf TV/PC abspielen": this PC as the receiver of a cast from the phone (plugin Medien, cast contract v1)
+  MediaCastReceiver,
+  mediaCastUtil,
+  MailService,
+  MailApi,
+  // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)
+  NotesService,
+  NotesApi,
+  // „Mein Profil › Meine Orte“ (GateControl 1.299.0)
+  PlacesService,
   AppSignin,
   SigninError,
   startLoopbackListener,
@@ -138,11 +214,20 @@ module.exports = {
   appSigninUtil,
   isSafeExternalUrl,
   openExternalSafely,
+  revealItem,
+  explorerShell,
+  runAs,
+  // the folders of the person signed in (also when the app runs as another Windows user): userPath('downloads') …
+  userFolders,
+  userPath: userFolders.userPath,
+  dialogPath: userFolders.dialogPath,
   windowGuard,
   installWindowGuard: windowGuard.installWindowGuard,
   autostartTask,
   reconnectDelay,
   shouldOpenPortal,
+  connectSteps,
+  waitForHandshake,
   createPortalOpener,
   resolvePortalUrl,
   portalNext,
@@ -159,12 +244,21 @@ module.exports = {
   clientPolicy,
   messengerUtil,
   schoolUtil,
+  familieUtil,
+  dnsProtectUtil,
+  quickActionsUtil,
+  printUtil,
+  camerasUtil,
   notifyRoutes,
   gatedropUtil,
   gatedropShell,
   vaultUtil,
   driveUtil,
   driveSyncUtil,
+  mailUtil,
+  notesUtil,
+  placesUtil,
+  scanUtil,
 
   // Support bundle
   collectSupportBundle,
@@ -182,6 +276,7 @@ module.exports = {
   // Preload
   createBridgeApi,
   createSubscriber,
+  createMediaBridge,
 
   // i18n
   i18n,
@@ -197,6 +292,10 @@ Object.defineProperties(module.exports, {
   totpQr: { enumerable: true, get: () => require('./services/totp-qr') },
   totpQrUtil: { enumerable: true, get: () => require('./utils/totp-qr') },
   // Windows Hello for Vault's unlock (WinRT KeyCredentialManager via koffi, loaded on the first call):
-  // new VaultService({ …, hello: windowsHello.createWindowsHello({ log }) })
+  // new VaultService({ …, hello: windowsHello.createWindowsHello({ log }) });
+  // Drive 1.11 vault lock: new DriveService({ …, consent: windowsHello.createConsentVerifier({ log }) })
   windowsHello: { enumerable: true, get: () => require('./services/windows-hello') },
+  // Drive 1.14 searchable PDFs of scans: the text recognition of Windows (WinRT Windows.Media.Ocr via koffi):
+  // new DriveService({ …, ocr: windowsOcr.createWindowsOcr({ log }) })
+  windowsOcr: { enumerable: true, get: () => require('./services/windows-ocr') },
 });

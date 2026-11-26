@@ -47,9 +47,38 @@ describe('ApiClient internal DNS', () => {
     assert.equal(old.internalDns, undefined);
   });
 
+  it('fetchConfig takes a shorter timeout for the connect (a local config can be used instead)', async () => {
+    const c = new ApiClient('https://gate.example.com', 'gc_x', log, 7, {});
+    const asked = [];
+    c.client.get = async (url, opts) => { asked.push(opts); return { data: { ok: true, config: '[Interface]' } }; };
+    await c.fetchConfig({ timeout: 6000 });
+    await c.fetchConfig();
+    assert.equal(asked[0].timeout, 6000);
+    assert.equal('timeout' in asked[1], false, 'the client\'s own timeout otherwise');
+    assert.deepEqual(asked[0].params, { peerId: 7 });
+  });
+
   it('a changed config from config/check updates it too', async () => {
     const c = answering({ ok: true, updated: true, config: '[Interface]', hash: 'h2', internalDns: { domain: 'lan.x', server: '10.9.0.1' } });
     await c.checkConfigUpdate();
     assert.deepEqual(c.internalDns, { domain: 'lan.x', server: '10.9.0.1' });
+  });
+
+  it('config/check without a new config still reports the zones (the zone can change while the hash stays)', async () => {
+    const internalDns = { domain: 'gc.internal', server: '10.8.0.1', domains: ['vpn.example.com', 'gc.internal'], primary: 'vpn.example.com' };
+    const c = answering({ ok: true, updated: false, internalDns });
+    assert.equal(await c.checkConfigUpdate(), null);
+    assert.deepEqual(c.internalDns, internalDns);
+
+    const off = answering({ ok: true, updated: false, internalDns: null });
+    off.internalDns = { domain: 'gc.internal', server: '10.8.0.1' };
+    await off.checkConfigUpdate();
+    assert.equal(off.internalDns, null);
+
+    // an older server says nothing with `updated: false`: what the config reported stays
+    const old = answering({ ok: true, updated: false });
+    old.internalDns = { domain: 'gc.internal', server: '10.8.0.1' };
+    await old.checkConfigUpdate();
+    assert.deepEqual(old.internalDns, { domain: 'gc.internal', server: '10.8.0.1' });
   });
 });

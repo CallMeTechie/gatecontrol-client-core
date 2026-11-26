@@ -41,12 +41,97 @@ const KNOWN_FEATURES = Object.freeze([
   'video_meta', 'file_thumbs',
   // Messenger 1.4.0 (only true keys are present)
   'status', 'stories', 'polls', 'events', 'arrival', 'actions', 'msg_tools', 'privacy2',
+  // Messenger 1.5.0: requesting home actions (approvers) and „Am Ende ausschalten“ — parts of `actions`, which this
+  // client only shows as messages; no newer Windows version offers them, so they must not raise the update hint
+  'action_requests', 'grant_off',
   // Messenger 1.4.1
   'story_duration',
   // Messenger 1.6: GateControl's notifications in chats (notice channels and
   // cards, `listPinned`) and "Wo Mitteilungen erscheinen" (core push routes)
   'notices', 'notice_routes',
+  // Messenger 1.11: the host's virus scan (`media.scan`, 422 infected / 423 scan_blocked on send, message.update { scan })
+  'scan',
+  // Messenger 1.13: „Verknüpfte Dienste“ (GET bridges …); 1.14: chats over a bridge (`bridge` on conversations and
+  // messages, the mark ?bridged=1) — the second one only for people who have such a chat
+  'linked_services', 'bridge_chats',
+  // Messenger 1.15: files and pictures over a bridge; a new chat by phone number (POST bridges/:network/resolve, …/chats)
+  // — set only together with bridge_chats (1.16: bridge_new_chat as soon as a service is linked)
+  'bridge_media', 'bridge_new_chat',
+  // Messenger 1.17: older history at a new link (GET/PUT bridges/history), its files on request
+  // (POST messages/:id/fetch), the phone warning — only for people who linked a service
+  'bridge_history',
+  // Messenger 1.18: „Neuer Chat“ with contacts — GateControl, WhatsApp, the address book (GET contacts/new-chat,
+  // POST bridges/:network/chats { ref } | { contactId, phoneKind }) — only for people who linked a service
+  'bridge_contacts',
+  // Messenger 1.20: WhatsApp channels on a page of their own (GET channels, ?channels=1 — they leave GET conversations),
+  // groups where only admins write, format (`marks`), link previews, the own reaction in a channel — for the same
+  // people as bridge_chats
+  'bridge_channels',
+  // Messenger 1.21: persons — the chat with a GateControl account and the WhatsApp chat of the same human as one entry
+  // (?people=1: `person`, `folded`, persons/… routes, suggestions, „Trennen“) — for the same people as bridge_chats
+  'chat_people',
+  // Messenger 1.25: the contacts' WhatsApp status updates in the status row (GET status/feed → `bridged`,
+  // POST status/bridged/:id/seen | reply, prefs.privacy.bridgedStatusSeen) — for people who linked WhatsApp
+  'bridge_status',
+  // Messenger 1.27: „Nachrichten senden über“ per person (person.replyPref, PUT persons/:id { replyPref }), the plus menu
+  // with everything the person can get, place messages (GET place-messages …; run on the phone only — this client
+  // shows the line „Ortsnachricht · <Ort>“ at an own message, nothing else)
+  'placeMessages',
+  // Messenger 1.28: „Meine Orte“ of GateControl's profile next to Familie's places (GET places, `ref` profile:<id> |
+  // home | place:<id>) — the source of the place choice on this PC
+  'profilePlaces',
 ]);
+// Messenger 1.13 / 1.14 `GET me` features (present only when true).
+const FEATURE_LINKED = 'linked_services';
+const FEATURE_BRIDGE_CHATS = 'bridge_chats';
+// Messenger 1.15 `GET me` features.
+const FEATURE_BRIDGE_MEDIA = 'bridge_media';
+const FEATURE_BRIDGE_NEW_CHAT = 'bridge_new_chat';
+// Messenger 1.18 `GET me` feature: „Neuer Chat“ with contacts.
+const FEATURE_BRIDGE_CONTACTS = 'bridge_contacts';
+// Messenger 1.20 `GET me` feature: channels, read-only groups, format, link previews.
+const FEATURE_BRIDGE_CHANNELS = 'bridge_channels';
+// Messenger 1.21 `GET me` feature: persons (one entry per human over several ways).
+const FEATURE_CHAT_PEOPLE = 'chat_people';
+// The way of a message / a conversation of a person: GateControl or the network of a bridge.
+const GC_WAY = 'gatecontrol';
+const WAY_RE = /^[a-z]{2,20}$/;
+// Messenger 1.27 `GET me` feature: the choice of the way per person (replyPref), place messages.
+const FEATURE_PLACE_MESSAGES = 'placeMessages';
+// Messenger 1.28 `GET me` feature: GET places (the person's own profile places + Familie's, with `ref`).
+const FEATURE_PROFILE_PLACES = 'profilePlaces';
+const PLACE_REF_RE = /^(?:profile:[1-9][0-9]{0,15}|home|place:[1-9][0-9]{0,15})$/;
+const PLACE_ICONS = Object.freeze(['home', 'work', 'school', 'gym', 'shop', 'family', 'pin']);
+const REPLY_AUTO = 'auto';
+// Kinds only GateControl carries: to a person whose text goes over a bridge they go to its GateControl way.
+const GC_ONLY_KINDS = Object.freeze(['poll', 'event', 'action']);
+// GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
+// address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
+const CONTACTS_QUERY_MAX = 100;
+const CONTACT_REF_RE = /^k[A-Za-z0-9_-]{40,1400}$/;
+const PHONE_KEY_RE = /^(mobile|work|home|other)(-[2-9])?$/;
+const PHONE_KINDS = Object.freeze(['mobile', 'work', 'home', 'other']);
+const CONTACT_LIST_STATES = Object.freeze(['ok', 'unreachable', 'logged_out']);
+// Messenger 1.17 `GET me` feature.
+const FEATURE_BRIDGE_HISTORY = 'bridge_history';
+// What of the older messages comes over at a new link (PUT bridges/history { days }): nothing, 30 days, everything.
+const HISTORY_DAYS = Object.freeze([0, 30, -1]);
+// The push of „Verknüpfte Dienste“ (Messenger 1.17: the phone was not seen for days).
+const BRIDGE_TOPIC = `plugin:${PLUGIN_ID}:bridge`;
+// Why a new chat by number is not possible right now (GET bridges → networks[].newChat.reason, Messenger 1.16).
+const NEW_CHAT_REASONS = Object.freeze(['unlinked', 'logged_out', 'unreachable', 'child_locked', 'child_new_chat_off', 'off']);
+// The country code a number without one gets (the dialog's default).
+const DEFAULT_CC = '+49';
+// The ways to link an account (POST bridges/:network/login { flow }).
+const BRIDGE_FLOWS = Object.freeze(['phone', 'qr']);
+// Messenger 1.23: where the step of a service that links by QR code only (Signal) goes („am PC fortsetzen“).
+const HANDOFF_TARGETS = Object.freeze(['portal', 'windows']);
+// A network id as the plugin names it (whatsapp; Messenger 1.23: signal), a login / process / step id of the bridge.
+const BRIDGE_NET_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const BRIDGE_ID_RE = /^[A-Za-z0-9._:=+-]{1,128}$/;
+const BRIDGE_LOGIN_STATES = Object.freeze(['connected', 'connecting', 'logged_out', 'error', 'unknown']);
+// A QR code has at most 177 modules a side (version 40).
+const QR_MAX = 177;
 // Messenger 1.4.0 `GET me` features (README "Since 1.4.0").
 const FEATURES_14 = Object.freeze({
   status: 'status', stories: 'stories', polls: 'polls', events: 'events', arrival: 'arrival', actions: 'actions', tools: 'msg_tools', privacy: 'privacy2',
@@ -54,6 +139,8 @@ const FEATURES_14 = Object.freeze({
   storyDuration: 'story_duration',
   // since 1.6: notice channels / cards, the family chat pinned to the list
   notices: 'notices', noticeRoutes: 'notice_routes',
+  // since 1.25: the contacts' WhatsApp status updates in the status row
+  bridgeStatus: 'bridge_status',
 });
 // Story durations in hours (Messenger 1.4.1 `durationH`, `limits.storyDurationsH`); the server's default is 24.
 const STORY_DURATIONS_H = Object.freeze([1, 3, 6, 12, 24]);
@@ -69,6 +156,8 @@ const PREF_RULES = Object.freeze({
     placeInStatus: ['nobody', 'family', 'all'],
     groupAdd: ['all', 'family', 'nobody'],
     defaultDisappearingS: [0, 86400, 604800, 2592000],
+    // Messenger 1.25: tell WhatsApp when the person views a contact's status (off; only with read receipts)
+    bridgedStatusSeen: 'bool',
   },
   notify: {
     groupsMentionsOnly: 'bool', reactions: 'bool', statusDigest: 'bool', eventReminderMin: [0, 15, 60, 120, 1440],
@@ -104,6 +193,46 @@ const UNSAFE_EXT = new Set([
 ]);
 
 /** Fresh idempotency key for POST …/messages (UUID, matches [A-Za-z0-9_-]{8,64}). */
+/**
+ * Messenger 1.25: `GET status/feed` → `bridged` — the contacts' status updates over a bridge (WhatsApp), checked and
+ * capped: [{ network, contact: { id, name, avatarMediaId, avatarUrl }, chatId, canReply, stories: [{ id, kind, text,
+ * mediaId, thumbMediaId, video, url, thumbUrl, createdAt, expiresAt, seen }], unseen }]. A contact stands for no
+ * account (no user id): the views key it by network and contact id.
+ */
+const BRIDGED_KINDS = Object.freeze(['text', 'image', 'video', 'unsupported']);
+function bridgedFeedOf(list) {
+  const out = [];
+  const seen = new Set();
+  for (const it of (Array.isArray(list) ? list : []).slice(0, 200)) {
+    if (!it || typeof it !== 'object' || !BRIDGE_NET_RE.test(String(it.network || ''))) continue;
+    const c = it.contact && typeof it.contact === 'object' ? it.contact : {};
+    const id = posInt(c.id);
+    if (!id || seen.has(`${it.network}:${id}`)) continue;
+    const stories = [];
+    for (const s of (Array.isArray(it.stories) ? it.stories : []).slice(0, 50)) {
+      if (!s || typeof s !== 'object' || !posInt(s.id) || !BRIDGED_KINDS.includes(s.kind)) continue;
+      stories.push({
+        id: posInt(s.id), kind: s.kind, text: typeof s.text === 'string' ? s.text.slice(0, 4000) : null,
+        mediaId: isMediaId(s.mediaId) ? s.mediaId : null, thumbMediaId: isMediaId(s.thumbMediaId) ? s.thumbMediaId : null,
+        video: s.video && typeof s.video === 'object' ? { durationMs: posInt(s.video.durationMs) || null, width: posInt(s.video.width) || null, height: posInt(s.video.height) || null } : null,
+        url: typeof s.url === 'string' ? s.url : null, thumbUrl: typeof s.thumbUrl === 'string' ? s.thumbUrl : null,
+        createdAt: isIso(s.createdAt) ? s.createdAt : null, expiresAt: isIso(s.expiresAt) ? s.expiresAt : null, seen: s.seen === true,
+      });
+    }
+    if (!stories.length) continue;
+    seen.add(`${it.network}:${id}`);
+    out.push({
+      network: it.network,
+      contact: { id, name: typeof c.name === 'string' && c.name.trim() ? c.name.slice(0, 120) : null, avatarMediaId: isMediaId(c.avatarMediaId) ? c.avatarMediaId : null, avatarUrl: typeof c.avatarUrl === 'string' ? c.avatarUrl : null },
+      chatId: posInt(it.chatId) || null,
+      canReply: it.canReply === true || !!posInt(it.chatId),
+      stories,
+      unseen: stories.some((s) => !s.seen),
+    });
+  }
+  return out;
+}
+
 function newClientId() {
   return crypto.randomUUID();
 }
@@ -198,6 +327,10 @@ function messageStatus(m, conv) {
   if (!m) return null;
   if (m.pending) return m.failed ? 'failed' : 'pending';
   if (!m.mine || m.kind === 'system') return null;
+  // Messenger 1.14, a chat over a bridge: what the other messenger said about this very message
+  const b = m.bridge && typeof m.bridge === 'object' ? m.bridge.state : null;
+  if (b === 'failed' || m.status === 'failed') return 'failed';
+  if (b === 'pending' || m.status === 'sending') return 'pending';
   const read = conv && Number.isSafeInteger(conv.readUpTo) ? conv.readUpTo : null;
   const delivered = conv && Number.isSafeInteger(conv.deliveredUpTo) ? conv.deliveredUpTo : null;
   if (read != null && m.id <= read) return 'read';
@@ -210,11 +343,21 @@ function messageStatus(m, conv) {
  * Merge server messages into a cached list: unique by id (incoming wins),
  * ascending by id.
  */
-function mergeMessages(list, incoming) {
+function mergeMessages(list, incoming, { byTime = false } = {}) {
   const map = new Map();
   for (const m of Array.isArray(list) ? list : []) if (m && Number.isSafeInteger(m.id)) map.set(m.id, m);
   for (const m of Array.isArray(incoming) ? incoming : []) if (m && Number.isSafeInteger(m.id)) map.set(m.id, m);
+  // Messenger 1.21: a person's shared history mixes its ways — by time (createdAt, a tie by id), as the server pages it
+  if (byTime) return [...map.values()].sort(byTimeOrder);
   return [...map.values()].sort((a, b) => a.id - b.id);
+}
+
+/** Messages by `createdAt`, a tie (or a missing time) by id. */
+function byTimeOrder(a, b) {
+  const ta = typeof a.createdAt === 'string' ? a.createdAt : '';
+  const tb = typeof b.createdAt === 'string' ? b.createdAt : '';
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  return a.id - b.id;
 }
 
 /** Time of the newest activity of a conversation (ISO) for sorting. */
@@ -325,6 +468,55 @@ function normalizePoll(p) {
     if (!isIso(p.closesAt)) throw invalidErr('poll closesAt');
     out.closesAt = new Date(p.closesAt).toISOString();
   }
+  return out;
+}
+
+/**
+ * One entry of the place choice → { ref, source: 'profile' | 'familie', id, name, icon, lat, lon, radiusM, address,
+ * visibility, lastUsedAt, usageCount, rank } or null. Messenger 1.28 `GET places` gives `ref`; an older Messenger's
+ * `GET familie/places` entry ({ id, name, lat, lon, radiusM }) becomes a Familie place (`home` / `place:<id>`).
+ */
+function normalizePickPlace(v, rank = 0) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  let ref = typeof v.ref === 'string' && PLACE_REF_RE.test(v.ref) ? v.ref : null;
+  if (!ref && v.ref === undefined) {
+    if (v.id === 'home') ref = 'home';
+    else if (typeof v.id === 'string' && /^place:[1-9][0-9]{0,15}$/.test(v.id)) ref = v.id;
+    else if (Number.isSafeInteger(v.id) && v.id > 0) ref = `place:${v.id}`;
+  }
+  if (!ref) return null;
+  const name = cleanLine(v.name, 80);
+  if (!name) return null;
+  const lat = typeof v.lat === 'number' ? v.lat : Number(v.lat);
+  const lon = typeof v.lon === 'number' ? v.lon : Number(v.lon);
+  const point = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+  const profile = ref.startsWith('profile:');
+  const r = Number(v.radiusM);
+  const at = typeof v.lastUsedAt === 'string' && Number.isFinite(Date.parse(v.lastUsedAt)) ? new Date(Date.parse(v.lastUsedAt)).toISOString() : null;
+  const n = Number(v.usageCount);
+  return {
+    ref, source: profile && v.source !== 'familie' ? 'profile' : 'familie',
+    // what an event's place keeps for a Familie place (familiePlaceId) — the plugin's own id
+    id: profile ? Number(ref.slice(8)) : (typeof v.id === 'string' || Number.isSafeInteger(v.id) ? v.id : ref),
+    name, icon: PLACE_ICONS.includes(v.icon) ? v.icon : (ref === 'home' ? 'home' : 'pin'),
+    lat: point ? lat : null, lon: point ? lon : null,
+    radiusM: Number.isFinite(r) && r > 0 ? Math.min(100000, Math.max(10, Math.round(r))) : null,
+    address: profile ? cleanLine(v.address, 200) || null : null,
+    visibility: profile && ['self', 'family', 'all'].includes(v.visibility) ? v.visibility : null,
+    lastUsedAt: at, usageCount: Number.isSafeInteger(n) && n > 0 ? n : 0, rank,
+  };
+}
+
+/** A list of the place choice → the entries (each `ref` once, at most 200), in the order given. */
+function normalizePickPlaces(list) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(list) ? list : []).forEach((v, i) => {
+    const p = normalizePickPlace(v, i);
+    if (!p || seen.has(p.ref) || out.length >= 200) return;
+    seen.add(p.ref);
+    out.push(p);
+  });
   return out;
 }
 
@@ -598,10 +790,490 @@ function parseChatNotification(n) {
     // Messenger 1.4.0: pushes that are not "a new message" carry data.kind
     // (poll_nudge, event_reminder, event_departure, arrived, reminder,
     // action_approved, action_denied, reaction) and their own collapse_key.
+    // Messenger 1.14: a message of a chat over a bridge (`data.bridge: "whatsapp"`)
+    bridge: isBridgeNet(data.bridge) ? data.bridge : null,
+    // Messenger 1.20: a post of a channel („<Kanal> · Kanal über WhatsApp“, only „Als gelesen“)
+    channel: isBridgeNet(data.bridge) && data.channel === true,
+    // Messenger 1.21: a message of a way of a person („Jenny Backes · über WhatsApp“) — a click opens the person's entry
+    person: data.person && typeof data.person === 'object' && posInt(data.person.id) && posInt(data.person.conversationId)
+      ? { id: posInt(data.person.id), conversationId: posInt(data.person.conversationId) } : null,
     pushKind: typeof data.kind === 'string' && /^[a-z_]{1,40}$/.test(data.kind) ? data.kind : null,
     deepLink: typeof data.deepLink === 'string' && /^[a-z_]{1,40}$/.test(data.deepLink) ? data.deepLink : null,
     reminderId: posInt(data.reminderId),
   };
+}
+
+// ── Messenger 1.13 / 1.14: linked services (bridges to other messengers) ──
+
+/**
+ * A push of „Verknüpfte Dienste“ (Messenger 1.17, topic `bridge`: „WhatsApp: Handy seit N Tagen nicht gesehen“,
+ * data { deepLink: 'bridges', bridge }) → { type: 'bridges', bridge } — a click opens „Verknüpfte Dienste“ —
+ * or null when the entry is none.
+ */
+function bridgePushContext(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {};
+  const topic = typeof entry.topic === 'string' ? entry.topic : '';
+  const ours = topic === BRIDGE_TOPIC || (topic.startsWith(`plugin:${PLUGIN_ID}:`) && data.deepLink === 'bridges');
+  if (!ours) return null;
+  return { type: 'bridges', bridge: typeof data.bridge === 'string' && BRIDGE_NET_RE.test(data.bridge) ? data.bridge : null };
+}
+
+// The services' own names (never translated); an id this version does not know shows as it is.
+const BRIDGE_LABELS = Object.freeze({ whatsapp: 'WhatsApp', signal: 'Signal', telegram: 'Telegram' });
+// Messenger 1.24: what a service still waits for (`networks[].needs`; 'app': Telegram not set up by an administrator)
+const BRIDGE_NEEDS = Object.freeze(['app', 'script', 'compose']);
+// Messenger 1.24 (Telegram): the longest code or password that goes to the bridge
+const BRIDGE_SECRET_MAX = 256;
+const bridgeLabel = (id) => BRIDGE_LABELS[id] || (typeof id === 'string' && id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
+const isBridgeNet = (v) => typeof v === 'string' && BRIDGE_NET_RE.test(v);
+const isBridgeId = (v) => typeof v === 'string' && BRIDGE_ID_RE.test(v);
+
+/**
+ * A phone number as typed → '+<6–15 digits>' (spaces, brackets, dots, dashes
+ * and slashes removed, a leading 00 becomes +), or null. It is sent once and
+ * never kept or logged.
+ */
+function bridgePhone(raw) {
+  let v = String(raw == null ? '' : raw).replace(/[\s()/.-]/g, '');
+  if (v.startsWith('00')) v = `+${v.slice(2)}`;
+  return /^\+[0-9]{6,15}$/.test(v) ? v : null;
+}
+
+/**
+ * A phone number for a new chat over a bridge, as typed in the dialog → '+<country code><number>' or null:
+ * spaces, brackets, dots, dashes and slashes go, a leading 00 becomes +, a number with + keeps its own country
+ * code, any other gets `cc` (default +49) and loses its leading 0. 8–15 digits in all, the first one not 0
+ * (+49: a mobile number has at least 10 after the country code).
+ * The server checks it again; it is sent only on „Prüfen“ / „Chat starten“ and never kept or logged.
+ */
+function bridgeNumber(raw, cc = DEFAULT_CC) {
+  const code = typeof cc === 'string' && /^\+[1-9][0-9]{0,3}$/.test(cc) ? cc : DEFAULT_CC;
+  let v = String(raw == null ? '' : raw).trim().replace(/[\s()/.\u2010-\u2015-]/g, '');
+  if (!v || v.length > 24) return null;
+  if (v.startsWith('00')) v = `+${v.slice(2)}`;
+  else if (!v.startsWith('+')) v = code + v.replace(/^0+/, '');
+  if (!/^\+[1-9][0-9]{7,14}$/.test(v)) return null;
+  // Germany: at least 6 digits after +49, a mobile number (015x, 016x, 017x) at least 10
+  if (v.startsWith('+49')) {
+    const nat = v.slice(3);
+    if (nat.length < 6 || (/^1[5-7]/.test(nat) && nat.length < 10)) return null;
+  }
+  return v;
+}
+
+/**
+ * `newChat` of a service in GET bridges (Messenger 1.16) → { available, reason, limit: { perHour, left, retryAfterS } | null },
+ * or null when the server does not say (then the person's links decide alone).
+ */
+function normalizeNewChat(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const int = (x, max) => (Number.isSafeInteger(x) && x >= 0 && x <= max ? x : null);
+  const l = v.limit && typeof v.limit === 'object' ? v.limit : null;
+  const reason = typeof v.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(v.reason) ? v.reason : null;
+  return {
+    available: v.available === true,
+    reason: v.available === true ? null : reason,
+    limit: l ? { perHour: int(l.perHour, 1000), left: int(l.left, 1000), retryAfterS: int(l.retryAfterS, 86400) || 0 } : null,
+  };
+}
+
+/**
+ * POST bridges/:network/resolve → { found, name, avatarMediaId, existing: { conversationId } | null }: is the number
+ * at the service and under which name; `existing` (Messenger 1.16) = there is a chat with it already.
+ */
+function normalizeResolve(r) {
+  const src = r && typeof r === 'object' ? r : {};
+  const found = src.found === true;
+  const name = found && typeof src.name === 'string' ? src.name.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 120) || null : null;
+  const ex = src.existing && typeof src.existing === 'object' ? posInt(src.existing.conversationId) : null;
+  return { found, name, avatarMediaId: found && isMediaId(src.avatarMediaId) ? src.avatarMediaId : null, existing: found && ex ? { conversationId: ex } : null };
+}
+
+/**
+ * Messenger 1.18: GET contacts/new-chat → { network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+ * number, numberEntry, limit } — the three sections of „Neuer Chat“ (GateControl → WhatsApp → address book, each
+ * null / empty when the server leaves it out). WhatsApp contacts carry a sealed `ref`, never a number; the numbers
+ * of the address book are the person's own (sorted mobile, work, home, other). Nothing of it is kept or logged.
+ */
+function normalizeNewChatContacts(r) {
+  const src = r && typeof r === 'object' ? r : {};
+  const name = (v) => (typeof v === 'string' ? v.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 120) : '');
+  const int = (x, max) => (Number.isSafeInteger(x) && x >= 0 && x <= max ? x : null);
+  // a picture's address as GET people gives it (absolute http(s) or a path of the server), nothing else
+  const url = (v) => (typeof v === 'string' && v.length <= 2048 && (/^https?:\/\//i.test(v) || !/^[a-z][a-z0-9+.-]*:/i.test(v)) ? v : null);
+  const state = (v) => (CONTACT_LIST_STATES.includes(v) ? v : 'unreachable');
+  const gatecontrol = (Array.isArray(src.gatecontrol) ? src.gatecontrol : []).filter((p) => p && posInt(p.userId)).slice(0, 2000).map((p) => ({
+    id: p.userId,
+    userId: p.userId,
+    name: name(p.name) || null,
+    avatarUrl: url(p.avatarUrl),
+    // whole characters (never half an emoji: a slice of UTF-16 units cut „M💕“ in the middle of the heart)
+    initials: typeof p.initials === 'string' ? Array.from(p.initials).slice(0, 4).join('') || null : null,
+    colorHex: typeof p.colorHex === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.colorHex) ? p.colorHex : null,
+    conversationId: posInt(p.conversationId),
+  }));
+  let whatsapp = null;
+  const wa = src.whatsapp && typeof src.whatsapp === 'object' ? src.whatsapp : null;
+  if (wa) {
+    const items = (Array.isArray(wa.items) ? wa.items : []).filter((c) => c && typeof c.ref === 'string' && CONTACT_REF_RE.test(c.ref)).slice(0, 5000).map((c) => ({
+      ref: c.ref,
+      name: name(c.name) || null,
+      avatarMediaId: isMediaId(c.avatarMediaId) ? c.avatarMediaId : null,
+      avatarUrl: url(c.avatarUrl),
+      conversationId: posInt(c.conversationId),
+      alsoInAddressBook: c.alsoInAddressBook === true,
+      addressBookId: posInt(c.addressBookId),
+    }));
+    const st = state(wa.state);
+    whatsapp = { state: st, total: int(wa.total, 100000) != null ? wa.total : items.length, items: st === 'ok' ? items : [] };
+  }
+  let addressBook = null;
+  const ab = whatsapp && src.addressBook && typeof src.addressBook === 'object' ? src.addressBook : null;
+  if (ab) {
+    const items = [];
+    for (const x of (Array.isArray(ab.items) ? ab.items : []).slice(0, 5000)) {
+      if (!x || !posInt(x.contactId)) continue;
+      const phones = (Array.isArray(x.phones) ? x.phones : []).filter((p) => p && typeof p.key === 'string' && PHONE_KEY_RE.test(p.key) && typeof p.number === 'string' && p.number.trim()).slice(0, 20).map((p) => ({
+        key: p.key,
+        kind: PHONE_KINDS.includes(p.kind) ? p.kind : p.key.replace(/-.*/, ''),
+        number: p.number.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 40),
+        e164: typeof p.e164 === 'string' && /^\+[1-9][0-9]{5,15}$/.test(p.e164) ? p.e164 : null,
+        landline: p.landline === true,
+        notOnNetwork: p.notOnNetwork === true,
+      }));
+      if (!phones.length) continue;
+      phones.sort((a, b) => PHONE_KINDS.indexOf(a.kind) - PHONE_KINDS.indexOf(b.kind));
+      items.push({ contactId: x.contactId, name: name(x.name) || null, conversationId: posInt(x.conversationId), phones });
+    }
+    addressBook = { state: whatsapp.state, total: int(ab.total, 100000) != null ? ab.total : items.length, items };
+  }
+  const n = src.number && typeof src.number === 'object' ? src.number : null;
+  const number = n && typeof n.e164 === 'string' && /^\+[1-9][0-9]{5,15}$/.test(n.e164)
+    ? { e164: n.e164, show: typeof n.show === 'string' && n.show.trim() ? n.show.trim().slice(0, 40) : n.e164, conversationId: posInt(n.conversationId) }
+    : null;
+  const l = src.limit && typeof src.limit === 'object' ? src.limit : null;
+  return {
+    network: isBridgeNet(src.network) ? src.network : null,
+    query: typeof src.query === 'string' ? src.query.slice(0, CONTACTS_QUERY_MAX) : '',
+    gatecontrol,
+    whatsapp,
+    addressBook,
+    addressBookReason: typeof src.addressBookReason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(src.addressBookReason) ? src.addressBookReason : null,
+    number: whatsapp ? number : null,
+    numberEntry: !!whatsapp && src.numberEntry === true,
+    limit: l ? { perHour: int(l.perHour, 1000), left: int(l.left, 1000), retryAfterS: int(l.retryAfterS, 86400) || 0 } : null,
+  };
+}
+
+/**
+ * Messenger 1.18: what POST bridges/:network/chats gets for a contact of GET contacts/new-chat → { ref } (a WhatsApp
+ * contact) or { contactId, phoneKind } (a number of the address book), or null.
+ */
+function contactChatBody(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  if (typeof o.ref === 'string') return CONTACT_REF_RE.test(o.ref) ? { ref: o.ref } : null;
+  const id = posInt(o.contactId);
+  return id && typeof o.phoneKind === 'string' && PHONE_KEY_RE.test(o.phoneKind) ? { contactId: id, phoneKind: o.phoneKind } : null;
+}
+
+/** Messenger 1.20: is this conversation a channel of another messenger (`bridge.channel`, read only)? */
+function isChannel(c) {
+  return !!(c && c.bridge && typeof c.bridge === 'object' && c.bridge.channel === true);
+}
+
+/**
+ * Messenger 1.20: `channels` of GET conversations?channels=1 → { count, unread } (channels with a post, their new
+ * posts together), or null when the answer has none (an older plugin, a client without ?channels=1).
+ */
+function normalizeChannelSummary(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const int = (x) => (Number.isSafeInteger(x) && x >= 0 && x <= 1e6 ? x : 0);
+  return { count: int(v.count), unread: int(v.unread) };
+}
+
+/**
+ * Messenger 1.21 (chat_people): is this list entry a person — one entry for several ways (`person` { id, ways, reply, … };
+ * its id is the lead conversation's)? Its routes are persons/:id/….
+ */
+function isPerson(c) {
+  const p = c && c.person;
+  return !!(p && typeof p === 'object' && posInt(p.id) && Array.isArray(p.ways) && p.ways.length);
+}
+
+/** The conversation ids of a person's ways (the entry itself when it is none). */
+function personWayIds(c) {
+  if (!isPerson(c)) return c && posInt(c.id) ? [c.id] : [];
+  return [...new Set(c.person.ways.map((w) => posInt(w && w.conversationId)).filter(Boolean))];
+}
+
+/** The way an answer to the person takes (`person.reply`, the server's pick) → that entry of `person.ways`, or null. */
+function personReplyWay(c) {
+  if (!isPerson(c) || !c.person.reply) return null;
+  const id = posInt(c.person.reply.conversationId);
+  return c.person.ways.find((w) => w && posInt(w.conversationId) === id) || null;
+}
+
+/** Messenger 1.27: the person's GateControl way (one that can send), or null. */
+function personGcWay(c) {
+  if (!isPerson(c)) return null;
+  return c.person.ways.find((w) => w && w.way === GC_WAY && !w.bridge && !(w.can && w.can.send === false)) || null;
+}
+
+/**
+ * Messenger 1.27, „Nur diese Nachricht über …“ (Schnellwechsel im Schreibfeld): the person's way of kind `way`
+ * ('gatecontrol' or a network) that can send right now, or null.
+ */
+function personSendWay(c, way) {
+  if (!isPerson(c) || typeof way !== 'string' || !WAY_RE.test(way)) return null;
+  return c.person.ways.find((w) => w && w.way === way && !(w.way === GC_WAY && w.bridge) && !(w.can && w.can.send === false)) || null;
+}
+
+/** Messenger 1.27: „Nachrichten senden über“ of a person → 'auto' | 'gatecontrol' | a network ('auto' when unknown). */
+function personReplyPref(c) {
+  const v = isPerson(c) ? c.person.replyPref : null;
+  return typeof v === 'string' && (v === REPLY_AUTO || WAY_RE.test(v)) ? v : REPLY_AUTO;
+}
+
+/**
+ * Messenger 1.27: the body of PUT persons/:id { replyPref } — 'auto' (also null), or a way the person has → { replyPref },
+ * else null (the server would answer bad_request / invalid).
+ */
+function replyPrefBody(c, pref) {
+  const v = pref == null ? REPLY_AUTO : pref;
+  if (typeof v !== 'string' || !isPerson(c)) return null;
+  if (v === REPLY_AUTO) return { replyPref: REPLY_AUTO };
+  if (!WAY_RE.test(v) || !c.person.ways.some((w) => w && w.way === v)) return null;
+  return { replyPref: v };
+}
+
+/** Messenger 1.27 (gc.bridges version 14): does the bridge of a chat send a location (`bridge.supports` names it)? */
+function bridgeTakesLocation(bridge) {
+  return !!(bridge && typeof bridge === 'object' && Array.isArray(bridge.supports) && bridge.supports.includes('location'));
+}
+
+/**
+ * Messenger 1.27: a message only GateControl carries — a poll, an event, a home action, a reply to a story, a location
+ * when the bridge sends none — must leave a person over its GateControl way while the text goes over `bridge`.
+ */
+function needsGcWay(body, bridge) {
+  if (!bridge || !body) return false;
+  if (GC_ONLY_KINDS.includes(body.kind) || body.replyStory) return true;
+  return body.kind === 'location' && !bridgeTakesLocation(bridge);
+}
+
+/** The way of a message (`way`, sent with ?people=1) — 'gatecontrol' or a bridge's network, else null. */
+function wayOf(m) {
+  return m && typeof m.way === 'string' && WAY_RE.test(m.way) ? m.way : null;
+}
+
+/** POST persons { conversationIds, userId?, name? } from a client request, or null (merge by hand / a suggestion). */
+function mergeBody(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const ids = [...new Set((Array.isArray(o.conversationIds) ? o.conversationIds : []).map(posInt).filter(Boolean))];
+  if (!ids.length || ids.length > 6) return null;
+  const body = { conversationIds: ids };
+  if (o.userId != null) {
+    const uid = posInt(o.userId);
+    if (!uid) return null;
+    body.userId = uid;
+  }
+  if (o.name === 'account') body.name = 'account';
+  else if (o.name != null) {
+    const nid = posInt(o.name);
+    if (!nid) return null;
+    body.name = nid;
+  }
+  return body;
+}
+
+/** A suggestion id of GET persons/suggestions („<conversationId>-<userId>“). */
+function isSuggestionId(v) {
+  return typeof v === 'string' && /^\d{1,15}-\d{1,15}$/.test(v);
+}
+
+/**
+ * GET bridges → recognition { available, network, asked, allowed } (gc.bridges version 9), else null. Messenger 1.23:
+ * also `networks[].recognition` (one consent per service; `network` given by the caller when the object names none).
+ */
+function normalizeRecognition(r, network = 'whatsapp') {
+  if (!r || typeof r !== 'object' || r.available !== true) return null;
+  return { available: true, network: isBridgeNet(r.network) ? r.network : (isBridgeNet(network) ? network : 'whatsapp'), asked: r.asked === true, allowed: r.allowed === true };
+}
+
+/**
+ * Messenger 1.23: an open „am PC fortsetzen“ (GET bridges → handoff, the live event bridge.handoff, POST
+ * bridges/:network/handoff) → { network, target: 'portal' | 'windows' | null, expiresAt, portalPath }, or null.
+ * `target: null` (the event of DELETE …/handoff or a finished link): it is over.
+ */
+function normalizeHandoff(h) {
+  if (!h || typeof h !== 'object' || Array.isArray(h) || !isBridgeNet(h.network)) return null;
+  const target = HANDOFF_TARGETS.includes(h.target) ? h.target : null;
+  if (h.target != null && !target) return null;
+  const at = typeof h.expiresAt === 'string' && Number.isFinite(Date.parse(h.expiresAt)) ? h.expiresAt.slice(0, 40) : null;
+  const path = typeof h.portalPath === 'string' && /^\/[A-Za-z0-9/#._-]{0,199}$/.test(h.portalPath) && !h.portalPath.includes('//') ? h.portalPath : null;
+  return { network: h.network, target, expiresAt: target ? at : null, portalPath: path };
+}
+
+/** Messenger 1.23: `networks[].history` → { maxDays (null: as chosen), phoneConfirms } (Signal: 30, true). */
+function normalizeNetHistory(h) {
+  const v = h && typeof h === 'object' && !Array.isArray(h) ? h : {};
+  return { maxDays: Number.isSafeInteger(v.maxDays) && v.maxDays > 0 && v.maxDays <= 100000 ? v.maxDays : null, phoneConfirms: v.phoneConfirms === true };
+}
+
+/** The kind a file goes out as over a bridge (like the plugin): image | voice | video (a file of video/*) | file. */
+function bridgeOutKind(kind, mime) {
+  if (kind === 'image' || kind === 'voice') return kind;
+  return /^video\//.test(baseMime(mime) || '') ? 'video' : 'file';
+}
+
+/**
+ * May a file go into a chat over a bridge (Messenger 1.15: `bridge.supports`, `bridge.mediaTypes`)?
+ * → null (yes), 'text_only' (the chat takes no files of this kind) or the kind whose types it misses
+ * ('image' | 'voice' | 'video' — 409 bridge_media_type at the server).
+ */
+function bridgeMediaRefusal(bridge, kind, mime) {
+  const b = bridge && typeof bridge === 'object' ? bridge : {};
+  const k = bridgeOutKind(kind, mime);
+  if (!Array.isArray(b.supports) || !b.supports.includes(k)) return 'text_only';
+  const types = b.mediaTypes && typeof b.mediaTypes === 'object' ? b.mediaTypes[k] : null;
+  if (!Array.isArray(types)) return null;
+  return types.includes(baseMime(mime)) ? null : k;
+}
+
+/**
+ * `history` of GET bridges (Messenger 1.17) → { available, days, default, options, pending }, or null (a server
+ * without older history: the row is left out). `days` / `options` only from 0, 30 and -1 (everything).
+ */
+function normalizeBridgeHistory(h) {
+  if (!h || typeof h !== 'object' || Array.isArray(h)) return null;
+  const day = (v) => (HISTORY_DAYS.includes(v) ? v : null);
+  const options = (Array.isArray(h.options) ? h.options : HISTORY_DAYS).filter((v) => HISTORY_DAYS.includes(v));
+  const uniq = [...new Set(options.length ? options : HISTORY_DAYS)];
+  const days = day(h.days);
+  return {
+    available: h.available === true,
+    days: days === null ? (day(h.default) === null ? 30 : day(h.default)) : days,
+    default: day(h.default) === null ? 30 : day(h.default),
+    options: uniq,
+    pending: Number.isSafeInteger(h.pending) && h.pending > 0 ? h.pending : 0,
+  };
+}
+
+/** `phone` of a service in GET bridges (Messenger 1.17) → { offline, days, leftDays } (days null when not offline). */
+function normalizePhone(p) {
+  const v = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+  if (v.offline !== true) return { offline: false, days: null, leftDays: null };
+  const int = (x) => (Number.isSafeInteger(x) && x >= 0 && x <= 100000 ? x : null);
+  return { offline: true, days: int(v.days), leftDays: int(v.leftDays) };
+}
+
+/**
+ * `GET bridges` → { available, location, networks: [{ id, state, allowed, lock, consent, outdated, clientOutdated,
+ * version, wantVersion, logins, newChat, phone }], history }.
+ */
+function normalizeBridges(b) {
+  const src = b && typeof b === 'object' ? b : {};
+  const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+  const networks = (Array.isArray(src.networks) ? src.networks : []).filter((n) => n && isBridgeNet(n.id)).slice(0, 20).map((n) => ({
+    id: n.id,
+    state: s(n.state, 24) || 'unknown',
+    allowed: n.allowed !== false,
+    lock: n.lock === 'child' ? 'child' : null,
+    consent: !!n.consent,
+    outdated: n.outdated === true,
+    // Messenger 1.17: WhatsApp turned the bridge's version away — shown like `outdated`
+    clientOutdated: n.clientOutdated === true,
+    version: s(n.version, 40),
+    wantVersion: s(n.wantVersion, 40),
+    logins: (Array.isArray(n.logins) ? n.logins : []).filter((l) => l && isBridgeId(l.id)).slice(0, 10).map((l) => ({
+      id: l.id,
+      name: s(l.name, 80) || '',
+      state: BRIDGE_LOGIN_STATES.includes(l.state) ? l.state : 'unknown',
+      since: s(l.since, 40),
+    })),
+    // Messenger 1.16: may the person start a chat by number here (only with the feature bridge_new_chat)
+    newChat: normalizeNewChat(n.newChat),
+    // Messenger 1.17: the bridge's warning — the phone was not seen for `days` (≥ 12) days
+    phone: normalizePhone(n.phone),
+    // Messenger 1.23: the ways in (Signal: the QR code only; an older plugin names none: both), what of the history
+    // this service brings, its consent „Erkennen“ (null: not offered)
+    flows: (() => {
+      const f = Array.isArray(n.flows) ? [...new Set(n.flows.filter((x) => BRIDGE_FLOWS.includes(x)))] : [];
+      return f.length ? f : BRIDGE_FLOWS.slice();
+    })(),
+    history: normalizeNetHistory(n.history),
+    recognition: normalizeRecognition(n.recognition, n.id),
+    // Messenger 1.24: 'app' — Telegram is not set up on the server yet (nothing to link)
+    needs: BRIDGE_NEEDS.includes(n.needs) ? n.needs : null,
+  }));
+  // Messenger 1.21: „Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?“ (only when GateControl has the call)
+  const recognition = src.available === true ? normalizeRecognition(src.recognition) : null;
+  // Messenger 1.23: an open „am PC fortsetzen“ of the person (only one that still runs)
+  const handoff = src.available === true ? normalizeHandoff(src.handoff) : null;
+  return {
+    available: src.available === true,
+    location: src.location === 'gateway' ? 'gateway' : 'server',
+    networks: src.available === true ? networks : [],
+    // Messenger 1.17: older messages at a new link (null: the server has none)
+    history: src.available === true ? normalizeBridgeHistory(src.history) : null,
+    ...(recognition ? { recognition } : {}),
+    ...(handoff && handoff.target ? { handoff } : {}),
+  };
+}
+
+/** `display.matrix` of a QR step → { size, rows: ['0101…'] } (square, only 0 / 1), or null. */
+function normalizeQrMatrix(m) {
+  if (!m || typeof m !== 'object' || !Array.isArray(m.rows)) return null;
+  const size = m.rows.length;
+  if (size < 21 || size > QR_MAX) return null;
+  const re = new RegExp(`^[01]{${size}}$`);
+  if (!m.rows.every((r) => typeof r === 'string' && re.test(r))) return null;
+  return { size, rows: m.rows.slice() };
+}
+
+/**
+ * `login` of POST bridges/:network/login[/…] → what the page shows next:
+ *   { processId, waiting: true }                       the phone has not confirmed yet — ask again
+ *   { processId, step: { id, type: 'complete' } }
+ *   { processId, step: { id, type: 'phone', fieldId } } the number is asked for
+ *   { processId, step: { id, type: 'secret', kind: 'code' | 'password', fieldId, retry } }  Messenger 1.24 (Telegram):
+ *                                                      the code from the service's app, the password of the two-step
+ *                                                      verification; retry: the one before was wrong
+ *   { processId, step: { id, type: 'code', code } }     the pairing code, then wait
+ *   { processId, step: { id, type: 'qr', matrix } }     the QR code (drawn from its modules), then wait
+ *   { processId, step: { id, type: 'unsupported' } }    a step this version cannot show
+ * null when the answer names no process.
+ */
+function normalizeBridgeLogin(l) {
+  const src = l && typeof l === 'object' ? l : {};
+  if (!isBridgeId(src.processId)) return null;
+  if (src.waiting === true) return { processId: src.processId, waiting: true };
+  const st = src.step && typeof src.step === 'object' ? src.step : {};
+  const id = isBridgeId(st.id) ? st.id : null;
+  const none = { processId: src.processId, step: { id, type: 'unsupported' } };
+  if (st.type === 'complete') return { processId: src.processId, step: { id, type: 'complete' } };
+  if (!id) return none;
+  if (st.type === 'user_input') {
+    const f = (Array.isArray(st.fields) ? st.fields : []).find((x) => x && isBridgeId(x.id));
+    // Messenger 1.24: Telegram's code and password
+    if (f && (f.type === '2fa_code' || f.type === 'password')) {
+      return { processId: src.processId, step: { id, type: 'secret', kind: f.type === 'password' ? 'password' : 'code', fieldId: f.id, retry: st.retry === true } };
+    }
+    if (f && f.type && f.type !== 'phone_number') return none;
+    return { processId: src.processId, step: { id, type: 'phone', fieldId: f ? f.id : 'phone_number' } };
+  }
+  if (st.type === 'display_and_wait') {
+    const d = st.display && typeof st.display === 'object' ? st.display : {};
+    if (d.type === 'qr') {
+      const matrix = normalizeQrMatrix(d.matrix);
+      return matrix ? { processId: src.processId, step: { id, type: 'qr', matrix } } : none;
+    }
+    if (d.type === 'code' && typeof d.data === 'string' && /^[A-Za-z0-9 -]{4,24}$/.test(d.data)) {
+      return { processId: src.processId, step: { id, type: 'code', code: d.data } };
+    }
+  }
+  return none;
 }
 
 /** Byte length of a Buffer / typed array / ArrayBuffer (0 otherwise). */
@@ -659,6 +1331,61 @@ module.exports = {
   FEATURE_VIDEO_META,
   FEATURE_FILE_THUMBS,
   KNOWN_FEATURES,
+  FEATURE_LINKED,
+  FEATURE_BRIDGE_CHATS,
+  FEATURE_BRIDGE_MEDIA,
+  FEATURE_BRIDGE_NEW_CHAT,
+  FEATURE_BRIDGE_CONTACTS,
+  FEATURE_BRIDGE_CHANNELS,
+  isChannel,
+  normalizeChannelSummary,
+  FEATURE_CHAT_PEOPLE,
+  GC_WAY,
+  byTimeOrder,
+  isPerson,
+  personWayIds,
+  personReplyWay,
+  personGcWay,
+  personSendWay,
+  personReplyPref,
+  replyPrefBody,
+  bridgeTakesLocation,
+  needsGcWay,
+  FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlace, normalizePickPlaces,
+  REPLY_AUTO,
+  GC_ONLY_KINDS,
+  wayOf,
+  mergeBody,
+  isSuggestionId,
+  normalizeRecognition,
+  normalizeHandoff,
+  normalizeNetHistory,
+  BRIDGE_SECRET_MAX,
+  HANDOFF_TARGETS,
+  CONTACTS_QUERY_MAX,
+  normalizeNewChatContacts,
+  contactChatBody,
+  NEW_CHAT_REASONS,
+  DEFAULT_CC,
+  bridgeNumber,
+  normalizeNewChat,
+  normalizeResolve,
+  bridgeOutKind,
+  bridgeMediaRefusal,
+  BRIDGE_FLOWS,
+  isBridgeNet,
+  isBridgeId,
+  bridgeLabel,
+  bridgePhone,
+  normalizeBridges,
+  normalizeBridgeHistory,
+  normalizePhone,
+  bridgePushContext,
+  FEATURE_BRIDGE_HISTORY,
+  HISTORY_DAYS,
+  BRIDGE_TOPIC,
+  normalizeQrMatrix,
+  normalizeBridgeLogin,
   DELETE_SCOPES,
   EMOJI_MAX,
   TEXT_MAX,
@@ -668,6 +1395,7 @@ module.exports = {
   NOTIFY_MEDIA_RE,
   isNotifyMediaPath,
   newClientId,
+  bridgedFeedOf,
   isClientId,
   isMediaId,
   isAvatarPath,

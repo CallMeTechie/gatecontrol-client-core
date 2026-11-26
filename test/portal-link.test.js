@@ -271,6 +271,8 @@ describe('portal opener', () => {
     const ok = {
       '/portal': '/portal', '/portal/': '/portal', '/portal#start': '/portal#start', '/#dienste': '/portal#dienste',
       '/portal#benachrichtigungen': '/portal#benachrichtigungen', '/portal#plg-midea-ac': '/portal#plg-midea-ac',
+      // the user profile („Mein Profil“)
+      '/portal#profil': '/portal#profil',
     };
     for (const [k, v] of Object.entries(ok)) assert.equal(portalNext(k), v, k);
     for (const bad of ['/', '', null, 42, '//evil', '/admin', '/portal#unknown', '/portal?x=1#start', '/portal#Start',

@@ -48,10 +48,95 @@
  *   (guardDecide()).
  * - Live: the plugin's push event `changed { areas, seq }` is passed on
  *   ('remote'); the page reloads what it shows.
+ * - Drive 1.7 'takenAt': pictures and videos carry the time they were taken
+ *   (EXIF / the video's header, utils/taken-at.js) with the commit.
+ * - Drive 1.7 'timeTravel': a folder back to how it was at a time (preview
+ *   first; "Rückgängig" is a time travel to `before`). After it the event
+ *   'timetravel' { folderId, at, before } lets "Ordner sichern" run the
+ *   folders of this PC that lie there.
+ * - Drive 1.7 'photos' / 'albums' / 'frame' / 'storage': the timeline of
+ *   pictures, "Vor einem Jahr", albums (also for the photo frame) and the
+ *   storage overview (largest files, duplicates); the previews of photos
+ *   whose answer names no mediaId are loaded by the node.
+ *
+ * - Drive 1.8 'docAi': what Drive recognised in a document (kind, title, date,
+ *   sender, amount, a suggested name / folder to take, its deadlines with the
+ *   person's reminder), "Erneut erkennen", the deadlines of all files, the
+ *   switch per area. A click on a deadline reminder (push topic `deadline`)
+ *   opens the file on the page (NotificationCenter.addClickRoute).
+ * - Drive 1.8 'cloudImport': the import runs in the portal only — its page
+ *   `/portal?drive=import#plg-gatecontrol-drive` opens in the browser.
+ * - Drive 1.9 'office': "Im Browser bearbeiten / ansehen" — POST
+ *   nodes/<id>/office, its https address goes to the default browser.
+ * - Drive 1.9 'vault' (services/drive-vault.js): vault folders, end-to-end
+ *   encrypted on this PC. Listings show their names decrypted (when this device
+ *   has the key, else `locked`); uploads into a vault are encrypted chunk by
+ *   chunk into a temporary file (ciphertext only) and go up as
+ *   application/octet-stream with nameCipher / keyVersion; renaming and new
+ *   folders send the encrypted name. No previews, text, takenAt, entropy, links,
+ *   office or AI for them. "In Tresor verschieben": a file put into a vault from
+ *   this PC is moved — its original is deleted for good (not into the recycle
+ *   bin) once the vault's commit answer is the very ciphertext sent; kept (and
+ *   reported) when it changed meanwhile, is locked / read-only, or anything
+ *   failed (services/drive-vault-move.js, event 'vaultMove').
+ *   Since Drive plugin 1.22 a vault file opens in the
+ *   viewer of the page (vaultView(), services/drive-vault-view.js: only the
+ *   ciphertext on the disk, the plaintext decrypted in memory through gcvault:);
+ *   open() of a vault file — the explicit "Mit anderem Programm öffnen", which
+ *   the page asks about first — still decrypts into
+ *   %TEMP%\gatecontrol-drive\vault\<random>\<name>, removed again after
+ *   VAULT_OPEN_KEEP_MS (later while a program holds it), when the vaults lock,
+ *   at stop and at the next start. A PDF, text or Markdown outside a vault opens in the same viewer's pages
+ *   (docView(), services/drive-doc-view.js): the copy open() loads (temp folder), handed to the page as bytes / text.
+ * - Drive 1.11 (the menu): the folder tree of the menu (tree(): folders only, `hasDirs`; with 'vaultsApart' the
+ *   server's `children?dirs=1`, else the plain children filtered here); vault folders are left out of every folder
+ *   listing and the search (only the menu's "Tresore" shows them, from vaults()); a new vault always goes into the
+ *   top folder of the area picked. The vault lock (services/drive-vault-lock.js): the vault keys are unwrapped only
+ *   after Windows Hello (vaultUnlock()); after a time without use, when the window is hidden, when Windows locks or
+ *   sleeps the keys are wiped, the decrypted names forgotten and the decrypted copies removed (event 'vaultLock').
+ *   The cache on this PC (opened files, previews; never vault keys or uploads still running): cacheInfo() /
+ *   clearCache().
+ *
+ * - Drive 1.12 'bulk' / 'zip' / 'multiLink' (the selection of many files and folders, services/drive-ops.js): what
+ *   a job would do (conflicts, what cannot go), the job itself (move, copy, into the trash) as a row of the transfer
+ *   list that runs on in the server, "Abbrechen", "Rückgängig"; older Drives: move and trash as a loop of single
+ *   calls. "Herunterladen (ZIP)" of a selection into a path the person picks, one link for several files.
+ *
+ * - Drive 1.14 (only with the features `me` reports): 'deadlineCalendar' — a deadline into the family calendar
+ *   (POST deadlines/<id>/calendar); 'docAsk' — a question to the person's documents (POST ask: the answer only from
+ *   their files, with the sources and quotes); 'photoSearch' — photos by what is on them (GET photos?q=, the labels
+ *   come from the phones); 'scanDocs' — "In Dokument umwandeln" of pictures: scans/classify (with the text of the
+ *   pages first, read on this PC), then the document: printed text becomes a searchable PDF made here (Windows OCR,
+ *   services/windows-ocr.js + utils/searchable-pdf.js; no AI); else Drive makes the document's bytes (scans/convert —
+ *   with smaller copies of the pictures for a PDF's pages, a whiteboard's photo, a handwritten page; Drive writes no
+ *   file itself), this PC uploads them and files them with scans/save (with the recognised text; "Original-Scan
+ *   behalten" off: the first picture into the trash by Drive, the other pages here). 'deadlineCalendar' also: per area
+ *   new deadlines into the calendar on their own (PATCH areas/<id> { deadlinesToCalendar }).
+ *
+ * - Drive 1.17 'deadlineMailCalendar': deadlines into a calendar of the mail plugin too — the calendars to choose
+ *   (deadlines/calendars), the person's own target per area (deadlines/targets), "In Kalender eintragen" with a target.
+ *
+ * - Drive 1.18 'overview': the page's "Übersicht" (overview()) in one call; an older Drive's overview is built here from
+ *   what it has (deadlines, photos/memories, people, photos/places, photos/classes, the storage of the areas), without
+ *   "Zuletzt geöffnet" and "Neu in …" (utils/drive-overview.js).
+ *
+ * - Drive 1.16 (only with the features `me` reports): 'photoPlaces' — pictures and videos carry where they were taken
+ *   (EXIF GPS / the video's ©xyz, utils/taken-at.js) with the commit unless the person switched keepGeo off; the
+ *   places, the map's clusters (the tiles come from services/map-service.js like the chats' maps), photos of a place,
+ *   a box of the map, the settings (keepGeo, stripGeoOnShare) and "Orte löschen" (DELETE photos/geo).
+ *   'photoPeople' — the people the phones recognised (the faces are found on the devices only; this PC finds none):
+ *   people, a person with "Ist das auch …?" (uncertain faces), "Zusammen mit", naming (a name taken merges both),
+ *   hiding, merging, "Sieht aus wie …", a face to another person, photos of people; `people: false` deletes all face
+ *   data. Both: suggestions while typing (photos/suggest) and the marks of a search (people, places).
  *
  * Events: 'state' (status()), 'transfers' (list of uploads / downloads),
  * 'changed' ({ folderId }) after an upload landed in a folder, 'remote'
- * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state).
+ * ({ areas, seq }) Drive changed elsewhere, 'guard' (guard state),
+ * 'timetravel' ({ folderId, at, before }) after a time travel, 'vault'
+ * ({ vault, event, device, keyVersion }) a request / approval / new key of a
+ * vault folder (live event `vault`), 'vaultLock' ({ locked, reason }) the vaults
+ * locked / unlocked (Drive 1.11), 'op' (the row of a job that ended, Drive 1.12),
+ * 'vaultMove' (a batch moved into a vault is through: see upload()).
  */
 
 const EventEmitter = require('events');
@@ -60,14 +145,27 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const DriveApi = require('./drive-api');
+const DriveVault = require('./drive-vault');
+const DriveVaultLock = require('./drive-vault-lock');
+const DriveOps = require('./drive-ops');
+const DriveVaultViews = require('./drive-vault-view');
+const VM = require('./drive-vault-move');
+const DocView = require('./drive-doc-view');
+const V = require('../utils/drive-vault');
 const MessengerApi = require('./messenger-api');
 const drive = require('../utils/drive');
+const notes = require('../utils/notes');
+const SC = require('../utils/scan');
+const OV = require('../utils/drive-overview');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
+const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { guessMime } = require('../utils/gatedrop');
 const { openExternalSafely } = require('../utils/external-url');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
+const { buildSearchablePdf, pagesText } = require('../utils/searchable-pdf');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -78,14 +176,35 @@ const DEFAULT_TIMING = {
   progressMs: 250,         // transfer list updates at most every 250 ms while bytes move
   previewCache: 300,       // pictures kept in memory
   keepTransfers: 50,       // finished rows kept in the list
+  minuteMs: 60 * 1000,     // Drive 1.11: the vault lock's minutes
+  opPollMs: 1000,          // Drive 1.12: a running job is asked every second
 };
 const STORE_KEY = 'driveLastFolder';
 const MAX_PATHS = 200;
 const FOLDER_MAX_FILES = 20000;   // a dropped folder: at most this many files …
 const FOLDER_MAX_DIRS = 5000;     // … and folders
 const ME_MAX_AGE = 10 * 60 * 1000;
+// "Mit anderem Programm öffnen" of a vault file (an explicit export since Drive plugin 1.22): the decrypted copy goes
+// as soon as the program had time to read it …
+const VAULT_OPEN_KEEP_MS = 60 * 1000;
+const VAULT_OPEN_RETRY_MS = 30 * 1000;       // … or later while a program still holds it
+const DEADLINE_TOPIC = `plugin:${drive.PLUGIN_ID}:deadline`;
+const VAULT_TOPIC = `plugin:${drive.PLUGIN_ID}:vault`;
+const SCAN_KEEP_MS = 30 * 60 * 1000;          // a prepared scan (its pictures on this PC) is dropped after this
+const SCAN_IMAGE_MAX = 40 * 1024 * 1024;      // a picture larger than this is not read on this PC
+const SCAN_MIME_RE = /^image\/(jpeg|png)$/i;  // what this PC can read (Electron's decoder) …
+const SCAN_ANY_RE = /^image\/(jpeg|png|webp|heic|heif|tiff|bmp)$/i;   // … and what Drive takes as a scan
+const SCAN_EXT = { pdf: 'pdf', docx: 'docx', xlsx: 'xlsx' };
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
+
+const SCAN_NAME_EXT_RE = /\.(jpe?g|png|webp|hei[cf]|tiff?|bmp|pdf|docx|xlsx)$/i;
+
+/** `name` with the extension `ext` (a picture's or document's extension already there is replaced). */
+function withExt(name, ext) {
+  const base = String(name || '').trim().replace(SCAN_NAME_EXT_RE, '');
+  return ext ? `${base}.${ext}` : base;
+}
 
 class DriveService extends EventEmitter {
   /**
@@ -98,16 +217,30 @@ class DriveService extends EventEmitter {
    * @param {object} [opts.dialog] - Electron dialog (pick files, save as)
    * @param {Function} [opts.getMainWindow]
    * @param {() => string} [opts.tempDir] - folder for opened files (%TEMP%\gatecontrol-drive)
+   * @param {(key: string, name?: string) => string|undefined} [opts.dialogPath] - where the dialogs start
+   *   (utils/user-folders dialogPath: the folders of the person signed in, also when the app runs as another Windows user)
    * @param {() => string} [opts.getLang] - 'de' | 'en'
    * @param {object} [opts.pushClient] - PushClient: a reconnect ('hello') asks for the plugin again
    * @param {object} [opts.timing]
    * @param {() => number} [opts.now]
    * @param {() => string[]} [opts.allowedHosts] - hosts "Im Portal öffnen" may open (default: the server's and the portal's)
    * @param {(file: string, o: object) => Promise<string|null>} [opts.readPdfText] - text layer of a PDF (tests)
+   * @param {object} [opts.protect] - Drive 1.9 vaults: { available, encrypt, decrypt } of Electron safeStorage (DPAPI) —
+   *   without it this PC cannot keep a device key (DriveService.safeStorageProtect(safeStorage))
+   * @param {object} [opts.notificationCenter] - a click on a deadline / vault push opens the page
+   * @param {() => string} [opts.deviceName] - this PC's name for vault requests
+   * @param {object|null} [opts.consent] - Drive 1.11: Windows Hello as the confirmation before the vaults unlock
+   *   (windowsHello.createConsentVerifier()); null: none here (the vaults open only with "Mit Windows Hello öffnen"
+   *   switched off); left out: not enforced (as before Drive 1.11)
+   * @param {object} [opts.powerMonitor] - Electron powerMonitor: the vaults lock when Windows locks or sleeps
+   * @param {object|null} [opts.ocr] - Drive 1.14: the text recognition of Windows (windowsOcr.createWindowsOcr()) for
+   *   searchable PDFs made on this PC; null: Drive makes them (scans/convert)
    */
   constructor({
     apiClient, log, api = null, store = null, shell = null, dialog = null, getMainWindow = null,
     tempDir = null, getLang = null, pushClient = null, timing = {}, now = Date.now, allowedHosts = null, readPdfText = null,
+    protect = null, notificationCenter = null, deviceName = null, consent, powerMonitor = null, ocr = null,
+    dialogPath = defaultDialogPath,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -122,9 +255,40 @@ class DriveService extends EventEmitter {
     this.dialog = dialog;
     this.getMainWindow = typeof getMainWindow === 'function' ? getMainWindow : () => null;
     this.tempDir = typeof tempDir === 'function' ? tempDir : () => path.join(os.tmpdir(), 'gatecontrol-drive');
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : (_k, n) => n || undefined;
     this.pushClient = pushClient;
+    this.notificationCenter = notificationCenter;
     this.timing = { ...DEFAULT_TIMING, ...timing };
+    // Drive 1.11: the vault lock (Windows Hello first; locks after a time without use, when hidden, when Windows locks)
+    this.vaultLock = new DriveVaultLock({
+      consent, store, powerMonitor, getLang, log: this.log, timing: { minuteMs: this.timing.minuteMs },
+      getWindow: () => {
+        const w = this.getMainWindow();
+        return w && !(typeof w.isDestroyed === 'function' && w.isDestroyed()) && typeof w.getNativeWindowHandle === 'function' ? w.getNativeWindowHandle() : null;
+      },
+      busy: () => this._vaultActive > 0 || [...this._jobs.values()].some((j) => j.vault && !j.waiting),
+      hasKeys: () => this.vault.hasKeys(),
+    });
+    this.vaultLock.on('lock', (e) => this._onVaultLock(e));
+    this.vaultLock.on('unlock', () => this.emit('vaultLock', { locked: false, reason: null }));
+    this._vaultActive = 0;          // vault uploads / downloads running (the lock's time without use waits)
+    this.vault = new DriveVault({ api: this.api, store, protect, scope: () => this._scopeNow(), deviceName, log: this.log, now, isUnlocked: () => this.vaultLock.isUnlocked() });
+    this._vaultOpened = new Map();  // a decrypted file's folder → its removal timer
+    // Drive plugin 1.22: the viewer of vault files — ciphertext on the disk, plaintext only in memory (gcvault:)
+    this.vaultViews = new DriveVaultViews({ dir: () => path.join(this.tempDir(), 'vault-view'), log: this.log });
+    this._vaultSweep = null;        // the running sweep of the vault's temp folders (_sweepVaultTemp)
+    this._vaultRoots = new Map();   // vault id → the node id of its folder
     this.now = now;
+    // Drive 1.12: jobs for many nodes at once (services/drive-ops.js); their rows are part of the transfer list
+    this.ops = new DriveOps({
+      api: this.api, vault: this.vault, now, log: this.log, timing: { opPollMs: this.timing.opPollMs },
+      row: (r) => this._row(r), set: (id, patch, o) => this._set(id, patch, o), emit: (ev, payload) => this.emit(ev, payload),
+      siblings: (folderId, vaultId) => this._vaultSiblings(folderId, vaultId),
+    });
+    this._opsResumed = false;
+    // Drive 1.14: the OCR of Windows and the scans prepared for "In Dokument umwandeln" (scanId → session)
+    this.ocr = ocr && typeof ocr.recognize === 'function' ? ocr : null;
+    this._scans = new Map();
 
     this._state = { state: 'unknown', reason: null, version: null, checkedAt: null };
     this._timer = null;
@@ -134,10 +298,12 @@ class DriveService extends EventEmitter {
     this._unsub = [];
     this._scope = this._scopeNow();
     this._previews = new Map();     // `${mediaId}|${size}` → { mime, data }
+    this._mediaOf = new Map();      // node id → mediaId (photos without a mediaId in the answer)
     this._inflight = new Map();
     this._transfers = [];           // rows of the transfer list (see _row)
     this._jobs = new Map();         // upload id → job (queued / waiting for a choice)
     this._queue = [];
+    this._moves = new Map();        // "In Tresor verschieben": batch id → batch (see _moveBatch)
     this._pumping = false;
     this._nextId = 0;
     this._emitTimer = null;
@@ -161,12 +327,28 @@ class DriveService extends EventEmitter {
           this.emit('remote', { areas, seq: drive.count(d.seq) });
         } else if (ev.data.type === 'guard') {
           this.guard({ fresh: true }).catch(() => {});
+        } else if (ev.data.type === 'op') {
+          // Drive 1.12: a job's progress / its end
+          this.ops.onEvent(d);
+        } else if (ev.data.type === 'vault') {
+          // Drive 1.9: a request, an approval, a new key of a vault folder
+          this.vault.onEvent(d);
+          this.emit('vault', vaultEvent(d));
         }
       };
       pc.on('hello', onHello);
       pc.on('event', onEvent);
       this._unsub.push(() => { pc.removeListener('hello', onHello); pc.removeListener('event', onEvent); });
     }
+    const nc = this.notificationCenter;
+    if (nc && typeof nc.addClickRoute === 'function') {
+      // Drive 1.8 / 1.9: a deadline reminder opens its file, a vault request the vault on the page
+      // Notizen & Aufgaben 1.7.0: „Datei öffnen“ at the reminder of a deadline the hub rings opens the file here too
+      this._unsub.push(nc.addClickRoute(drive.APP_ROUTE, (entry, action) => this.clickContext(entry, action)));
+    }
+    this.vaultLock.start();
+    // decrypted files a crash left behind
+    this._sweepVaultTemp().catch(() => {});
     this.check().catch(() => {});
   }
 
@@ -177,6 +359,41 @@ class DriveService extends EventEmitter {
     clearTimeout(this._emitTimer);
     this._emitTimer = null;
     for (const off of this._unsub.splice(0)) { try { off(); } catch { /* gone */ } }
+    this.vaultLock.stop();
+    this.ops.stop();
+    this.vault.clear();
+    this.vaultViews.closeAll().catch(() => {});
+    for (const t of this._vaultOpened.values()) clearTimeout(t);
+    this._vaultOpened.clear();
+    this._sweepVaultTemp().catch(() => {});
+    for (const id of [...this._scans.keys()]) this.scanDiscard(id);
+  }
+
+  /**
+   * A click on a Drive push while the page exists → { kind: 'deadline', nodeId, deadlineId, areaId } |
+   * { kind: 'vault', vaultId, nodeId, event } | null (the inbox opens). `action`: the button that was pressed
+   * (NotificationCenter.performAction). „Datei öffnen“ ('open_file') of a reminder of „Notizen & Aufgaben“ for one of
+   * Drive's deadlines (Notizen 1.7.0 — the hub rings, the button is a link to the file in the portal) →
+   * { kind: 'deadline', nodeId, deadlineId: null, areaId: null, action: 'open_file' }: the file opens on the page
+   * instead of in the portal. A click on that message itself, and its other buttons, are not Drive's.
+   */
+  clickContext(entry, action = null) {
+    if (!this.available() || !entry || typeof entry !== 'object') return null;
+    const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {};
+    const file = action && typeof action === 'object' ? notes.pushFile(entry.topic, data, action.id) : null;
+    if (file) {
+      const m = file.plugin === drive.PLUGIN_ID ? /^node\/([1-9]\d{0,14})$/.exec(file.route) : null;
+      return m ? { kind: 'deadline', nodeId: Number(m[1]), deadlineId: null, areaId: null, action: 'open_file' } : null;
+    }
+    const d = data.drive && typeof data.drive === 'object' && !Array.isArray(data.drive) ? data.drive : null;
+    if (!d) return null;
+    if (entry.topic === DEADLINE_TOPIC && drive.posId(d.node)) {
+      return { kind: 'deadline', nodeId: drive.posId(d.node), deadlineId: drive.posId(d.deadline), areaId: drive.areaIdOf(d.area) };
+    }
+    if (entry.topic === VAULT_TOPIC && drive.vaultIdOf(d.vault)) {
+      return { kind: 'vault', vaultId: d.vault, nodeId: drive.posId(d.node), areaId: drive.areaIdOf(d.area), event: typeof d.event === 'string' ? d.event.slice(0, 20) : null };
+    }
+    return null;
   }
 
   /** server:setup: the old server's state goes (queued uploads are dropped), the new one is asked. */
@@ -184,10 +401,19 @@ class DriveService extends EventEmitter {
     this._meCache = null;
     this._guardKey = '';
     this._previews.clear();
+    this._mediaOf.clear();
     this._inflight.clear();
+    this.vaultLock.lock('server');
+    this.vault.clear();
+    this._vaultRoots.clear();
+    this.ops.reset();
+    this._opsResumed = false;
+    this._transfers = this._transfers.filter((r) => r.dir !== 'op');
     for (const job of this._queue.splice(0)) this._set(job.id, { state: 'skipped' });
     for (const [id, job] of this._jobs) if (job.waiting) this._set(id, { state: 'skipped' });
     this._jobs.clear();
+    // their originals stay (nothing went into a vault)
+    this._moves.clear();
     this._retry = 0;
     this._scope = this._scopeNow();
     this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
@@ -221,7 +447,14 @@ class DriveService extends EventEmitter {
       const p = await this.api.plugin();
       this._retry = 0;
       if (!p) this._setState({ state: 'unavailable', reason: 'not_installed', version: null, checkedAt: this.now() });
-      else this._setState({ state: 'available', reason: null, version: typeof p.version === 'string' ? p.version.slice(0, 40) : null, checkedAt: this.now() });
+      else {
+        this._setState({ state: 'available', reason: null, version: typeof p.version === 'string' ? p.version.slice(0, 40) : null, checkedAt: this.now() });
+        // Drive 1.12: jobs of the person still running on the server (the app was closed meanwhile) show again
+        if (this._started && !this._opsResumed) {
+          this._opsResumed = true;
+          this.ops.resume().catch((err) => { this._opsResumed = false; this.log.debug(`Drive jobs not resumed: ${drive.errorCode(err)}`); });
+        }
+      }
     } catch (err) {
       if (err && err.status === 404) {
         this._retry = 0;
@@ -261,6 +494,7 @@ class DriveService extends EventEmitter {
     if (s === this._scope) return;
     this._scope = s;
     this._previews.clear();
+    this._mediaOf.clear();
   }
 
   /** Drive is not listed (any more): the call fails like the plugin would. */
@@ -400,19 +634,446 @@ class DriveService extends EventEmitter {
     return this._run(async () => ({ ok: true, ...(await this.api.areas()) }));
   }
 
-  /** A folder: { ok, node, crumbs, role, writable, items, total, next } */
+  /**
+   * A folder: { ok, node, crumbs, role, writable, items, total, next, vault } — vault (Drive 1.9): the vault the folder
+   * lies in { id, state, name, needsRotation } (null outside one); vault nodes carry their decrypted name, or
+   * `locked: true` while this device has no key.
+   */
   async folder(id, query = {}) {
-    return this._run(async () => ({ ok: true, ...(await this.api.folder(id, query)) }));
+    return this._run(async () => {
+      const f = await this.api.folder(id, query);
+      // Drive 1.11: vault folders only in the menu ("Tresore"); an older Drive lists them, they are left out here
+      if (!f.node.encrypted) {
+        const before = f.items.length;
+        f.items = drive.withoutVaults(f.items);
+        if (f.items.length !== before && Number.isFinite(f.total)) f.total = Math.max(f.items.length, f.total - (before - f.items.length));
+      }
+      await this._vaultDecorate(f.items, { inVault: f.node.encrypted });
+      if (f.node.encrypted) this.vaultLock.touch();
+      let vault = null;
+      if (f.node.encrypted && f.node.vaultId) {
+        await this.vault.tryOpen(f.node.vaultId);
+        f.node = this._vaultNode(f.node);
+        if (f.node.vaultRoot === undefined) f.node.vaultRoot = false;
+        vault = { id: f.node.vaultId, state: this.vault.stateOf(f.node.vaultId) };
+        await this._vaultCrumbs(f).catch(() => {});
+      }
+      return { ok: true, ...f, vault };
+    });
   }
 
-  async search(q, area = null) {
+  // ── Vault folders (Drive 1.9, 'vault') ───────────────────
+
+  /** A vault node with its decrypted name (else locked: true and the opaque name). */
+  _vaultNode(n) {
+    if (!n || !n.encrypted) return n;
+    const name = this.vault.nameOf(n);
+    return name ? { ...n, name, opaqueName: n.name, locked: false } : { ...n, opaqueName: n.name, locked: true };
+  }
+
+  /** Names of the vault nodes of a list (vaults with a key here are opened quietly first). */
+  async _vaultDecorate(items, { inVault = false } = {}) {
+    if (!Array.isArray(items) || !items.some((n) => n.encrypted)) return items;
+    for (const vid of new Set(items.filter((n) => n.encrypted && n.vaultId).map((n) => n.vaultId))) await this.vault.tryOpen(vid);
+    for (let i = 0; i < items.length; i++) {
+      const n = items[i];
+      if (!n.encrypted) continue;
+      items[i] = { ...this._vaultNode(n), vaultRoot: !inVault && n.isDir, vaultState: this.vault.stateOf(n.vaultId) };
+      if (!inVault && n.isDir && n.vaultId) this._vaultRoots.set(n.vaultId, n.id);
+    }
+    return items;
+  }
+
+  /** The breadcrumbs inside a vault get their names (from the names decrypted before, else the nodes). */
+  async _vaultCrumbs(f) {
+    const vid = f.node.vaultId;
+    let rootId = this._vaultRoots.get(vid);
+    if (!rootId) {
+      rootId = (await this.api.vault(vid)).nodeId;
+      this._vaultRoots.set(vid, rootId);
+    }
+    const at = f.crumbs.findIndex((c) => c.id === rootId);
+    if (at < 0) return;
+    for (let i = at; i < f.crumbs.length; i++) {
+      const c = f.crumbs[i];
+      let name = c.id === f.node.id && !f.node.locked ? f.node.name : this.vault.knownName(c.id);
+      if (!name && this.vault.isOpen(vid)) name = this.vault.nameOf(await this.api.node(c.id).catch(() => null));
+      f.crumbs[i] = name ? { ...c, name } : { ...c, locked: true };
+    }
+  }
+
+  /** The node `id` when it lies in a vault (feature on), else null. */
+  async _vaultNodeOf(id) {
+    if (!(await this.api.has('vault').catch(() => false))) return null;
+    const n = await this.api.node(id);
+    return n.encrypted && n.vaultId ? n : null;
+  }
+
+  /** The decrypted names of the children of the vault folder `folderId` → [{ node, name }] (locked ones left out). */
+  async _vaultSiblings(folderId, vaultId) {
+    const out = [];
+    for (const n of await this.api.childrenAll(folderId)) {
+      if (n.deleted || !n.encrypted || n.vaultId !== vaultId) continue;
+      const name = this.vault.nameOf(n);
+      if (name) out.push({ node: n, name });
+    }
+    return out;
+  }
+
+  /** { ok, supported, device: { id, safetyNumber, name } | null } — this PC for vaults (no key made here). */
+  async vaultStatus() {
+    return this._run(async () => {
+      const supported = this.vault.supported() && await this.api.has('vault').catch(() => false);
+      const device = supported ? await this.vault.device({ create: false }) : null;
+      return { ok: true, supported, protect: this.vault.supported(), device: device ? { id: device.id, safetyNumber: device.safetyNumber, name: device.name } : null };
+    });
+  }
+
+  async vaults() {
+    return this._run(async () => {
+      await this._feature('vault');
+      const vaults = await this.vault.list();
+      for (const v of vaults) this._vaultRoots.set(v.id, v.nodeId);
+      return { ok: true, vaults };
+    });
+  }
+
+  /**
+   * A new vault folder → { ok, vault, node, recoveryKey } (recoveryKey: shown once). Drive 1.11: it always goes into
+   * the top folder of an area — `areaId` (the area picked in "Wer darf ihn öffnen?") or the area of `parentId`
+   * (older callers); a Drive with 'vaultsApart' does the same itself.
+   */
+  async vaultCreate(parentId, name, { areaId = null } = {}) {
+    const n = this._name(name);
+    return this._run(async () => {
+      await this._feature('vault');
+      const { areas } = await this.api.areas();
+      let area = areaId ? areas.find((a) => a.id === areaId) : null;
+      if (!area && !areaId && drive.posId(parentId)) {
+        const p = await this.api.node(parentId);
+        area = areas.find((a) => a.id === p.areaId) || null;
+      }
+      if (!area) throw new DriveError('no such area', { code: 'not_found' });
+      if (!area.writable) throw new DriveError('read only', { code: 'forbidden' });
+      const r = await this.vault.create(area.rootId, n);
+      // its key stays until the next lock (time without use, window hidden, Windows locked)
+      this.vaultLock.touch();
+      this._vaultRoots.set(r.vault.id, r.node.id);
+      this.emit('changed', { folderId: area.rootId });
+      return { ok: true, ...r };
+    });
+  }
+
+  // ── Vault lock (Drive 1.11) ──────────────────────────────
+
+  /** { ok, enforced, unlocked, settings: { hello, autoLockMinutes, lockOnLeave }, hello: { available, reason }, choices, lastLock } */
+  async vaultLockStatus() {
+    return { ok: true, ...(await this.vaultLock.status()) };
+  }
+
+  /**
+   * Windows Hello, then the vaults of this PC unlock → { ok, unlocked, state? } — with `vaultId` that vault is opened
+   * right away (its state). Refused: { ok: false, code: 'hello_cancelled' | 'hello_not_set_up' | … }.
+   */
+  async vaultUnlock(vaultId = null) {
+    return this._run(async () => {
+      await this.vaultLock.unlock();
+      const out = { ok: true, unlocked: true };
+      if (vaultId) out.state = (await this.vault.open(vaultId, { fresh: true })).state;
+      return out;
+    });
+  }
+
+  /** "Jetzt sperren" → { ok, unlocked: false } */
+  vaultLockNow() {
+    this.vaultLock.lock('manual');
+    return { ok: true, unlocked: false };
+  }
+
+  /** { hello?, autoLockMinutes?, lockOnLeave? } → the lock's status (switching Hello off asks Windows Hello first). */
+  async vaultLockSettings(patch) {
+    return { ok: true, ...(await this.vaultLock.setSettings(patch)) };
+  }
+
+  /** Activity on the page while a vault is open: its time without use starts again. */
+  vaultTouch() {
+    this.vaultLock.touch();
+    return { ok: true };
+  }
+
+  /** The main window was minimized / hidden into the tray ("Beim Verlassen sperren"). */
+  windowHidden() {
+    this.vaultLock.windowHidden();
+  }
+
+  /** Windows' sign-in options (to set up Windows Hello). */
+  async openHelloSettings() {
+    if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+    await this.shell.openExternal('ms-settings:signinoptions');
+    return { ok: true };
+  }
+
+  /** The vaults locked: keys wiped, names forgotten, the decrypted copies removed (later while a program holds one). */
+  _onVaultLock({ reason = 'manual' } = {}) {
+    this.vault.forget();
+    // the viewer first: its tokens, file keys and ciphertexts go (the page closes it on the event)
+    this.vaultViews.closeAll().catch(() => {});
+    for (const t of this._vaultOpened.values()) clearTimeout(t);
+    this._vaultOpened.clear();
+    const dir = path.join(this.tempDir(), 'vault');
+    fs.promises.readdir(dir).then((names) => {
+      for (const n of names) {
+        const d = path.join(dir, n);
+        fs.promises.rm(d, { recursive: true, force: true }).catch(() => this._forgetOpened(d, VAULT_OPEN_RETRY_MS));
+      }
+    }).catch(() => {});
+    this.emit('vaultLock', { locked: true, reason });
+  }
+
+  /** Opens a vault on this PC → { ok, state: 'open' | 'pending' | 'none' | 'revoked' } */
+  async vaultOpen(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, ...(await this.vault.open(vaultId, { fresh: true })) };
+    });
+  }
+
+  /** This PC asks for access → { ok, state, safetyNumber } (the number the approving device compares). */
+  async vaultRequest(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      const r = await this.vault.request(vaultId);
+      return { ok: true, state: r.state, safetyNumber: r.safetyNumber, deviceId: r.device.deviceId };
+    });
+  }
+
+  /** The devices of a vault with their safety numbers → { ok, devices, vault } */
+  async vaultDevices(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      const [devices, vault] = await Promise.all([this.vault.devices(vaultId), this.vault.get(vaultId)]);
+      return { ok: true, devices, vault };
+    });
+  }
+
+  /** Approves a request after the safety number was compared → { ok, device } */
+  async vaultApprove(vaultId, deviceId, safetyNumber) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, device: await this.vault.approve(vaultId, deviceId, safetyNumber) };
+    });
+  }
+
+  async vaultDecline(vaultId, deviceId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, device: await this.vault.decline(vaultId, deviceId) };
+    });
+  }
+
+  /** Opens the vault with its recovery key → { ok, state: 'open' } */
+  async vaultRecover(vaultId, text) {
+    return this._run(async () => {
+      await this._feature('vault');
+      const r = await this.vault.recover(vaultId, text);
+      this.vaultLock.touch();
+      return { ok: true, ...r };
+    });
+  }
+
+  /** A new vault key (needsRotation) → { ok, vault, recoveryKey } (recoveryKey only when Drive asked for a new one) */
+  async vaultRotate(vaultId) {
+    return this._run(async () => {
+      await this._feature('vault');
+      return { ok: true, ...(await this.vault.rotate(vaultId)) };
+    });
+  }
+
+  /** A folder in a vault (the top one of an uploaded folder: a free name) → node with its name. */
+  async _vaultMkdir(vaultId, parentId, name, { free = false } = {}) {
+    let n = name;
+    if (free) {
+      const taken = new Set((await this._vaultSiblings(parentId, vaultId)).map((x) => S.keyOf(x.name)));
+      n = freeFileName(name, taken, true);
+    }
+    const node = await this.vault.withCurrent(vaultId, (cur) => this.api.mkdirEncrypted(parentId, this.vault.encryptName(vaultId, n, cur)));
+    this.vault.nameOf(node);
+    return { ...node, name: n, opaqueName: node.name, locked: false };
+  }
+
+  /**
+   * Removes the folders of decrypted files (all of them: at stop / start). What writes there next waits for it
+   * (_vaultTempReady): an upload or opening right after start() would else lose its file to the sweep.
+   */
+  _sweepVaultTemp() {
+    const run = async () => {
+      for (const d of ['vault', 'vault-dl', 'vault-up', 'vault-view']) {
+        await fs.promises.rm(path.join(this.tempDir(), d), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      }
+    };
+    this._vaultSweep = Promise.resolve(this._vaultSweep).then(run, run);
+    return this._vaultSweep;
+  }
+
+  /** Resolves once no sweep of the vault's temp folders runs. */
+  async _vaultTempReady() {
+    await Promise.resolve(this._vaultSweep).catch(() => {});
+  }
+
+  /** The decrypted copy in `dir` goes after VAULT_OPEN_KEEP_MS — later while a program still holds it. */
+  _forgetOpened(dir, delay = VAULT_OPEN_KEEP_MS) {
+    clearTimeout(this._vaultOpened.get(dir));
+    const t = setTimeout(async () => {
+      this._vaultOpened.delete(dir);
+      try {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      } catch {
+        this._forgetOpened(dir, VAULT_OPEN_RETRY_MS);
+      }
+    }, delay);
+    if (t.unref) t.unref();
+    this._vaultOpened.set(dir, t);
+  }
+
+  /** The ciphertext of a vault file (or a version) decrypted into `file` → node content info. */
+  async _vaultFetchTo(node, versionId, file, row) {
+    this._vaultActive++;
+    try {
+      return await this._vaultFetch(node, versionId, file, row);
+    } finally {
+      this._vaultActive--;
+      this.vaultLock.touch();
+    }
+  }
+
+  async _vaultFetch(node, versionId, file, row) {
+    const keys = this.vault.keys(node.vaultId);
+    const c = await this.api.content(node.id, versionId);
+    if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
+    await this._vaultTempReady();
+    const tmpDir = path.join(this.tempDir(), 'vault-dl');
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+    const enc = path.join(tmpDir, `${crypto.randomBytes(8).toString('hex')}.enc`);
+    const part = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
+    try {
+      // Drive 1.20: from the home gateway when it holds the ciphertext (lan), else from the server
+      await this.api.downloadTo(c, enc, { onProgress: (got, total) => this._set(row.id, { sent: Math.round(got / 2), ...(total ? { total } : {}) }, { progress: true }) });
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      let total = null;
+      try {
+        await V.decryptFile(keys, node.vaultId, enc, part, { onProgress: (done, size) => { total = size; this._set(row.id, { sent: done, total: size }, { progress: true }); } });
+      } catch (err) {
+        if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'decrypt' ? 'vault_decrypt' : 'vault_invalid' });
+        throw err;
+      }
+      await fs.promises.rm(file, { force: true });
+      await fs.promises.rename(part, file);
+      return { size: total };
+    } finally {
+      await fs.promises.rm(enc, { force: true }).catch(() => {});
+      await fs.promises.rm(part, { force: true }).catch(() => {});
+    }
+  }
+
+  // ── The menu's folder tree (Drive 1.11) ──────────────────
+
+  /**
+   * The subfolders of folder `id` for the menu → { ok, items: [{ id, name, hasDirs }], more } — never a vault folder;
+   * hasDirs null: an older Drive does not say (known once that folder is opened). At most 5000.
+   */
+  async tree(id) {
+    return this._run(async () => {
+      const apart = await this.api.has('vaultsApart').catch(() => false);
+      const items = [];
+      let offset = 0;
+      let more = false;
+      for (;;) {
+        const page = await this.api.dirs(id, { offset, limit: 1000, apart });
+        items.push(...page.items);
+        if (page.next === null || page.next <= offset) break;
+        if (items.length >= 5000) { more = true; break; }
+        offset = page.next;
+      }
+      return { ok: true, items, more };
+    });
+  }
+
+  // ── The cache on this PC (Drive 1.11 settings) ───────────
+
+  /** What a clear removes: the opened files' copies, previews in memory → { ok, bytes, files }. */
+  async cacheInfo() {
+    let bytes = 0;
+    let files = 0;
+    const walk = async (d, depth) => {
+      let entries;
+      try { entries = await fs.promises.readdir(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) { if (depth < 6) await walk(p, depth + 1); continue; }
+        try { const st = await fs.promises.stat(p); bytes += st.size; files++; } catch { /* gone */ }
+      }
+    };
+    for (const e of await this._cacheEntries()) {
+      if (e.dir) await walk(e.path, 0);
+      else { bytes += e.size; files++; }
+    }
+    for (const p of this._previews.values()) if (p && p.data) bytes += p.data.length;
+    return { ok: true, bytes, files, previews: this._previews.size };
+  }
+
+  /** The cached entries of the temp folder: never uploads in progress (vault-up / vault-dl), never a file being loaded. */
+  async _cacheEntries() {
+    const root = this.tempDir();
+    let entries;
+    try { entries = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return []; }
+    const out = [];
+    for (const e of entries) {
+      if (e.name === 'vault-up' || e.name === 'vault-dl') continue;
+      const p = path.join(root, e.name);
+      if (e.isDirectory()) out.push({ path: p, dir: true });
+      else { try { out.push({ path: p, dir: false, size: (await fs.promises.stat(p)).size }); } catch { /* gone */ } }
+    }
+    return out;
+  }
+
+  /** "Zwischenspeicher leeren" → { ok, removed, kept } (kept: copies a program still holds open). */
+  async clearCache() {
+    this._previews.clear();
+    this._mediaOf.clear();
+    let removed = 0;
+    let kept = 0;
+    const running = this._transfers.some((r) => r.dir === 'down' && r.state === 'running');
+    for (const e of await this._cacheEntries()) {
+      // a download running right now writes its .part there: that folder stays until it is done
+      if (running && e.dir && (await fs.promises.readdir(e.path).catch(() => [])).some((n) => n.endsWith('.part'))) { kept++; continue; }
+      try {
+        await fs.promises.rm(e.path, { recursive: true, force: true, maxRetries: 1 });
+        removed++;
+      } catch {
+        kept++;
+      }
+    }
+    return { ok: true, removed, kept };
+  }
+
+  /**
+   * GET search → { ok, items }: names, then the recognised text. Drive 1.25 'mediaFilter': `media` 'image' | 'video'
+   * only those (no folders) — then `q` may be empty: the newest of them.
+   */
+  async search(q, area = null, media = null) {
     const text = typeof q === 'string' ? q.trim() : '';
-    if (text.length < 2 || text.length > 100) throw new DriveError('search needs 2 to 100 characters', { code: 'invalid' });
-    return this._run(async () => ({ ok: true, items: await this.api.search(text, area) }));
+    const kind = drive.mediaOf(media);
+    if (media && !kind) throw new DriveError('invalid media', { code: 'invalid' });
+    if ((text.length < 2 && !(kind && !text)) || text.length > 100) throw new DriveError('search needs 2 to 100 characters', { code: 'invalid' });
+    // Drive 1.11: never a vault's node (the plugin leaves them out already; an older one, too — checked here again)
+    return this._run(async () => {
+      if (kind) await this._feature('mediaFilter');
+      return { ok: true, items: drive.withoutVaults(await this.api.search(text, area, kind)) };
+    });
   }
 
   async trashList(area = null) {
-    return this._run(async () => ({ ok: true, items: await this.api.trashList(area) }));
+    return this._run(async () => ({ ok: true, items: await this._vaultDecorate(await this.api.trashList(area), { inVault: true }) }));
   }
 
   async versions(id) {
@@ -432,12 +1093,24 @@ class DriveService extends EventEmitter {
 
   async mkdir(parentId, name) {
     const n = this._name(name);
-    return this._run(async () => ({ ok: true, node: await this.api.mkdir(parentId, n) }));
+    return this._run(async () => {
+      // Drive 1.9: a folder in a vault gets an encrypted name
+      const parent = await this._vaultNodeOf(parentId);
+      if (parent) return { ok: true, node: await this._vaultMkdir(parent.vaultId, parent.id, n, { free: true }) };
+      return { ok: true, node: await this.api.mkdir(parentId, n) };
+    });
   }
 
   async rename(id, name) {
     const n = this._name(name);
-    return this._run(async () => ({ ok: true, node: await this.api.rename(id, n) }));
+    return this._run(async () => {
+      const node = await this._vaultNodeOf(id);
+      if (node) {
+        const r = await this.vault.withCurrent(node.vaultId, (cur) => this.api.renameEncrypted(node.id, this.vault.encryptName(node.vaultId, n, cur).nameCipher));
+        return { ok: true, node: this._vaultNode(r) };
+      }
+      return { ok: true, node: await this.api.rename(id, n) };
+    });
   }
 
   async move(id, parentId) {
@@ -460,12 +1133,828 @@ class DriveService extends EventEmitter {
     return this._run(async () => ({ ok: true, node: await this.api.restoreVersion(id, versionId) }));
   }
 
+  /** A link of one node, or (`ids`, Drive 1.12 'multiLink') one link for several (with folders: 400 invalid { reason: 'mixed' }). */
   async createLink(opts) {
-    return this._run(async () => ({ ok: true, link: await this.api.createLink(opts) }));
+    return this._run(async () => {
+      if (opts && Array.isArray(opts.ids)) await this._feature('multiLink');
+      // Drive 1.19: files the virus scan blocks are left out of a link of several (`skipped`, reason 'blocked')
+      const { link, skipped } = await this.api.createLink(opts, { withSkipped: true });
+      return { ok: true, link, skipped, blocked: skipped.filter((x) => x.reason === 'blocked').length };
+    });
+  }
+
+  // ── Jobs for many nodes (Drive 1.12, services/drive-ops.js) ──
+
+  /** What a job would do → { ok, bulk, local, files, folders, bytes, conflicts, blocked } (changes nothing) */
+  async opsCheck({ op, ids, target = null } = {}) {
+    return this._run(() => this.ops.check({ op, ids, target }));
+  }
+
+  /** Starts a job → { ok, op } (its row of the transfer list; the event 'op' when it ends) */
+  async opsStart({ op, ids, target = null, onConflict = null, meta = {} } = {}) {
+    return this._run(() => this.ops.start({ op, ids, target, onConflict, meta }));
+  }
+
+  /** "Abbrechen" of a running job → { ok, op } */
+  async opCancel(opId) {
+    return this._run(() => this.ops.cancel(opId));
+  }
+
+  /** "Rückgängig" of a job that ended (until undoUntil) → { ok, op } */
+  async opUndo(opId) {
+    return this._run(async () => {
+      await this._feature('bulk');
+      return this.ops.undo(opId);
+    });
+  }
+
+  /**
+   * "Herunterladen (ZIP)" (Drive 1.12 'zip'): "Speichern unter …" first (name: the page's suggestion), then Drive
+   * makes the ZIP of the nodes (never a vault's) and it streams into that path → { ok, path } | { ok: false, cancelled }.
+   */
+  async zip(ids, { name = null } = {}) {
+    if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
+    const list = drive.idList(ids);
+    if (!list) throw new DriveError('invalid ids', { code: 'invalid' });
+    return this._run(async () => {
+      await this._feature('zip');
+      const base = drive.safeName(typeof name === 'string' ? name : '') || 'Drive';
+      const fileName = /\.zip$/i.test(base) ? base : `${base}.zip`;
+      const win = this.getMainWindow();
+      const opts = { defaultPath: this.dialogPath('downloads', fileName), filters: [{ name: 'ZIP', extensions: ['zip'] }] };
+      const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
+      if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
+      const row = this._downloadRow(path.basename(res.filePath), 0);
+      const part = `${res.filePath}.${crypto.randomBytes(4).toString('hex')}.part`;
+      let bytes = 0;
+      let skipped = [];
+      try {
+        const z = await this.api.zip(list, { name: typeof name === 'string' && name ? base.replace(/\.zip$/i, '') : null });
+        skipped = z.skipped || [];
+        const out = fs.createWriteStream(part);
+        try {
+          const r = await this.api.downloadZip(z.url, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+          bytes = r.bytes;
+        } catch (err) { out.destroy(); throw err; }
+        await fs.promises.rm(res.filePath, { force: true });
+        await fs.promises.rename(part, res.filePath);
+      } catch (err) {
+        await fs.promises.rm(part, { force: true }).catch(() => {});
+        this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+        throw err;
+      }
+      this._set(row.id, { state: 'done', sent: bytes, total: bytes, path: res.filePath });
+      // Drive 1.19: files the virus scan blocks are not in the ZIP („x gesperrte Dateien fehlen“)
+      return { ok: true, path: res.filePath, skipped, blocked: skipped.filter((x) => x.reason === 'blocked').length };
+    });
   }
 
   async endLink(token) {
     return this._run(async () => ({ ok: true, ...(await this.api.endLink(token)) }));
+  }
+
+  // ── Drive 1.7: time travel, photos, albums, storage ──────
+
+  /** Throws 'unsupported' when this Drive does not report `name` in me.features. */
+  async _feature(name) {
+    if (!(await this.api.has(name).catch(() => false))) throw new DriveError(`Drive cannot do ${name}`, { code: 'unsupported' });
+  }
+
+  // ── Drive 1.20: "offline verfügbar" ─────────────────────
+
+  /**
+   * GET offline → { ok, items, ids }: what the person marked "offline verfügbar" (files and folders, newest first;
+   * ids for the menu's tick). A mark of the person on every device: the phones keep these files, the home gateways
+   * hold them first (home cache, priority 90) — this PC keeps nothing extra for it (that is "Dateien bei Bedarf").
+   */
+  async offlineList() {
+    return this._run(async () => {
+      await this._feature('offline');
+      const items = await this.api.offline();
+      return { ok: true, items, ids: items.map((n) => n.id) };
+    });
+  }
+
+  /** PUT / DELETE nodes/<id>/offline → { ok, id, offline, node } (at most 500 a person: 400 invalid). */
+  async setOffline(id, on) {
+    return this._run(async () => {
+      await this._feature('offline');
+      return { ok: true, ...(await this.api.setOffline(id, on === true)) };
+    });
+  }
+
+  /** What a time travel of the folder `id` back to `at` would do → { ok, at, historySince, restore, revert, trash, move, total, sample, limited } */
+  async timeTravelPreview(id, at) {
+    return this._run(async () => {
+      await this._feature('timeTravel');
+      return { ok: true, ...(await this.api.timeTravelPreview(id, at)) };
+    });
+  }
+
+  /**
+   * The folder `id` back to how it was at `at` → { ok, at, before, restored, reverted, trashed, moved, failed }.
+   * Nothing is lost: new files go into the trash, replaced contents become older versions.
+   * "Rückgängig" is another time travel to `before`.
+   */
+  async timeTravel(id, at) {
+    return this._run(async () => {
+      await this._feature('timeTravel');
+      const folderId = drive.posId(id);
+      const r = await this.api.timeTravel(folderId, at);
+      this.emit('timetravel', { folderId, at: r.at, before: r.before });
+      this.emit('changed', { folderId });
+      return { ok: true, ...r };
+    });
+  }
+
+  /**
+   * GET photos → { ok, items, next } — Drive 1.14 'photoSearch': with `q` the photos by what is on them (+ terms,
+   * total); Drive 1.16: `q` also matches names of people and places (→ marks), photos of a place (`place`, with
+   * `districts` its districts) or a box of the map (`bbox`) need 'photoPlaces', of people (`person`, one id or
+   * several) and `withPeople` (the people on each photo) 'photoPeople'.
+   */
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false, media = null } = {}) {
+    return this._run(async () => {
+      await this._feature('photos');
+      if (q) await this._searchFeature();
+      if (place || bbox) await this._feature('photoPlaces');
+      if (person || withPeople) await this._feature('photoPeople');
+      // Drive 1.25: only pictures or only videos
+      if (media) await this._feature('mediaFilter');
+      const r = await this.api.photos({ area, before, limit, q, place, bbox, person, districts, withPeople, media });
+      this._learnMedia(r.items);
+      return { ok: true, ...r };
+    });
+  }
+
+  /** A search of photos needs 'photoSearch' (labels) or, Drive 1.16, 'photoPlaces' / 'photoPeople' (names). */
+  async _searchFeature() {
+    for (const f of ['photoSearch', 'photoPlaces', 'photoPeople']) if (await this.api.has(f).catch(() => false)) return;
+    throw new DriveError('Drive cannot do photoSearch', { code: 'unsupported' });
+  }
+
+  /** photos/months → { ok, months } — Drive 1.16 with the filters of photos (q, place, person), 1.25 media */
+  async photoMonths(area = null, { q = null, place = null, person = null, media = null } = {}) {
+    return this._run(async () => {
+      await this._feature('photos');
+      if (q) await this._searchFeature();
+      if (place) await this._feature('photoPlaces');
+      if (person) await this._feature('photoPeople');
+      if (media) await this._feature('mediaFilter');
+      return { ok: true, ...(await this.api.photoMonths(area, q || place || person || media ? { q, place, person, media } : null)) };
+    });
+  }
+
+  /** "Vor einem Jahr": photos of this day (± 1) of earlier years → { ok, groups } */
+  async memories(date = null) {
+    return this._run(async () => {
+      await this._feature('photos');
+      return { ok: true, ...(await this.api.memories(date)) };
+    });
+  }
+
+  // ── Drive 1.26: the page „Erinnerungen“ ─────────────────
+
+  /** The collections of the private photos → { ok, date, home, collections } ('unsupported' without the feature). */
+  async memoryCollections(date = null) {
+    return this._run(async () => {
+      await this._feature('memoryCollections');
+      return { ok: true, ...(await this.api.memoryCollections(date)) };
+    });
+  }
+
+  /** The photos of one collection, page by page → { ok, items, next }. */
+  async memoryPhotos(id, { before = null, limit = 100 } = {}) {
+    return this._run(async () => {
+      await this._feature('memoryCollections');
+      return { ok: true, ...(await this.api.memoryPhotos(id, { before, limit })) };
+    });
+  }
+
+  // ── Drive 1.18: the overview ───────────────────────────
+
+  /**
+   * The page "Übersicht" → { ok, overview, view } (utils/drive-overview.js; view: the tiles and their texts). With 'overview' GET overview; else built from
+   * the endpoints this Drive has (a part that fails is left out, like one whose feature is off).
+   */
+  async overview() {
+    return this._run(async () => {
+      const f = (await this._meFresh()).features || [];
+      if (f.includes('overview')) {
+        const overview = await this.api.overview();
+        return { ok: true, overview, view: OV.overviewView(overview, this.now()) };
+      }
+      const soft = (on, fn) => (on ? fn().catch(() => null) : Promise.resolve(null));
+      const now = this.now();
+      const d = new Date(now);
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const [deadlines, classes, memories, people, places, areas] = await Promise.all([
+        soft(f.includes('docAi'), () => this.api.deadlines({ from: today })),
+        soft(f.includes('photoClasses'), () => this.api.photoClasses()),
+        soft(f.includes('photos'), () => this.api.memories(today)),
+        soft(f.includes('photoPeople'), () => this.api.people()),
+        soft(f.includes('photoPlaces'), () => this.api.photoPlaces({})),
+        soft(true, () => this.api.areas()),
+      ]);
+      const overview = OV.assembleOverview({ now, deadlines, classes, memories, people, places, areas: areas && areas.areas });
+      return { ok: true, overview, view: OV.overviewView(overview, now) };
+    });
+  }
+
+  // ── Drive 1.16: places and people ────────────────────────
+
+  /** The places of the photos (most first) → { ok, places } */
+  async photoPlaces(filter = {}) {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      if (filter && filter.person) await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.photoPlaces(filter || {})) };
+    });
+  }
+
+  /** The clusters of photos in a box of the map at a zoom → { ok, clusters } */
+  async photoMap({ bbox, zoom, ...filter } = {}) {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      return { ok: true, ...(await this.api.photoMap({ bbox, zoom, ...filter })) };
+    });
+  }
+
+  /** Suggestions while typing: people, places, labels → { ok, people, places, labels } */
+  async photoSuggest(q) {
+    return this._run(async () => {
+      if (!(await this.api.has('photoPlaces').catch(() => false)) && !(await this.api.has('photoPeople').catch(() => false))) {
+        throw new DriveError('Drive cannot do photoPlaces / photoPeople', { code: 'unsupported' });
+      }
+      return { ok: true, ...(await this.api.photoSuggest(q)) };
+    });
+  }
+
+  async _placesOrPeople() {
+    const [places, people] = await Promise.all([this.api.has('photoPlaces').catch(() => false), this.api.has('photoPeople').catch(() => false)]);
+    if (!places && !people) throw new DriveError('Drive cannot do photoPlaces / photoPeople', { code: 'unsupported' });
+    return { places, people };
+  }
+
+  /** The person's settings of places and people → { ok, keepGeo, stripGeoOnShare, people, peopleKids } */
+  async photoSettings() {
+    return this._run(async () => {
+      await this._placesOrPeople();
+      return { ok: true, ...(await this.api.photoSettings()) };
+    });
+  }
+
+  /**
+   * Changes them ({ keepGeo?, stripGeoOnShare?, people?, peopleKids? }); `people: false` deletes all face data
+   * ("Alle Gesichtsdaten löschen") → { ok, …settings, deleted }.
+   */
+  async setPhotoSettings(patch = {}) {
+    return this._run(async () => {
+      const f = await this._placesOrPeople();
+      const p = patch || {};
+      if ((p.keepGeo !== undefined || p.stripGeoOnShare !== undefined) && !f.places) throw new DriveError('Drive cannot do photoPlaces', { code: 'unsupported' });
+      if ((p.people !== undefined || p.peopleKids !== undefined) && !f.people) throw new DriveError('Drive cannot do photoPeople', { code: 'unsupported' });
+      return { ok: true, ...(await this.api.setPhotoSettings(p)) };
+    });
+  }
+
+  /** "Orte löschen": the places of every photo this person uploaded → { ok, deleted } */
+  async deletePhotoGeo() {
+    return this._run(async () => {
+      await this._feature('photoPlaces');
+      return { ok: true, ...(await this.api.deletePhotoGeo()) };
+    });
+  }
+
+  async people() {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.people()) };
+    });
+  }
+
+  async person(id) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.person(id)) };
+    });
+  }
+
+  /** Name ("" removes it; a name taken merges both → mergedInto), hide / show, link with a family member or contact. */
+  async updatePerson(id, patch = {}) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.updatePerson(id, patch || {})) };
+    });
+  }
+
+  async mergePerson(id, into) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.mergePerson(id, into)) };
+    });
+  }
+
+  async similarPeople(id) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.similarPeople(id)) };
+    });
+  }
+
+  async uncertainFaces(id, limit = 50) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.uncertainFaces(id, limit)) };
+    });
+  }
+
+  async confirmFaces(id, faceIds, yes) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.confirmFaces(id, faceIds, yes)) };
+    });
+  }
+
+  async moveFace(faceId, person = null) {
+    return this._run(async () => {
+      await this._feature('photoPeople');
+      return { ok: true, ...(await this.api.moveFace(faceId, person)) };
+    });
+  }
+
+  async albums() {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, ...(await this.api.albums()) };
+    });
+  }
+
+  async album(id, { before = null, limit = 100 } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      const r = await this.api.album(id, { before, limit });
+      this._learnMedia(r.items);
+      return { ok: true, ...r };
+    });
+  }
+
+  async createAlbum({ name, areaId = null } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, album: await this.api.createAlbum({ name, areaId }) };
+    });
+  }
+
+  /** { name?, coverId?, frame? } – `frame` only on Drives with 'frame' (and albums with canFrame; else 403 { field: 'frame' }) */
+  async updateAlbum(id, patch = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      if (patch && patch.frame !== undefined) await this._feature('frame');
+      return { ok: true, album: await this.api.updateAlbum(id, patch || {}) };
+    });
+  }
+
+  async deleteAlbum(id) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return this.api.deleteAlbum(id);
+    });
+  }
+
+  /** Photos into an album (remove: out of it) → { ok, album } */
+  async albumItems(id, ids, { remove = false } = {}) {
+    return this._run(async () => {
+      await this._feature('albums');
+      return { ok: true, album: await this.api.albumItems(id, ids, { remove }) };
+    });
+  }
+
+  /**
+   * Drive 1.31 'framePhotos': GET frame/photos → { ok, album, ids, count }; with `ids` only those of them in the photo frame
+   * (for the menu: „Für Fotorahmen freigeben“ or „Aus Fotorahmen entfernen“).
+   */
+  async framePhotos(ids = null) {
+    return this._run(async () => {
+      await this._feature('framePhotos');
+      return { ok: true, ...(await this.api.framePhotos(ids)) };
+    });
+  }
+
+  /**
+   * Photos into the photo frame (remove: out of it; the photos stay) → { ok, album, added, removed, skipped, ids, count }.
+   * skipped[].reason: not_found | not_image | vault | blocked | child. A child or no write right in „Meine Dateien“:
+   * 403 { code: 'forbidden', field: 'frame' }.
+   */
+  async setFramePhotos(ids, { remove = false } = {}) {
+    return this._run(async () => {
+      await this._feature('framePhotos');
+      return { ok: true, ...(await this.api.setFramePhotos(ids, { remove })) };
+    });
+  }
+
+  /** The storage overview → { ok, total, limit, areas, people, largest, duplicates } (`all`: administrators) */
+  async storage({ all = false } = {}) {
+    return this._run(async () => {
+      await this._feature('storage');
+      return { ok: true, ...(await this.api.storage({ all })) };
+    });
+  }
+
+  async pruneVersions({ areaId, keep } = {}) {
+    return this._run(async () => {
+      await this._feature('storage');
+      return { ok: true, ...(await this.api.pruneVersions({ areaId, keep })) };
+    });
+  }
+
+  // ── Drive 1.8: AI for documents, deadlines, the import ───
+
+  /** What Drive recognised in a file → { ok, insight } */
+  async insight(id) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, insight: await this.api.insight(id) };
+    });
+  }
+
+  /** "Erneut erkennen" → { ok, insight } (422 unsupported { reason: no_text | media_disabled }) */
+  async recognize(id) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, insight: await this.api.recognize(id) };
+    });
+  }
+
+  /** The suggestion taken (name and / or folder) → { ok, node, insight } */
+  async applyInsight(id, { name = false, folder = false } = {}) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      const before = await this.api.node(id).catch(() => null);
+      const r = await this.api.applyInsight(id, { name, folder });
+      if (before && before.parentId) this.emit('changed', { folderId: before.parentId });
+      if (r.node.parentId && (!before || before.parentId !== r.node.parentId)) this.emit('changed', { folderId: r.node.parentId });
+      return { ok: true, ...r };
+    });
+  }
+
+  /** The deadlines of the files the person reads → { ok, deadlines } (from / to: YYYY-MM-DD) */
+  async deadlines({ from = null, to = null } = {}) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, ...(await this.api.deadlines({ from, to })) };
+    });
+  }
+
+  /** "Erinnern N Tage vorher" (daysBefore null: no reminder) → { ok, deadline } */
+  async remind(deadlineId, daysBefore) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      const deadline = daysBefore === null || daysBefore === undefined ? await this.api.unremind(deadlineId) : await this.api.remind(deadlineId, daysBefore);
+      return { ok: true, deadline };
+    });
+  }
+
+  /** AI for documents on / off in an area (write right) → { ok, area: { id, docAi } } */
+  async setDocAi(areaId, on) {
+    return this._run(async () => {
+      await this._feature('docAi');
+      return { ok: true, area: await this.api.setDocAi(areaId, on) };
+    });
+  }
+
+  /** "Aus Google Drive / OneDrive importieren": the portal's import page in the browser (Drive 1.8 'cloudImport'). */
+  async openImport() {
+    return this._run(async () => {
+      await this._feature('cloudImport');
+      const c = await this._meFresh(false);
+      const a = this.apiClient || {};
+      const url = drive.allowedLink(drive.importLink((c.links && c.links.drive) || a.portalUrl || a.serverUrl), this._hosts());
+      if (!url) return { ok: false, code: 'unsupported', error: 'no portal address' };
+      if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+      const ok = await openExternalSafely(this.shell, url, { log: this.log, label: 'Drive import link' });
+      return ok ? { ok: true } : { ok: false, code: 'open_failed', error: 'not opened' };
+    });
+  }
+
+  // ── Drive 1.9: office in the browser ─────────────────────
+
+  /** "Im Browser bearbeiten / ansehen": the office address in the default browser → { ok, mode, expiresAt } */
+  async office(id) {
+    return this._run(async () => {
+      await this._feature('office');
+      if (!this.shell || typeof this.shell.openExternal !== 'function') throw new DriveError('no shell', { code: 'unsupported' });
+      const r = await this.api.office(id);
+      const ok = await openExternalSafely(this.shell, r.url, { log: this.log, label: 'Drive office link' });
+      return ok ? { ok: true, mode: r.mode, expiresAt: r.expiresAt } : { ok: false, code: 'open_failed', error: 'not opened' };
+    });
+  }
+
+  // ── Drive 1.14: the family calendar, questions, scans become documents ──
+
+  /**
+   * "In den Familienkalender" of a deadline → { ok, deadline } (409 familie_unavailable: Familie not there / refused);
+   * Drive 1.17 "In Kalender eintragen": target { kind: 'mail', calendarId } (409 mail_unavailable { reason }).
+   */
+  async calendar(deadlineId, target = null) {
+    return this._run(async () => {
+      const mail = !!(target && target.kind === 'mail');
+      await this._feature(mail ? 'deadlineMailCalendar' : 'deadlineCalendar');
+      return { ok: true, deadline: await this.api.calendar(deadlineId, mail ? target : null) };
+    });
+  }
+
+  /** Drive 1.17: the calendars a deadline can go to → { ok, family, mail: [{ id, name, account, color }] } */
+  async deadlineCalendars() {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.deadlineCalendars()) };
+    });
+  }
+
+  /** Drive 1.17: the person's target per area for new deadlines → { ok, targets: [{ areaId, label, target }] } */
+  async deadlineTargets() {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.deadlineTargets()) };
+    });
+  }
+
+  /** Drive 1.17: "Fristen aus <Bereich>" → { ok, targets } (target null: off, { kind: 'family' }, { kind: 'mail', calendarId, label }) */
+  async setDeadlineTarget(areaId, target) {
+    return this._run(async () => {
+      await this._feature('deadlineMailCalendar');
+      return { ok: true, ...(await this.api.setDeadlineTarget(areaId, target)) };
+    });
+  }
+
+  /** New deadlines of an area into the family calendar on their own (write right) → { ok, area: { id, docAi, deadlinesToCalendar } } */
+  async setDeadlinesToCalendar(areaId, on) {
+    return this._run(async () => {
+      await this._feature('deadlineCalendar');
+      return { ok: true, area: await this.api.setDeadlinesToCalendar(areaId, on) };
+    });
+  }
+
+  /** A question to the person's documents (3 … 300 characters) → { ok, status, answer, sources, terms, areas, deadline } (429 rate_limited) */
+  async ask(q, area = null) {
+    return this._run(async () => {
+      await this._feature('docAsk');
+      return { ok: true, ...(await this.api.ask(q, { area })) };
+    });
+  }
+
+  /** Can this PC make the searchable PDF itself? → { ok, supported, local, reason } */
+  async scanStatus() {
+    const supported = await this.api.has('scanDocs').catch(() => false);
+    if (!this.ocr) return { ok: true, supported, local: false, reason: 'no_ocr' };
+    const a = await Promise.resolve(this.ocr.available()).catch(() => ({ available: false, reason: 'error' }));
+    return { ok: true, supported, local: !!(a && a.available), reason: a && a.available ? null : (a && a.reason) || 'error' };
+  }
+
+  _scanDir() {
+    return path.join(this.tempDir(), 'scan', crypto.randomBytes(8).toString('hex'));
+  }
+
+  /**
+   * "In Dokument umwandeln" of the pictures `ids` (one scan, its pages in this order, ≤ 8): their media; the pictures
+   * this PC reads (JPEG / PNG) are loaded — the text of the pages is read here when Windows has an OCR language (the
+   * text goes to the AI first, the picture only when it is needed); then scans/classify → { ok, scanId, pages, kind,
+   * confidence, summary, classified, local, words, folderId, areaId, name, suggestion: { name, folderId, folderPath } |
+   * null }. local: the searchable PDF is made here.
+   */
+  async scanPrepare(ids) {
+    return this._run(async () => {
+      await this._feature('scanDocs');
+      const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.posId).filter(Boolean))];
+      if (!list.length || list.length > drive.SCAN_PAGES_MAX) throw new DriveError('invalid pages', { code: 'invalid' });
+      const nodes = [];
+      for (const id of list) {
+        const n = await this.api.node(id);
+        if (n.isDir || n.encrypted) throw new DriveError('not a picture', { code: n.encrypted ? 'encrypted' : 'invalid' });
+        if (!SCAN_ANY_RE.test(n.mime || guessMime(n.name))) throw new DriveError('not a picture', { code: 'not_picture' });
+        nodes.push(n);
+      }
+      const contents = [];
+      for (const n of nodes) contents.push(await this.api.content(n.id));
+      const mediaIds = contents.map((c) => c.mediaId);
+      // the pictures on this PC (smaller copies go to Drive for a PDF / a Word file; with an OCR language: their text)
+      let pages = null;
+      let dir = null;
+      const readable = !!this.ocr && contents.every((c, i) => SCAN_MIME_RE.test(c.mime || nodes[i].mime || '') && (!c.size || c.size <= SCAN_IMAGE_MAX));
+      if (readable) {
+        dir = this._scanDir();
+        try {
+          await fs.promises.mkdir(dir, { recursive: true });
+          pages = [];
+          for (let i = 0; i < contents.length; i++) {
+            const file = path.join(dir, `page-${i + 1}`);
+            await this.api.downloadTo(contents[i], file, { maxBytes: SCAN_IMAGE_MAX });
+            pages.push({ file, width: null, height: null, lines: null });
+          }
+        } catch (err) {
+          this.log.warn(`Drive scan: pictures not loaded (${drive.errorCode(err)})`);
+          pages = null;
+          await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+          dir = null;
+        }
+      }
+      let local = false;
+      if (pages && (await Promise.resolve(this.ocr.available()).catch(() => null) || {}).available) {
+        try {
+          for (const p of pages) {
+            const r = await this.ocr.recognize(await fs.promises.readFile(p.file));
+            Object.assign(p, { width: r.width, height: r.height, lines: r.lines });
+          }
+          local = true;
+        } catch (err) {
+          this.log.warn(`Drive scan: no text on this PC (${drive.errorCode(err)})`);
+          for (const p of pages) Object.assign(p, { width: null, height: null, lines: null });
+        }
+      }
+      const text = local ? pagesText(pages) : '';
+      const words = local ? pages.reduce((a, p) => a + p.lines.reduce((b, l) => b + l.words.length, 0), 0) : 0;
+      let cls = null;
+      let classifyError = null;
+      try {
+        cls = await this.api.scanClassify({ mediaIds, text: text || null });
+      } catch (err) {
+        // without AI for it (budget, pictures not allowed …) the PDF made here and "Nur Bild" still work
+        if (!(err instanceof DriveError) || ['network', 'timeout', 'drive_unavailable'].includes(err.code)) throw err;
+        classifyError = drive.errorCode(err);
+      }
+      let suggestion = null;
+      if (await this.api.has('docAi').catch(() => false)) {
+        const ins = await this.api.insight(nodes[0].id).catch(() => null);
+        if (ins && ins.status === 'ready' && ins.suggestion) suggestion = ins.suggestion;
+      }
+      const kind = cls ? cls.kind : (words ? 'printed' : 'other');
+      const scanId = crypto.randomBytes(12).toString('hex');
+      const timer = setTimeout(() => this.scanDiscard(scanId), SCAN_KEEP_MS);
+      if (timer.unref) timer.unref();
+      this._scans.set(scanId, { ids: list, nodes, mediaIds, pages, local, text, dir, kind, timer, scope: this._scopeNow() });
+      return {
+        ok: true,
+        scanId,
+        pages: list.length,
+        kind,
+        confidence: cls ? cls.confidence : null,
+        summary: cls ? cls.summary : null,
+        classified: !!cls,
+        classifyError,
+        local,
+        // a PDF needs this PC's text or its pictures for Drive (without them Drive makes no PDF)
+        pdf: local || !!pages,
+        words,
+        folderId: nodes[0].parentId,
+        areaId: nodes[0].areaId,
+        name: withExt(nodes[0].name, null),
+        suggestion,
+      };
+    });
+  }
+
+  /** A prepared scan is not needed any more (its pictures on this PC go). */
+  scanDiscard(scanId) {
+    const sc = this._scans.get(scanId);
+    if (!sc) return { ok: true };
+    this._scans.delete(scanId);
+    clearTimeout(sc.timer);
+    if (sc.dir) fs.promises.rm(sc.dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: true };
+  }
+
+  /**
+   * "Als PDF / Word-Datei / Excel-Datei speichern" (target 'pdf' | 'docx' | 'xlsx') or "Bild speichern" ('image': the
+   * picture stays, renamed / moved when asked) of a prepared scan into `folderId` as `name` → { ok, node, target, local }.
+   * A PDF with this PC's text is made here; else Drive makes the bytes (scans/convert — with smaller copies of the
+   * pictures for a PDF's pages, a whiteboard's photo, a handwritten page) and this PC uploads them; scans/save files
+   * either. keepOriginal false: the scan's pictures go into the trash once the document is there (the first by Drive).
+   * Drive gave no file (a PDF without pictures): code 'scan_no_file'.
+   */
+  async scanSave(scanId, { target, folderId = null, name = null, keepOriginal = true } = {}) {
+    return this._run(async () => {
+      await this._feature('scanDocs');
+      const sc = this._scans.get(scanId);
+      if (!sc || sc.scope !== this._scopeNow()) throw new DriveError('scan gone', { code: 'not_found' });
+      if (this._locked()) throw new DriveError('device locked', { code: 'device_locked' });
+      const parentId = drive.posId(folderId) || sc.nodes[0].parentId;
+      if (target === 'image') {
+        if (sc.nodes.length !== 1) throw new DriveError('one picture only', { code: 'invalid' });
+        const n = sc.nodes[0];
+        const ext = (/\.([A-Za-z0-9]{1,5})$/.exec(n.name) || [])[1] || null;
+        const want = name ? this._name(withExt(name, ext)) : n.name;
+        const node = want !== n.name || parentId !== n.parentId ? await this.api.place(n.id, { name: want !== n.name ? want : null, parentId: parentId !== n.parentId ? parentId : null }) : n;
+        this.scanDiscard(scanId);
+        if (n.parentId) this.emit('changed', { folderId: n.parentId });
+        if (parentId !== n.parentId) this.emit('changed', { folderId: parentId });
+        return { ok: true, node, target, local: false };
+      }
+      if (!SCAN_EXT[target]) throw new DriveError('invalid target', { code: 'invalid' });
+      const fileName = this._name(withExt(name || sc.nodes[0].name, SCAN_EXT[target]));
+      const local = target === 'pdf' && sc.local;
+      let doc;   // { data, mime, name, text, folderId }
+      if (local) {
+        doc = await this._scanPdfHere(sc, fileName);
+      } else {
+        const images = await this._scanImages(sc, target);
+        const ask = (imgs) => this.api.scanConvert({ mediaIds: sc.mediaIds, text: sc.text || null, target, kind: sc.kind, folderId: parentId, name: fileName, images: imgs });
+        let r;
+        try {
+          r = await ask(images);
+        } catch (err) {
+          // the pictures too large for Drive: once more without them
+          if (!(images && err && err.code === 'too_large')) throw err;
+          r = await ask(null);
+        }
+        if (!r.file) throw new DriveError('no document', { code: 'scan_no_file' });
+        doc = { data: r.file.data, mime: r.file.mime, name: r.file.name, text: r.text, folderId: r.folderId || parentId };
+      }
+      const file = path.join(sc.dir || this._scanDir(), `doc.${SCAN_EXT[target]}`);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(file, doc.data);
+      let saved;
+      try {
+        const up = await this.api.upload({ path: file, size: doc.data.length, mime: doc.mime || guessMime(doc.name) }, {});
+        saved = await this.api.scanSave({ mediaId: up.mediaId, folderId: doc.folderId || parentId, name: doc.name, text: doc.text || null, sourceId: sc.nodes[0].id, keepOriginal: keepOriginal !== false });
+      } finally {
+        if (!sc.dir) fs.promises.rm(path.dirname(file), { recursive: true, force: true }).catch(() => {});
+      }
+      this.scanDiscard(scanId);
+      if (keepOriginal === false) {
+        // the first picture Drive put into the trash (when one may); the other pages here
+        for (const n of sc.nodes.slice(1)) await this.api.trash(n.id).catch((err) => this.log.warn(`Drive scan: original not removed (${drive.errorCode(err)})`));
+        for (const f of new Set(sc.nodes.map((n) => n.parentId).filter(Boolean))) if (f !== saved.node.parentId) this.emit('changed', { folderId: f });
+      }
+      this.emit('changed', { folderId: saved.node.parentId || doc.folderId || parentId });
+      return { ok: true, node: saved.node, target, local };
+    });
+  }
+
+  /** The searchable PDF of a scan made on this PC → { data, mime, name, text, folderId: null }. */
+  async _scanPdfHere(sc, fileName) {
+    const pages = [];
+    for (const p of sc.pages) {
+      const img = this.ocr.image(await fs.promises.readFile(p.file));
+      pages.push({ jpeg: img.jpeg, width: img.width, height: img.height, lines: p.lines });
+    }
+    const data = buildSearchablePdf(pages, { title: fileName.replace(/\.pdf$/i, ''), now: this.now() });
+    return { data, mime: 'application/pdf', name: fileName, text: pagesText(sc.pages) || null, folderId: null };
+  }
+
+  /**
+   * Smaller JPEGs of the pages for scans/convert (≤ 600 KB together): every page for a PDF, the first for the Word file
+   * of a whiteboard / handwriting; null when not needed or not possible (Drive then works with the text alone).
+   */
+  async _scanImages(sc, target) {
+    const want = target === 'pdf' ? sc.pages : target === 'docx' && (sc.kind === 'whiteboard' || sc.kind === 'handwriting') && sc.pages ? sc.pages.slice(0, 1) : null;
+    if (!want || !want.length || !this.ocr || typeof this.ocr.jpeg !== 'function') return null;
+    const raw = [];
+    for (const p of want) raw.push(await fs.promises.readFile(p.file));
+    for (const [maxSide, quality] of [[1700, 72], [1400, 62], [1100, 55], [850, 50]]) {
+      try {
+        const out = raw.map((b) => this.ocr.jpeg(b, { maxSide, quality }));
+        if (out.reduce((a, b) => a + b.length, 0) <= drive.SCAN_IMAGES_MAX_BYTES - 8 * 1024) return out;
+      } catch (err) {
+        this.log.warn(`Drive scan: pictures not made smaller (${drive.errorCode(err)})`);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The preview of a photo by its node (Drive 1.7 photo answers without a mediaId): the node is
+   * asked once (GET nodes/<id>, it tells no one), then the preview of its media → { ok, mime, data }.
+   */
+  async previewOf(nodeId, { large = false } = {}) {
+    const id = drive.posId(nodeId);
+    if (!id) throw new DriveError('invalid id', { code: 'invalid' });
+    this._ensureScope();
+    let mediaId = this._mediaOf.get(id);
+    if (!mediaId) {
+      const node = await this._run(() => this.api.node(id));
+      if (!node.mediaId || node.isDir) throw new DriveError('no picture', { code: 'not_found' });
+      refuseBlocked(node);
+      mediaId = node.mediaId;
+      this._mediaOf.set(id, mediaId);
+      while (this._mediaOf.size > 5000) this._mediaOf.delete(this._mediaOf.keys().next().value);
+    }
+    return this.preview(mediaId, { large });
+  }
+
+  /**
+   * Remembers the mediaId of photos (previewOf); a photo the virus scan blocks now (Drive 1.19) loses it and its
+   * pictures loaded before.
+   */
+  _learnMedia(items) {
+    for (const p of items || []) {
+      if (p.mediaId) { this._mediaOf.set(p.id, p.mediaId); continue; }
+      if (!SC.isBlocked(p.scan)) continue;
+      const old = this._mediaOf.get(p.id);
+      this._mediaOf.delete(p.id);
+      if (old) { this._previews.delete(`${old}|s`); this._previews.delete(`${old}|l`); }
+    }
   }
 
   // ── Previews ─────────────────────────────────────────────
@@ -559,7 +2048,8 @@ class DriveService extends EventEmitter {
   async pickFiles() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openFile', 'multiSelections'] };
+    const start = this.dialogPath('documents');
+    const opts = { properties: ['openFile', 'multiSelections'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
@@ -569,7 +2059,8 @@ class DriveService extends EventEmitter {
   async pickFolders() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openDirectory', 'multiSelections', 'dontAddToRecent'] };
+    const start = this.dialogPath('documents');
+    const opts = { properties: ['openDirectory', 'multiSelections', 'dontAddToRecent'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, paths: r.filePaths.slice(0, MAX_PATHS) };
@@ -577,38 +2068,115 @@ class DriveService extends EventEmitter {
 
   /**
    * Queues files (and whole folders) from disk for the folder `parentId`
-   * → { ok, queued, rejected, folders, skipped }. Unreadable paths are rejected ({ name, code });
+   * → { ok, queued, rejected, folders, skipped, move }. Unreadable paths are rejected ({ name, code });
    * a folder is made in Drive with its structure (folders: how many), what is left out counts in skipped.
+   * Into a vault it is "In Tresor verschieben" (services/drive-vault-move.js): `move` is the batch's id, each
+   * original is deleted for good once its upload is verified (its row: `move`, `original` 'deleted' | 'kept' + `originalReason`),
+   * a dropped folder's emptied folders after its last file; when the batch is through: event 'vaultMove'
+   * ({ id, folderId, moved, deleted, kept, keptFiles [{ name, reason }], notMoved, folders { removed, kept } }).
    */
   async upload(parentId, paths) {
     const folderId = drive.posId(parentId);
     if (!folderId) throw new DriveError('invalid folder', { code: 'invalid' });
     this._need();
+    // Drive 1.9: into a vault only encrypted (this PC needs its key)
+    const parent = await this._run(() => this._vaultNodeOf(folderId));
+    const vaultId = parent ? parent.vaultId : null;
+    if (vaultId) {
+      await this.vault.tryOpen(vaultId);
+      this.vault.keys(vaultId);
+    }
     const list = Array.isArray(paths) ? paths.slice(0, MAX_PATHS) : [];
     const out = { queued: [], rejected: [], folders: 0, skipped: 0 };
-    for (const p of list) {
-      if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
-      const base = path.basename(p);
-      let st;
-      try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      if (st.isDirectory()) { await this._queueFolder(folderId, p, out); continue; }
-      if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
-      this._queueFile(folderId, p, base, st, out);
+    // Drive 1.9: into a vault the files are moved (the originals go once they are in the vault, verified)
+    const batch = vaultId ? this._moveBatch(folderId) : null;
+    try {
+      for (const p of list) {
+        if (typeof p !== 'string' || !p || p.length > 4096 || !path.isAbsolute(p)) continue;
+        const base = path.basename(p);
+        let st;
+        try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
+        if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId, batch); continue; }
+        if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
+        this._queueFile(folderId, p, base, st, out, vaultId, { batch });
+      }
+    } finally {
+      if (batch) {
+        batch.sealed = true;
+        this._finishMove(batch);
+      }
     }
     this._pump();
-    return { ok: true, ...out };
+    return { ok: true, ...out, move: batch ? batch.id : null };
   }
 
-  _queueFile(folderId, p, base, st, out) {
-    if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); return; }
+  _queueFile(folderId, p, base, st, out, vaultId = null, { batch = null, tree = null } = {}) {
+    if (st.size > drive.MAX_FILE_BYTES) { out.rejected.push({ name: base, code: 'too_large' }); VM.keep(tree, path.dirname(p)); return false; }
     const name = drive.safeName(base);
-    if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    if (!name) { out.rejected.push({ name: base, code: 'invalid_name' }); VM.keep(tree, path.dirname(p)); return false; }
     const id = `u${++this._nextId}`;
-    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow() };
+    const job = { id, path: p, name, size: st.size, mtime: st.mtimeMs, folderId, choice: null, waiting: false, scope: this._scopeNow(), vault: vaultId, batch, tree };
     this._jobs.set(id, job);
     this._queue.push(job);
-    this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now() });
+    if (batch) batch.open.add(id);
+    this._row({ id, dir: 'up', name, folderId, total: st.size, sent: 0, state: 'queued', code: null, at: this.now(), ...(batch ? { move: true } : {}) });
     out.queued.push(id);
+    return true;
+  }
+
+  // ── "In Tresor verschieben" (Drive 1.9 vault; services/drive-vault-move.js) ──
+
+  /** A batch of files going into the vault folder `folderId` (one upload()). */
+  _moveBatch(folderId) {
+    const batch = { id: `m${++this._nextId}`, folderId, open: new Set(), files: [], trees: [], sealed: false, finishing: false };
+    this._moves.set(batch.id, batch);
+    return batch;
+  }
+
+  /**
+   * A file of a batch is through: 'done' with its original's fate ({ original, reason }), 'failed' or 'skipped' (its
+   * original stays). A kept original keeps its folder (and the ones above it) of a dropped folder.
+   */
+  _settleMove(job, state, removal = null) {
+    const batch = job && job.batch;
+    if (!batch || !batch.open.has(job.id)) return;
+    batch.open.delete(job.id);
+    const original = state === 'done' && removal ? removal.original : 'kept';
+    batch.files.push({ id: job.id, name: job.name, state, original, reason: original === 'kept' ? (state === 'done' && removal ? removal.reason : 'not_moved') : null });
+    if (original !== 'deleted') VM.keep(job.tree, path.dirname(job.path));
+    this._finishMove(batch);
+  }
+
+  /** The batch is through (all queued, every file done): the emptied folders of dropped folders go, then 'vaultMove'. */
+  _finishMove(batch) {
+    if (!batch.sealed || batch.open.size || batch.finishing) return null;
+    batch.finishing = true;
+    const run = (async () => {
+      const folders = { removed: 0, kept: 0 };
+      for (const tree of batch.trees) {
+        const r = await VM.removeEmptyDirs(tree).catch(() => ({ removed: 0, kept: tree.dirs.length }));
+        folders.removed += r.removed;
+        folders.kept += r.kept;
+      }
+      // a reset (new server) dropped the batch: nothing to report
+      if (this._moves.get(batch.id) !== batch) return;
+      this._moves.delete(batch.id);
+      const done = batch.files.filter((f) => f.state === 'done');
+      const keptFiles = done.filter((f) => f.original === 'kept');
+      if (!batch.files.length && !folders.removed) return;
+      this.emit('vaultMove', {
+        id: batch.id,
+        folderId: batch.folderId,
+        moved: done.length,
+        deleted: done.length - keptFiles.length,
+        kept: keptFiles.length,
+        keptFiles: keptFiles.slice(0, 50).map((f) => ({ id: f.id, name: f.name, reason: f.reason })),
+        notMoved: batch.files.length - done.length,
+        folders,
+      });
+    })().catch((err) => this.log.warn(`Drive vault move not finished: ${err && err.message}`));
+    batch.done = run;
+    return run;
   }
 
   /**
@@ -616,33 +2184,45 @@ class DriveService extends EventEmitter {
    * then its files into the queue. Left out like "Ordner sichern": temporary files,
    * node_modules / .git, names Drive does not take, links.
    */
-  async _queueFolder(parentId, abs, out) {
+  async _queueFolder(parentId, abs, out, vaultId = null, batch = null) {
     const base = path.basename(abs);
     const top = drive.safeName(base);
     if (!top) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
+    // "In Tresor verschieben": the folders walked, what stays in them (their files go one by one)
+    let tree = null;
+    if (batch) {
+      const root = path.resolve(abs);
+      const realRoot = await fs.promises.realpath(root).catch(() => null);
+      if (!realRoot) { out.rejected.push({ name: base, code: 'missing' }); return; }
+      tree = VM.newTree(root, realRoot);
+      batch.trees.push(tree);
+    }
+    const left = (dirAbs) => { out.skipped++; VM.keep(tree, dirAbs); };
     const row = { id: `f${++this._nextId}`, dir: 'up', name: top, folderId: parentId, total: 0, sent: 0, state: 'running', code: null, at: this.now(), folder: true };
     this._row(row);
     const settings = { ...S.DEFAULT_SETTINGS, maxFileBytes: 0 };
     let files = 0;
     let dirs = 0;
     try {
-      const made = await this._run(() => this.api.mkdir(parentId, top, { rename: true }));
+      const made = await this._run(() => (vaultId ? this._vaultMkdir(vaultId, parentId, top, { free: true }) : this.api.mkdir(parentId, top, { rename: true })));
       dirs++;
       const walk = async (dirAbs, nodeId, rel) => {
         let entries;
-        try { entries = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { out.skipped++; return; }
+        try { entries = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { left(dirAbs); return; }
+        if (tree) tree.dirs.push(dirAbs);
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const e of entries) {
           const name = e.name.normalize('NFC');
           const r = S.joinRel(rel, name);
           const p = path.join(dirAbs, e.name);
-          if (e.isSymbolicLink()) { out.skipped++; continue; }
+          // links (and junctions) are never followed — and stay where they are
+          if (e.isSymbolicLink()) { left(dirAbs); continue; }
           if (e.isDirectory()) {
-            if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { out.skipped++; continue; }
-            const child = await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
+            if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { left(dirAbs); continue; }
+            const child = vaultId ? await this._run(() => this._vaultMkdir(vaultId, nodeId, name)) : await this._run(() => this.api.mkdir(nodeId, name, { rename: false })).catch(async (err) => {
               if (!(err && err.status === 409)) throw err;
               const kids = await this.api.childrenAll(nodeId);
-              const have = kids.find((k) => k.isDir && S.keyOf(k.name) === S.keyOf(name));
+              const have = kids.find((k) => k.isDir && !k.encrypted && S.keyOf(k.name) === S.keyOf(name));
               if (!have) throw err;
               return have;
             });
@@ -650,18 +2230,22 @@ class DriveService extends EventEmitter {
             await walk(p, child.id, r);
           } else if (e.isFile()) {
             let st;
-            try { st = await fs.promises.stat(p); } catch { out.skipped++; continue; }
+            try { st = await fs.promises.lstat(p); } catch { left(dirAbs); continue; }
+            if (!st.isFile()) { left(dirAbs); continue; }
             const why = S.excluded(r, { dir: false, size: st.size }, settings);
-            if (why) { if (why !== 'temp') out.skipped++; continue; }
-            // an empty file only goes to Drives that take them (1.5 'emptyFiles')
-            if (!st.size && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
-            if (files >= FOLDER_MAX_FILES) { out.skipped++; continue; }
+            if (why) { if (why !== 'temp') out.skipped++; VM.keep(tree, dirAbs); continue; }
+            // an empty file only goes to Drives that take them (1.5 'emptyFiles'; a vault's file always has its header)
+            if (!st.size && !vaultId && !(await this.api.has('emptyFiles').catch(() => false))) { out.skipped++; continue; }
+            if (files >= FOLDER_MAX_FILES) { left(dirAbs); continue; }
             files++;
-            this._queueFile(nodeId, p, name, st, out);
+            this._queueFile(nodeId, p, name, st, out, vaultId, { batch, tree });
+          } else {
+            VM.keep(tree, dirAbs);
           }
         }
       };
-      await walk(abs, made.id, '');
+      await walk(tree ? tree.root : abs, made.id, '');
+      if (tree) tree.complete = true;
       out.folders += dirs;
       this._set(row.id, { state: 'done', nodeId: made.id, name: made.name, files });
       this.emit('changed', { folderId: parentId });
@@ -677,9 +2261,21 @@ class DriveService extends EventEmitter {
     return !!(this._meCache && this._meCache.guard && this._meCache.guard.locked);
   }
 
-  /** What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'). */
+  /**
+   * What goes with a commit: the text layer of a PDF, the entropy (Drive 1.6 'guard'), when a photo was taken
+   * (1.7 'takenAt') and where (1.16 'photoPlaces', not with keepGeo off).
+   */
   async _commitExtra(file, name, size) {
     const extra = {};
+    if (size > 0 && isMediaName(name)) {
+      const wantAt = await this.api.has('takenAt').catch(() => false);
+      const wantGeo = typeof this.api.geoAllowed === 'function' && await this.api.geoAllowed().catch(() => false);
+      if (wantAt || wantGeo) {
+        const r = await readShot(file, { name, geo: wantGeo }).catch(() => ({ takenAt: null, geo: null }));
+        if (wantAt && r.takenAt) extra.takenAt = r.takenAt;
+        if (wantGeo && r.geo) extra.geo = r.geo;
+      }
+    }
     if (size > 0 && isPdf(name)) {
       const text = await Promise.resolve(this.readPdfText(file, { size })).catch(() => null);
       if (text) extra.text = text;
@@ -699,6 +2295,7 @@ class DriveService extends EventEmitter {
     if (choice !== 'version' && choice !== 'rename') {
       this._jobs.delete(id);
       this._set(id, { state: 'skipped' });
+      this._settleMove(job, 'skipped');
       return { ok: true };
     }
     job.choice = choice;
@@ -722,6 +2319,8 @@ class DriveService extends EventEmitter {
           this.log.info(`Drive upload of a file failed: ${code}`);
           this._jobs.delete(job.id);
           this._set(job.id, { state: 'failed', code });
+          // into a vault: its original stays
+          this._settleMove(job, 'failed');
         }
       }
     } finally {
@@ -740,6 +2339,7 @@ class DriveService extends EventEmitter {
       job.size = st.size;
       this._set(job.id, { total: st.size });
     }
+    if (job.vault) { await this._runVaultUpload(job); return; }
     if (!job.choice) {
       const sha = job.size <= drive.SHA_MAX_BYTES ? await sha256File(job.path).catch(() => null) : null;
       const c = await this.api.check({ parentId: job.folderId, name: job.name, sha256: sha, size: job.size });
@@ -771,21 +2371,98 @@ class DriveService extends EventEmitter {
     this.emit('changed', { folderId: job.folderId });
   }
 
+  /**
+   * A file into a vault: a taken name asks like any upload (by the decrypted names of the folder) → the file encrypted
+   * chunk by chunk into a temporary file (ciphertext only) → media upload → commit with nameCipher / keyVersion
+   * (a new version: the file's opaque name with onConflict 'version'). A stale key: the keys again, once.
+   */
+  async _runVaultUpload(job) {
+    this._vaultActive++;
+    try {
+      return await this._vaultUpload(job);
+    } finally {
+      this._vaultActive--;
+      this.vaultLock.touch();
+    }
+  }
+
+  async _vaultUpload(job) {
+    const vaultId = job.vault;
+    this.vault.keys(vaultId);
+    const siblings = await this._vaultSiblings(job.folderId, vaultId);
+    const same = (x) => S.keyOf(x.name) === S.keyOf(job.name);
+    let name = job.name;
+    let opaque = null;
+    if (!job.choice) {
+      const hit = siblings.find((x) => same(x) && !x.node.isDir);
+      if (hit) {
+        job.waiting = true;
+        this._set(job.id, { state: 'conflict' });
+        return;
+      }
+    }
+    if (job.choice === 'version') {
+      const hit = siblings.find((x) => same(x) && !x.node.isDir);
+      if (hit) opaque = hit.node.name;
+    }
+    if (!opaque && siblings.some(same)) name = freeFileName(job.name, new Set(siblings.map((x) => S.keyOf(x.name))));
+    await this._vaultTempReady();
+    const dir = path.join(this.tempDir(), 'vault-up');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const tmp = path.join(dir, `${job.id}-${crypto.randomBytes(6).toString('hex')}.enc`);
+    let r;
+    let sent = null;   // the ciphertext that went up: { size, mtimeMs, cipherSize, sha256 }
+    try {
+      r = await this.vault.withCurrent(vaultId, async (cur) => {
+        let enc;
+        try {
+          enc = await V.encryptFile(cur.tk, vaultId, cur.keyVersion, job.path, tmp, { sha256: !!job.batch });
+          sent = enc;
+        } catch (err) {
+          if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'changed' ? 'missing' : 'invalid' });
+          throw err;
+        }
+        const up = await this.api.upload({ path: tmp, size: enc.cipherSize, mime: 'application/octet-stream' }, {
+          onProgress: (sent) => this._set(job.id, { sent: Math.min(job.size, Math.round(sent * job.size / Math.max(1, enc.cipherSize))) }, { progress: true }),
+        });
+        const { nameCipher } = this.vault.encryptName(vaultId, name, cur);
+        return this.api.commit({ mediaId: up.mediaId, parentId: job.folderId, mtime: job.mtime, encrypted: { nameCipher, keyVersion: cur.keyVersion, name: opaque, onConflict: opaque ? 'version' : 'rename' } });
+      });
+    } finally {
+      await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    }
+    this.vault.nameOf(r.node);
+    this._jobs.delete(job.id);
+    // "In Tresor verschieben": the original goes only once the vault holds the very ciphertext sent
+    let removal = null;
+    if (job.batch) {
+      if (VM.verified(r.node, sent)) {
+        removal = await VM.removeOriginal(job.path, sent, { tree: job.tree });
+      } else {
+        this.log.warn('Drive vault: the uploaded file differs from the ciphertext sent; the original stays');
+        removal = { original: 'kept', reason: 'verify' };
+      }
+      if (removal.original !== 'deleted') this.log.info(`Drive vault move: original kept (${removal.reason})`);
+    }
+    this._set(job.id, { state: 'done', sent: job.size, nodeId: r.node.id, name, ...(removal ? { original: removal.original, originalReason: removal.reason || null } : {}) });
+    this._settleMove(job, 'done', removal);
+    this.emit('changed', { folderId: job.folderId });
+  }
+
   // ── Download: open / save as ─────────────────────────────
 
   async _fetchTo(nodeId, versionId, file, row) {
     const c = await this.api.content(nodeId, versionId);
     const part = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    const out = fs.createWriteStream(part);
     try {
       // Drive 1.5: an empty file has no media
-      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
-      else await this.api.download(c.mediaId, out, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
+      if (c.empty) await fs.promises.writeFile(part, '');
+      // Drive 1.20: from the home gateway when it holds the file (lan), else from the server
+      else await this.api.downloadTo(c, part, { onProgress: (got, total) => this._set(row.id, { sent: got, ...(total ? { total } : {}) }, { progress: true }) });
       await fs.promises.rm(file, { force: true });
       await fs.promises.rename(part, file);
     } catch (err) {
-      out.destroy();
       await fs.promises.rm(part, { force: true }).catch(() => {});
       throw err;
     }
@@ -808,28 +2485,16 @@ class DriveService extends EventEmitter {
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
+      const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
+      if (SC.isBlocked(node.scan)) {
+        // blocked by the virus scan (maybe later, by the nightly check): a copy loaded before is not opened again
+        await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+        refuseBlocked(node);
+      }
+      if (node.encrypted && node.vaultId) return this._openVaultFile(node, versionId);
       const name = drive.safeName(node.name) || 'Datei';
       if (unsafeToOpen(name, node.mime)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
-      const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
-      // Windows device names (CON, NUL, COM1 …) cannot be files: open a renamed local copy.
-      const file = path.join(dir, safeFileName(name, 'Datei'));
-      let have = false;
-      if (!versionId) {
-        try { have = (await fs.promises.stat(file)).size === node.size && node.size > 0; } catch { have = false; }
-      }
-      if (have) {
-        // Already loaded this revision: the server still learns that it was opened (a child's folder).
-        await this.api.content(node.id).catch(() => {});
-      } else {
-        const row = this._downloadRow(name, node.size);
-        try {
-          await this._fetchTo(node.id, versionId, file, row);
-          this._set(row.id, { state: 'done', sent: row.total, path: file });
-        } catch (err) {
-          this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
-          throw err;
-        }
-      }
+      const file = await this._localCopy(node, versionId, name);
       const err = await this.shell.openPath(file);
       if (err) {
         this.log.warn(`Opening a Drive file failed: ${err}`);
@@ -839,19 +2504,220 @@ class DriveService extends EventEmitter {
     });
   }
 
+  /**
+   * The copy of `node` (a version: `versionId`) in the temp folder → its path: the one of this revision already
+   * there, else downloaded (a row of the transfer list). Windows device names (CON, NUL, COM1 …) cannot be files: a
+   * renamed local copy.
+   */
+  async _localCopy(node, versionId, name) {
+    const dir = path.join(this.tempDir(), `${node.id}-${versionId ? `v${drive.posId(versionId)}` : node.rev}`);
+    const file = path.join(dir, safeFileName(name, 'Datei'));
+    let have = false;
+    if (!versionId) {
+      try { have = (await fs.promises.stat(file)).size === node.size && node.size > 0; } catch { have = false; }
+    }
+    if (have) {
+      // Already loaded this revision: the server still learns that it was opened (a child's folder).
+      await this.api.content(node.id).catch(() => {});
+      return file;
+    }
+    const row = this._downloadRow(name, node.size);
+    try {
+      await this._fetchTo(node.id, versionId, file, row);
+      this._set(row.id, { state: 'done', sent: row.total, path: file });
+    } catch (err) {
+      this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+      throw err;
+    }
+    return file;
+  }
+
+  /**
+   * A file of Drive for a part of the app that hands it on (printing), without loading it →
+   * { ok, id, name, size, mime, encrypted, parentId }. A folder: 'invalid'; blocked by the virus scan: 423 as
+   * open(); a vault file needs its vault open on this PC (its name is decrypted here).
+   */
+  async fileInfo(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.deleted) throw new DriveError('not a file', { code: 'invalid' });
+      refuseBlocked(node);
+      let name = drive.safeName(node.name) || 'Datei';
+      const encrypted = !!(node.encrypted && node.vaultId);
+      if (encrypted) {
+        await this.vault.tryOpen(node.vaultId);
+        this.vault.keys(node.vaultId);
+        name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+      }
+      return { ok: true, id: node.id, name, size: node.size, mime: node.mime || null, encrypted, parentId: node.parentId };
+    });
+  }
+
+  /**
+   * The file as a copy on this PC → { ok, path, name, size, dispose } — the copy of this revision in the temp folder
+   * (as open() loads it), a vault file decrypted into a folder of its own that `dispose()` removes again (call it
+   * when done; the copy of a normal file stays for the next "Öffnen"). Nothing is opened.
+   */
+  async fileCopy(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.deleted) throw new DriveError('not a file', { code: 'invalid' });
+      refuseBlocked(node);
+      if (node.encrypted && node.vaultId) {
+        await this.vault.tryOpen(node.vaultId);
+        this.vault.keys(node.vaultId);
+        const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+        const dir = path.join(this.tempDir(), 'vault', crypto.randomBytes(8).toString('hex'));
+        const file = path.join(dir, safeFileName(name, 'Datei'));
+        const dispose = () => fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+        const row = this._downloadRow(name, node.size);
+        try {
+          await this._vaultFetchTo(node, null, file, row);
+          this._set(row.id, { state: 'done', sent: row.total });
+        } catch (err) {
+          this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+          await dispose();
+          throw err;
+        }
+        return { ok: true, path: file, name, size: (await fs.promises.stat(file)).size, dispose };
+      }
+      const name = drive.safeName(node.name) || 'Datei';
+      const file = await this._localCopy(node, null, name);
+      return { ok: true, path: file, name, size: (await fs.promises.stat(file)).size, dispose: () => Promise.resolve() };
+    });
+  }
+
+  /**
+   * The viewer of a PDF, text or Markdown of Drive (not of a vault; services/drive-doc-view.js) →
+   * { ok, kind: 'pdf', name, size, data } (the bytes for pdf.js) | { ok, kind: 'text' | 'markdown', name, size, text }
+   * | { ok, kind, name, note: 'too_large', limitMb } (nothing loaded). The file comes as for open() — the copy of this
+   * revision in the temp folder, else a download —, so "Mit anderem Programm öffnen" afterwards needs no second one.
+   * A folder, a vault file and anything else: 'invalid'; blocked by the virus scan: 423 as open().
+   */
+  async docView(nodeId) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || node.encrypted) throw new DriveError('not a document of the viewer', { code: 'invalid' });
+      if (SC.isBlocked(node.scan)) {
+        await fs.promises.rm(path.join(this.tempDir(), `${node.id}-${node.rev}`), { recursive: true, force: true }).catch(() => {});
+        refuseBlocked(node);
+      }
+      const name = drive.safeName(node.name) || 'Datei';
+      const kind = DocView.kindOf(name, node.mime);
+      if (!kind) throw new DriveError('not a document of the viewer', { code: 'invalid' });
+      if (DocView.tooLarge(kind, node.size)) return { ok: true, kind, name, note: 'too_large', limitMb: DocView.limitMb(kind) };
+      const file = await this._localCopy(node, null, name);
+      // the size the listing said may be old: the copy itself decides
+      const size = (await fs.promises.stat(file)).size;
+      if (DocView.tooLarge(kind, size)) return { ok: true, kind, name, note: 'too_large', limitMb: DocView.limitMb(kind) };
+      const buf = await fs.promises.readFile(file);
+      if (kind === 'pdf') return { ok: true, kind, name, size, data: new Uint8Array(buf.buffer, buf.byteOffset, buf.length) };
+      return { ok: true, kind, name, size, text: DocView.decodeText(buf) };
+    });
+  }
+
+  /**
+   * A vault file decrypted into %TEMP%\gatecontrol-drive\vault\<random>\<name> and opened; the copy goes again
+   * after VAULT_OPEN_KEEP_MS (later while in use), at stop and at the next start.
+   */
+  async _openVaultFile(node, versionId) {
+    await this.vault.tryOpen(node.vaultId);
+    this.vault.keys(node.vaultId);
+    const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+    if (unsafeToOpen(name, null)) return { ok: false, code: 'unsafe', error: 'file type is not opened directly' };
+    const dir = path.join(this.tempDir(), 'vault', crypto.randomBytes(8).toString('hex'));
+    const file = path.join(dir, safeFileName(name, 'Datei'));
+    const row = this._downloadRow(name, node.size);
+    try {
+      await this._vaultFetchTo(node, versionId, file, row);
+      this._set(row.id, { state: 'done', sent: row.total });
+    } catch (err) {
+      this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
+      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+    this._forgetOpened(dir);
+    const err = await this.shell.openPath(file);
+    if (err) {
+      this.log.warn(`Opening a Drive vault file failed: ${err}`);
+      return { ok: false, code: 'open_failed', error: String(err) };
+    }
+    return { ok: true, path: file };
+  }
+
+  /**
+   * The viewer of a vault file (Drive plugin 1.22) → { ok, kind, name, mime, size, token, url } — the page shows `url`
+   * (gcvault://v/<token>: decrypted in memory, chunk by chunk) — or { ok, kind, name, note } for what it does not show
+   * ('office', 'heic', 'other', 'too_large'; nothing loaded). The ciphertext waits in %TEMP%\…\vault-view until
+   * vaultViewClose(token), the lock or the stop.
+   */
+  async vaultView(nodeId, { versionId = null } = {}) {
+    return this._run(async () => {
+      const node = await this.api.node(nodeId);
+      if (node.isDir || !node.encrypted || !node.vaultId) throw new DriveError('not a vault file', { code: 'invalid' });
+      refuseBlocked(node);
+      await this.vault.tryOpen(node.vaultId);
+      const keys = this.vault.keys(node.vaultId);
+      const name = drive.safeName(this.vault.nameOf(node) || '') || 'Datei';
+      this._vaultActive++;
+      try {
+        const r = await this.vaultViews.open({
+          node, name, vaultId: node.vaultId, keys,
+          download: async (file) => {
+            const c = await this.api.content(node.id, versionId);
+            if (c.empty || !c.mediaId) throw new DriveError('no content', { code: 'invalid' });
+            await this.api.downloadTo(c, file, {});
+          },
+        });
+        // locked while it loaded: nothing is shown
+        if (r.token && !this.vault.keysOf(node.vaultId)) {
+          await this.vaultViews.close(r.token);
+          throw new DriveError('vault is locked', { code: 'vault_locked' });
+        }
+        return { ok: true, ...r };
+      } catch (err) {
+        if (err instanceof V.DriveVaultError) throw new DriveError(err.message, { code: err.code === 'decrypt' ? 'vault_decrypt' : 'vault_invalid' });
+        throw err;
+      } finally {
+        this._vaultActive--;
+        this.vaultLock.touch();
+      }
+    });
+  }
+
+  /** The viewer closed → { ok }: its token, file key and ciphertext go. */
+  async vaultViewClose(token) {
+    await this.vaultViews.close(token);
+    return { ok: true };
+  }
+
+  /** Electron protocol.handle('gcvault', (req) => drive.handleVaultProtocol(req)) — the viewer's bytes (drive-vault-view.js). */
+  handleVaultProtocol(request) {
+    return this.vaultViews.handleProtocol(request);
+  }
+
   /** "Speichern unter …": the file (or a version) into a path the person picks → { ok, path } | { ok: false, cancelled }. */
   async saveAs(nodeId, { versionId = null } = {}) {
     if (!this.dialog || typeof this.dialog.showSaveDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     return this._run(async () => {
       const node = await this.api.node(nodeId);
       if (node.isDir) throw new DriveError('a folder', { code: 'invalid' });
-      const name = drive.safeName(node.name) || 'Datei';
+      refuseBlocked(node);
+      const vault = node.encrypted && node.vaultId ? node.vaultId : null;
+      if (vault) {
+        await this.vault.tryOpen(vault);
+        this.vault.keys(vault);
+      }
+      const name = drive.safeName(vault ? this.vault.nameOf(node) || '' : node.name) || 'Datei';
       const win = this.getMainWindow();
-      const res = win ? await this.dialog.showSaveDialog(win, { defaultPath: name }) : await this.dialog.showSaveDialog({ defaultPath: name });
+      const opts = { defaultPath: this.dialogPath('downloads', name) };
+      const res = win ? await this.dialog.showSaveDialog(win, opts) : await this.dialog.showSaveDialog(opts);
       if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true, code: 'cancelled' };
       const row = this._downloadRow(path.basename(res.filePath), node.size);
       try {
-        await this._fetchTo(node.id, versionId, res.filePath, row);
+        // a vault's file: decrypted into the path picked (the person asked for a plain copy there)
+        if (vault) await this._vaultFetchTo(node, versionId, res.filePath, row);
+        else await this._fetchTo(node.id, versionId, res.filePath, row);
       } catch (err) {
         this._set(row.id, { state: 'failed', code: drive.errorCode(err) });
         throw err;
@@ -870,6 +2736,51 @@ class DriveService extends EventEmitter {
   }
 }
 
+/**
+ * A node the host's virus scan blocks (Drive 1.19 'scan') is not opened, saved or previewed: the same refusal as the
+ * plugin's (423 scan_pending | quarantined | scan_blocked { scan }), without asking the server for the bytes.
+ */
+function refuseBlocked(node) {
+  if (!node || !SC.isBlocked(node.scan)) return;
+  throw new DriveError('blocked by the virus scan', { status: 423, code: SC.refusalOf(node.scan), body: { scan: node.scan } });
+}
+
+/** The live event / push data `vault` → { vault, event, device, keyVersion } */
+function vaultEvent(d) {
+  const o = d && typeof d === 'object' ? d : {};
+  return {
+    vault: drive.vaultIdOf(o.vault),
+    event: typeof o.event === 'string' ? o.event.slice(0, 20) : null,
+    device: drive.vaultDeviceIdOf(o.device),
+    keyVersion: drive.posId(o.keyVersion),
+  };
+}
+
+/** "Brief.pdf" → "Brief (2).pdf" while taken (keys of S.keyOf); a folder (`dir`) without the extension rule. */
+function freeFileName(name, taken, dir = false) {
+  if (!taken.has(S.keyOf(name))) return name;
+  const dot = dir ? -1 : name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let i = 2; i < 10000; i++) {
+    const c = `${base} (${i})${ext}`;
+    if (!taken.has(S.keyOf(c))) return c;
+  }
+  return `${base} (${Date.now()})${ext}`;
+}
+
+/**
+ * safeStorage (Windows: DPAPI, bound to the Windows user) as the `protect` of the vault folders' device key:
+ * DriveService.safeStorageProtect(require('electron').safeStorage).
+ */
+function safeStorageProtect(safeStorage) {
+  return {
+    available: () => !!(safeStorage && safeStorage.isEncryptionAvailable()),
+    encrypt: (b) => safeStorage.encryptString(Buffer.from(b).toString('base64')),
+    decrypt: (b) => Buffer.from(safeStorage.decryptString(Buffer.from(b)), 'base64'),
+  };
+}
+
 /** SHA-256 of a file (hex), streamed. */
 function sha256File(p) {
   return new Promise((resolve, reject) => {
@@ -885,5 +2796,9 @@ DriveService.DEFAULT_TIMING = DEFAULT_TIMING;
 DriveService.STORE_KEY = STORE_KEY;
 DriveService.sha256File = sha256File;
 DriveService.FOLDER_MAX_FILES = FOLDER_MAX_FILES;
+DriveService.safeStorageProtect = safeStorageProtect;
+DriveService.freeFileName = freeFileName;
+DriveService.VAULT_OPEN_KEEP_MS = VAULT_OPEN_KEEP_MS;
+DriveService.VaultViews = DriveVaultViews;
 
 module.exports = DriveService;

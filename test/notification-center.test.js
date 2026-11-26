@@ -103,6 +103,69 @@ describe('NotificationCenter toasts', () => {
     assert.equal(center.list().items[0].actions.length, 2);
   });
 
+  it('Windows refuses the toasts: the same local message is not shown twice next to itself in the app', () => {
+    const { center, N, setNow } = setup();
+    const fallback = [];
+    center.on('fallback', (x) => fallback.push(x.title + (x.body ? ` – ${x.body}` : '')));
+    const update = () => center.notify({ title: 'Update bereit', body: 'Version 1.89.0 kann installiert werden', collapseKey: 'update', force: true });
+    // the updater finds the update, Windows refuses its toast: the app shows it
+    update();
+    N.created[0].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2147024891)');
+    assert.deepEqual(fallback, ['Update bereit – Version 1.89.0 kann installiert werden']);
+    // 10 s after the start the updater tells the waiting update again: as a toast it would have replaced the first one
+    setNow(T0 + 4000);
+    assert.equal(update(), null);
+    assert.equal(fallback.length, 1);
+    // another text under the same key (a newer version), another key and a message without a key are shown
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'update', force: true });
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'other', force: true });
+    center.notify({ title: 'VPN getrennt', force: true });
+    center.notify({ title: 'VPN getrennt', force: true });
+    assert.deepEqual(fallback.slice(1), ['Update bereit – Version 1.90.0 kann installiert werden', 'Update bereit – Version 1.90.0 kann installiert werden', 'VPN getrennt', 'VPN getrennt']);
+    // a push of the inbox is never dropped (its entry is another one each time)
+    center.handleNotification(note(1, { title: 'Gateway offline', collapse_key: 'gw' }));
+    center.handleNotification(note(2, { title: 'Gateway offline', collapse_key: 'gw' }));
+    assert.equal(fallback.filter((x) => x.startsWith('Gateway offline')).length, 2);
+    // once the first one has left the screen the same message is told again (the periodic check, „Nach Updates suchen“)
+    setNow(T0 + 4000 + NotificationCenter.FALLBACK_REPEAT_MS);
+    center.notify({ title: 'Update bereit', body: 'Version 1.90.0 kann installiert werden', collapseKey: 'update', force: true });
+    assert.equal(fallback.at(-1), 'Update bereit – Version 1.90.0 kann installiert werden');
+    assert.equal(fallback.length, 8);
+  });
+
+  it('Windows refuses the toasts (E_ACCESSDENIED): shown in the app instead, the status says so, tried again later', () => {
+    const { center, N, events, setNow } = setup();
+    const fallback = [];
+    center.on('fallback', (x) => fallback.push(x));
+    center.handleNotification(note(1, { title: 'Gateway offline' }));
+    assert.equal(center.status().toastsBlocked, false);
+    // as Electron reports it on Windows when the app's notifications are off (or another Windows user runs it)
+    N.created[0].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2147024891)');
+    assert.deepEqual(fallback, [{ title: 'Gateway offline', body: 'Seit 2 Minuten kein Lebenszeichen', id: 1001 }]);
+    assert.equal(center.status().toastsBlocked, true);
+    assert.equal(events.status.at(-1).toastsBlocked, true);
+    assert.equal(center.toastBlocked(), true);
+    // the next ones are not handed to Windows meanwhile, the app shows them
+    center.handleNotification(note(2, { title: 'Gateway 2' }));
+    assert.equal(N.created.length, 1);
+    assert.equal(fallback.at(-1).title, 'Gateway 2');
+    assert.ok(center.notify({ title: 'VPN getrennt', force: true }) === null);
+    assert.equal(fallback.at(-1).title, 'VPN getrennt');
+    // later Windows is asked again; a toast shown ends the block
+    setNow(T0 + NotificationCenter.TOAST_BLOCK_MS + 1000);
+    assert.equal(center.toastBlocked(), false);
+    center.handleNotification(note(3, { title: 'Gateway 3' }));
+    assert.equal(N.created.length, 2);
+    N.created[1].emit('show');
+    assert.equal(center.status().toastsBlocked, false);
+    // other failures are only logged
+    center.handleNotification(note(4));
+    N.created[2].emit('failed', {}, 'WinAPI: Show failed, ERROR (HRESULT: -2143420155)');
+    assert.equal(center.status().toastsBlocked, false);
+    assert.equal(NotificationCenter.isToastDenied('0x80070005'), true);
+    assert.equal(NotificationCenter.isToastDenied('timeout'), false);
+  });
+
   it('maps priority to sound: info is silent, normal has the default sound', () => {
     const { center, N } = setup();
     center.handleNotification(note(1, { priority: 'info' }));
@@ -336,6 +399,65 @@ describe('NotificationCenter actions', () => {
     b.center.handleNotification(note(1, { data }));
     await b.center.performAction(1001, 'portal');
     assert.deepEqual(b.events.portal, [{ path: '/portal/notify' }]);
+  });
+
+  it('a reminder of Notizen & Aufgaben: three callback buttons on the toast; the morning hint\'s portal buttons open the page that answers them', async () => {
+    const topic = 'plugin:gatecontrol-notizen:reminders';
+    const reminder = { notizen: { kind: 'reminder', taskId: 41, task: 41, tag: 'task:41:1794729600000' }, actions: [
+      { id: 'done', label: 'Erledigt', type: 'callback' },
+      { id: 'snooze_1h', label: 'In 1 Std.', type: 'callback' },
+      { id: 'snooze_eve', label: 'Heute Abend', type: 'callback' },
+    ] };
+    const { center, N, push, portal, events, shown } = setup();
+    center.handleNotification(note(1, { topic, title: 'Mülltonne rausstellen', body: 'Fällig heute 09:00 · Aufgaben', collapse_key: 'task:41', data: reminder }));
+    const xml = N.created[0].opts.toastXml;
+    assert.deepEqual([...xml.matchAll(/<action content="([^"]*)"/g)].map((m) => m[1]), ['Erledigt', 'In 1 Std.', 'Heute Abend']);
+    // „In 1 Std.“ on the toast: the ack carries the button, the server hands it to the plugin
+    assert.equal(center.handleProtocolUrl(buttonUrls(N.created[0])[1]), true);
+    await tick();
+    assert.deepEqual(push.acks.at(-1), { seqs: [1], state: 'read', action: 'snooze_1h' });
+    assert.equal(portal.length, 0);
+
+    // the morning hint: „Erledigt“ of several tasks and „Verschieben“ come as links to the plugin's portal tab
+    const yesterday = { notizen: { kind: 'yesterday', day: '2026-11-18', count: 2, taskIds: [41, 42] }, actions: [
+      { id: 'done_ask', label: 'Erledigt', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+      { id: 'today', label: 'Heute', type: 'callback' },
+      { id: 'move', label: 'Verschieben', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+    ] };
+    center.handleNotification(note(2, { topic, title: 'Gestern offen geblieben: 2', collapse_key: 'yesterday', data: yesterday }));
+    // no page claimed the entry: the portal, as before
+    assert.deepEqual(await center.performAction(1002, 'move'), { ok: true });
+    assert.deepEqual(portal, ['/portal#plg-gatecontrol-notizen']);
+    // the page claims it and answers 'done_ask' and 'move' itself
+    const seen = [];
+    center.addClickRoute('plg-gatecontrol-notizen', (entry, action) => {
+      seen.push(action ? action.id : null);
+      return entry.topic === topic ? { kind: 'yesterday', action: action && ['done_ask', 'move'].includes(action.id) ? action.id : null } : null;
+    });
+    const before = shown.length;
+    assert.deepEqual(await center.performAction(1002, 'done_ask'), { ok: true });
+    assert.deepEqual(events.navigate.at(-1), { route: 'plg-gatecontrol-notizen', id: 1002, context: { kind: 'yesterday', action: 'done_ask' } });
+    assert.equal(shown.length, before + 1);
+    assert.equal(portal.length, 1);
+    assert.deepEqual(push.acks.at(-1), { seqs: [2], state: 'read', action: 'done_ask' });
+    assert.deepEqual(seen, ['done_ask']);
+    // „Heute“ stays a callback: nothing opens
+    const nav = events.navigate.length;
+    assert.deepEqual(await center.performAction(1002, 'today'), { ok: true });
+    assert.equal(events.navigate.length, nav);
+    assert.deepEqual(push.acks.at(-1), { seqs: [2], state: 'read', action: 'today' });
+    // a portal button the page does not answer, and one to another portal tab, still open the portal
+    center.handleNotification(note(3, { topic, data: { notizen: { kind: 'yesterday', taskIds: [41] }, actions: [
+      { id: 'more', label: 'Mehr', type: 'open_portal', target: '/portal#plg-gatecontrol-notizen' },
+      { id: 'move', label: 'Verschieben', type: 'open_portal', target: '/portal#plg-gatecontrol-mail' },
+    ] } }));
+    await center.performAction(1003, 'more');
+    await center.performAction(1003, 'move');
+    assert.deepEqual(portal, ['/portal#plg-gatecontrol-notizen', '/portal#plg-gatecontrol-notizen', '/portal#plg-gatecontrol-mail']);
+    // a click on the toast itself: the resolver gets no button
+    N.created.at(-1).emit('click');
+    assert.equal(seen.at(-1), null);
+    assert.deepEqual(events.navigate.at(-1), { route: 'plg-gatecontrol-notizen', id: 1003, context: { kind: 'yesterday', action: null } });
   });
 
   it('callback buttons of a plugin push (Fahrtenbuch): offered, acked with their id and remembered', async () => {

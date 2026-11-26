@@ -53,11 +53,12 @@ function actionUrl(scheme, nonce) {
  * @param {string} [opts.scheme] - protocol for the buttons; none → no buttons
  * @param {string} [opts.launch] - argument of a body click (foreground)
  * @param {string} [opts.imagePath] - app logo override (absolute file path)
+ * @param {string} [opts.inlineImagePath] - a picture below the text (absolute file path, e.g. a camera still)
  * @returns {string}
  */
 function buildToastXml({
   title, body = '', attribution = '', priority = 'normal', silent = false,
-  buttons = [], scheme = null, launch = 'gatecontrol-notify', imagePath = null,
+  buttons = [], scheme = null, launch = 'gatecontrol-notify', imagePath = null, inlineImagePath = null,
 } = {}) {
   const critical = priority === 'critical';
   const attrs = [`launch="${xmlEscape(launch)}"`, 'activationType="foreground"'];
@@ -71,6 +72,7 @@ function buildToastXml({
   if (body) lines.push(`<text>${xmlEscape(body)}</text>`);
   if (attribution) lines.push(`<text placement="attribution">${xmlEscape(attribution)}</text>`);
   if (imagePath) lines.push(`<image placement="appLogoOverride" src="${xmlEscape(imagePath)}"/>`);
+  if (inlineImagePath) lines.push(`<image src="${xmlEscape(inlineImagePath)}"/>`);
   lines.push('</binding></visual>');
 
   const quiet = silent || priority === 'info';

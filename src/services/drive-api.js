@@ -11,6 +11,7 @@
  *   GET    …/gatecontrol-drive/api/me                            seat, licence, areas
  *   GET    …/api/areas                                           areas with their storage
  *   GET    …/api/nodes/<id>  +  …/nodes/<id>/children            a folder (crumbs, role, content)
+ *   GET    …/api/nodes/<id>/children?dirs=1                      Drive 1.11 'vaultsApart': its folders (hasDirs) for the menu
  *   GET    …/api/nodes/by-path?area&path                         a node by its path in an area
  *   GET    …/api/changes?since&limit                             the change log (folder sync)
  *   POST   …/api/nodes { parentId, name, rename? }               new folder
@@ -29,9 +30,59 @@
  *   GET    …/api/trash · POST trash/<id>/restore · DELETE trash/<id>
  *   GET    …/api/search?q&area
  *   POST   …/api/links · GET links?nodeId · DELETE links/<token>
+ *   GET    …/api/nodes/<id>/timetravel?at=<ISO>                  Drive 1.7 'timeTravel': what a time travel would do
+ *   POST   …/api/nodes/<id>/timetravel { at }                    … and doing it
+ *   GET    …/api/photos?area&before&limit · photos/months?area · photos/memories?date   Drive 1.7 'photos'
+ *   GET    …/api/memories?date · memories/photos?id&before&limit                     Drive 1.26 'memoryCollections'
+ *   GET/POST …/api/albums · PATCH/DELETE albums/<id> · GET albums/<id>?before&limit
+ *   POST/DELETE …/api/albums/<id>/items { ids }                   Drive 1.7 'albums' ('frame': PATCH { frame })
+ *   GET    …/api/storage[?all=1] · POST storage/versions/prune { areaId, keep }   Drive 1.7 'storage'
+ *   GET|POST …/api/nodes/<id>/insight · POST nodes/<id>/insight/apply { name?, folder? }   Drive 1.8 'docAi'
+ *   GET    …/api/deadlines?from&to · POST|DELETE deadlines/<id>/remind { daysBefore } · PATCH areas/<id> { docAi }
+ *   POST   …/api/nodes/<id>/office                               Drive 1.9 'office' → { url, mode, expiresAt }
+ *   GET|POST …/api/vaults · GET vaults/<id> · GET vaults/<id>/keys?deviceId · GET|PUT vaults/<id>/recovery
+ *   GET|POST …/api/vaults/<id>/devices · POST …/devices/<did>/approve · DELETE …/devices/<did> · POST vaults/<id>/rotate
+ *          (Drive 1.9 'vault'; POST nodes, uploads/commit and PATCH nodes/<id> take encrypted, nameCipher, keyVersion)
+ *   POST   …/api/ops/check { op, ids, target? } · POST ops { op, ids, target?, onConflict? } · GET ops/<id> · GET ops?state
+ *   DELETE …/api/ops/<id> · POST ops/<id>/undo                   Drive 1.12 'bulk': jobs for many nodes (move, copy, trash …)
+ *   POST   …/api/zip { ids, name? } → { url, name, expiresAt }    Drive 1.12 'zip' · POST links { nodeIds, … }: 'multiLink'
+ *   POST   …/api/deadlines/<id>/calendar                         Drive 1.14 'deadlineCalendar' → { deadline } (calendar)
+ *   POST   …/api/ask { q, area? }                                Drive 1.14 'docAsk' → { status, answer, sources, terms }
+ *   POST   …/api/scans/classify { mediaIds, text? }              Drive 1.14 'scanDocs' → { kind, confidence, summary }
+ *   POST   …/api/scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → { …, file { …, data } | null }
+ *   POST   …/api/scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original }
+ *   PATCH  …/api/areas/<id> { deadlinesToCalendar }               Drive 1.14: new deadlines of the area into the calendar
+ *   GET    …/api/deadlines/calendars · GET|PUT deadlines/targets   Drive 1.17 'deadlineMailCalendar': the family calendar or
+ *          a mail calendar, the person's target per area; POST deadlines/<id>/calendar { target? }
+ *   GET    …/api/photos?q=                                       Drive 1.14 'photoSearch': photos by their labels (+ terms)
+ *   GET    …/api/photos?place=&bbox=&person=&districts=1&with=people · photos/months (the same filters)
+ *   GET    …/api/photos/places · photos/map?bbox&zoom · photos/suggest?q   Drive 1.16 'photoPlaces' / 'photoPeople'
+ *   GET|PUT …/api/photos/settings { keepGeo, stripGeoOnShare, people, peopleKids } · DELETE photos/geo
+ *          (uploads/commit takes `geo { lat, lon }`)
+ *   GET    …/api/people · people/<id> · people/<id>/similar · people/<id>/uncertain?limit
+ *   PATCH  …/api/people/<id> { name?, hidden?, contact? } · POST people/<id>/merge { into }
+ *   POST   …/api/people/<id>/confirm { faceIds, yes } · POST faces/<id>/move { person }   Drive 1.16 'photoPeople'
+ *   GET    …/api/overview                                        Drive 1.18 'overview': the page "Übersicht" in one call
+ *   GET    …/api/photos/classes                                  Drive 1.13 'photoClasses': { work, private, review }
+ *   GET    …/api/photos?media=image|video · photos/months?media= · search?media=&q=   Drive 1.25 'mediaFilter'
+ *          (only pictures or only videos; search then also without q), items with durationMs
  *   PUT    …/gatecontrol-drive/media (resumable: ?uploadId&offset + Content-Range)  → { mediaId }
  *   GET    …/gatecontrol-drive/media/<mediaId>                   the file (streamed)
  *   GET    …/gatecontrol-drive/media/<mediaId>/preview[?size=large]   the preview picture (JPEG)
+ *   GET    …/api/offline · PUT|DELETE …/api/nodes/<id>/offline    Drive 1.20 'offline': „offline verfügbar“ (a mark of the
+ *          person: the phones keep the files, the home gateways hold them first)
+ *   GET    …/api/frame/photos[?ids=] · POST frame/photos { ids } · DELETE frame/photos { ids } (+ ?ids=)   Drive 1.31
+ *          'framePhotos': photos of the person for the photo frame (album „Fotorahmen“; 403 { field: 'frame' })
+ *
+ * Home cache (Drive 1.20, GateControl 1.231): GET nodes/<id>/content goes out with `X-GC-Local` (this PC's private
+ * IPv4 addresses, utils/home-cache.js); in the home network of a gateway that holds the file the answer carries
+ * `lan { url, sha256, tlsSha256, exp }` and downloadTo() loads it from there (certificate pinned, SHA-256 checked),
+ * else — and on any error there — from the server as before.
+ * Drive 1.24 on GateControl 1.249 (feature 'homeCachePreviews'): the previews are in the home cache too. Every GET goes
+ * out with `X-GC-Local` then; the file nodes of an answer may carry `preview.lan` / `preview.largeLan` (photo items
+ * `previewLan` / `largeLan`), kept per media id for ten minutes at most (their `exp`), and preview() loads the picture
+ * from the gateway first (pinned, SHA-256 checked, at most PREVIEW_LAN_PARALLEL at a time) — on any error, and for a
+ * minute after one, from the server as before.
  *
  * The media upload / download is GateDropApi's code (same core media routes,
  * same resumable protocol) on Drive's media path. Failures are thrown as
@@ -39,16 +90,30 @@
  * `http_<status>`, 'network', 'timeout').
  */
 
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const axios = require('axios');
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
 const drive = require('../utils/drive');
+const OV = require('../utils/drive-overview');
+const HC = require('../utils/home-cache');
+const { fetchLan } = require('./home-cache');
 
 const { MessengerError: DriveError } = MessengerApi;
 
 const JSON_TIMEOUT_MS = 25000;
 const PREVIEW_MAX = 2 * 1024 * 1024;
+// Drive 1.24: previews from the home gateway
+const PREVIEW_LANS_MAX = 5000;
+const PREVIEW_LAN_PARALLEL = 6;
+const PREVIEW_LAN_PAUSE_MS = 60 * 1000;
+const PREVIEW_LAN_MARGIN_S = 5;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
+const isB64u = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[A-Za-z0-9_-]+$/.test(v);
 
 class DriveApi {
   /**
@@ -60,9 +125,22 @@ class DriveApi {
    * @param {(ms: number) => Promise<void>} [opts.sleep]
    * @param {number} [opts.resumableFrom] - larger uploads are resumable (8 MiB)
    * @param {number} [opts.partSize] - resumable part size (8 MiB)
+   * @param {() => object} [opts.getInterfaces] - os.networkInterfaces (the PC's LAN addresses for X-GC-Local)
+   * @param {Function} [opts.fetchLan] - services/home-cache.js fetchLan (tests)
+   * @param {(host: string) => boolean} [opts.lanHostOk] - which hosts a `lan` hint may name (private IPv4; tests)
    */
-  constructor({ apiClient, log, http = null, getLang = null, sleep = null, resumableFrom = drive.RESUMABLE_FROM, partSize } = {}) {
+  constructor({
+    apiClient, log, http = null, getLang = null, sleep = null, resumableFrom = drive.RESUMABLE_FROM, partSize,
+    getInterfaces = () => os.networkInterfaces(), fetchLan: lanFetch = fetchLan, lanHostOk = HC.isPrivateV4,
+  } = {}) {
     this.log = log || noopLog();
+    this.getInterfaces = getInterfaces;
+    this.fetchLan = lanFetch;
+    this.lanHostOk = lanHostOk;
+    // Drive 1.24: the previews' hints (`<mediaId>|s|l` → lan), LAN loads running, no LAN until (after a failure)
+    this._previewLans = new Map();
+    this._previewLanBusy = 0;
+    this._previewLanPause = 0;
     this.http = http || new MessengerApi({ apiClient, log: this.log });
     this.getLang = typeof getLang === 'function' ? getLang : () => null;
     this.media = new GateDropApi({
@@ -81,9 +159,78 @@ class DriveApi {
     return l === 'de' || l === 'en' ? { lang: l } : {};
   }
 
-  /** JSON call below …/gatecontrol-drive/api/. */
-  api(method, p, { body, params, timeout = JSON_TIMEOUT_MS } = {}) {
-    return this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout });
+  /**
+   * JSON call below …/gatecontrol-drive/api/. Drive 1.24 ('homeCachePreviews'): a GET carries `X-GC-Local` and the
+   * previews' hints of its answer are kept (_keepPreviewLans).
+   */
+  api(method, p, { body, params, timeout = JSON_TIMEOUT_MS, headers = null } = {}) {
+    const lans = method === 'GET' && this._previewLanOn();
+    const h = lans && !headers ? HC.localHeaders(this.getInterfaces) : headers;
+    const run = this.http._call(method, drive.API_BASE + p, { body, params: { ...(params || {}), ...this._lang() }, timeout, ...(h && Object.keys(h).length ? { headers: h } : {}) });
+    return lans ? run.then((data) => { this._keepPreviewLans(data); return data; }) : run;
+  }
+
+  /** The last `me` named 'homeCachePreviews' (Drive 1.24 on GateControl 1.249). */
+  _previewLanOn() {
+    return !!(this._features && Array.isArray(this._features.list) && this._features.list.includes('homeCachePreviews'));
+  }
+
+  /**
+   * The hints of the previews in an answer → this._previewLans (`<mediaId>|s` / `|l` → lan): file nodes (node, current,
+   * items, changes[].node, recent, activity[].sample) with `preview.lan` / `.largeLan`, photo items with `previewLan` /
+   * `largeLan`. A hint that is not right (utils/home-cache.js normalizeLan) is not kept.
+   */
+  _keepPreviewLans(data) {
+    if (!data || typeof data !== 'object') return;
+    const list = [];
+    const add = (n) => { if (n && typeof n === 'object' && drive.isMediaId(n.mediaId)) list.push(n); };
+    add(data.node);
+    add(data.current);
+    for (const k of ['items', 'recent']) if (Array.isArray(data[k])) data[k].forEach(add);
+    if (Array.isArray(data.changes)) data.changes.forEach((c) => add(c && c.node));
+    if (Array.isArray(data.activity)) data.activity.forEach((x) => add(x && x.sample));
+    for (const n of list) {
+      const pv = n.preview && typeof n.preview === 'object' ? n.preview : null;
+      const small = HC.normalizeLan(pv ? pv.lan : n.previewLan, { hostOk: this.lanHostOk });
+      const large = HC.normalizeLan(pv ? pv.largeLan : n.largeLan, { hostOk: this.lanHostOk });
+      for (const [k, lan] of [[`${n.mediaId}|s`, small], [`${n.mediaId}|l`, large]]) {
+        if (!lan) continue;
+        this._previewLans.delete(k);
+        this._previewLans.set(k, lan);
+      }
+    }
+    while (this._previewLans.size > PREVIEW_LANS_MAX) this._previewLans.delete(this._previewLans.keys().next().value);
+  }
+
+  /** The kept hint of a preview while it has time left, else null. */
+  _previewLan(mediaId, large) {
+    const k = `${mediaId}|${large ? 'l' : 's'}`;
+    const lan = this._previewLans.get(k);
+    if (!lan) return null;
+    if (lan.exp <= Math.floor(Date.now() / 1000) + PREVIEW_LAN_MARGIN_S) { this._previewLans.delete(k); return null; }
+    return lan;
+  }
+
+  /** A preview from the home gateway → { mime: 'image/jpeg', data } or null (no hint, busy, paused, any error). */
+  async _previewFromLan(mediaId, large) {
+    const lan = this._previewLan(mediaId, large);
+    if (!lan || Date.now() < this._previewLanPause || this._previewLanBusy >= PREVIEW_LAN_PARALLEL) return null;
+    this._previewLanBusy++;
+    const file = path.join(os.tmpdir(), `gc-lan-preview-${crypto.randomBytes(8).toString('hex')}`);
+    try {
+      await this.fetchLan(lan, file, { maxBytes: PREVIEW_MAX });
+      const data = await fs.promises.readFile(file);
+      // GateControl's previews are JPEG
+      if (data.length < 3 || data[0] !== 0xff || data[1] !== 0xd8 || data[2] !== 0xff) throw new DriveError('not a picture', { code: 'bad_response' });
+      return { mime: 'image/jpeg', data };
+    } catch (err) {
+      this._previewLanPause = Date.now() + PREVIEW_LAN_PAUSE_MS;
+      this.log.info(`Drive: Vorschaubild nicht aus dem Heimnetz (${(err && err.code) || 'error'}) – vom Server`);
+      return null;
+    } finally {
+      this._previewLanBusy--;
+      fs.promises.rm(file, { force: true }).catch(() => {});
+    }
   }
 
   _id(v) {
@@ -143,6 +290,22 @@ class DriveApi {
     const r = await this.api('GET', `nodes/${this._id(id)}/children`, { params: drive.childrenQuery({ sort: 'name', order: 'asc', offset, limit }) });
     if (!r || !Array.isArray(r.items)) throw new DriveError('bad children answer', { code: 'bad_response' });
     return { items: drive.normalizeItems(r, 1000), total: drive.count(r.total), next: drive.count(r.next), role: drive.ROLES.includes(r.role) ? r.role : null };
+  }
+
+  /**
+   * Drive 1.11: the subfolders of a folder for the menu's tree → { items: [{ id, name, hasDirs }], next }. With
+   * 'vaultsApart' `children?dirs=1` (folders only, no vaults, `hasDirs`), else the plain children filtered here
+   * (hasDirs null: unknown until opened).
+   */
+  async dirs(id, { offset = 0, limit = 1000, apart = false } = {}) {
+    const params = drive.childrenQuery({ sort: 'name', order: 'asc', offset, limit });
+    if (apart) params.dirs = 1;
+    const r = await this.api('GET', `nodes/${this._id(id)}/children`, { params });
+    if (!r || !Array.isArray(r.items)) throw new DriveError('bad children answer', { code: 'bad_response' });
+    const d = drive.normalizeDirs(r, 1000);
+    // an older Drive sends folders first: a page with files has all folders already
+    if (!apart && d.next !== null && r.items.some((x) => x && x.isDir === false)) d.next = null;
+    return d;
   }
 
   /** Every child of a folder (all pages, at most `max`). */
@@ -244,8 +407,13 @@ class DriveApi {
     return drive.normalizeGuardAnswer(await this.api('POST', `guard/incidents/${encodeURIComponent(id)}/${decision}`, { body: {}, timeout: 120000 }));
   }
 
-  async search(q, area = null) {
+  /** GET search?q=&area=&media= — Drive 1.25 'mediaFilter': `media` 'image' | 'video' (q may then be empty). */
+  async search(q, area = null, media = null) {
     const params = { q };
+    if (media) {
+      if (!drive.mediaOf(media)) throw new DriveError('invalid media', { code: 'invalid' });
+      params.media = media;
+    }
     if (area) {
       const a = drive.areaIdOf(area);
       if (!a) throw new DriveError('invalid area', { code: 'invalid' });
@@ -288,12 +456,18 @@ class DriveApi {
 
   // ── Links ────────────────────────────────────────────────
 
-  async createLink(opts) {
-    const body = drive.linkBody(opts);
+  /**
+   * A link of one node ({ nodeId, … }) or — Drive 1.12 'multiLink' — one link for several ({ ids, … }).
+   * `withSkipped` → { link, skipped: [{ id, reason }] } (Drive 1.19: files the virus scan blocks are left out,
+   * reason 'blocked'; a single blocked file: 423 scan_pending | quarantined | scan_blocked).
+   */
+  async createLink(opts, { withSkipped = false } = {}) {
+    const body = opts && Array.isArray(opts.ids) ? drive.multiLinkBody(opts) : drive.linkBody(opts);
     if (!body) throw new DriveError('invalid link', { code: 'invalid' });
-    const link = drive.normalizeLink((await this.api('POST', 'links', { body })).link);
+    const r = await this.api('POST', 'links', { body });
+    const link = drive.normalizeLink(r.link);
     if (!link) throw new DriveError('bad link answer', { code: 'bad_response' });
-    return link;
+    return withSkipped ? { link, skipped: drive.blockedList(r.skipped) } : link;
   }
 
   async links(nodeId = null) {
@@ -305,6 +479,97 @@ class DriveApi {
     if (!drive.isLinkToken(token)) throw new DriveError('invalid link', { code: 'invalid' });
     await this.api('DELETE', `links/${token}`);
     return { ended: true };
+  }
+
+  // ── Jobs for many nodes (Drive 1.12, 'bulk' / 'zip') ───
+
+  _opBody(o) {
+    const body = drive.opBody(o);
+    if (!body) throw new DriveError('invalid job', { code: 'invalid' });
+    return body;
+  }
+
+  _opId(id) {
+    const v = drive.opIdOf(id);
+    if (!v) throw new DriveError('invalid job id', { code: 'invalid' });
+    return encodeURIComponent(v);
+  }
+
+  async _opAnswer(promise) {
+    const op = drive.normalizeOp(await promise);
+    if (!op) throw new DriveError('bad job answer', { code: 'bad_response' });
+    return op;
+  }
+
+  /** POST ops/check { op, ids, target? } → { files, folders, bytes, conflicts, blocked } (changes nothing) */
+  async opsCheck(o) {
+    const { onConflict, ...rest } = o || {};
+    const r = drive.normalizeOpCheck(await this.api('POST', 'ops/check', { body: this._opBody(rest), timeout: 120000 }));
+    if (!r) throw new DriveError('bad check answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST ops { op, ids, target?, onConflict? } → job (a small one may come back `done` already) */
+  opsStart(o) {
+    return this._opAnswer(this.api('POST', 'ops', { body: this._opBody(o), timeout: 120000 }));
+  }
+
+  /** GET ops/<id> → job */
+  op(id) {
+    return this._opAnswer(this.api('GET', `ops/${this._opId(id)}`));
+  }
+
+  /** GET ops?state=running → [job] (the person's own) */
+  async ops({ state = 'running' } = {}) {
+    return drive.normalizeOps(await this.api('GET', 'ops', { params: drive.OP_STATES.includes(state) ? { state } : {} }));
+  }
+
+  /** DELETE ops/<id>: stops the job (what is done stays) → job */
+  opCancel(id) {
+    return this._opAnswer(this.api('DELETE', `ops/${this._opId(id)}`));
+  }
+
+  /** POST ops/<id>/undo (until undoUntil) → the job that undoes it */
+  opUndo(id) {
+    return this._opAnswer(this.api('POST', `ops/${this._opId(id)}/undo`, { body: {}, timeout: 120000 }));
+  }
+
+  /**
+   * POST zip { ids, name? } → { url, name, expiresAt, files, skipped } (a short-lived bearer address of the ZIP; Drive 1.12
+   * without 'zipMixed': one folder or 1 … 20 files, else 400 invalid { reason: 'mixed' | 'too_many' })
+   */
+  async zip(ids, { name = null } = {}) {
+    const list = drive.idList(ids);
+    if (!list) throw new DriveError('invalid ids', { code: 'invalid' });
+    const body = { ids: list };
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (n) body.name = n;
+    const z = drive.normalizeZip(await this.api('POST', 'zip', { body, timeout: 120000 }));
+    if (!z) throw new DriveError('bad zip answer', { code: 'bad_response' });
+    return z;
+  }
+
+  /**
+   * Streams the ZIP of zip() into `dest` → { bytes, mime }: a path on this server goes with the device token; an address
+   * written out (Drive 1.12: GateControl's bearer link `…/s/<token>/zip`, no login) is fetched without it — https, or
+   * the server's own address.
+   */
+  downloadZip(url, dest, { onProgress } = {}) {
+    const opts = { onProgress, maxBytes: Number.MAX_SAFE_INTEGER };
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
+      if (url.includes('..')) return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
+      return this.media._stream(url, dest, opts);
+    }
+    let u = null;
+    try { u = new URL(String(url)); } catch { u = null; }
+    let same = false;
+    try { same = !!u && u.origin === new URL(String(this.scope().split('\n')[0] || '')).origin; } catch { same = false; }
+    if (!u || u.username || u.password || !(u.protocol === 'https:' || (same && u.protocol === 'http:'))) {
+      return Promise.reject(new DriveError('invalid zip address', { code: 'invalid' }));
+    }
+    // a bearer link: no token, no cookies — a plain GET
+    const plain = new GateDropApi({ http: { _client: () => axios, scope: () => '' }, log: this.log, mediaPath: drive.MEDIA_PATH, label: 'Drive' });
+    return plain._stream(u.href, dest, opts);
   }
 
   // ── Files ────────────────────────────────────────────────
@@ -322,7 +587,10 @@ class DriveApi {
    * `onConflict`: 'rename' (default) | 'version' | null — null with `baseRev`: a new version only
    * while the file still has that rev, else 409 conflict (err.body.current: the file as it is now).
    */
-  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null }) {
+  async commit({ mediaId, parentId, name, mtime = null, onConflict = 'rename', baseRev = null, empty = false, text = null, entropy = null, takenAt = null, geo = null, encrypted = null }) {
+    // Drive 1.9 ('vault'): into a vault only the ciphertext with { nameCipher, keyVersion } (name: the opaque name of a
+    // file of the vault for a new version) — never text, takenAt, entropy
+    if (encrypted) return this._commitEncrypted({ mediaId, parentId, name, mtime, onConflict, baseRev, ...encrypted });
     // Drive 1.5 ('emptyFiles'): an empty file goes without media as `size: 0`
     if (!empty && !drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
     const body = empty ? { parentId: this._id(parentId), name, size: 0 } : { mediaId, parentId: this._id(parentId), name };
@@ -333,20 +601,107 @@ class DriveApi {
     if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
     // Drive 1.6 ('guard'): the entropy of the first 64 KB (the caller sends it only to such Drives)
     if (Number.isFinite(entropy) && entropy >= 0 && entropy <= 8) body.entropy = Math.round(entropy * 1000) / 1000;
+    // Drive 1.7 ('takenAt'): when the photo / video was taken (ISO with the offset; the caller sends it only to such Drives)
+    if (typeof takenAt === 'string' && takenAt.length <= 40 && Number.isFinite(Date.parse(takenAt))) body.takenAt = takenAt;
+    // Drive 1.16 ('photoPlaces'): where it was taken (the caller sends it only to such Drives, and only with keepGeo)
+    if (geo && drive.geoBody(geo)) body.geo = drive.geoBody(geo);
     const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
     if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
     return c;
   }
 
+  async _commitEncrypted({ mediaId, parentId, name = null, mtime = null, onConflict = null, baseRev = null, nameCipher = null, keyVersion }) {
+    if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    const kv = drive.posId(keyVersion);
+    if (!kv || (nameCipher !== null && !isB64u(nameCipher, 2000)) || (name !== null && !/^[0-9a-f]{32}$/.test(String(name)))) throw new DriveError('invalid', { code: 'invalid' });
+    if (!nameCipher && !name) throw new DriveError('invalid', { code: 'invalid' });
+    const body = { mediaId, parentId: this._id(parentId), encrypted: true, keyVersion: kv };
+    if (nameCipher) body.nameCipher = nameCipher;
+    if (name) body.name = name;
+    if (onConflict === 'version' || onConflict === 'rename') body.onConflict = onConflict;
+    if (drive.count(baseRev) !== null) body.baseRev = baseRev;
+    if (Number.isFinite(mtime) && mtime > 0) body.mtime = Math.round(mtime);
+    const c = drive.normalizeCommit(await this.api('POST', 'uploads/commit', { body, timeout: 120000 }));
+    if (!c) throw new DriveError('bad commit answer', { code: 'bad_response' });
+    return c;
+  }
+
+  /** Drive 1.9 ('vault'): a folder in a vault (POST nodes { parentId, encrypted, nameCipher, keyVersion }). */
+  mkdirEncrypted(parentId, { nameCipher, keyVersion }) {
+    if (!isB64u(nameCipher, 2000) || !drive.posId(keyVersion)) throw new DriveError('invalid', { code: 'invalid' });
+    return this._nodeAnswer(this.api('POST', 'nodes', { body: { parentId: this._id(parentId), encrypted: true, nameCipher, keyVersion: drive.posId(keyVersion) } }));
+  }
+
+  /** Drive 1.9 ('vault'): a vault node's new name (PATCH nodes/<id> { nameCipher }). */
+  renameEncrypted(id, nameCipher) {
+    if (!isB64u(nameCipher, 2000)) throw new DriveError('invalid', { code: 'invalid' });
+    return this._nodeAnswer(this.api('PATCH', `nodes/${this._id(id)}`, { body: { nameCipher } }));
+  }
+
+
   /**
-   * GET nodes/<id>/content (or a version's) → { mediaId, name, mime, size }.
+   * GET nodes/<id>/content (or a version's) → { mediaId, name, mime, size, lan }.
    * Comes first for every download: it names the media and tells a child that a parent looked.
+   * Drive 1.20: the current content (not a version's) of a file a home gateway holds comes with
+   * `lan { url, sha256, tlsSha256, exp }` while this PC is in that home network, else lan: null.
    */
   async content(id, versionId = null) {
     const p = versionId ? `nodes/${this._id(id)}/versions/${this._id(versionId)}/content` : `nodes/${this._id(id)}/content`;
-    const c = drive.normalizeContent(await this.api('GET', p));
+    const raw = await this.api('GET', p, versionId ? {} : { headers: HC.localHeaders(this.getInterfaces) });
+    const c = drive.normalizeContent(raw);
     if (!c) throw new DriveError('bad content answer', { code: 'bad_response' });
+    c.lan = !c.empty && !versionId ? HC.normalizeLan(raw.lan, { hostOk: this.lanHostOk }) : null;
     return c;
+  }
+
+  /**
+   * The content `c` (content()) into the file `file` → { bytes, mime, via: 'lan' | 'server' }. With `c.lan` first from
+   * the home gateway (pinned certificate, SHA-256 of the bytes, size); on any error there quietly from the server.
+   * The file is (re)written from the start; on a failure of the server download the caller removes it.
+   * opts: onProgress, maxBytes, throttle (as download()).
+   */
+  async downloadTo(c, file, opts = {}) {
+    if (!c || !drive.isMediaId(c.mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    if (c.lan) {
+      try {
+        const max = Number.isSafeInteger(opts.maxBytes) ? opts.maxBytes : drive.MAX_FILE_BYTES;
+        const r = await this.fetchLan(c.lan, file, {
+          size: Number.isSafeInteger(c.size) && c.size > 0 ? c.size : null, maxBytes: max, onProgress: opts.onProgress, throttle: opts.throttle,
+        });
+        this.log.info(`Drive: aus dem Heimnetz geladen (${HC.lanWhere(c.lan)}, ${r.bytes} Bytes)`);
+        return { bytes: r.bytes, mime: c.mime || null, via: 'lan' };
+      } catch (err) {
+        this.log.info(`Drive: Heimnetz-Zwischenspeicher nicht nutzbar (${(err && err.code) || 'error'}) – lade vom Server`);
+      }
+    }
+    const out = fs.createWriteStream(file);
+    try {
+      const r = await this.download(c.mediaId, out, opts);
+      return { ...r, via: 'server' };
+    } catch (err) {
+      out.destroy();
+      throw err;
+    }
+  }
+
+  // ── "Offline verfügbar" (Drive 1.20, 'offline') ──────────
+
+  /** GET offline → [node + offline, offlineAt] — what the person keeps offline (newest first). */
+  async offline() {
+    return drive.normalizeItems(await this.api('GET', 'offline'), 500);
+  }
+
+  /** PUT nodes/<id>/offline (on) → { id, offline: true, node } · DELETE (off) → { id, offline: false } */
+  async setOffline(id, on) {
+    const nid = this._id(id);
+    if (on) {
+      const r = await this.api('PUT', `nodes/${nid}/offline`);
+      const node = drive.normalizeNode(r && r.node);
+      if (!node) throw new DriveError('bad node answer', { code: 'bad_response' });
+      return { id: node.id, offline: true, node };
+    }
+    await this.api('DELETE', `nodes/${nid}/offline`);
+    return { id: nid, offline: false, node: null };
   }
 
   // ── Devices (Drive 1.5, 'devices') ───────────────────────
@@ -378,6 +733,657 @@ class DriveApi {
     return { ok: true };
   }
 
+  // ── Time travel (Drive 1.7, 'timeTravel') ───────────────
+
+  _at(at) {
+    const iso = drive.isoOf(at);
+    if (!iso) throw new DriveError('invalid time', { code: 'invalid' });
+    return iso;
+  }
+
+  /** GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample, limited } (changes nothing) */
+  async timeTravelPreview(id, at) {
+    const r = drive.normalizeTimeTravelPreview(await this.api('GET', `nodes/${this._id(id)}/timetravel`, { params: { at: this._at(at) }, timeout: 120000 }));
+    if (!r) throw new DriveError('bad time travel answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST nodes/<id>/timetravel { at } → { at, before, restored, reverted, trashed, moved, failed } */
+  async timeTravel(id, at) {
+    const r = drive.normalizeTimeTravelResult(await this.api('POST', `nodes/${this._id(id)}/timetravel`, { body: { at: this._at(at) }, timeout: 300000 }));
+    if (!r) throw new DriveError('bad time travel answer', { code: 'bad_response' });
+    return r;
+  }
+
+  // ── Photos and albums (Drive 1.7, 'photos' / 'albums') ──
+
+  _area(area) {
+    if (area === null || area === undefined || area === '') return {};
+    const a = drive.areaIdOf(area);
+    if (!a) throw new DriveError('invalid area', { code: 'invalid' });
+    return { area: a };
+  }
+
+  _page({ before = null, limit = 100 } = {}) {
+    const params = { limit: Math.min(200, Math.max(1, drive.posId(limit) || 100)) };
+    if (before !== null && before !== undefined && before !== '') {
+      const c = drive.cursorOf(before);
+      if (!c) throw new DriveError('invalid cursor', { code: 'invalid' });
+      params.before = c;
+    }
+    return params;
+  }
+
+  _albumId(id) {
+    const a = drive.albumIdOf(id);
+    if (!a) throw new DriveError('invalid album', { code: 'invalid' });
+    return encodeURIComponent(String(a));
+  }
+
+  _ids(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.posId).filter(Boolean))];
+    if (!list.length || list.length > 500) throw new DriveError('invalid ids', { code: 'invalid' });
+    return list;
+  }
+
+  /**
+   * GET photos?area=&before=&limit= → { items, next } (newest first by takenAt); Drive 1.14 'photoSearch': with `q` the
+   * photos whose labels match (→ also { terms, total }).
+   */
+  async photos({ area = null, before = null, limit = 100, q = null, place = null, bbox = null, person = null, districts = false, withPeople = false, media = null } = {}) {
+    const params = { ...this._photoFilter({ area, q, place, bbox, person, media }), ...this._page({ before, limit }) };
+    if (districts && params.place) params.districts = 1;
+    if (withPeople) params.with = 'people';
+    return drive.normalizePhotos(await this.api('GET', 'photos', { params }));
+  }
+
+  /**
+   * The filters of GET photos, photos/months, photos/places and photos/map: area, q (labels; Drive 1.16 also names of
+   * people and places), Drive 1.16 place (a place key), bbox ([w, s, e, n]), person (one id or several: photos with all),
+   * Drive 1.25 media ('image' | 'video': only pictures or only videos).
+   */
+  _photoFilter({ area = null, q = null, place = null, bbox = null, person = null, media = null } = {}) {
+    const params = { ...this._area(area) };
+    if (media !== null && media !== undefined && media !== '') {
+      if (!drive.mediaOf(media)) throw new DriveError('invalid media', { code: 'invalid' });
+      params.media = media;
+    }
+    if (q !== null && q !== undefined && q !== '') {
+      const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+      if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });
+      params.q = text;
+    }
+    if (place !== null && place !== undefined && place !== '') {
+      if (!drive.placeKeyOf(place)) throw new DriveError('invalid place', { code: 'invalid' });
+      params.place = place;
+    }
+    if (bbox !== null && bbox !== undefined && bbox !== '') {
+      const b = drive.bboxOf(bbox);
+      if (!b) throw new DriveError('invalid bbox', { code: 'invalid' });
+      params.bbox = b;
+    }
+    if (person !== null && person !== undefined && person !== '') {
+      const ids = (Array.isArray(person) ? person : [person]).map(drive.personIdOf);
+      if (!ids.length || ids.length > 10 || ids.some((x) => !x)) throw new DriveError('invalid person', { code: 'invalid' });
+      params.person = [...new Set(ids.map(String))].join(',');
+    }
+    return params;
+  }
+
+  /** GET photos/months?area= → { months: [{ month, count }] } (Drive 1.16: with the filters of `photos`) */
+  async photoMonths(area = null, filter = null) {
+    const params = filter ? this._photoFilter({ ...filter, area }) : this._area(area);
+    return drive.normalizeMonths(await this.api('GET', 'photos/months', { params }));
+  }
+
+  // ── Drive 1.16: places and people ('photoPlaces' / 'photoPeople') ──
+
+  /** GET photos/places?area=&q=&person= → { places: [{ key, name, region, country, count, lat, lon, from, to, cover }] } */
+  async photoPlaces({ area = null, q = null, person = null } = {}) {
+    return drive.normalizePlaces(await this.api('GET', 'photos/places', { params: this._photoFilter({ area, q, person }) }));
+  }
+
+  /** GET photos/map?bbox=<w,s,e,n>&zoom=<0..19>&… → { clusters: [{ lat, lon, count, key, cover }] } */
+  async photoMap({ bbox, zoom, area = null, q = null, person = null } = {}) {
+    const b = drive.bboxOf(bbox);
+    const z = drive.count(zoom);
+    if (!b || z === null || z > 19) throw new DriveError('invalid map', { code: 'invalid' });
+    return drive.normalizeMap(await this.api('GET', 'photos/map', { params: { ...this._photoFilter({ area, q, person }), bbox: b, zoom: z } }));
+  }
+
+  /** GET photos/suggest?q= → { people, places, labels } (≤ 5 each) for the suggestions while typing */
+  async photoSuggest(q) {
+    const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+    if (!text || text.length > 100) throw new DriveError('invalid query', { code: 'invalid' });
+    return drive.normalizeSuggest(await this.api('GET', 'photos/suggest', { params: { q: text } }));
+  }
+
+  /** GET photos/settings → { keepGeo, stripGeoOnShare, people, peopleKids } (per person; remembered for the commits) */
+  async photoSettings() {
+    const s = drive.normalizePhotoSettings(await this.api('GET', 'photos/settings'));
+    this._photoSettings = { s, at: Date.now() };
+    return s;
+  }
+
+  /**
+   * PUT photos/settings with the fields given (keepGeo, stripGeoOnShare, people, peopleKids) → the settings;
+   * `people: false` deletes every face, person and name of this person (→ deleted).
+   */
+  async setPhotoSettings(patch = {}) {
+    const body = {};
+    for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) {
+      if (patch[k] === undefined) continue;
+      if (typeof patch[k] !== 'boolean') throw new DriveError('invalid setting', { code: 'invalid' });
+      body[k] = patch[k];
+    }
+    if (!Object.keys(body).length) throw new DriveError('invalid setting', { code: 'invalid' });
+    const s = drive.normalizePhotoSettings(await this.api('PUT', 'photos/settings', { body }));
+    this._photoSettings = { s, at: Date.now() };
+    return s;
+  }
+
+  /** DELETE photos/geo: the places of every photo this person uploaded → { deleted } */
+  async deletePhotoGeo() {
+    const r = await this.api('DELETE', 'photos/geo', { timeout: 120000 });
+    return { deleted: drive.count(r && r.deleted) || 0 };
+  }
+
+  /**
+   * May a commit carry `geo`? Drive 1.16 'photoPlaces' and the person's keepGeo (photos/settings, asked again after
+   * 10 min). When the settings cannot be read the position goes (the plugin drops it itself with keepGeo off).
+   */
+  async geoAllowed() {
+    if (!(await this.has('photoPlaces').catch(() => false))) return false;
+    const c = this._photoSettings;
+    if (c && Date.now() - c.at < 10 * 60 * 1000) return c.s.keepGeo;
+    try { return (await this.photoSettings()).keepGeo; } catch { return true; }
+  }
+
+  _personId(id) {
+    const p = drive.personIdOf(id);
+    if (!p) throw new DriveError('invalid person', { code: 'invalid' });
+    return encodeURIComponent(String(p));
+  }
+
+  _faceIds(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(drive.faceIdOf).filter(Boolean))];
+    if (!list.length || list.length > 500) throw new DriveError('invalid faces', { code: 'invalid' });
+    return list;
+  }
+
+  /** GET people → { people, progress } */
+  async people() {
+    return drive.normalizePeople(await this.api('GET', 'people'));
+  }
+
+  /** GET people/<id> → { person, together, places, uncertain, years } */
+  async person(id) {
+    const r = drive.normalizePersonDetail(await this.api('GET', `people/${this._personId(id)}`));
+    if (!r) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /**
+   * PATCH people/<id> { name?, hidden?, contact? } → { person, mergedInto } — a name another person has already
+   * merges both; an empty name removes it; contact null unlinks.
+   */
+  async updatePerson(id, { name, hidden, contact } = {}) {
+    const body = {};
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.length > 200) throw new DriveError('invalid name', { code: 'invalid' });
+      body.name = name.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
+    }
+    if (hidden !== undefined) {
+      if (typeof hidden !== 'boolean') throw new DriveError('invalid hidden', { code: 'invalid' });
+      body.hidden = hidden;
+    }
+    if (contact !== undefined) {
+      const c = drive.contactBody(contact);
+      if (c === undefined) throw new DriveError('invalid contact', { code: 'invalid' });
+      body.contact = c;
+    }
+    if (!Object.keys(body).length) throw new DriveError('nothing to change', { code: 'invalid' });
+    const r = drive.normalizePersonUpdate(await this.api('PATCH', `people/${this._personId(id)}`, { body }));
+    if (!r) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST people/<id>/merge { into } → { person } (the person both are now) */
+  async mergePerson(id, into) {
+    const target = drive.personIdOf(into);
+    if (!target) throw new DriveError('invalid person', { code: 'invalid' });
+    const p = drive.normalizePerson((await this.api('POST', `people/${this._personId(id)}/merge`, { body: { into: target } })).person);
+    if (!p) throw new DriveError('bad person answer', { code: 'bad_response' });
+    return { person: p };
+  }
+
+  /** GET people/<id>/similar → { people: [{ id, name, count, score }] } ("Sieht aus wie …", ≤ 3) */
+  async similarPeople(id) {
+    return drive.normalizeSimilar(await this.api('GET', `people/${this._personId(id)}/similar`));
+  }
+
+  /** GET people/<id>/uncertain?limit= → { faces: [{ faceId, box, item, score }] } ("Ist das auch …?") */
+  async uncertainFaces(id, limit = 50) {
+    const l = Math.min(200, Math.max(1, drive.posId(limit) || 50));
+    return drive.normalizeUncertain(await this.api('GET', `people/${this._personId(id)}/uncertain`, { params: { limit: l } }));
+  }
+
+  /** POST people/<id>/confirm { faceIds, yes } — yes: they are this person; no: never suggested again */
+  async confirmFaces(id, faceIds, yes) {
+    if (typeof yes !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('POST', `people/${this._personId(id)}/confirm`, { body: { faceIds: this._faceIds(faceIds), yes } });
+    const person = r && drive.normalizePerson(r.person);
+    return { person: person || null };
+  }
+
+  /** POST faces/<id>/move { person: <id> | null } — "Nicht diese Person" (null) / "Zu … verschieben" */
+  async moveFace(faceId, person = null) {
+    const f = drive.faceIdOf(faceId);
+    const p = person === null ? null : drive.personIdOf(person);
+    if (!f || (person !== null && !p)) throw new DriveError('invalid face', { code: 'invalid' });
+    await this.api('POST', `faces/${encodeURIComponent(String(f))}/move`, { body: { person: p } });
+    return {};
+  }
+
+  /** Drive 1.18 'overview': GET overview → the overview (utils/drive-overview.js normalizeOverview) */
+  async overview() {
+    return OV.normalizeOverview(await this.api('GET', 'overview', { timeout: 30000 }));
+  }
+
+  /** Drive 1.13 'photoClasses': GET photos/classes → { work, private, review } or null */
+  async photoClasses() {
+    return OV.normalizePhotoClasses(await this.api('GET', 'photos/classes'));
+  }
+
+  /** GET photos/memories?date=YYYY-MM-DD → { groups: [{ yearsAgo, date, items }] } */
+  async memories(date = null) {
+    const params = {};
+    if (date) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new DriveError('invalid date', { code: 'invalid' });
+      params.date = date;
+    }
+    return drive.normalizeMemories(await this.api('GET', 'photos/memories', { params }));
+  }
+
+  /** Drive 1.26 'memoryCollections': GET memories?date= → { date, home, collections } (the page „Erinnerungen“) */
+  async memoryCollections(date = null) {
+    const params = {};
+    if (date) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new DriveError('invalid date', { code: 'invalid' });
+      params.date = date;
+    }
+    return drive.normalizeMemoryCollections(await this.api('GET', 'memories', { params }));
+  }
+
+  /** Drive 1.26: GET memories/photos?id=&before=&limit= → { items, next } — the photos of one collection */
+  async memoryPhotos(id, { before = null, limit = 100 } = {}) {
+    if (!drive.memoryIdOf(id)) throw new DriveError('invalid collection', { code: 'invalid' });
+    return drive.normalizePhotos(await this.api('GET', 'memories/photos', { params: { id, ...this._page({ before, limit }) } }));
+  }
+
+  async albums() {
+    return drive.normalizeAlbums(await this.api('GET', 'albums'));
+  }
+
+  async _albumAnswer(promise) {
+    const a = drive.normalizeAlbum((await promise).album);
+    if (!a) throw new DriveError('bad album answer', { code: 'bad_response' });
+    return a;
+  }
+
+  /** POST albums { name, areaId? } → album */
+  createAlbum({ name, areaId = null } = {}) {
+    const body = { name: String(name || '').trim().slice(0, 200) };
+    if (!body.name) throw new DriveError('invalid name', { code: 'invalid_name' });
+    if (areaId) {
+      const a = drive.areaIdOf(areaId);
+      if (!a) throw new DriveError('invalid area', { code: 'invalid' });
+      body.areaId = a;
+    }
+    return this._albumAnswer(this.api('POST', 'albums', { body }));
+  }
+
+  /** PATCH albums/<id> { name?, coverId?, frame? } → album */
+  updateAlbum(id, { name, coverId, frame } = {}) {
+    const body = {};
+    if (name !== undefined) {
+      body.name = String(name || '').trim().slice(0, 200);
+      if (!body.name) throw new DriveError('invalid name', { code: 'invalid_name' });
+    }
+    if (coverId !== undefined) body.coverId = coverId === null ? null : this._id(coverId);
+    if (frame !== undefined) body.frame = frame === true;
+    if (!Object.keys(body).length) throw new DriveError('nothing to change', { code: 'invalid' });
+    return this._albumAnswer(this.api('PATCH', `albums/${this._albumId(id)}`, { body }));
+  }
+
+  async deleteAlbum(id) {
+    await this.api('DELETE', `albums/${this._albumId(id)}`);
+    return { ok: true };
+  }
+
+  /** GET albums/<id>?before=&limit= → { album, items, next } */
+  async album(id, { before = null, limit = 100 } = {}) {
+    const r = drive.normalizeAlbumPage(await this.api('GET', `albums/${this._albumId(id)}`, { params: this._page({ before, limit }) }));
+    if (!r) throw new DriveError('bad album answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /**
+   * POST / DELETE albums/<id>/items { ids } (≤ 500, pictures and videos) → album.
+   * DELETE also carries the ids as `?ids=1,2,3` (a body of a DELETE may not pass every proxy).
+   */
+  albumItems(id, ids, { remove = false } = {}) {
+    const list = this._ids(ids);
+    return this._albumAnswer(this.api(remove ? 'DELETE' : 'POST', `albums/${this._albumId(id)}/items`, { body: { ids: list }, ...(remove ? { params: { ids: list.join(',') } } : {}) }));
+  }
+
+  // ── Photo frame (Drive 1.31, 'framePhotos') ──────────────
+
+  /** GET frame/photos[?ids=1,2,3] → { album, ids, count }; with `ids` only those of them that are in the frame. */
+  async framePhotos(ids = null) {
+    const params = ids === null || ids === undefined ? {} : { ids: this._ids(ids).join(',') };
+    return drive.normalizeFramePhotos(await this.api('GET', 'frame/photos', { params }));
+  }
+
+  /**
+   * POST frame/photos { ids } (1 … 500) → { album, added, skipped: [{ id, reason }], ids, count };
+   * remove: DELETE frame/photos { ids } (+ ?ids=, a body of a DELETE may not pass every proxy) → { album, removed, ids, count }.
+   */
+  async setFramePhotos(ids, { remove = false } = {}) {
+    const list = this._ids(ids);
+    const opts = { body: { ids: list }, ...(remove ? { params: { ids: list.join(',') } } : {}) };
+    return drive.normalizeFramePhotos(await this.api(remove ? 'DELETE' : 'POST', 'frame/photos', opts));
+  }
+
+  // ── Storage (Drive 1.7, 'storage') ───────────────────────
+
+  /** GET storage[?all=1] → { total, limit, areas, people, largest, duplicates } */
+  async storage({ all = false } = {}) {
+    const r = drive.normalizeStorage(await this.api('GET', 'storage', { params: all ? { all: 1 } : {}, timeout: 120000 }));
+    if (!r) throw new DriveError('bad storage answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST storage/versions/prune { areaId, keep } → { removed, freedBytes, more } (more: there is more to remove, run it again) */
+  async pruneVersions({ areaId, keep } = {}) {
+    const a = drive.areaIdOf(areaId);
+    const k = drive.count(keep);
+    if (!a || k === null || k > 1000) throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('POST', 'storage/versions/prune', { body: { areaId: a, keep: k }, timeout: 300000 });
+    return { removed: drive.count(r.removed) || 0, freedBytes: drive.count(r.freedBytes) || 0, more: r.more === true };
+  }
+
+  // ── AI for documents (Drive 1.8, 'docAi') ────────────────
+
+  async _insight(promise) {
+    const r = drive.normalizeInsight(await promise);
+    if (!r) throw new DriveError('bad insight answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** GET nodes/<id>/insight → { status, kind, title, date, sender, amount, currency, error, at, suggestion, deadlines } */
+  insight(id) {
+    return this._insight(this.api('GET', `nodes/${this._id(id)}/insight`));
+  }
+
+  /** POST nodes/<id>/insight: recognise again (write right; 422 unsupported { reason: no_text | media_disabled }) */
+  recognize(id) {
+    return this._insight(this.api('POST', `nodes/${this._id(id)}/insight`, { body: {} }));
+  }
+
+  /** POST nodes/<id>/insight/apply { name?: true, folder?: true } → { node, insight } */
+  async applyInsight(id, { name = false, folder = false } = {}) {
+    const body = {};
+    if (name === true) body.name = true;
+    if (folder === true) body.folder = true;
+    if (!Object.keys(body).length) throw new DriveError('nothing to apply', { code: 'invalid' });
+    const r = await this.api('POST', `nodes/${this._id(id)}/insight/apply`, { body });
+    const node = drive.normalizeNode(r && r.node);
+    const insight = drive.normalizeInsight(r && r.insight);
+    if (!node) throw new DriveError('bad apply answer', { code: 'bad_response' });
+    return { node, insight };
+  }
+
+  /** GET deadlines?from=&to= (YYYY-MM-DD; default today … +365 days) → { deadlines } */
+  async deadlines({ from = null, to = null } = {}) {
+    const params = {};
+    for (const [k, v] of [['from', from], ['to', to]]) {
+      if (v === null || v === undefined || v === '') continue;
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new DriveError('invalid date', { code: 'invalid' });
+      params[k] = v;
+    }
+    return drive.normalizeDeadlines(await this.api('GET', 'deadlines', { params }));
+  }
+
+  async _deadline(promise) {
+    const d = drive.normalizeDeadline((await promise).deadline);
+    if (!d) throw new DriveError('bad deadline answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** POST deadlines/<id>/remind { daysBefore: 0…90 } → deadline (the reminder is the person's own) */
+  remind(id, daysBefore) {
+    const days = drive.count(daysBefore);
+    if (days === null || days > 90) throw new DriveError('invalid', { code: 'invalid' });
+    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/remind`, { body: { daysBefore: days } }));
+  }
+
+  /** DELETE deadlines/<id>/remind → deadline */
+  unremind(id) {
+    return this._deadline(this.api('DELETE', `deadlines/${this._id(id)}/remind`));
+  }
+
+  /**
+   * Drive 1.14 'deadlineCalendar': POST deadlines/<id>/calendar → deadline (with `calendar`; 409 familie_unavailable).
+   * Drive 1.17 'deadlineMailCalendar': target { kind: 'mail', calendarId } into a mail calendar (409 mail_unavailable).
+   */
+  calendar(id, target = null) {
+    let body = {};
+    if (target !== null && target !== undefined && target.kind !== 'family') {
+      const t = drive.deadlineTargetBody(target);
+      if (!t) throw new DriveError('invalid target', { code: 'invalid' });
+      body = { target: t };
+    }
+    return this._deadline(this.api('POST', `deadlines/${this._id(id)}/calendar`, { body, timeout: 60000 }));
+  }
+
+  /** Drive 1.17: GET deadlines/calendars → { family, mail: [{ id, name, account, color }] } */
+  async deadlineCalendars() {
+    return drive.normalizeDeadlineCalendars(await this.api('GET', 'deadlines/calendars', { timeout: 60000 }));
+  }
+
+  /** Drive 1.17: GET deadlines/targets → { targets: [{ areaId, label, target }] } (the person's own) */
+  async deadlineTargets() {
+    return drive.normalizeDeadlineTargets(await this.api('GET', 'deadlines/targets'));
+  }
+
+  /** Drive 1.17: PUT deadlines/targets { targets: [{ areaId, target }] } → { targets } (target null: off) */
+  async setDeadlineTarget(areaId, target) {
+    const a = drive.areaIdOf(areaId);
+    const t = drive.deadlineTargetBody(target);
+    if (!a || t === undefined) throw new DriveError('invalid', { code: 'invalid' });
+    return drive.normalizeDeadlineTargets(await this.api('PUT', 'deadlines/targets', { body: { targets: [{ areaId: a, target: t }] }, timeout: 60000 }));
+  }
+
+  // ── Drive 1.14: questions, scans ─────────────────────────
+
+  /** POST ask { q, area? } → { status: answered | not_found, answer, sources, terms } (429 rate_limited) */
+  async ask(q, { area = null } = {}) {
+    const text = typeof q === 'string' ? q.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() : '';
+    if (text.length < 3 || text.length > 300) throw new DriveError('invalid question', { code: 'invalid' });
+    const r = drive.normalizeAsk(await this.api('POST', 'ask', { body: { q: text, ...this._area(area) }, timeout: 120000 }));
+    if (!r) throw new DriveError('bad answer', { code: 'bad_response' });
+    return r;
+  }
+
+  _mediaIds(ids) {
+    const list = Array.isArray(ids) ? ids : [];
+    if (!list.length || list.length > drive.SCAN_PAGES_MAX || !list.every(drive.isMediaId)) throw new DriveError('invalid media ids', { code: 'invalid' });
+    return list.slice();
+  }
+
+  /** POST scans/classify { mediaIds, text? } → { kind, confidence, summary } (text first: the picture only when needed) */
+  async scanClassify({ mediaIds, text = null } = {}) {
+    const body = { mediaIds: this._mediaIds(mediaIds) };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    const r = drive.normalizeScanClass(await this.api('POST', 'scans/classify', { body, timeout: 120000 }));
+    if (!r) throw new DriveError('bad classify answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /**
+   * POST scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → { kind, target, title, name, folderId,
+   * folderPath, text, file: { name, mime, size, sha256, data: Buffer } | null } — Drive makes the document's bytes, the
+   * app files them (media upload, then scanSave). `images`: Buffers (JPEG; PNG for docx), ≤ 600 KB together (else 413
+   * too_large) — a PDF's pages, a whiteboard's photo, a handwritten page.
+   */
+  async scanConvert({ mediaIds, text = null, target, kind, folderId = null, name = null, images = null } = {}) {
+    if (!drive.SCAN_TARGETS.includes(target) || !drive.SCAN_KINDS.includes(kind)) throw new DriveError('invalid scan', { code: 'invalid' });
+    const body = { mediaIds: this._mediaIds(mediaIds), target, kind };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    if (folderId !== null && folderId !== undefined) body.folderId = this._id(folderId);
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (n) body.name = n;
+    if (Array.isArray(images) && images.length) {
+      if (images.length > drive.SCAN_PAGES_MAX || !images.every(Buffer.isBuffer)) throw new DriveError('invalid images', { code: 'invalid' });
+      body.images = images.map((b) => b.toString('base64'));
+    }
+    const r = drive.normalizeScanConvert(await this.api('POST', 'scans/convert', { body, timeout: 300000 }));
+    if (!r) throw new DriveError('bad convert answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** POST scans/save { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original } (onConflict rename) */
+  async scanSave({ mediaId, folderId, name, text = null, sourceId = null, keepOriginal = true } = {}) {
+    const n = typeof name === 'string' ? drive.safeName(name) : null;
+    if (!drive.isMediaId(mediaId) || !n) throw new DriveError('invalid', { code: 'invalid' });
+    const body = { mediaId, folderId: this._id(folderId), name: n };
+    if (typeof text === 'string' && text.trim()) body.text = text.slice(0, drive.TEXT_MAX);
+    if (sourceId !== null && sourceId !== undefined) { body.sourceId = this._id(sourceId); body.keepOriginal = keepOriginal !== false; }
+    const r = drive.normalizeScanSave(await this.api('POST', 'scans/save', { body, timeout: 120000 }));
+    if (!r) throw new DriveError('bad save answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** Drive 1.14: PATCH areas/<id> { deadlinesToCalendar } → { id, docAi, deadlinesToCalendar } (409 familie_unavailable) */
+  async setDeadlinesToCalendar(areaId, on) {
+    const a = drive.areaIdOf(areaId);
+    if (!a || typeof on !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('PATCH', `areas/${encodeURIComponent(a)}`, { body: { deadlinesToCalendar: on } });
+    const area = r && r.area && typeof r.area === 'object' ? r.area : {};
+    return { id: drive.areaIdOf(area.id) || a, docAi: typeof area.docAi === 'boolean' ? area.docAi : null, deadlinesToCalendar: typeof area.deadlinesToCalendar === 'boolean' ? area.deadlinesToCalendar : on };
+  }
+
+  /** PATCH areas/<id> { docAi } → { id, docAi } */
+  async setDocAi(areaId, on) {
+    const a = drive.areaIdOf(areaId);
+    if (!a || typeof on !== 'boolean') throw new DriveError('invalid', { code: 'invalid' });
+    const r = await this.api('PATCH', `areas/${encodeURIComponent(a)}`, { body: { docAi: on } });
+    const area = r && r.area && typeof r.area === 'object' ? r.area : {};
+    return { id: drive.areaIdOf(area.id) || a, docAi: typeof area.docAi === 'boolean' ? area.docAi : on };
+  }
+
+  // ── Office in the browser (Drive 1.9, 'office') ─────────
+
+  /** POST nodes/<id>/office → { url, mode: 'edit' | 'view', expiresAt } (409 encrypted / office_unavailable) */
+  async office(id) {
+    const r = drive.normalizeOffice(await this.api('POST', `nodes/${this._id(id)}/office`, { body: {} }));
+    if (!r) throw new DriveError('bad office answer', { code: 'bad_response' });
+    return r;
+  }
+
+  // ── Vault folders (Drive 1.9, 'vault') ───────────────────
+
+  _vaultId(id) {
+    const v = drive.vaultIdOf(id);
+    if (!v) throw new DriveError('invalid vault', { code: 'invalid' });
+    return v;
+  }
+
+  _deviceId(id) {
+    const d = drive.vaultDeviceIdOf(id);
+    if (!d) throw new DriveError('invalid device', { code: 'invalid' });
+    return d;
+  }
+
+  async _vaultAnswer(promise) {
+    const v = drive.normalizeVault((await promise).vault);
+    if (!v) throw new DriveError('bad vault answer', { code: 'bad_response' });
+    return v;
+  }
+
+  /** GET vaults → [vault] */
+  async vaults() {
+    const r = await this.api('GET', 'vaults');
+    return (Array.isArray(r && r.vaults) ? r.vaults : []).slice(0, 1000).map(drive.normalizeVault).filter(Boolean);
+  }
+
+  vault(id) {
+    return this._vaultAnswer(this.api('GET', `vaults/${this._vaultId(id)}`));
+  }
+
+  /** POST vaults { id, parentId, nameCipher, recoveryPub, recoveryAuth, recoveryWrap, device, wrap } → { vault, node } */
+  async createVault(body) {
+    const r = await this.api('POST', 'vaults', { body: { ...body, id: this._vaultId(body && body.id), parentId: this._id(body && body.parentId) } });
+    const vault = drive.normalizeVault(r && r.vault);
+    const node = drive.normalizeNode(r && r.node);
+    if (!vault || !node) throw new DriveError('bad vault answer', { code: 'bad_response' });
+    return { vault, node };
+  }
+
+  /** GET vaults/<id>/keys?deviceId= → { deviceId, state, keyVersion, keys } (404: this device never asked) */
+  async vaultKeys(id, deviceId) {
+    const r = drive.normalizeVaultKeys(await this.api('GET', `vaults/${this._vaultId(id)}/keys`, { params: { deviceId: this._deviceId(deviceId) } }));
+    if (!r) throw new DriveError('bad keys answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** GET vaults/<id>/recovery → { recoveryPub, keyVersion, keys } */
+  async vaultRecovery(id) {
+    const r = drive.normalizeVaultRecovery(await this.api('GET', `vaults/${this._vaultId(id)}/recovery`));
+    if (!r) throw new DriveError('bad recovery answer', { code: 'bad_response' });
+    return r;
+  }
+
+  /** PUT vaults/<id>/recovery { pub, auth, wraps } → vault */
+  setVaultRecovery(id, body) {
+    return this._vaultAnswer(this.api('PUT', `vaults/${this._vaultId(id)}/recovery`, { body }));
+  }
+
+  /** GET vaults/<id>/devices → [device] */
+  async vaultDevices(id) {
+    const r = await this.api('GET', `vaults/${this._vaultId(id)}/devices`);
+    return (Array.isArray(r && r.devices) ? r.devices : []).slice(0, 500).map(drive.normalizeVaultDevice).filter(Boolean);
+  }
+
+  async _deviceAnswer(promise) {
+    const d = drive.normalizeVaultDevice((await promise).device);
+    if (!d) throw new DriveError('bad device answer', { code: 'bad_response' });
+    return d;
+  }
+
+  /** POST vaults/<id>/devices { publicKey, name, platform } → device (the request; pending) */
+  askVault(id, { publicKey, name = null, platform = 'windows' }) {
+    const body = { publicKey, platform };
+    if (name) body.name = String(name).slice(0, 80);
+    return this._deviceAnswer(this.api('POST', `vaults/${this._vaultId(id)}/devices`, { body }));
+  }
+
+  /** POST vaults/<id>/devices/<did>/approve { wraps, via?, recoveryAuth? } → device */
+  approveVaultDevice(id, deviceId, body) {
+    return this._deviceAnswer(this.api('POST', `vaults/${this._vaultId(id)}/devices/${this._deviceId(deviceId)}/approve`, { body }));
+  }
+
+  /** DELETE vaults/<id>/devices/<did> → device (declined / removed) */
+  revokeVaultDevice(id, deviceId) {
+    return this._deviceAnswer(this.api('DELETE', `vaults/${this._vaultId(id)}/devices/${this._deviceId(deviceId)}`));
+  }
+
+  /** POST vaults/<id>/rotate { keyVersion, wraps, recoveryWrap | recovery } → vault */
+  rotateVault(id, body) {
+    return this._vaultAnswer(this.api('POST', `vaults/${this._vaultId(id)}/rotate`, { body }));
+  }
+
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */
   download(mediaId, dest, opts = {}) {
     if (!drive.isMediaId(mediaId)) return Promise.reject(new DriveError('invalid media id', { code: 'invalid' }));
@@ -395,6 +1401,9 @@ class DriveApi {
    */
   async preview(mediaId, { large = false } = {}) {
     if (!drive.isMediaId(mediaId)) throw new DriveError('invalid media id', { code: 'invalid' });
+    // Drive 1.24: from the home gateway when an answer named it there
+    const home = await this._previewFromLan(mediaId, large);
+    if (home) return home;
     const url = `${drive.MEDIA_PATH}/${mediaId}/preview${large ? '?size=large' : ''}`;
     const r = await this.http._binary(url, PREVIEW_MAX, JSON_TIMEOUT_MS);
     if (!/^image\/(jpeg|png|webp)$/.test(r.mime) || !r.data.length) throw new DriveError('not a picture', { code: 'bad_response' });

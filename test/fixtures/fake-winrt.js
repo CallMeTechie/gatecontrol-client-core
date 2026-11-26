@@ -10,12 +10,19 @@
  *   const hello = createWindowsHello({ platform: 'win32', koffi, api: rt.api, timing: { pollMs: 1 } });
  *   rt.next = 'cancel';              // the person's answer to the next prompt: 'ok' | 'cancel' | 'password' | 'locked'
  *                                    // (or a list for the next prompts)
+ *   rt.consent = { avail: 'available', next: 'verified', interop: true }   // UserConsentVerifier: availability, the
+ *                                    // answer to the next confirmation (or a list), whether the factory has the interop
+ *   rt.consentPrompts                // [{ kind: 'window' | 'plain', message, hwnd }]
+ *   rt.ocr = { languages: true, maxDim: 2600, lines: [{ text, words: [{ text, x, y, w, h }] }], bitmaps: [] }
+ *                                    // Windows.Media.Ocr (services/windows-ocr.js): an OCR language there? the
+ *                                    // MaxImageDimension, what RecognizeAsync finds, the SoftwareBitmaps made
  *   rt.live()                        // objects not released yet (must be 0 after every call)
  *   rt.dispose()                     // unregisters the callbacks
  */
 
 const crypto = require('node:crypto');
 const { protos, guidBytes, IID, CO_E_NOTINITIALIZED } = require('../../src/services/windows-hello');
+const { ocrProtos, IID: OCR_IID } = require('../../src/services/windows-ocr');
 
 const E_NOINTERFACE = 0x80004002 | 0;
 const E_NOTIMPL = 0x80004001 | 0;
@@ -41,12 +48,19 @@ function fakeWinRt(koffi, opts = {}) {
     asyncError: null,        // HRESULT for the next async operation
     badBuffer: false,        // CopyToByteArray returns other bytes
     dialog: null,            // hwnd FindWindowW finds
-    focused: [],
+    focused: [],             // SetForegroundWindow calls
+    foreground: null,        // what GetForegroundWindow returns (a value or a function)
+    refuseFocus: false,      // SetForegroundWindow refused (foreground lock)
+    raised: [],              // BringWindowToTop calls
+    allowed: [],             // AllowSetForegroundWindow calls
+    asyncStates: [],         // every async operation's state (a test can finish a long prompt: polls = 0)
     prompts: [],             // { kind: 'create' | 'sign', name }
     signFlip: false,         // signatures change every time (not deterministic)
     freed: [],               // wiped? per CoTaskMemFree
     roInit: 0,
     created: 0,
+    consent: { avail: 'available', next: 'verified', interop: true, windowFails: false },
+    consentPrompts: [],
   };
 
   const reg = (proto, fn) => {
@@ -104,6 +118,7 @@ function fakeWinRt(koffi, opts = {}) {
   function asyncOp(cls, result) {
     const state = { polls: rt.polls, error: rt.asyncError, result, closed: false, status: 0, info: null };
     rt.asyncError = null;
+    rt.asyncStates.push(state);
     return make(cls, state);
   }
   const qiAsync = (o, riid) => {
@@ -117,6 +132,10 @@ function fakeWinRt(koffi, opts = {}) {
   }];
   defineClass('AsyncOpPtr', { 8: getResultsPtr }, { qi: qiAsync });
   defineClass('AsyncOpBool', { 8: [P.outU8, (o, out) => { koffi.encode(out, 'uint8_t', o.state.result() ? 1 : 0); return 0; }] }, { qi: qiAsync });
+  defineClass('AsyncOpI32', { 8: [P.outI32, (o, out) => putI32(out, o.state.result())] }, { qi: (o, riid) => {
+    if (o.state.iid && sameIid(riid, o.state.iid)) { o.refs++; return o.mem; }
+    return qiAsync(o, riid);
+  } });
   defineClass('AsyncAction', { 8: [P.call, (o) => { o.state.result(); return 0; }] }, { qi: qiAsync });
   defineClass('AsyncInfo', {
     7: [P.outI32, (o, out) => {
@@ -207,7 +226,89 @@ function fakeWinRt(koffi, opts = {}) {
     }],
   });
 
-  const statics = { 'Windows.Security.Credentials.KeyCredentialManager': ['ManagerStatics', IID.IKeyCredentialManagerStatics], 'Windows.Security.Cryptography.CryptographicBuffer': ['BufferStatics', IID.ICryptographicBufferStatics] };
+  // ── UserConsentVerifier ──
+  const AVAIL = ['available', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy'];
+  const RESULT = ['verified', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy', 'retries_exhausted', 'cancelled'];
+  const consentAnswer = () => {
+    const c = rt.consent;
+    if (Array.isArray(c.next)) return c.next.length ? c.next.shift() : 'verified';
+    const a = c.next;
+    c.next = 'verified';
+    return a;
+  };
+  const consentOp = (iid, result) => {
+    const op = asyncOp('AsyncOpI32', result);
+    objects.get(op).state.iid = iid;
+    return op;
+  };
+  defineClass('ConsentInterop', {
+    6: [P.forWindow, (_o, hwnd, h, riid, out) => {
+      if (rt.consent.windowFails) return E_FAIL;
+      if (!sameIid(riid, IID.IAsyncVerificationResult)) return E_NOINTERFACE;
+      rt.consentPrompts.push({ kind: 'window', message: textOf(h), hwnd: BigInt(hwnd) });
+      return put(out, consentOp(IID.IAsyncVerificationResult, () => RESULT.indexOf(consentAnswer())));
+    }],
+  });
+  defineClass('ConsentStatics', {
+    6: [P.outPtr, (_o, out) => put(out, consentOp(IID.IAsyncAvailability, () => AVAIL.indexOf(rt.consent.avail)))],
+    7: [P.strOut, (_o, h, out) => {
+      rt.consentPrompts.push({ kind: 'plain', message: textOf(h), hwnd: null });
+      return put(out, consentOp(IID.IAsyncVerificationResult, () => RESULT.indexOf(consentAnswer())));
+    }],
+  }, { qi: (_o, riid) => (rt.consent.interop && sameIid(riid, IID.IUserConsentVerifierInterop) ? make('ConsentInterop') : null) });
+
+  // ── Windows.Media.Ocr, SoftwareBitmap ──
+  const Q = ocrProtos(koffi);
+  rt.ocr = { languages: true, maxDim: 2600, lines: [], bitmaps: [] };
+  const hstring = (text) => {
+    const h = nextString++;
+    strings.set(h, String(text));
+    return h;
+  };
+  const putU32 = (out, v) => { koffi.encode(out, 'uint32_t', v); return 0; };
+  defineClass('Vector', {
+    6: [Q.getAt, (o, i, out) => (i < o.state.items.length ? put(out, o.state.items[i]()) : E_FAIL)],
+    7: [Q.outU32, (o, out) => putU32(out, o.state.items.length)],
+  });
+  defineClass('OcrWord', {
+    6: [Q.rect, (o, mem) => { const w = o.state; koffi.encode(mem, 'float', [w.x, w.y, w.w, w.h], 4); return 0; }],
+    7: [P.outPtr, (o, out) => put(out, hstring(o.state.text))],
+  });
+  defineClass('OcrLine', {
+    6: [P.outPtr, (o, out) => put(out, make('Vector', { items: o.state.words.map((w) => () => make('OcrWord', w)) }))],
+    7: [P.outPtr, (o, out) => put(out, hstring(o.state.text))],
+  });
+  defineClass('OcrResult', {
+    6: [P.outPtr, (o, out) => put(out, make('Vector', { items: o.state.lines.map((l) => () => make('OcrLine', l)) }))],
+  });
+  defineClass('OcrEngine', {
+    6: [P.ptrOut, (_o, bmp, out) => {
+      if (!objects.has(bmp) || objects.get(bmp).cls !== 'Bitmap') return E_FAIL;
+      const lines = rt.ocr.lines;
+      return put(out, asyncOp('AsyncOpPtr', () => make('OcrResult', { lines })));
+    }],
+  });
+  defineClass('OcrStatics', {
+    6: [Q.outU32, (_o, out) => putU32(out, rt.ocr.maxDim)],
+    10: [P.outPtr, (_o, out) => put(out, rt.ocr.languages ? make('OcrEngine') : null)],
+  });
+  defineClass('Bitmap', {});
+  defineClass('BitmapStatics', {
+    9: [Q.fromBuffer, (_o, buf, format, width, height, out) => {
+      const bytes = objects.get(buf).state.bytes;
+      if (bytes.length !== width * height * 4) return E_FAIL;
+      rt.ocr.bitmaps.push({ format, width, height, bytes: bytes.length });
+      return put(out, make('Bitmap', { width, height }));
+    }],
+  });
+
+  const statics = {
+    'Windows.Security.Credentials.KeyCredentialManager': ['ManagerStatics', IID.IKeyCredentialManagerStatics],
+    'Windows.Security.Cryptography.CryptographicBuffer': ['BufferStatics', IID.ICryptographicBufferStatics],
+    'Windows.Security.Credentials.UI.UserConsentVerifier': ['ConsentStatics', IID.IUserConsentVerifierStatics],
+    'Windows.Media.Ocr.OcrEngine': ['OcrStatics', OCR_IID.IOcrEngineStatics],
+    'Windows.Graphics.Imaging.SoftwareBitmap': ['BitmapStatics', OCR_IID.ISoftwareBitmapStatics],
+  };
   const factories = new Map();
 
   rt.api = {
@@ -220,6 +321,7 @@ function fakeWinRt(koffi, opts = {}) {
       return 0;
     },
     WindowsDeleteString: (h) => { strings.delete(h); return 0; },
+    WindowsGetStringRawBuffer: (h, len) => { const text = strings.get(h) || ''; len[0] = text.length; return text; },
     RoGetActivationFactory: (h, iid, out) => {
       const s = statics[textOf(h)];
       if (!s) return 0x80040154 | 0; // REGDB_E_CLASSNOTREG
@@ -236,11 +338,19 @@ function fakeWinRt(koffi, opts = {}) {
     },
     GetSystemMetrics: (i) => (i === 0x1000 && rt.remote ? 1 : 0),
     FindWindowW: (cls) => (cls === 'Credential Dialog Xaml Host' ? rt.dialog : null),
-    SetForegroundWindow: (h) => { rt.focused.push(h); return 1; },
+    SetForegroundWindow: (h) => {
+      rt.focused.push(h);
+      if (rt.refuseFocus) return 0;
+      rt.foreground = h;
+      return 1;
+    },
+    GetForegroundWindow: () => (typeof rt.foreground === 'function' ? rt.foreground() : rt.foreground),
+    BringWindowToTop: (h) => { rt.raised.push(h); return 1; },
+    AllowSetForegroundWindow: (pid) => { rt.allowed.push(pid); return 1; },
   };
 
   /** Objects still referenced (factories excluded: kept for the process' lifetime). */
-  rt.live = () => [...objects.values()].filter((o) => o.refs > 0 && !['ManagerStatics', 'BufferStatics'].includes(o.cls)).map((o) => o.cls);
+  rt.live = () => [...objects.values()].filter((o) => o.refs > 0 && !['ManagerStatics', 'BufferStatics', 'ConsentStatics', 'ConsentInterop', 'OcrStatics', 'BitmapStatics'].includes(o.cls)).map((o) => o.cls);
   rt.strings = () => strings.size;
   rt.leakedMemory = () => memory.size;
   rt.dispose = () => { for (const c of cbs.splice(0)) koffi.unregister(c); };

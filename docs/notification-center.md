@@ -118,6 +118,17 @@ app.on('second-instance', (_e, argv) => {
 });
 ```
 
+Buttons of type `open_portal` open the portal. A page that claimed the entry
+(`addClickRoute(route, (entry, action) => …)`, `action` = the pressed button
+or null for a click on the toast) can answer such a button itself: when its
+context carries `action: '<button id>'` and the button's target is the route's
+own portal tab (`/portal#<route>`, a query before the `#` does not matter:
+`/portal?drive=41#<route>`), the page opens — `navigate { route, id,
+context }` — instead of the portal (Notizen & Aufgaben, the morning hint
+„Gestern offen geblieben“: a plugin without an app tab gets its
+`open_app_route` buttons from GateControl as portal links; Drive, „Datei
+öffnen“ at a reminder of „Notizen & Aufgaben“ for one of Drive's deadlines).
+
 Without `protocol` the toasts have no buttons; a click on the toast still
 opens the entry (event `navigate`). Unknown/stale nonces only open the inbox.
 
@@ -223,6 +234,22 @@ the portal origin as before. `portal:open` accepts `{ next }` as well
 (validated with `portalNext`, anything else opens the portal home); apps pass
 it on: `openPortal: (opts) => portalOpener.open(opts)`.
 
+### 9a. „Auch per E-Mail“ of plugin topics (GateControl 1.225.0)
+
+Plugin topics can also reach the person by e-mail (GateControl's SMTP server,
+to the account address; server `docs/plugins.md` „Notifications by e-mail“).
+The switch is **per person**, not per device — the portal shows the same
+„Auch per E-Mail an …“ under each topic. The same `GET …/push/prefs` answer
+that carries the quiet hours carries `email_topics: [{ id, label, enabled }]`,
+`email_to` and `email_ready`; `refreshQuiet()` keeps them
+(`emailState()` → `{ known, topics, to, ready }`, `known: false` on older
+servers: show nothing). `setEmailTopic(id, enabled)` sends only
+`PUT …/push/prefs { email_topics: [{ id, enabled }] }` (the device prefs stay)
+and answers `{ ok, ...emailState() }` or `{ ok: false, error }` (`unknown_topic`
+for a topic the server did not list, `busy` while one is saved, the server's
+`invalid_email_topics` / `no_user`). Without `email_ready` or an address the app
+shows the box greyed with the reason, as the portal does.
+
 ### 10. Where notifications appear (core 1.191, Messenger 1.6)
 
 With a sink plugin (the messenger) each kind of notification (push topic) can
@@ -272,7 +299,8 @@ route itself (its page, or the plugin's portal tab).
 | `fetchInbox({ limit, before })` | `GET …/push/inbox` → `{ ok, items, unread }` |
 | `setPrefs({ enabled, mode \| direct, muted_topics \| mutedTopics })` | `PUT …/push/prefs` → `{ ok }` |
 | `requestTest()` | `POST …/push/test` → `{ ok, seq }` (server: 5/min) |
-| `fetchPrefs()` | `GET …/push/prefs` → `{ ok, quiet, hasQuiet }` (quiet hours, read-only) |
+| `fetchPrefs()` | `GET …/push/prefs` → `{ ok, quiet, hasQuiet, email }` (quiet hours, read-only; `email`: the e-mail channel of plugin topics, null before GateControl 1.225.0) |
+| `setEmailTopics(list)` | `PUT …/push/prefs { email_topics: [{ id, enabled }] }` → `{ ok }` / `{ ok: false, error }` (plugin topics only) |
 | `controlSupported()` | stream open and its hello carried `state` (server with control events) |
 | `refreshPath()` | re-run the kill-switch check |
 | `status()` | see below |
@@ -320,12 +348,13 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `get(id)` | one entry |
 | `refresh()` | replace the cache with the server inbox (also runs after every `hello`) |
 | `markRead(ids \| 'all')` | local + `ack read`; failed acks are retried after the next `hello` |
-| `performAction(id, actionId)` | `open_app_route` → `navigate`; `open_portal` → `openPortal(target)` (portal tab via the login link with `next`, or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; `callback` (answer button of a plugin push, handed to the plugin by the server); always acks with `action`; `ack` / `callback` are remembered as the entry's `acted` (local only) |
+| `performAction(id, actionId)` | `open_app_route` → `navigate` (with the `context` of the page that claimed the entry through `addClickRoute`, when its route is the target — e.g. "Ansehen" of "Personen an der Kamera" opens Kameras on that camera); `open_portal` → `openPortal(target)` (portal tab via the login link with `next`, or event `portal`); `mute_1h` → local topic mute 1 h; `done` → `dismissed`; `ack`; `callback` (answer button of a plugin push, handed to the plugin by the server); always acks with `action`; `ack` / `callback` are remembered as the entry's `acted` (local only) |
 | `getPrefs()` / `setPrefs(patch)` | `{ enabled, direct, toasts, criticalBypass, mutedTopics, dndUntil, topics }` |
 | `setDnd({ minutes } \| { until } \| null)` / `dndState()` | "Nicht stören bis" |
 | `muteTopic(topic, ms)` | local mute |
 | `unreadCount()`, `topics()`, `status()` | status = push status + `unread`, `dnd`, `toasts`, `enabled`, `quiet`, `quietKnown` |
 | `quietState()` / `refreshQuiet()` | `{ known, quiet, source: 'hello'\|'prefs', at }`; refresh asks `GET …/push/prefs` |
+| `emailState()` / `refreshEmail()` / `setEmailTopic(id, enabled)` | „Auch per E-Mail“: `{ known, topics: [{ id, label, enabled }], to, ready }` (section 9a) |
 | `openQuietHoursInPortal()` | portal tab `/portal#benachrichtigungen` (auto-login) |
 | `routes()` / `setRoute(topic, dest)` | where each kind of notification appears (`PushClient.fetchRoutes()` / `setRoute()`): `{ ok, routes }` / `{ ok: false, error }` |
 | `openTarget({ route, topic, data })` | a notice card's link: `navigate` `{ route, id: null, context }` when a click route claims the notification → `{ ok: true, route }`, else `{ ok: false }` |
@@ -333,6 +362,7 @@ accepts an optional `agent` (e.g. a proxy agent) if an app ever needs one.
 | `handleArgv(argv)` / `handleProtocolUrl(url)` | toast button activation |
 | `openInbox(id?)` | show the window on the inbox (event `navigate`) |
 | `addClickRoute(route, resolve)` / `clickTarget(entry)` | an app page claims its entries: a toast click opens `route` (event `navigate` `{ route, id, context }`, context = `resolve(entry)`) instead of the inbox while `resolve` answers; used by `SchoolService` (`plg-gatecontrol-schule`) |
+| `addToastImage(resolve)` | a service adds a picture to the toasts of its pushes: `resolve(entry)` → `null` (not its push: the toast shows at once) or a Promise of an absolute image file (shown below the text, `<image src>` in the toast XML); the toast waits at most `toastImageWaitMs` (5 s), not at all when the entry was read / withdrawn meanwhile; used by `CamerasService` (camera pushes of Tür & Kamera, the push's `imageUrl` or a fresh still). Entries keep `image_url` (`/notify-media/…`) when the push has a picture |
 | `resetForNewServer()` / `clear()` | drop cache (+ reconnect without seq) |
 
 Events: `new` (entry + `toast`, `updated`), `update` `{ reason, ids, unread }`
@@ -363,6 +393,8 @@ scenario with the reminder sound; `high`/`critical` prefix the body with
 | `notify:dnd` | `dnd(arg?)` | `{ minutes }` / `{ until }` / `null` (off) / no argument (query) → `{ ok, active, until }` |
 | `notify:quiet` | `quiet(opts)` | `{ refresh }` → `{ ok, known, quiet, source, at }` |
 | `notify:quiet:open` | `openQuietHours()` | → boolean (portal tab "Meine Benachrichtigungen") |
+| `notify:email` | `email(opts)` | `{ refresh }` → `{ ok, known, topics, to, ready }` |
+| `notify:email:set` | `setEmail(id, enabled)` | → `{ ok, ...state }` / `{ ok: false, error, ...state }` |
 | `notify:routes` | `routes()` | → `{ ok, routes: { sink, canFamily, groups } }` / `{ ok:false, error }` (`unsupported`: older server) |
 | `notify:routes:set` | `setRoute(topic, dest)` | `'inbox'\|'own'\|'family'` → `{ ok, routes }` / `{ ok:false, error }` |
 | `notify:open` | `open({ route, topic, data })` | notice card link → `{ ok, route? }` (ok false: the app opens the route) |

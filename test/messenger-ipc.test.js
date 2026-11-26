@@ -36,6 +36,10 @@ function fakeMessenger() {
   m.refreshConversations = async (o) => { m.calls.push(['refresh', o]); };
   m.listConversations = () => [{ id: 12 }];
   m.unreadTotal = () => 3;
+  // Messenger 1.20: the page „Kanäle“
+  m.channelSummary = () => ({ count: 1, unread: 4 });
+  m.listChannels = () => [{ id: 14, bridge: { network: 'whatsapp', channel: true } }];
+  m.refreshChannels = async () => { m.calls.push(['channels']); return m.listChannels(); };
   m.getConversation = async (id) => ({ id });
   m.getMessages = async (id, o) => { m.calls.push(['messages', id, o]); return { conversationId: id, messages: [], pending: [], hasMore: false, offline: false }; };
   m.messagesView = (id) => ({ conversationId: id, messages: [], pending: [], hasMore: true, offline: false });
@@ -95,8 +99,13 @@ describe('messenger IPC', () => {
 
   it('answers and validates arguments', async () => {
     const { call, messenger } = setup();
-    assert.deepEqual(await call('chat:conversations', { refresh: true }), { ok: true, conversations: [{ id: 12 }], unread: 3 });
-    assert.deepEqual(messenger.calls.at(-1), ['refresh', { full: false }]);
+    assert.deepEqual(await call('chat:conversations', { refresh: true }), { ok: true, conversations: [{ id: 12 }], unread: 3, channels: { count: 1, unread: 4 } });
+    // Messenger 1.20: the channels, read again on request
+    assert.deepEqual(await call('chat:channels', {}), { ok: true, channels: [{ id: 14, bridge: { network: 'whatsapp', channel: true } }], summary: { count: 1, unread: 4 } });
+    assert.equal(messenger.calls.filter((c) => c[0] === 'channels').length, 0);
+    await call('chat:channels', { refresh: true });
+    assert.equal(messenger.calls.filter((c) => c[0] === 'channels').length, 1);
+    assert.deepEqual(messenger.calls.filter((c) => c[0] === 'refresh'), [['refresh', { full: false }]]);
     assert.equal((await call('chat:messages', { id: 'x' })).code, 'invalid');
     assert.equal((await call('chat:messages', { id: 12, cached: true })).hasMore, true);
     await call('chat:messages', { id: 12, before: 400 });
@@ -210,5 +219,101 @@ describe('messenger IPC', () => {
     assert.equal(r.success, true);
     await new Promise((res) => setTimeout(res, 5));
     assert.ok(messenger.calls.some((c) => c[0] === 'reset'));
+  });
+  it('Messenger 1.13 / 1.14: linked services and resend pass through, a refusal keeps its reason', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    messenger.bridges = async () => ({ available: true, location: 'server', networks: [] });
+    messenger.bridgeConsent = async (n) => { calls.push(['consent', n]); return { consent: true }; };
+    messenger.bridgeLogin = async (n, f) => { calls.push(['login', n, f]); return { processId: 'p1', step: { id: 's1', type: 'phone', fieldId: 'phone_number' } }; };
+    messenger.bridgeStep = async (n, p, st, o) => {
+      calls.push(['step', n, p, st, o]);
+      if (st === 'gone') throw Object.assign(new Error('bridge_failed'), { code: 'bridge_failed', status: 502, body: { reason: 'timeout' } });
+      return { processId: p, waiting: true };
+    };
+    messenger.bridgeCancel = async (n, p) => { calls.push(['cancel', n, p]); return true; };
+    messenger.bridgeUnlink = async (n, l) => { calls.push(['unlink', n, l]); return true; };
+    messenger.resend = async (id) => ({ id, bridge: { state: 'sent' } });
+    assert.deepEqual(await call('chat:bridges'), { ok: true, bridges: { available: true, location: 'server', networks: [] } });
+    assert.deepEqual(await call('chat:bridge:consent', { network: 'whatsapp' }), { ok: true, consent: true });
+    assert.equal((await call('chat:bridge:login', { network: 'whatsapp', flow: 'phone' })).login.step.type, 'phone');
+    assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 's1', phone: '+49 1512 0000000', fieldId: 'phone_number' }), { ok: true, login: { processId: 'p1', waiting: true } });
+    assert.deepEqual(await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'c1', phone: 4915 }), { ok: true, login: { processId: 'p1', waiting: true } });
+    // Messenger 1.24: Telegram's code or password (`secret`) — cut at 256, the field it answers
+    assert.deepEqual(await call('chat:bridge:step', { network: 'telegram', processId: 'p1', stepId: 'pass1', secret: 'x'.repeat(300), fieldId: 'pass' }), { ok: true, login: { processId: 'p1', waiting: true } });
+    const gone = await call('chat:bridge:step', { network: 'whatsapp', processId: 'p1', stepId: 'gone' });
+    assert.deepEqual([gone.ok, gone.code, gone.reason, gone.status], [false, 'bridge_failed', 'timeout', 502]);
+    assert.deepEqual(await call('chat:bridge:cancel', { network: 'whatsapp', processId: 'p1' }), { ok: true });
+    assert.deepEqual(await call('chat:bridge:unlink', { network: 'whatsapp', loginId: 'login1' }), { ok: true });
+    assert.deepEqual(calls, [
+      ['consent', 'whatsapp'], ['login', 'whatsapp', 'phone'],
+      ['step', 'whatsapp', 'p1', 's1', { phone: '+49 1512 0000000', fieldId: 'phone_number' }],
+      ['step', 'whatsapp', 'p1', 'c1', {}], ['step', 'telegram', 'p1', 'pass1', { secret: 'x'.repeat(256), fieldId: 'pass' }], ['step', 'whatsapp', 'p1', 'gone', {}],
+      ['cancel', 'whatsapp', 'p1'], ['unlink', 'whatsapp', 'login1'],
+    ]);
+    assert.deepEqual(await call('chat:resend', { id: 4711 }), { ok: true, message: { id: 4711, bridge: { state: 'sent' } } });
+    assert.equal((await call('chat:resend', { id: 'x' })).code, 'invalid');
+  });
+
+  it('Messenger 1.15: a new chat by number passes through; rate_limited keeps retryAfterS', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    messenger.bridgeResolve = async (n, num, cc) => {
+      calls.push(['resolve', n, num, cc]);
+      if (num === 'many') throw Object.assign(new Error('rate_limited'), { code: 'rate_limited', status: 429, body: { retryAfterS: 840, perHour: 10 } });
+      return { found: true, name: 'Lena Berger', avatarMediaId: null, existing: null };
+    };
+    messenger.bridgeStartChat = async (n, num, cc) => { calls.push(['chat', n, num, cc]); return { conversation: { id: 77 }, created: true }; };
+    assert.deepEqual(await call('chat:bridge:resolve', { network: 'whatsapp', number: '0151 23456789', cc: '+49' }), { ok: true, found: true, name: 'Lena Berger', avatarMediaId: null, existing: null });
+    const many = await call('chat:bridge:resolve', { network: 'whatsapp', number: 'many' });
+    assert.deepEqual([many.ok, many.code, many.retryAfterS, many.perHour, many.status], [false, 'rate_limited', 840, 10, 429]);
+    assert.deepEqual(await call('chat:bridge:chat', { network: 'whatsapp', number: '+49 151 23456789', cc: 49 }), { ok: true, conversation: { id: 77 }, created: true });
+    assert.deepEqual(calls, [['resolve', 'whatsapp', '0151 23456789', '+49'], ['resolve', 'whatsapp', 'many', ''], ['chat', 'whatsapp', '+49 151 23456789', '']]);
+  });
+
+  it('Messenger 1.18: „Neuer Chat“ with contacts passes through; not_found keeps reason and remembered', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    const REF = `k${'a'.repeat(48)}`;
+    messenger.newChatContacts = async (n, q) => { calls.push(['list', n, q]); return { network: n, query: q, gatecontrol: [], whatsapp: null, addressBook: null, number: null, numberEntry: false, limit: null }; };
+    messenger.bridgeContactChat = async (n, c) => {
+      calls.push(['chat', n, c]);
+      if (c.contactId === 13) throw Object.assign(new Error('not_found'), { code: 'not_found', status: 404, body: { reason: 'not_on_network', remembered: true } });
+      if (c.ref === 'old') throw Object.assign(new Error('contact_expired'), { code: 'contact_expired', status: 409, body: {} });
+      return { conversation: { id: 78 }, created: true };
+    };
+    assert.equal((await call('chat:bridge:contacts', { network: 'whatsapp', q: 'ber' })).query, 'ber');
+    await call('chat:bridge:contacts', { network: 'whatsapp', q: 5 });
+    assert.deepEqual(await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { ref: REF } }), { ok: true, conversation: { id: 78 }, created: true });
+    const none = await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { contactId: 13, phoneKind: 'mobile' } });
+    assert.deepEqual([none.ok, none.code, none.reason, none.remembered, none.status], [false, 'not_found', 'not_on_network', true, 404]);
+    const old = await call('chat:bridge:contact-chat', { network: 'whatsapp', contact: { ref: 'old' } });
+    assert.deepEqual([old.ok, old.code, old.remembered], [false, 'contact_expired', undefined]);
+    assert.deepEqual(calls, [
+      ['list', 'whatsapp', 'ber'], ['list', 'whatsapp', ''],
+      ['chat', 'whatsapp', { ref: REF }], ['chat', 'whatsapp', { contactId: 13, phoneKind: 'mobile' }], ['chat', 'whatsapp', { ref: 'old' }],
+    ]);
+  });
+
+  it('Messenger 1.17: „Älteren Verlauf laden“ and a file of the history pass through; a refusal keeps its code', async () => {
+    const { call, messenger } = setup();
+    const calls = [];
+    messenger.setBridgeHistory = async (d) => {
+      calls.push(['history', d]);
+      if (d === 7) throw Object.assign(new Error('invalid'), { code: 'invalid', status: 400 });
+      return { available: true, days: d, default: 30, options: [0, 30, -1], pending: 0 };
+    };
+    messenger.fetchBridgeFile = async (id) => {
+      calls.push(['fetch', id]);
+      if (id === 5) throw Object.assign(new Error('invalid'), { code: 'invalid', status: 400 });
+      return { id, bridge: { placeholder: { kind: 'image', state: 'loading' } } };
+    };
+    assert.deepEqual(await call('chat:bridge:history', { days: -1 }), { ok: true, history: { available: true, days: -1, default: 30, options: [0, 30, -1], pending: 0 } });
+    const bad = await call('chat:bridge:history', { days: 7 });
+    assert.deepEqual([bad.ok, bad.code, bad.status], [false, 'invalid', 400]);
+    assert.deepEqual(await call('chat:fetch', { id: 4711 }), { ok: true, message: { id: 4711, bridge: { placeholder: { kind: 'image', state: 'loading' } } } });
+    assert.equal((await call('chat:fetch', { id: 'x' })).code, 'invalid');
+    assert.equal((await call('chat:fetch', { id: 5 })).code, 'invalid');
+    assert.deepEqual(calls, [['history', -1], ['history', 7], ['fetch', 4711], ['fetch', 5]]);
   });
 });

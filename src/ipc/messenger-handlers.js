@@ -7,7 +7,9 @@
  *
  *   chat:status          () → MessengerService.status()
  *   chat:check           () → status after asking the server again
- *   chat:conversations   ({ refresh? }) → { ok, conversations, unread }
+ *   chat:conversations   ({ refresh? }) → { ok, conversations, unread, channels: { count, unread } | null }
+ *   chat:channels        ({ refresh? }) → { ok, channels, summary: { count, unread } | null }   Messenger 1.20 (bridge_channels):
+ *                        the page „Kanäle“ — channels are not in chat:conversations then, nor in its unread
  *   chat:conversation    ({ id, refresh? }) → { ok, conversation }
  *   chat:messages        ({ id, before?, after?, around?, cached? }) → { ok, conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }
  *                        around: the page around a message (Messenger ≥ 1.1.0, else code 'unsupported'); after: newer page of that window
@@ -40,7 +42,10 @@
  *   chat:update-hint:dismiss () → { ok }   close the "newer version" banner (status().updateHint) for this set of features
  *
  * Messenger 1.4.0 (each answers code 'unsupported' when `GET me` lacks the feature):
- *   chat:status:feed     ({ refresh? }) → { ok, items, me, serverTime }        status strip / stories
+ *   chat:status:feed     ({ refresh? }) → { ok, items, me, bridged, serverTime } status strip / stories (1.25: bridged —
+ *                        the contacts' WhatsApp status updates)
+ *   chat:story:bridged:seen  ({ id }) → { ok }                                 1.25: a contact's WhatsApp status was shown
+ *   chat:story:bridged:reply ({ id, text? | emoji? }) → { ok, message }        1.25: answer / reaction as a WhatsApp message
  *   chat:status:set      ({ preset, text?, until?, visibility?, userIds?, eta?, destLabel? }) → { ok, status }
  *   chat:status:clear    () → { ok }
  *   chat:story:create    ({ kind, text?, bg?, font?, visibility?, userIds?, eventMessageId?, place?, video?, file?, thumb?, durationH? }) → { ok, story }
@@ -64,6 +69,8 @@
  *   chat:to-drive        ({ id, folderId? }) → { ok, saved: { nodeId, name, where } } (Messenger 1.10, Drive)
  *   chat:to-calendar     ({ id, title, startsAt, endsAt?, allDay?, place? }) → { ok, eventId }
  *   chat:places          () → { ok, places }                                     Familie places
+ *                        ({ all: true }) → { ok, places, sources, profile }      the place choice: Messenger 1.28
+ *                        (`profilePlaces`) GET places — own profile places + Familie's, with `ref`; older: Familie's
  *   chat:poll            ({ id, op: 'vote'|'option'|'close'|'nudge', optionIds?, text? }) → { ok, message, nudged? }
  *   chat:event           ({ id, op: 'rsvp'|'check'|'edit', answer?, guests?, itemId?, done?, patch? }) → { ok, message }
  *   chat:arrival:stop    ({ id }) → { ok, message }
@@ -74,9 +81,60 @@
  *   chat:storage         () → { ok, mediaCacheBytes, avatarCacheBytes, cachedChats, cachedMessages, outbox, server }
  *   chat:cache:clear     () → { ok, … storage }
  *
+ * Messenger 1.13 („Verknüpfte Dienste“, code 'unsupported' without feature `linked_services`) and 1.14 (chats over a
+ * bridge). The number and the pairing code pass through and are never logged or stored:
+ *   chat:bridges         () → { ok, bridges: { available, location, networks: [{ id, state, allowed, lock, consent, outdated, logins }] } }
+ *   chat:bridge:consent  ({ network }) → { ok, consent }
+ *   chat:bridge:login    ({ network, flow: 'phone'|'qr' }) → { ok, login }
+ *   chat:bridge:step     ({ network, processId, stepId, phone?, secret?, fieldId? }) → { ok, login }   without phone or secret: waits for the
+ *                        phone (≤ 15 s); secret (1.24): Telegram's code or password, passed through once
+ *                        login: { processId, waiting } | { processId, step: { id, type: 'complete'|'phone'|'secret'|'code'|'qr'|'unsupported', fieldId?, kind?, retry?, code?, matrix? } }
+ *   chat:bridge:cancel   ({ network, processId }) → { ok }
+ *   chat:bridge:unlink   ({ network, loginId }) → { ok }
+ *   chat:resend          ({ id }) → { ok, message }   an own message with bridge.state 'failed', once more
+ *
+ * Messenger 1.15 (feature `bridge_new_chat`; code 'unsupported' without it). `number` as typed, `cc` the country
+ * code for a number without one (default +49); normalized in main, sent once, never logged or stored:
+ *   chat:bridge:resolve  ({ network, number, cc? }) → { ok, found, name, avatarMediaId, existing: { conversationId } | null }
+ *   chat:bridge:chat     ({ network, number, cc? }) → { ok, conversation, created }   kept in the list until it is listed
+ * Refusals: invalid_number, rate_limited (+ retryAfterS, perHour), bridge_unlinked (reason), bridge_logged_out (1.16),
+ * bridge_locked, child_new_chat_off,
+ * bridge_unreachable, bridge_off, feature_off, not_found (reason not_on_network).
+ * Messenger 1.18 (feature `bridge_contacts`; code 'unsupported' without it) — „Neuer Chat“ with contacts:
+ *   chat:bridge:contacts     ({ network, q? }) → { ok, network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+ *                            number, numberEntry, limit }   (utils normalizeNewChatContacts; q never logged)
+ *   chat:bridge:contact-chat ({ network, contact: { ref } | { contactId, phoneKind } }) → { ok, conversation, created }
+ * Refusals as above, and: contact_expired (load the list again), not_found (reason not_on_network, remembered |
+ * contact_gone), mail_missing.
+ * chat:send in a chat over a bridge also takes image / voice / file of a kind and type in `bridge.supports` /
+ * `bridge.mediaTypes` (else bridge_text_only / bridge_media_type with reason image | voice | video); 423 scan_pending
+ * is sent again by the queue.
+ *
+ * Messenger 1.17 (feature `bridge_history`; code 'unsupported' without it):
+ *   chat:bridge:history  ({ days: 0 | 30 | -1 }) → { ok, history: { available, days, default, options, pending } }
+ *   chat:fetch           ({ id }) → { ok, message }   a file of the older history (placeholder on_request), now
+ * Refusals: invalid (nothing to fetch / days), feature_off, not_found.
+ *
+ * Messenger 1.21 (feature `chat_people`; code 'unsupported' without it) — persons, one entry per human over several
+ * ways (`person` on the entry; chat:messages / chat:send / chat:read / chat:search / chat:update / chat:archive of
+ * that entry go through persons/:id/…):
+ *   chat:person:way        ({ id, way: 'gatecontrol'|'whatsapp'|…|null }) → { ok, …chat:messages }   the source chips
+ *   chat:suggestions       ({ refresh? }) → { ok, suggestions }        „… ist vielleicht …“ (asked ≤ every 15 min)
+ *   chat:suggestion:answer ({ id, action: 'later'|'never' }) → { ok, suggestion }
+ *   chat:person:merge      ({ conversationIds, userId?, name?: 'account'|conversationId }) → { ok, conversation }
+ *   chat:person:split      ({ id, conversationId? }) → { ok, person, conversationIds }   „Trennen“, nothing is lost
+ *   chat:person:name       ({ id, name: 'account'|conversationId }) → { ok, conversation }
+ *   chat:person:candidates ({ id }) → { ok, accounts, chats }          „Mit Person zusammenführen …“
+ *   chat:bridge:recognition ({ allowed }) → { ok, recognition }        asked once after WhatsApp was linked
+ *                        Messenger 1.23: ({ allowed, network? }) — one consent per service (network missing: whatsapp)
+ *   chat:bridge:handoff     ({ network, target: 'portal'|'windows' }) → { ok, handoff: { network, target, expiresAt, portalPath } }
+ *   chat:bridge:handoff:end ({ network }) → { ok }                     the second screen is not needed any more
+ *   event chat:handoff      { network, target: 'portal'|'windows'|null, expiresAt, portalPath } (bridge.handoff; null: over)
+ * Refusals: cannot_merge (reason group | channel | not_direct | two_accounts | one_way), not_found, feature_off.
+ *
  * Events to the main window: chat:state, chat:conversations, chat:messages,
  * chat:typing, chat:unread, chat:outbox, chat:navigate, chat:feed, chat:lists,
- * chat:reminders.
+ * chat:reminders, chat:suggestions (1.21).
  */
 
 const fs = require('fs');
@@ -85,6 +143,8 @@ const path = require('path');
 const {
   posInt, isClientId, isMediaId, isAvatarPath, isNotifyMediaPath, safeFileName, unsafeToOpen, extForMime, extOf, prefsBody,
 } = require('../utils/messenger');
+const SC = require('../utils/scan');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const CHAT_EVENTS = {
   state: 'chat:state',
@@ -96,11 +156,26 @@ const CHAT_EVENTS = {
   feed: 'chat:feed',
   lists: 'chat:lists',
   reminders: 'chat:reminders',
+  suggestions: 'chat:suggestions',
+  // Messenger 1.23: „Im Windows-Client fortsetzen“ of another device (bridge.handoff)
+  handoff: 'chat:handoff',
 };
 const MAX_IPC_FILE = 64 * 1024 * 1024;
 
 function fail(err) {
-  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null };
+  // Messenger 1.11: the virus scan's refusal (423 quarantined | scan_pending | scan_blocked, 422 infected) → scan,
+  // finding, retryAfter
+  // Messenger 1.13 / 1.14: a bridge's refusal names why (`reason`: timeout, not_running, logged_out, …)
+  const reason = err && err.body && typeof err.body.reason === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(err.body.reason) ? err.body.reason : null;
+  // Messenger 1.15: 429 rate_limited of a new chat by number says when the next try goes (`retryAfterS`)
+  const ra = err && err.body ? err.body.retryAfterS : null;
+  const retryAfterS = Number.isSafeInteger(ra) && ra > 0 && ra <= 86400 ? ra : null;
+  // Messenger 1.16: … and the brake per hour (`perHour`)
+  const ph = err && err.body ? err.body.perHour : null;
+  const perHour = retryAfterS && Number.isSafeInteger(ph) && ph > 0 && ph <= 1000 ? ph : null;
+  // Messenger 1.18: a „nicht bei WhatsApp“ of an address book number came from the server's 30-day memory
+  const remembered = !!(err && err.body && err.body.remembered === true);
+  return { ok: false, code: (err && err.code) || 'failed', error: (err && err.message) || 'failed', status: (err && err.status) || null, ...(reason ? { reason } : {}), ...(retryAfterS ? { retryAfterS } : {}), ...(perHour ? { perHour } : {}), ...(remembered ? { remembered } : {}), ...SC.refusalFields(err) };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -135,12 +210,14 @@ async function markOfTheWeb(file, platform, fsp) {
  * @param {object} [deps.dialog] - Electron dialog (save as)
  * @param {object} [deps.shell] - Electron shell (open)
  * @param {Function} [deps.getTempDir] - () => folder for opened files
+ * @param {Function} [deps.dialogPath] - utils/user-folders dialogPath (save dialogs: the Downloads of the person signed in)
  * @param {string} [deps.platform]
  * @param {object} [deps.fsp]
  */
 function registerMessengerHandlers(handle, {
   messenger: m, chatNotifier = null, maps = null, getMainWindow, log, dialog = null, shell = null,
   getTempDir = () => path.join(os.tmpdir(), 'gatecontrol-chat'), platform = process.platform, fsp = fs.promises,
+  dialogPath = defaultDialogPath,
 }) {
   const wrap = (fn) => async (_e, arg) => {
     try {
@@ -156,7 +233,12 @@ function registerMessengerHandlers(handle, {
   handle('chat:update-hint:dismiss', wrap(async () => ({ ok: m.dismissUpdateHint() })));
   handle('chat:conversations', wrap(async (a) => {
     if (a.refresh === true && m.available()) await m.refreshConversations({ full: false }).catch(() => null);
-    return { ok: true, conversations: m.listConversations(), unread: m.unreadTotal() };
+    return { ok: true, conversations: m.listConversations(), unread: m.unreadTotal(), channels: m.channelSummary() };
+  }));
+  // Messenger 1.20 (feature `bridge_channels`): the page „Kanäle“ — [] / summary null without it
+  handle('chat:channels', wrap(async (a) => {
+    if (a.refresh === true && m.available() && m.channelSummary()) await m.refreshChannels().catch(() => null);
+    return { ok: true, channels: m.listChannels(), summary: m.channelSummary() };
   }));
   handle('chat:conversation', wrap(async (a) => {
     const id = posInt(a.id);
@@ -191,12 +273,88 @@ function registerMessengerHandlers(handle, {
       event: a.event && typeof a.event === 'object' ? a.event : undefined,
       action: a.action && typeof a.action === 'object' ? a.action : undefined,
       replyStory: a.replyStory && typeof a.replyStory === 'object' ? a.replyStory : undefined,
+      // Messenger 1.27: „Nur diese Nachricht über …“ — 'gatecontrol' or a network (checked again in the core)
+      way: typeof a.way === 'string' && /^[a-z]{2,20}$/.test(a.way) ? a.way : undefined,
     };
     if (a.file && !req.file) return { ok: false, code: 'invalid', error: 'invalid file' };
     return { ok: true, message: await m.send(req) };
   }));
   handle('chat:outbox:retry', wrap(async (a) => (isClientId(a.clientId) ? { ok: m.retrySend(a.clientId) } : invalid())));
   handle('chat:outbox:discard', wrap(async (a) => (isClientId(a.clientId) ? { ok: await m.discardSend(a.clientId) } : invalid())));
+  // Messenger 1.13 / 1.14: linked services, chats over a bridge
+  const text = (v, max) => (typeof v === 'string' && v.length <= max ? v : '');
+  handle('chat:bridges', wrap(async () => ({ ok: true, bridges: await m.bridges() })));
+  handle('chat:bridge:consent', wrap(async (a) => ({ ok: true, ...(await m.bridgeConsent(text(a.network, 32))) })));
+  handle('chat:bridge:login', wrap(async (a) => ({ ok: true, login: await m.bridgeLogin(text(a.network, 32), text(a.flow, 8)) })));
+  handle('chat:bridge:step', wrap(async (a) => ({
+    ok: true,
+    // Messenger 1.24: `secret` — Telegram's code or password, passed through once (never logged)
+    login: await m.bridgeStep(text(a.network, 32), text(a.processId, 128), text(a.stepId, 128),
+      typeof a.secret === 'string' ? { secret: a.secret.slice(0, 256), fieldId: text(a.fieldId, 128) }
+        : (typeof a.phone === 'string' ? { phone: a.phone.slice(0, 40), fieldId: text(a.fieldId, 128) } : {})),
+  })));
+  handle('chat:bridge:cancel', wrap(async (a) => ({ ok: await m.bridgeCancel(text(a.network, 32), text(a.processId, 128)) })));
+  handle('chat:bridge:unlink', wrap(async (a) => ({ ok: await m.bridgeUnlink(text(a.network, 32), text(a.loginId, 128)) })));
+  // Messenger 1.15: a new chat by number — the number passes through once and is never logged or stored
+  const num = (v) => (typeof v === 'string' ? v.slice(0, 40) : '');
+  handle('chat:bridge:resolve', wrap(async (a) => ({ ok: true, ...(await m.bridgeResolve(text(a.network, 32), num(a.number), text(a.cc, 5))) })));
+  handle('chat:bridge:chat', wrap(async (a) => ({ ok: true, ...(await m.bridgeStartChat(text(a.network, 32), num(a.number), text(a.cc, 5))) })));
+  // Messenger 1.17 (feature `bridge_history`; code 'unsupported' without it): older history at a new link, its files
+  handle('chat:bridge:history', wrap(async (a) => ({ ok: true, history: await m.setBridgeHistory(a.days) })));
+  // Messenger 1.21: persons (feature `chat_people`)
+  handle('chat:person:way', wrap(async (a) => {
+    const id = posInt(a.id);
+    const way = a.way == null ? null : text(a.way, 20);
+    if (!id || (way != null && !/^[a-z]{2,20}$/.test(way))) return invalid();
+    return { ok: true, ...(await m.setWay(id, way)) };
+  }));
+  handle('chat:suggestions', wrap(async (a) => ({ ok: true, suggestions: await m.suggestions({ refresh: a.refresh === true }) })));
+  handle('chat:suggestion:answer', wrap(async (a) => ({ ok: true, suggestion: await m.answerSuggestion(text(a.id, 40), text(a.action, 10)) })));
+  handle('chat:person:merge', wrap(async (a) => ({ ok: true, conversation: await m.mergePersons({ conversationIds: a.conversationIds, userId: a.userId, name: a.name }) })));
+  handle('chat:person:split', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id || (a.conversationId != null && !posInt(a.conversationId))) return invalid();
+    return { ok: true, ...(await m.splitPerson(id, a.conversationId == null ? null : posInt(a.conversationId))) };
+  }));
+  handle('chat:person:name', wrap(async (a) => {
+    const id = posInt(a.id);
+    const name = a.name === 'account' ? 'account' : posInt(a.name);
+    if (!id || !name) return invalid();
+    return { ok: true, conversation: await m.renamePerson(id, name) };
+  }));
+  // Messenger 1.27: „Nachrichten senden über“ — 'auto' (null), 'gatecontrol' or a network of the person (checked in the core)
+  handle('chat:person:reply-pref', wrap(async (a) => {
+    const id = posInt(a.id);
+    const pref = a.pref == null ? 'auto' : text(a.pref, 20);
+    if (!id || !/^[a-z]{2,20}$/.test(pref)) return invalid();
+    return { ok: true, conversation: await m.setReplyPref(id, pref) };
+  }));
+  handle('chat:person:candidates', wrap(async (a) => (posInt(a.id) ? { ok: true, ...(await m.personCandidates(posInt(a.id))) } : invalid())));
+  handle('chat:bridge:recognition', wrap(async (a) => {
+    if (typeof a.allowed !== 'boolean') return invalid();
+    // Messenger 1.23: one consent per service (network missing: WhatsApp, as before)
+    return { ok: true, recognition: await m.setRecognition(a.allowed, a.network == null ? 'whatsapp' : text(a.network, 32)) };
+  }));
+  // Messenger 1.23: „Im Portal / Windows-Client fortsetzen“ (a service with the QR code only) and its end
+  handle('chat:bridge:handoff', wrap(async (a) => ({ ok: true, handoff: await m.bridgeHandoff(text(a.network, 32), text(a.target, 16)) })));
+  handle('chat:bridge:handoff:end', wrap(async (a) => ({ ok: await m.bridgeHandoffEnd(text(a.network, 32)) })));
+  handle('chat:fetch', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id) return invalid();
+    return { ok: true, message: await m.fetchBridgeFile(id) };
+  }));
+  // Messenger 1.18: „Neuer Chat“ with contacts — the search passes through once and is never logged or stored
+  handle('chat:bridge:contacts', wrap(async (a) => ({ ok: true, ...(await m.newChatContacts(text(a.network, 32), typeof a.q === 'string' ? a.q.slice(0, 200) : '')) })));
+  handle('chat:bridge:contact-chat', wrap(async (a) => {
+    const c = obj(a.contact);
+    const contact = typeof c.ref === 'string' ? { ref: c.ref.slice(0, 1500) } : { contactId: c.contactId, phoneKind: text(c.phoneKind, 16) };
+    return { ok: true, ...(await m.bridgeContactChat(text(a.network, 32), contact)) };
+  }));
+  handle('chat:resend', wrap(async (a) => {
+    const id = posInt(a.id);
+    if (!id) return invalid();
+    return { ok: true, message: await m.resend(id) };
+  }));
   handle('chat:edit', wrap(async (a) => {
     if (!posInt(a.id) || typeof a.text !== 'string') return invalid();
     return { ok: true, message: await m.edit(posInt(a.id), a.text) };
@@ -268,7 +426,7 @@ function registerMessengerHandlers(handle, {
     const r = await m.media(a.mediaId);
     const name = nameFor(a, r.mime);
     const win = getMainWindow && getMainWindow();
-    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: name });
+    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: dialogPath('downloads', name) });
     if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
     await fsp.writeFile(res.filePath, r.data);
     await markOfTheWeb(res.filePath, platform, fsp);
@@ -319,6 +477,14 @@ function registerMessengerHandlers(handle, {
   }));
   handle('chat:story:delete', wrap(async (a) => (posInt(a.id) ? { ok: await m.deleteStory(posInt(a.id)) } : invalid())));
   handle('chat:story:seen', wrap(async (a) => (posInt(a.id) ? { ok: await m.storySeen(posInt(a.id)) } : invalid())));
+  // Messenger 1.25: a contact's WhatsApp status — watched; an answer or a reaction goes as a message into the WhatsApp chat
+  handle('chat:story:bridged:seen', wrap(async (a) => (posInt(a.id) ? { ok: await m.bridgedStorySeen(posInt(a.id)) } : invalid())));
+  handle('chat:story:bridged:reply', wrap(async (a) => {
+    const emoji = typeof a.emoji === 'string' && a.emoji && a.emoji.length <= 16 ? a.emoji : null;
+    const text = typeof a.text === 'string' && a.text.trim() && a.text.length <= 4000 ? a.text : null;
+    if (!posInt(a.id) || (emoji == null) === (text == null)) return invalid();
+    return { ok: true, message: await m.bridgedStoryReply(posInt(a.id), emoji ? { emoji } : { text }) };
+  }));
   handle('chat:story:viewers', wrap(async (a) => (posInt(a.id) ? { ok: true, viewers: await m.storyViewers(posInt(a.id)) } : invalid())));
   handle('chat:story:react', wrap(async (a) => {
     if (!posInt(a.id) || typeof a.emoji !== 'string' || !a.emoji || a.emoji.length > 16) return invalid();
@@ -340,7 +506,7 @@ function registerMessengerHandlers(handle, {
     const r = await m.exportChat(posInt(a.id));
     const name = safeFileName(r.fileName, 'Chat.txt');
     const win = getMainWindow && getMainWindow();
-    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: extOf(name) === 'txt' ? name : `${name}.txt`, filters: [{ name: 'Text', extensions: ['txt'] }] });
+    const res = await dialog.showSaveDialog(win || undefined, { defaultPath: dialogPath('downloads', extOf(name) === 'txt' ? name : `${name}.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
     if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
     // UTF-8 with BOM: umlauts read right in every Windows editor.
     await fsp.writeFile(res.filePath, `\ufeff${r.text.replace(/\r?\n/g, '\r\n')}`, 'utf8');
@@ -365,7 +531,7 @@ function registerMessengerHandlers(handle, {
     if (!posInt(a.id) || !(a.folderId === undefined || a.folderId === null || posInt(a.folderId))) return invalid();
     return { ok: true, saved: await m.toDrive(posInt(a.id), posInt(a.folderId) || null) };
   }));
-  handle('chat:places', wrap(async () => ({ ok: true, places: await m.places() })));
+  handle('chat:places', wrap(async (a) => (a.all === true ? { ok: true, ...(await m.pickPlaces()) } : { ok: true, places: await m.places() })));
   handle('chat:poll', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();

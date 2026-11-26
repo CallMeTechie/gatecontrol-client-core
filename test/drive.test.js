@@ -131,6 +131,17 @@ describe('utils/drive', () => {
     assert.equal(f.items.length, 1);
     assert.equal(f.crumbs.length, 2);
     assert.equal(drive.normalizeFolder({ node: {} }, { items: [] }), null);
+    // as the plugin answers GET nodes/<id>: the top folder of an area has the name '' and no parent, `crumbs` are the
+    // folders above (the top folder first, with the name '')
+    const top = drive.normalizeFolder({ ok: true, node: { id: 1, areaId: 'family:1', parentId: null, name: '', isDir: true, role: 'write', crumbs: [] } }, { items: [], role: 'write' });
+    assert.ok(top, 'the top folder of an area opens');
+    assert.equal(top.node.name, '');
+    assert.deepEqual(top.crumbs, [{ id: 1, name: '' }]);
+    const sub = drive.normalizeFolder({ node: { id: 7, areaId: 'family:1', parentId: 5, name: '2026', isDir: true, crumbs: [{ id: 1, name: '' }, { id: 5, name: 'Fotos' }] } }, { items: [] });
+    assert.deepEqual(sub.crumbs, [{ id: 1, name: '' }, { id: 5, name: 'Fotos' }, { id: 7, name: '2026' }]);
+    // only a top folder may be without a name
+    assert.equal(drive.normalizeNode({ id: 7, areaId: 'family:1', parentId: 5, name: '', isDir: true }), null);
+    assert.equal(drive.normalizeNode({ id: 1, areaId: 'family:1', parentId: null, name: '', isDir: false }), null);
     const v = drive.normalizeVersions({ current: { id: 1, areaId: 'mine:2', name: 'a' }, versions: [{ id: 3, rev: 1 }, { id: 4, rev: 2 }, { id: 'x' }] });
     assert.deepEqual(v.versions.map((x) => x.id), [4, 3]);
     const l = drive.normalizeLinks({ links: [{ token: 'tok_old_1', active: false, createdAt: '2026-10-01T00:00:00Z' }, { token: 'tok_new_1', active: true, url: 'javascript:alert(1)', pin: true }, { token: '!' }] });
@@ -180,12 +191,17 @@ describe('DriveService', () => {
   it('browses a folder (crumbs, role) and sends the language', async () => {
     const { svc, srv } = await setup();
     const f = await svc.folder(10);
-    assert.deepEqual(f.crumbs, [{ id: 1, name: 'Meine Dateien' }, { id: 10, name: 'Dokumente' }]);
+    // Drive sends the folders above (the area's top folder without a name); the folder itself is added
+    assert.deepEqual(f.crumbs, [{ id: 1, name: '' }, { id: 10, name: 'Dokumente' }]);
     assert.equal(f.writable, true);
     assert.deepEqual(f.items.map((i) => i.name), ['Brief.pdf']);
     const childrenCall = srv.state.requests.find((r) => r.path.endsWith('/nodes/10/children'));
     assert.deepEqual(childrenCall.query, { sort: 'name', order: 'asc', offset: '0', limit: '500', lang: 'de' });
+    // the top folder of an area: no name in Drive, no parent — it opens (it used to be refused as bad_response)
     const root = await svc.folder(1);
+    assert.equal(root.node.name, '');
+    assert.equal(root.node.parentId, null);
+    assert.deepEqual(root.crumbs, [{ id: 1, name: '' }]);
     assert.deepEqual(root.items.map((i) => [i.name, i.isDir, i.preview]), [['Dokumente', true, false], ['Foto.jpg', false, true], ['setup.exe', false, false]]);
     const ro = await svc.folder(3);
     assert.equal(ro.writable, false);

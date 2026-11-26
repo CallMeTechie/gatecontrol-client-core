@@ -28,6 +28,11 @@
  * - Watching: fs.watch (recursive) per folder → a run 3 s after the last
  *   change; a full run at start and every 15 minutes. Files that are still
  *   being written (changed in the last 2 s) wait for the next run.
+ * - Vault folders (Drive 1.9 'vault', end-to-end encrypted on the devices):
+ *   never part of "Ordner sichern" — nodes with `encrypted: true` are left out
+ *   of Drive's tree (their names are opaque, their contents ciphertext), a
+ *   folder of the PC is never uploaded into one, and a vault folder cannot be
+ *   the Drive folder of "Abgleichen" ('encrypted').
  * - Left out: temporary files (~$*, *.tmp, Thumbs.db, desktop.ini,
  *   .DS_Store), node_modules and .git (switch, on by default), files over a
  *   size (10 GB by default), empty files on Drives before 1.5 (the media upload
@@ -48,7 +53,25 @@
  *   "Rückgängig machen" the files of each folder come back from Drive – a PC
  *   file that differs stays next to it as a conflict copy that is not
  *   uploaded (with files new on the PC since then: "zurückgehalten").
- * - PDFs with a text layer: their text goes with the commit (search).
+ * - Virus scan (Drive 1.19 'scan'): a file the host blocks (`scan.blocked`, also later: change op 'scan') does not
+ *   come down — it counts in `blocked` (with `blockedName`), not as a failure; a copy already on the PC stays
+ *   (never deleted by itself), the change of its `scan` is no new content.
+ * - PDFs with a text layer: their text goes with the commit (search);
+ *   pictures and videos carry when they were taken (Drive 1.7 'takenAt') and where (Drive 1.16 'photoPlaces', EXIF GPS,
+ *   not with the person's keepGeo off).
+ * - Time travel (Drive 1.7 'timeTravel', DriveService event 'timetravel'):
+ *   every folder of this PC whose Drive folder is the folder sent back in
+ *   time, lies in it or holds it runs at once.
+ *   "Abgleichen": what the time travel changed comes to the PC as any change
+ *   in Drive – a PC file changed since the last run is kept as a conflict
+ *   copy next to the file from Drive; files the time travel moved into the
+ *   trash go into the recycle bin (only while unchanged on the PC, the
+ *   mass-delete question is not asked for this one run).
+ *   "Nur sichern": the PC is never written. Drive stays the backup of the PC:
+ *   the next run uploads the PC's file again where Drive now has another one
+ *   (the time travel's file stays as an older version), files it moved into
+ *   the trash that the PC still has go up again; files it brought back that
+ *   the PC does not have stay in Drive (like anything only in Drive).
  * - Control: pause all / a folder, upload / download limit (KB/s, shared by
  *   every transfer of a direction), "nur im Heimnetz" (networks marked as
  *   home: utils/drive-sync.js localNetworks + fingerprints), "nur mit VPN".
@@ -85,8 +108,11 @@ const drive = require('../utils/drive');
 const S = require('../utils/drive-sync');
 const G = require('../utils/drive-guard');
 const { pdfText, isPdf } = require('../utils/pdf-text');
+const { shot: readShot, isMediaName } = require('../utils/taken-at');
 const { createLimiter } = require('../utils/throttle');
 const { guessMime } = require('../utils/gatedrop');
+const SC = require('../utils/scan');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const { MessengerError: DriveError } = MessengerApi;
 
@@ -125,6 +151,8 @@ class DriveSync extends EventEmitter {
    * @param {object} [opts.log]
    * @param {(p: string) => Promise<void>} [opts.trashItem] - into the recycle bin (Electron shell.trashItem)
    * @param {object} [opts.dialog] - Electron dialog (pick a folder)
+   * @param {(key: string) => string|undefined} [opts.dialogPath] - where the folder dialog starts
+   *   (utils/user-folders dialogPath: the profile of the person signed in, also when the app runs as another Windows user)
    * @param {object} [opts.shell] - Electron shell (open a folder)
    * @param {Function} [opts.getMainWindow]
    * @param {() => string} [opts.hostname]
@@ -145,6 +173,7 @@ class DriveSync extends EventEmitter {
     drive: driveSvc, api = null, store, dir, log, trashItem = null, dialog = null, shell = null, getMainWindow = null,
     hostname = () => os.hostname(), getInterfaces = () => os.networkInterfaces(), getGateways = null, isVpnUp = null, getDeviceKey = null,
     knownFolders = null, blockedPaths = null, appVersion = '', pushClient = null, timing = {}, now = Date.now, readPdfText = null,
+    dialogPath = defaultDialogPath,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -164,6 +193,7 @@ class DriveSync extends EventEmitter {
     this.isVpnUp = typeof isVpnUp === 'function' ? isVpnUp : () => true;
     this.getDeviceKey = typeof getDeviceKey === 'function' ? getDeviceKey : () => null;
     this.knownFolders = typeof knownFolders === 'function' ? knownFolders : () => [];
+    this.dialogPath = typeof dialogPath === 'function' ? dialogPath : () => undefined;
     this.blockedPaths = typeof blockedPaths === 'function' ? blockedPaths : () => [];
     this.appVersion = typeof appVersion === 'string' ? appVersion.slice(0, 40) : '';
     this._devReg = null;           // Drive 1.5: { device, at } of the last PUT devices/<id>
@@ -222,9 +252,9 @@ class DriveSync extends EventEmitter {
       const f = this._folder(id);
       const fresh = !!f && !f.lastSyncAt;
       this._rt.set(id, {
-        state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null,
+        state: fresh ? 'syncing' : 'idle', reason: fresh ? 'queued' : null, dirty: true, total: 0, done: 0, current: null, failed: 0, failure: null, blocked: 0, blockedName: null,
         confirm: null, allowDeletes: false, restore: false, files: null, bytes: null, skipped: 0, pendingDeletes: 0, pendingUntil: null,
-        conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0,
+        conflicts: 0, watching: false, suspect: null, allowSuspect: false, undo: false, held: 0, timeTravel: 0,
       });
     }
     return this._rt.get(id);
@@ -239,9 +269,12 @@ class DriveSync extends EventEmitter {
     if (d && typeof d.on === 'function') {
       const onState = (st) => { if (st && st.state === 'available') this.syncAll({ full: true }); else this._emit(); };
       const onGuard = (g) => this._onGuard(g);
+      // Drive 1.7: a folder went back in time – the folders of this PC that lie there run now
+      const onTimeTravel = (e) => { this.afterTimeTravel(e && e.folderId).catch((err) => this.log.info(`Drive sync after a time travel: ${drive.errorCode(err)}`)); };
       d.on('state', onState);
       d.on('guard', onGuard);
-      this._unsub.push(() => { d.removeListener('state', onState); d.removeListener('guard', onGuard); });
+      d.on('timetravel', onTimeTravel);
+      this._unsub.push(() => { d.removeListener('state', onState); d.removeListener('guard', onGuard); d.removeListener('timetravel', onTimeTravel); });
     }
     const pc = this.pushClient;
     if (pc && typeof pc.on === 'function') {
@@ -343,6 +376,9 @@ class DriveSync extends EventEmitter {
       current: rt.current,
       failed: rt.failed,
       failure: rt.failure,
+      // Drive 1.19: files the virus scan blocks — not loaded onto this PC
+      blocked: rt.blocked || 0,
+      blockedName: rt.blockedName || null,
       confirm: rt.confirm ? { ...rt.confirm } : null,
       // "ungewöhnliche Änderungen": { count, sample, why: 'entropy' | 'extension' }
       suspect: rt.suspect ? { ...rt.suspect, sample: rt.suspect.sample.slice() } : null,
@@ -439,7 +475,8 @@ class DriveSync extends EventEmitter {
   async pickFolder() {
     if (!this.dialog || typeof this.dialog.showOpenDialog !== 'function') throw new DriveError('no dialog', { code: 'unsupported' });
     const win = this.getMainWindow();
-    const opts = { properties: ['openDirectory', 'dontAddToRecent'] };
+    const start = this.dialogPath('home');
+    const opts = { properties: ['openDirectory', 'dontAddToRecent'], ...(start ? { defaultPath: start } : {}) };
     const r = win ? await this.dialog.showOpenDialog(win, opts) : await this.dialog.showOpenDialog(opts);
     if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths[0]) return { ok: false, code: 'cancelled', error: 'cancelled' };
     return { ok: true, path: r.filePaths[0] };
@@ -472,6 +509,7 @@ class DriveSync extends EventEmitter {
       if (!id) throw new DriveError('no Drive folder', { code: 'invalid' });
       if (this._cfg.folders.some((f) => f.mode === 'sync' && f.target.nodeId === id && f.scope === folder.scope)) throw new DriveError('Drive folder synced already', { code: 'target_taken' });
       const r = await this.api.folder(id, { limit: 1 });
+      if (r.node.encrypted) throw new DriveError('a vault folder', { code: 'encrypted' });
       if (!r.writable) throw new DriveError('read only', { code: 'forbidden' });
       const area = (await this.api.areas().catch(() => ({ areas: [] }))).areas.find((a) => a.id === r.node.areaId);
       const names = r.crumbs.filter((c) => c.id !== r.node.id).map((c) => c.name);
@@ -601,6 +639,61 @@ class DriveSync extends EventEmitter {
     return true;
   }
 
+  // ── Time travel (Drive 1.7) ──────────────────────────────
+
+  /**
+   * How the Drive folder `nodeId` relates to the folder `f` of this PC: 'same', 'inside' (it lies in
+   * f's Drive folder), 'contains' (it holds f's Drive folder) or null. Errors count as null.
+   */
+  async _relation(f, nodeId) {
+    const id = drive.posId(nodeId);
+    if (!id || !f.target || !f.target.nodeId || (f.scope && f.scope !== this._scopeKey())) return null;
+    if (f.target.nodeId === id) return 'same';
+    try {
+      const st = await this._state(f);
+      if (st.rootId === f.target.nodeId && st.tree && st.tree[id] && st.tree[id].isDir) return 'inside';
+    } catch { /* no state yet */ }
+    try {
+      const r = await this.api.folder(f.target.nodeId, { limit: 1 });
+      if (r.crumbs.some((c) => c.id === id)) return 'contains';
+    } catch { /* gone, offline */ }
+    return null;
+  }
+
+  /** The folders of this PC the Drive folder `nodeId` touches → [{ id, path, name, mode, relation }] (the time travel's preview). */
+  async linkedFolders(nodeId) {
+    const out = [];
+    for (const f of this._cfg.folders) {
+      const relation = await this._relation(f, nodeId);
+      if (relation) out.push({ id: f.id, path: f.path, name: path.win32.basename(f.path) || f.path, mode: f.mode, relation });
+    }
+    return out;
+  }
+
+  /**
+   * After a time travel of the Drive folder `nodeId`: the folders of this PC it touches run now.
+   * "Nur sichern" uploads the PC's files again where Drive has another one now (`reassert`, kept in
+   * the state until a run went through); "Abgleichen" takes Drive's changes without asking about
+   * mass deletes in this run. → [{ id, mode }]
+   */
+  async afterTimeTravel(nodeId) {
+    const out = [];
+    for (const f of this._cfg.folders) {
+      if (!(await this._relation(f, nodeId))) continue;
+      if (f.mode === 'backup') {
+        const st = await this._state(f);
+        st.reassert = true;
+        await this._writeState(f.id).catch((err) => this.log.warn(`Drive sync state not written: ${err.message}`));
+      } else {
+        this._runtime(f.id).timeTravel = this.now();
+      }
+      this.log.info(`Drive sync: a time travel in Drive touches a folder of this PC (${f.mode}) – it runs now`);
+      this.sync(f.id, { full: true });
+      out.push({ id: f.id, mode: f.mode });
+    }
+    return out;
+  }
+
   /** Opens the local folder in the Explorer. */
   async openFolder(id) {
     const f = this._folder(id);
@@ -673,7 +766,8 @@ class DriveSync extends EventEmitter {
 
   /** Waits until the queue is empty (tests, quit). */
   async idle() {
-    while (this._pumping || this._queue.size) await new Promise((r) => setTimeout(r, 10));
+    // a run ends with the report of the folders to Drive (Drive 1.5 'devices'): idle after that, too
+    while (this._pumping || this._queue.size || this._reporting) await new Promise((r) => setTimeout(r, 10));
   }
 
   async _pump() {
@@ -698,7 +792,12 @@ class DriveSync extends EventEmitter {
       this._pumping = false;
       this._emit(true);
     }
-    await this._reportFolders();
+    this._reporting = (this._reporting || 0) + 1;
+    try {
+      await this._reportFolders();
+    } finally {
+      this._reporting -= 1;
+    }
   }
 
   _retryLater() {
@@ -786,7 +885,7 @@ class DriveSync extends EventEmitter {
       return;
     }
     const st = await this._state(f);
-    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0, uploaded: new Set(), entropy: new Map() };
+    const ctx = { f, st, rt, root: f.path, actions: 0, me: null, deferred: 0, uploaded: new Set(), entropy: new Map(), started: this.now() };
     rt.state = 'syncing';
     rt.reason = 'checking';
     rt.total = 0;
@@ -794,6 +893,8 @@ class DriveSync extends EventEmitter {
     rt.current = null;
     rt.failed = 0;
     rt.failure = null;
+    rt.blocked = 0;
+    rt.blockedName = null;
     this._emit();
     try {
       await this._ensureLocal(ctx);
@@ -804,6 +905,9 @@ class DriveSync extends EventEmitter {
       // Drive 1.5: Drive keeps the 30 days of "Nur sichern"; 1.6: the entropy goes with each commit
       ctx.deleteAfter = await this._has('deleteAfter');
       ctx.guard = await this._has('guard');
+      // Drive 1.7: when a photo / video was taken goes with its commit; 1.16 'photoPlaces': where (not with keepGeo off)
+      ctx.takenAt = await this._has('takenAt');
+      ctx.geo = typeof this.api.geoAllowed === 'function' ? await this.api.geoAllowed().catch(() => false) : false;
       await this._ensureTarget(ctx);
       const touched = await this._pullRemote(ctx);
       if (q.remote && !q.full && !touched && !rt.dirty && rt.watching && st.base && Object.keys(st.base).length) {
@@ -954,7 +1058,7 @@ class DriveSync extends EventEmitter {
     });
     if (dev && dev.folder) {
       const leaf = f.remoteName || 'Ordner';
-      const find = async () => (await this.api.childrenAll(dev.folder.id)).find((n) => n.isDir && !n.deleted && S.keyOf(n.name) === S.keyOf(leaf)) || null;
+      const find = async () => (await this.api.childrenAll(dev.folder.id)).find((n) => n.isDir && !n.deleted && !n.encrypted && S.keyOf(n.name) === S.keyOf(leaf)) || null;
       let n = await find();
       if (!n) {
         try {
@@ -1034,7 +1138,8 @@ class DriveSync extends EventEmitter {
     while (dirs.length) {
       const id = dirs.shift();
       for (const n of await this.api.childrenAll(id)) {
-        if (n.deleted) continue;
+        // Drive 1.9: vault folders and their content are never synced (opaque names, ciphertext)
+        if (n.deleted || n.encrypted) continue;
         tree[n.id] = S.slimNode(n);
         if (n.isDir) dirs.push(n.id);
         if (++count > 500000) throw new DriveError('too many files', { code: 'too_many_files' });
@@ -1138,7 +1243,9 @@ class DriveSync extends EventEmitter {
     }
 
     const v = this._views(ctx, local, unreadable);
-    const p = S.plan({ mode: f.mode, base: v.base, local: v.local, remote: v.remote, restoreDeleted: rt.restore });
+    // after a time travel ("Nur sichern"): the PC's files go up again where Drive has another one now
+    const reassert = f.mode === 'backup' && st.reassert === true;
+    const p = S.plan({ mode: f.mode, base: v.base, local: v.local, remote: v.remote, restoreDeleted: rt.restore, reassert });
     let actions = p.actions;
     const isDelete = (a) => a.op === 'trashRemote' || (a.op === 'pendingDelete' && !st.pending[a.key]);
     const deletes = actions.filter(isDelete).reduce((n, a) => n + (a.files || 0), 0);
@@ -1147,7 +1254,10 @@ class DriveSync extends EventEmitter {
     const driveDeletes = actions.filter((a) => a.op === 'deleteLocal').reduce((n, a) => n + (a.files || 0), 0);
     const massPc = S.massDelete(deletes, p.files);
     const massDrive = S.massDelete(driveDeletes, p.files);
-    if (!rt.allowDeletes && !rt.restore && (massPc || massDrive)) {
+    // a time travel of this person (Drive 1.7) moved many files into Drive's trash: no question for that run
+    const tt = rt.timeTravel && ctx.started >= rt.timeTravel && this.now() - rt.timeTravel < 30 * 60 * 1000;
+    if (rt.timeTravel && ctx.started >= rt.timeTravel) rt.timeTravel = 0;
+    if (!rt.allowDeletes && !rt.restore && (massPc || (massDrive && !tt))) {
       actions = actions.filter((a) => !isDelete(a) && a.op !== 'deleteLocal');
       rt.confirm = massDrive && !massPc ? { count: driveDeletes, total: p.files, from: 'drive' } : { count: deletes, total: p.files, from: 'pc' };
       this.log.info(`Drive sync: ${rt.confirm.count} of ${p.files} files deleted ${rt.confirm.from === 'drive' ? 'in Drive' : 'on this PC'} at once — waiting for the person`);
@@ -1184,6 +1294,14 @@ class DriveSync extends EventEmitter {
         await this._do(ctx, a);
       } catch (err) {
         if (err instanceof SyncStop || isNetwork(err) || isLocked(err)) throw err;
+        if (SC.isRefusal(err.code)) {
+          // blocked by the virus scan: not a failure of the run (the next one does not try it again while it is)
+          rt.blocked++;
+          rt.blockedName = S.baseName(a.path || a.key);
+          this.log.info(`Drive sync: a file is blocked by the virus scan (${err.code})`);
+          if (a.op === 'download' || a.op === 'merge') { rt.done++; rt.current = null; this._emit(); }
+          continue;
+        }
         rt.failed++;
         rt.failure = { name: S.baseName(a.path || a.key), code: drive.errorCode(err) };
         this.log.info(`Drive sync: ${a.op} of a file failed (${rt.failure.code})`);
@@ -1192,6 +1310,7 @@ class DriveSync extends EventEmitter {
       if (++ctx.actions % this.timing.saveEvery === 0) await this._writeState(f.id).catch(() => {});
     }
     rt.pendingDeletes = Object.keys(st.pending).length;
+    if (reassert && !rt.failed) st.reassert = false;
   }
 
   /**
@@ -1321,7 +1440,7 @@ class DriveSync extends EventEmitter {
   }
 
   _tree(ctx, node) {
-    if (!ctx.st.tree || !node) return;
+    if (!ctx.st.tree || !node || node.encrypted) return;
     ctx.st.tree[node.id] = S.slimNode(node);
   }
 
@@ -1396,7 +1515,8 @@ class DriveSync extends EventEmitter {
       if (!(err && err.status === 409)) throw err;
       const kids = await this.api.childrenAll(parentId);
       node = kids.find((n) => S.keyOf(n.name) === S.keyOf(name));
-      if (!node || !node.isDir) throw new DriveError('a file is in the way', { code: 'exists' });
+      // a vault folder (Drive 1.9) is never a folder of the PC: nothing goes into it
+      if (!node || !node.isDir || node.encrypted) throw new DriveError('a file is in the way', { code: 'exists' });
       for (const k of kids) this._tree(ctx, k);
     }
     this._tree(ctx, node);
@@ -1460,6 +1580,11 @@ class DriveSync extends EventEmitter {
     const mtime = Math.floor(s.mtimeMs);
     const sha = await this._hash(ctx, abs, s.size);
     const b = st.base[a.key];
+    // after a time travel ("Nur sichern", reassert): Drive has the PC's bytes already
+    if (a.reassert && sha && a.sha256 === sha && a.nodeId) {
+      this._record(ctx, a.key, { ...(b || {}), path: a.path, dir: false, size: s.size, mtime, sha256: sha, nodeId: a.nodeId, rev: a.baseRev });
+      return;
+    }
     // only the time changed: nothing to upload
     if (b && sha && b.sha256 === sha && a.nodeId && b.nodeId === a.nodeId && b.rev === a.baseRev) {
       this._record(ctx, a.key, { ...b, path: a.path, size: s.size, mtime });
@@ -1506,6 +1631,11 @@ class DriveSync extends EventEmitter {
     if (size > 0 && isPdf(name)) {
       const text = await Promise.resolve(this.readPdfText(abs, { size })).catch(() => null);
       if (text) send.text = text;
+    }
+    if ((ctx.takenAt || ctx.geo) && size > 0 && isMediaName(name)) {
+      const r = await readShot(abs, { name, geo: !!ctx.geo }).catch(() => ({ takenAt: null, geo: null }));
+      if (ctx.takenAt && r.takenAt) send.takenAt = r.takenAt;
+      if (ctx.geo && r.geo) send.geo = r.geo;
     }
     return { send, ent };
   }
@@ -1595,6 +1725,8 @@ class DriveSync extends EventEmitter {
       // changed on the PC since the scan: the next run compares both
       if (!b || b.size !== have.size || b.mtime !== Math.floor(have.mtimeMs)) { ctx.deferred++; ctx.rt.dirty = true; this._later(ctx.f.id); return; }
     }
+    const remote = ctx.st.tree && ctx.st.tree[a.nodeId];
+    if (remote && remote.blocked) throw new DriveError('blocked by the virus scan', { status: 423, code: remote.blocked });
     await fs.promises.mkdir(path.dirname(abs), { recursive: true });
     const name = S.baseName(a.path);
     const c = await this.api.content(a.nodeId);
@@ -1602,15 +1734,14 @@ class DriveSync extends EventEmitter {
     ctx.rt.reason = 'transfer';
     ctx.rt.current = { name, sent: 0, total: a.size || null };
     this._emit();
-    const out = fs.createWriteStream(tmp);
     try {
       // Drive 1.5: an empty file has no media
-      if (c.empty) await new Promise((resolve, reject) => { out.on('error', reject); out.end(resolve); });
-      else await this.api.download(c.mediaId, out, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
+      if (c.empty) await fs.promises.writeFile(tmp, '');
+      // Drive 1.20: from the home gateway when it holds the file (lan), else from the server
+      else await this.api.downloadTo(c, tmp, { onProgress: this._progress(ctx, name), throttle: () => this.down.stream() });
       if (Number.isFinite(a.mtime) && a.mtime > 0) await fs.promises.utimes(tmp, new Date(), new Date(a.mtime));
       await fs.promises.rename(tmp, abs);
     } catch (err) {
-      out.destroy();
       await fs.promises.rm(tmp, { force: true }).catch(() => {});
       throw err;
     }
@@ -1749,7 +1880,7 @@ class DriveSync extends EventEmitter {
 }
 
 function freshState(scope) {
-  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, quarantine: {}, lastSyncAt: null };
+  return { v: 1, scope: scope || null, rootId: null, cursor: null, tree: null, base: {}, pending: {}, quarantine: {}, lastSyncAt: null, reassert: false };
 }
 
 const entOf = (v) => (Number.isFinite(v) && v >= 0 && v <= 8 ? v : null);
@@ -1761,6 +1892,7 @@ function parseState(raw) {
   st.rootId = drive.posId(raw.rootId);
   st.cursor = drive.count(raw.cursor);
   st.lastSyncAt = drive.msOf(raw.lastSyncAt);
+  st.reassert = raw.reassert === true;
   if (raw.tree && typeof raw.tree === 'object') {
     st.tree = {};
     for (const [id, n] of Object.entries(raw.tree)) {

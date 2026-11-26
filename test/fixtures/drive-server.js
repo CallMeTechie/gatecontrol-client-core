@@ -21,6 +21,59 @@
 // Drive 1.6: 'links' (me.links), 'guard' (me.guard / incidents; srv.lock({ snapshot: srv.snapshot() }) → every
 // write 423 device_locked; POST guard/incidents/<id>/release | undo – undo gives the files changed since the
 // snapshot their old bytes as a new version and trashes the files this device made since then).
+// Drive 1.7: 'takenAt' (uploads/commit { takenAt } kept on the node), 'timeTravel' (GET / POST nodes/<id>/timetravel
+// against the history of every change: srv.state.history), 'photos' (photos, photos/months, photos/memories – items
+// with mediaId / previewUrl / largeUrl; srv.photoMediaIds = false: without), 'albums' / 'frame' (srv.state.albums), 'storage' (GET storage,
+// storage/versions/prune).
+// Drive 1.8: 'docAi' (node.insight { status, kind }, GET / POST nodes/<id>/insight, …/insight/apply, GET deadlines,
+// POST / DELETE deadlines/<id>/remind, PATCH areas/<id> { docAi }, areas[].docAi; srv.setInsight(id, insight),
+// srv.state.deadlines), 'cloudImport' (only the feature: the import runs in the portal).
+// Drive 1.9: 'office' (POST nodes/<id>/office → an https URL; 409 encrypted / office_unavailable), 'vault' (vaults,
+// keys, recovery, devices, approve, revoke, rotate; nodes, uploads/commit and PATCH with encrypted / nameCipher /
+// keyVersion; 409 stale_key; no links, search or office in a vault; srv.state.vaults).
+// Drive 1.11: 'vaultsApart' (children leave out vault folders — `vaults=1` keeps them —, `children?dirs=1` lists
+// folders only with `hasDirs`, POST vaults puts the vault into the top folder of the parent's area, a vault folder
+// cannot be moved: 400 invalid parentId).
+// Drive 1.12: 'bulk' (POST ops/check, POST ops, GET ops[/<id>], DELETE ops/<id>, POST ops/<id>/undo: move / copy /
+// trash / restore / purge with the conflict rule version | rename | skip, the same content counts as done, folders of
+// the same name merged, blocked root / same_folder / into_itself / encrypted / forbidden, 409 job_limit; srv.opAsync: jobs run until srv.finishOps(), srv.progressOp(), srv.failOp(); state.ops,
+// state.opCalls), 'zip' (POST zip { ids } → a media path of a fake ZIP listing the files; state.zips; srv.zipUrl(mediaId)
+// for another address; without 'zipMixed' one folder or ≤ 20 files), 'multiLink' (POST links { nodeIds }: files only,
+// ≤ 20, a folder → 400 invalid { reason: 'mixed' } — 'zipMixed' lifts both), 'copyServer' (copies carry transfer 'server').
+// Drive 1.30.0: 'deadlineHub' (in the features only while „Notizen & Aufgaben“ rings the reminders of the deadlines):
+// a reminder set here is `by: 'notizen'`. Without the word the field is left out (the default stays an older Drive);
+// srv.remindBy = 'drive' | 'notizen' names it (a Drive 1.30.0 that reminds itself: 'drive').
+// Drive 1.14: 'deadlineCalendar' (POST deadlines/<id>/calendar → deadline.calendar; srv.familie = false → 409
+// familie_unavailable { reason }; state.calendarCalls; PATCH areas/<id> { deadlinesToCalendar }, areas[].deadlinesToCalendar),
+// Drive 1.17: 'deadlineMailCalendar' (GET deadlines/calendars, GET|PUT deadlines/targets, POST deadlines/<id>/calendar
+// { target: { kind: 'mail', calendarId } }; srv.mail = false → 409 mail_unavailable; srv.mailCalendars; state.targets),
+// 'docAsk' (POST ask { q (3 … 300), area? }: srv.answer(q) → the answer, default not_found with the words of q as terms
+// and the areas' labels; state.askCalls; srv.askLimited → 429), 'scanDocs' (POST scans/classify { mediaIds, text? } →
+// srv.scanKind (default: 'table'); POST scans/convert { mediaIds, text?, target, kind, folderId?, name?, images? } → the
+// document's bytes as `file` (a PDF only with images; srv.imagesMax → 413 too_large above it); POST scans/save
+// { mediaId, folderId, name, text?, sourceId?, keepOriginal? } → { node, original } (sourceId into the trash with
+// keepOriginal false); state.classifyCalls / convertCalls / saveCalls; me settings.scanKeepOriginal), 'photoSearch' (GET
+// photos?q=: the photos whose state.labels (nodeId → [label]) contain every word of q, with terms [{ term, label, count }],
+// total and search.chips).
+// Drive 1.16: 'photoPlaces' (uploads/commit { geo } kept on the node unless keepGeo is off, photo items with geo / located
+// (the place from srv.gazetteer: Hamburg, Köln, Palma with districts), GET photos?place=&bbox=&districts=1, photos/places,
+// photos/map (a grid per zoom), DELETE photos/geo; srv.setGeo(id, lat, lon), srv.addPhoto({ name, takenAt, geo })),
+// 'photoPeople' (state.people via srv.addPerson({ name, hidden, contact, nodes, uncertain }), GET people, people/<id>,
+// PATCH (a name taken merges), merge, similar (state.similar), uncertain, confirm, faces/<id>/move, photos?person=,
+// with=people), both: photos?q= matching names of people and places (search.people / search.places), photos/suggest,
+// GET / PUT photos/settings { keepGeo, stripGeoOnShare (only with srv.stripGeo = true), people, peopleKids }
+// (people: false deletes all faces → deleted).
+// Drive 1.18: 'overview' (GET overview → srv.overview, the calls in srv.overviewCalls), 'photoClasses' (GET photos/classes
+// → srv.classes, for the overview of an older Drive).
+// Drive 1.20: 'offline' (GET offline, PUT / DELETE nodes/<id>/offline; state.offline: nodeId → at; srv.offlineMax),
+// the home cache: GET nodes/<id>/content answers `lan` = srv.lan(node, xGcLocal) when that gives one; the
+// X-GC-Local of every request in state.local [{ method, route, value }].
+// Drive 1.24: GET nodes/<id>/children gives each preview `lan` / `largeLan` = srv.previewLan(node, xGcLocal, 'small' |
+// 'large') when that gives one.
+// Drive 1.31: 'framePhotos' (GET frame/photos[?ids=], POST / DELETE frame/photos { ids } (DELETE also ?ids=);
+// state.frame: the album „Fotorahmen“ { id, items } or null, made at the first share; skipped not_found / not_image /
+// vault (encrypted) / blocked (srv.frameBlocked: a Set of ids) / child (srv.frameChild: a Set of ids);
+// srv.frameForbidden → POST / DELETE 403 { code: 'forbidden', field: 'frame' }; state.frameCalls).
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -44,14 +97,34 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     nodes: new Map(),
     versions: new Map(), // nodeId → [{ id, rev, size, at, by, mediaId }]
     pending: new Set(),  // mediaIds whose preview is still being made
+    mediaGets: [],       // GET of a media file: { mediaId, range } (Drive 1.21's viewer)
     log: [],             // { seq, op, areaId, nodeId, device }
     seq: 9,
     devices: new Map(),  // Drive 1.5: id → { id, name, platform, version, folderId, folders }
     guard: { locked: false, incident: null, since: 0 },
     incidents: [],
+    offline: new Map(),  // Drive 1.20: nodeId → at ("offline verfügbar")
+    local: [],           // X-GC-Local of the requests: { method, route, value }
   };
   const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-  const logChange = (op, n, device = '42', areaId = n.areaId) => { state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device }); };
+  // Drive 1.7 'timeTravel': how every node was after each change
+  state.history = [];
+  state.albums = new Map();
+  // Drive 1.31 'framePhotos'
+  state.frame = null;
+  state.frameCalls = [];
+  // Drive 1.8 'docAi': nodeId → the full insight; deadlines; areas switched off
+  state.insights = new Map();
+  state.deadlines = [];
+  state.docAiOff = new Set();
+  // Drive 1.9 'vault': id → { id, nodeId, areaId, keyVersion, recoveryPub, recoveryAuth (sha256 hex), recoveryBy, needsRotation, devices, wraps }
+  state.vaults = new Map();
+  state.officeCalls = [];
+  const snap = () => new Map([...state.nodes.values()].map((n) => [n.id, { name: n.name, parentId: n.parentId, isDir: n.isDir, deleted: !!n.deleted, mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime }]));
+  const logChange = (op, n, device = '42', areaId = n.areaId) => {
+    state.log.push({ seq: ++state.seq, op, areaId, nodeId: n.id, at: Date.now(), device });
+    if (features && features.includes('timeTravel')) state.history.push({ at: Date.now(), nodes: snap() });
+  };
   const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
   const areas = [
     { id: 'mine:2', kind: 'mine', label: 'Meine Dateien', role: 'manage', via: 'owner', rootId: 1, owner: 2, archived: false, storage: { bytes: 1024, quota: 0, form: 'readable', target: { kind: 'local', label: 'Dieser Server' }, state: 'ok' } },
@@ -82,7 +155,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.media.set(toolMedia, { data: Buffer.from('MZ'), mime: 'application/x-msdownload' });
   node({ id: 13, areaId: 'mine:2', parentId: 1, name: 'setup.exe', size: 2, mime: 'application/x-msdownload', mediaId: toolMedia });
 
-  const srv = { state, cutUploadAfter: null, pageMax: 1000 };
+  // linksBase: the origin of me.links (an e2e test points it at its mock server)
+  const srv = { state, nextId: () => ++nextId, linksBase: 'https://gc.example.com', cutUploadAfter: null, pageMax: 1000, photoMediaIds: true, startedAt: Date.now(), timeTravelMax: 2000 };
+  state.history.push({ at: 0, nodes: snap() });
   // nodes below `id` (all, also deleted ones)
   srv.below = (id) => {
     const out = [];
@@ -92,6 +167,29 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       for (const n of state.nodes.values()) if (n.parentId === x) { out.push(n); stack.push(n.id); }
     }
     return out;
+  };
+  // Drive 1.7 'timeTravel': what going back to `at` changes below `folderId` → [{ op, id, then }]
+  srv.timeTravelPlan = (folderId, at) => {
+    const then = (state.history.filter((h) => h.at <= at).pop() || state.history[0]).nodes;
+    const isBelow = (map, id) => { for (let c = map.get(id); c; c = c.parentId ? map.get(c.parentId) : null) { if (c.deleted) return false; if (c.parentId === folderId) return true; } return false; };
+    const nowMap = new Map([...state.nodes.values()].map((n) => [n.id, n]));
+    const depth = (map, id) => { let d = 0; for (let c = map.get(id); c && c.parentId; c = map.get(c.parentId)) d++; return d; };
+    const out = [];
+    for (const [id, t] of then) {
+      if (t.deleted || !isBelow(then, id)) continue;
+      const n = state.nodes.get(id);
+      if (!n) continue; // purged: gone for good
+      if (n.deleted) out.push({ op: 'restore', id, then: t, d: depth(then, id) });
+      else if (!t.isDir && t.mediaId !== n.mediaId) out.push({ op: 'revert', id, then: t, d: depth(then, id) });
+      else if (t.name !== n.name || t.parentId !== n.parentId) out.push({ op: 'move', id, then: t, d: depth(then, id) });
+    }
+    for (const n of state.nodes.values()) {
+      if (n.deleted || !isBelow(nowMap, n.id)) continue;
+      const t = then.get(n.id);
+      if (!t || t.deleted) out.push({ op: 'trash', id: n.id, then: null, d: -depth(nowMap, n.id) });
+    }
+    // folders first when they come back, deepest first when they go
+    return out.sort((a, b) => (a.op === 'trash') - (b.op === 'trash') || a.d - b.d);
   };
   // Changes "by another device" (they land in the change log with device '77').
   // Drive 1.5 'deleteAfter': marked nodes whose time has come go into the trash
@@ -121,6 +219,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const mediaId = crypto.randomBytes(16).toString('hex');
       state.media.set(mediaId, { data, mime: 'application/octet-stream' });
       const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mediaId, sha256: sha(data), mtime: iso(mtime) });
+      logChange('create', n, '77');
+      return n;
+    },
+    // Drive 1.7: a picture (image/jpeg with a preview) taken at `takenAt`
+    photo(parentId, name, { takenAt = Date.now(), content = name, mime = 'image/jpeg', durationMs = null } = {}) {
+      const data = Buffer.from(content);
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data, mime });
+      const n = node({ id: ++nextId, areaId: state.nodes.get(parentId).areaId, parentId, name, size: data.length, mime, mediaId, sha256: sha(data), takenAt: iso(takenAt), mtime: iso(takenAt), ...(durationMs ? { durationMs } : {}) });
       logChange('create', n, '77');
       return n;
     },
@@ -154,6 +261,205 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     },
   };
 
+  // Drive 1.12 'bulk': jobs (state.ops; srv.opAsync = true: a job runs until srv.finishOps() / srv.progressOp()),
+  // what a job would do (srv.opPlan), the job itself (srv.finishOp) with its steps for "Rückgängig"
+  state.ops = new Map();
+  state.opCalls = [];
+  state.zips = [];
+  srv.opAsync = false;
+  srv.undoMs = 15 * 60 * 1000;
+  srv.opsMax = 3;
+  srv.opMaxIds = 10000;
+  srv.zipUrl = null;
+  const liveNode = (id) => { const n = state.nodes.get(Number(id)); return n && !n.deleted ? n : null; };
+  const isVaultRoot = (n) => !!(n && n.encrypted && n.isDir && state.vaults.has(n.vaultId) && state.vaults.get(n.vaultId).nodeId === n.id);
+  srv.opPlan = (b) => {
+    const kinds = ['move', 'copy', 'trash', 'restore', 'purge'];
+    if (!b || !kinds.includes(b.op) || !Array.isArray(b.ids) || !b.ids.length) return { error: [400, 'invalid'] };
+    if (b.ids.length > srv.opMaxIds) return { error: [400, 'too_many'] };
+    const fromTrash = b.op === 'restore' || b.op === 'purge';
+    let target = null;
+    if (b.op === 'move' || b.op === 'copy') {
+      target = liveNode(b.target);
+      if (!target || !target.isDir) return { error: [404, 'not_found'] };
+      if (!writable(target)) return { error: [403, 'forbidden'] };
+    }
+    const up = new Set();
+    for (let c = target; c; c = c.parentId ? state.nodes.get(c.parentId) : null) up.add(c.id);
+    const out = { files: 0, folders: 0, bytes: 0, conflicts: [], conflictsMore: 0, merges: 0, blocked: [], items: [], quota: null, limit: srv.opMaxIds, tooMany: false };
+    for (const id of b.ids) {
+      const n = fromTrash ? state.nodes.get(Number(id)) || null : liveNode(id);
+      const block = (reason) => out.blocked.push({ id: Number(id), reason });
+      if (!n || (fromTrash && !n.deleted)) { block('not_found'); continue; }
+      if (b.op !== 'copy' && !writable(n)) { block('forbidden'); continue; }
+      if ((b.op === 'move' || b.op === 'copy') && (isVaultRoot(n) || (n.vaultId || null) !== (target.vaultId || null) || (b.op === 'copy' && n.encrypted))) { block('encrypted'); continue; }
+      if (!n.parentId && b.op !== 'copy') { block('root'); continue; }
+      if (target && up.has(n.id)) { block('into_itself'); continue; }
+      if (b.op === 'move' && n.parentId === target.id) { block('same_folder'); continue; }
+      const all = [n, ...srv.below(n.id).filter((x) => fromTrash || !x.deleted)];
+      for (const x of all) { if (x.isDir) out.folders++; else { out.files++; out.bytes += x.size || 0; } }
+      if (target) {
+        const t = taken(target.id, n.name);
+        // folders of the same name are merged (counted; Drive lists the files in them that meet)
+        if (t && t.id !== n.id && n.isDir && t.isDir) out.merges++;
+        else if (t && t.id !== n.id) {
+          out.conflicts.push({
+            id: n.id, name: n.name, isDir: n.isDir, size: n.isDir ? null : n.size, mtime: n.mtime,
+            existing: { id: t.id, size: t.isDir ? null : t.size, mtime: t.mtime, isDir: t.isDir },
+            same: !n.isDir && !t.isDir && !!n.sha256 && n.sha256 === t.sha256,
+          });
+        }
+      }
+      out.items.push(n);
+    }
+    return out;
+  };
+  const setArea = (n, areaId) => { n.areaId = areaId; for (const d of srv.below(n.id)) d.areaId = areaId; };
+  srv.finishOp = (o) => {
+    if (o.state !== 'running') return;
+    const target = o.targetId ? state.nodes.get(o.targetId) : null;
+    const choice = o.onConflict || 'version';
+    const newVersion = (t, n) => {
+      (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
+      Object.assign(t, { mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime, rev: t.rev + 1 });
+      logChange('update', t);
+    };
+    const moveInto = (n, parentId, top) => {
+      const t = taken(parentId, n.name);
+      let name = n.name;
+      if (t && t.id !== n.id) {
+        if (n.isDir && t.isDir) {
+          // the same folder name: merged (the content goes in, the rule holds for the files in it)
+          for (const c of children(n.id)) moveInto(c, t.id, false);
+          n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n);
+          o.steps.push({ action: 'trashed', id: n.id });
+          if (top) o.res.done++;
+          return;
+        }
+        if (!n.isDir && !t.isDir && n.sha256 && n.sha256 === t.sha256) { n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); o.steps.push({ action: 'trashed', id: n.id }); if (top) o.res.done++; return; }
+        if (choice === 'skip') { if (top) o.res.skipped++; return; }
+        if (choice === 'version' && !n.isDir && !t.isDir) { newVersion(t, n); n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); o.steps.push({ action: 'trashed', id: n.id }); if (top) o.res.done++; return; }
+        name = freeName(parentId, n.name);
+      }
+      o.steps.push({ action: 'moved', id: n.id, from: { parentId: n.parentId, name: n.name, areaId: n.areaId } });
+      n.parentId = parentId;
+      n.name = name;
+      setArea(n, state.nodes.get(parentId).areaId);
+      logChange('move', n);
+      if (top) { o.res.done++; o.res.resultIds.push(n.id); }
+    };
+    const copyInto = (n, parentId, top) => {
+      const t = taken(parentId, n.name);
+      let name = n.name;
+      if (t) {
+        if (n.isDir && t.isDir) { for (const c of children(n.id)) copyInto(c, t.id, false); if (top) o.res.done++; return; }
+        if (!n.isDir && !t.isDir && n.sha256 && n.sha256 === t.sha256) { if (top) o.res.done++; return; }
+        if (choice === 'skip') { if (top) o.res.skipped++; return; }
+        if (choice === 'version' && !n.isDir && !t.isDir) { newVersion(t, n); if (top) o.res.done++; return; }
+        name = freeName(parentId, n.name);
+      }
+      const parent = state.nodes.get(parentId);
+      const c = node({ id: ++nextId, areaId: parent.areaId, parentId, name, isDir: n.isDir, size: n.size, mime: n.mime, mediaId: n.mediaId, sha256: n.sha256, mtime: n.mtime });
+      logChange('create', c);
+      if (top) { o.steps.push({ action: 'created', id: c.id }); o.res.done++; o.res.resultIds.push(c.id); }
+      if (n.isDir) for (const k of children(n.id)) copyInto(k, c.id, false);
+    };
+    for (const n of o.plan.items) {
+      if (o.kind === 'move') moveInto(n, target.id, true);
+      else if (o.kind === 'copy') copyInto(n, target.id, true);
+      else if (o.kind === 'trash') {
+        n.deleted = true; n.deletedAt = iso(Date.now());
+        for (const d of srv.below(n.id)) { if (!d.deleted) { d.deleted = true; d.deletedAt = n.deletedAt; } }
+        logChange('delete', n);
+        o.steps.push({ action: 'trashed', id: n.id });
+        o.res.done++;
+      } else if (o.kind === 'restore') {
+        n.deleted = false; n.name = freeName(n.parentId, n.name);
+        for (const d of srv.below(n.id)) d.deleted = false;
+        logChange('restore', n);
+        o.res.done++;
+      } else if (o.kind === 'purge') {
+        for (const d of srv.below(n.id)) state.nodes.delete(d.id);
+        logChange('purge', n);
+        state.nodes.delete(n.id);
+        o.res.done++;
+      }
+    }
+    Object.assign(o, { done: o.total, bytesDone: o.bytesTotal, state: 'done', finishedAt: Date.now() });
+  };
+  srv.finishOps = () => { for (const o of state.ops.values()) srv.finishOp(o); };
+  srv.progressOp = (id, done, bytesDone = 0) => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { done, bytesDone }); };
+  srv.failOp = (id, code = 'failed') => { const o = state.ops.get(id); if (o && o.state === 'running') Object.assign(o, { state: 'failed', error: code, finishedAt: Date.now() }); };
+
+  // Drive 1.14
+  state.calendarCalls = [];
+  state.askCalls = [];
+  state.classifyCalls = [];
+  state.convertCalls = [];
+  state.commits = [];
+  state.saveCalls = [];
+  state.toCalendar = new Set();
+  state.labels = new Map();
+  srv.familie = true;
+  // Drive 1.17 'deadlineMailCalendar': the person's mail calendars (srv.mail = false: 409 mail_unavailable), targets per area
+  srv.mail = true;
+  srv.mailCalendars = [
+    { id: 'cal-1', name: 'Kalender', account: { id: 'acc-1', label: 'Outlook', kind: 'microsoft' }, color: '#3366ff', writable: true },
+    { id: 'cal-2', name: 'Privat', account: { id: 'acc-2', label: 'Posteo', kind: 'caldav' }, color: null, writable: true },
+  ];
+  state.targets = new Map();
+  state.calendarBodies = [];
+  srv.scanKeepOriginal = true;
+  srv.imagesMax = 600 * 1024;
+  srv.answer = null;
+  srv.scanKind = 'table';
+  // Drive 1.16 'photoPlaces' / 'photoPeople'
+  state.photoSettings = { keepGeo: true, stripGeoOnShare: true, people: false, peopleKids: false };
+  state.people = new Map();      // id → { id, name, hidden, contact, faces: [{ faceId, nodeId, box }], uncertain: [{ faceId, nodeId, box, score }] }
+  state.similar = new Map();     // person id → [{ id, score }]
+  state.peopleProgress = { done: 0, total: 0 };
+  state.refusedFaces = new Set();
+  // stripGeoOnShare: Drive 1.16.0 does not report it (its deviations: share links are served by GateControl itself);
+  // srv.stripGeo = true reports it like the contract has it
+  srv.stripGeo = false;
+  // the places the fake knows (the plugin: GeoNames, offline), with their districts
+  srv.gazetteer = [
+    { key: 'geonames:2911298', name: 'Hamburg', en: 'Hamburg', region: 'Hamburg', country: 'DE', lat: 53.5511, lon: 9.9937, districts: [{ name: 'Altona', lat: 53.55, lon: 9.935 }, { name: 'St. Pauli', lat: 53.556, lon: 9.964 }, { name: 'HafenCity', lat: 53.541, lon: 10.0 }] },
+    { key: 'geonames:2886242', name: 'Köln', en: 'Cologne', region: 'Nordrhein-Westfalen', country: 'DE', lat: 50.9375, lon: 6.9603, districts: [{ name: 'Deutz', lat: 50.936, lon: 6.976 }, { name: 'Altstadt-Nord', lat: 50.94, lon: 6.955 }] },
+    { key: 'geonames:2512989', name: 'Palma', en: 'Palma', region: 'Balearische Inseln', country: 'ES', lat: 39.5696, lon: 2.6502, districts: [] },
+  ];
+  srv.setGeo = (id, lat, lon) => { const n = state.nodes.get(id); n.geo = lat === null ? null : { lat, lon }; };
+  // a person with a face on each of `nodes` (and uncertain ones on `uncertain`) → the person
+  srv.addPerson = ({ name = null, hidden = false, contact = null, nodes = [], uncertain = [] } = {}) => {
+    const p = { id: ++nextId, name, hidden, contact, faces: [], uncertain: [] };
+    for (const nodeId of nodes) p.faces.push({ faceId: ++nextId, nodeId, box: [0.3, 0.2, 0.25, 0.3] });
+    for (const nodeId of uncertain) p.uncertain.push({ faceId: ++nextId, nodeId, box: [0.5, 0.1, 0.2, 0.25], score: 0.36 });
+    state.people.set(p.id, p);
+    return p;
+  };
+  // a photo (image/jpeg) in Meine Dateien › Fotos, taken at `takenAt`, at `geo` → the node
+  srv.addPhoto = ({ name, takenAt = Date.now(), geo = null, parentId = 1 } = {}) => {
+    const mediaId = `ppMedia${String(++nextId).padStart(9, '0')}`;
+    state.media.set(mediaId, { data: Buffer.from(`jpeg ${name}`), mime: 'image/jpeg' });
+    return node({ id: ++nextId, areaId: 'mine:2', parentId, name, size: 8, mime: 'image/jpeg', mediaId, takenAt: iso(takenAt), mtime: iso(takenAt), geo });
+  };
+  // Drive 1.8: an insight for node `id` (status ready …), its deadlines with ids
+  srv.setInsight = (id, ins) => {
+    const deadlines = (ins.deadlines || []).map((d) => {
+      const row = { id: ++nextId, nodeId: id, kind: d.kind, date: d.date, label: d.label || null, reminder: null };
+      state.deadlines.push(row);
+      return row;
+    });
+    state.insights.set(id, { status: 'ready', kind: 'other', title: null, date: null, sender: null, amount: null, currency: null, error: null, at: iso(Date.now()), suggestion: null, ...ins, deadlines });
+  };
+  // Drive 1.9: another device of the person asks for vault `vaultId` (pending)
+  srv.vaultAsk = (vaultId, publicKey, name = 'Pixel') => {
+    const v = state.vaults.get(vaultId);
+    const deviceId = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('gcdrive-v1:device:'), Buffer.from(publicKey, 'base64url')])).digest().subarray(0, 16).toString('base64url');
+    v.devices.set(deviceId, { deviceId, userId: 2, name, platform: 'android', publicKey, state: 'pending', via: null, createdAt: iso(Date.now()), approvedAt: null, approvedBy: null, revokedAt: null });
+    return deviceId;
+  };
+
   const json = (res, status, body) => {
     const data = Buffer.from(JSON.stringify(body));
     res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': data.length });
@@ -166,9 +472,16 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     req.on('end', () => resolve(Buffer.concat(parts)));
     req.on('error', () => resolve(Buffer.concat(parts)));
   });
+  const insightOf = (n) => {
+    if (n.isDir) return undefined;
+    if (n.encrypted || state.docAiOff.has(n.areaId)) return { status: 'off', kind: null };
+    const i = state.insights.get(n.id);
+    return i ? { status: i.status, kind: i.status === 'ready' ? i.kind : null } : { status: 'none', kind: null };
+  };
   const view = (n) => ({
     ...n,
-    preview: !n.isDir && n.mediaId && /^image\//.test(n.mime || '') ? { url: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : (n.isDir ? undefined : null),
+    preview: !n.isDir && n.mediaId && !n.encrypted && /^image\//.test(n.mime || '') ? { url: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : (n.isDir ? undefined : null),
+    ...(features && features.includes('docAi') && !n.isDir ? { insight: insightOf(n) } : {}),
   });
   const areaOf = (n) => areas.find((a) => a.id === n.areaId);
   const writable = (n) => { const a = areaOf(n); return a && !a.archived && (a.role === 'write' || a.role === 'manage'); };
@@ -177,6 +490,13 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     for (let c = n; c; c = c.parentId ? state.nodes.get(c.parentId) : null) out.unshift({ id: c.id, name: c.name });
     return out;
   };
+  // GET nodes/<id> as the plugin answers it: the top folder of an area without a name, `crumbs` the folders above
+  // the node (not the node itself), the top folder first with the name ''
+  const nodeAnswer = (n) => ({
+    ...view(n),
+    ...(n.parentId ? {} : { name: '' }),
+    crumbs: crumbs(n).slice(0, -1).map((c, i) => (i === 0 ? { ...c, name: '' } : c)),
+  });
   const children = (id) => [...state.nodes.values()].filter((n) => n.parentId === id && !n.deleted)
     .sort((a, b) => (Number(b.isDir) - Number(a.isDir)) || a.name.localeCompare(b.name));
   const taken = (parentId, name) => children(parentId).find((n) => n.name.toLowerCase() === name.toLowerCase());
@@ -192,6 +512,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     state.requests.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams) });
+    if (req.headers['x-gc-local'] !== undefined) state.local.push({ method: req.method, route: p.startsWith(API) ? p.slice(API.length) : p, value: req.headers['x-gc-local'] });
+    // Drive 1.12: the ZIP of a selection as GateControl's bearer link (no login)
+    const zipHit = /^\/s\/([A-Za-z0-9]+)\/zip$/.exec(p);
+    if (req.method === 'GET' && zipHit && state.media.has(zipHit[1])) {
+      const md = state.media.get(zipHit[1]);
+      state.zipGets = (state.zipGets || []).concat([{ token: req.headers['x-api-token'] || null }]);
+      res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': md.data.length });
+      return res.end(md.data);
+    }
     if (req.headers['x-api-token'] !== 'gc_token') return json(res, 401, { error: 'unauthorized' });
 
     if (p === '/api/v1/client/plugins') {
@@ -251,7 +580,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': PREVIEW_JPEG.length });
         return res.end(PREVIEW_JPEG);
       }
-      res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length });
+      // Range (one range) like GateControl's media route: 206 / 416, Accept-Ranges (the viewer's gcdrive:, Drive 1.21)
+      const total = md.data.length;
+      const rg = /^bytes=(\d{0,15})-(\d{0,15})$/.exec(String(req.headers.range || '').trim());
+      state.mediaGets.push({ mediaId: rest[0], range: req.headers.range || null });
+      if (srv.mediaStatus) { res.writeHead(srv.mediaStatus, { 'Content-Type': 'application/json' }); return res.end('{"ok":false}'); }
+      if (rg && (rg[1] !== '' || rg[2] !== '')) {
+        let start = rg[1] === '' ? Math.max(0, total - Number(rg[2])) : Number(rg[1]);
+        const end = rg[1] === '' || rg[2] === '' ? total - 1 : Math.min(Number(rg[2]), total - 1);
+        if (rg[1] === '' && Number(rg[2]) === 0) start = total;
+        if (start >= total || end < start) {
+          res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+          return res.end();
+        }
+        res.writeHead(206, { 'Content-Type': md.mime, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${total}`, 'Accept-Ranges': 'bytes' });
+        return res.end(md.data.subarray(start, end + 1));
+      }
+      res.writeHead(200, { 'Content-Type': md.mime, 'Content-Length': md.data.length, 'Accept-Ranges': 'bytes' });
       return res.end(md.data);
     }
 
@@ -267,13 +612,14 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const seg = route.split('/');
     const get = (id) => { const n = state.nodes.get(Number(id)); return n && !n.deleted ? n : null; };
 
+    const areasNowMe = () => (features && features.includes('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id), ...(features.includes('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) })) : areas);
     if (req.method === 'GET' && route === 'me') {
       return json(res, 200, {
         ok: true, me: { id: 2, name: 'Marc', seat: seat || null, deviceId: '42' }, licence: { valid: licence, tier: 'combo' },
-        areas: seat ? areas : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30 }, limits: { maxBytes: 107374182400 },
+        areas: seat ? areasNowMe() : [], latest: state.seq, settings: { trashDays: 30, versionsDays: 30, ...(features && features.includes('scanDocs') ? { scanKeepOriginal: srv.scanKeepOriginal } : {}) }, limits: { maxBytes: 107374182400 },
         people: [{ id: 2, name: 'Marc' }, { id: 7, name: 'Lena' }], wipes: 0, devices: 1,
         ...(features ? { features } : {}),
-        ...(features && features.includes('links') ? { links: { node: 'https://gc.example.com/portal#plg-gatecontrol-drive/node/{id}', drive: 'https://gc.example.com/portal#plg-gatecontrol-drive' } } : {}),
+        ...(features && features.includes('links') ? { links: { node: `${srv.linksBase}/portal#plg-gatecontrol-drive/node/{id}`, drive: `${srv.linksBase}/portal#plg-gatecontrol-drive` } } : {}),
         ...(features && features.includes('guard') ? { guard: { locked: state.guard.locked, incident: state.guard.locked ? state.guard.incident : null }, incidents: state.incidents } : {}),
       });
     }
@@ -338,10 +684,759 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       return json(res, 200, { ok: true, device: devView(d) });
     }
-    if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas });
+    const has = (f) => !!(features && features.includes(f));
+    // ── Drive 1.20 'offline' ──
+    if (has('offline') && route === 'offline' && req.method === 'GET') {
+      const items = [...state.offline.entries()].sort((a, b) => b[1] - a[1]).map(([id, at]) => state.nodes.get(id))
+        .filter((n) => n && !n.deleted).map((n) => ({ ...view(n), offline: true, offlineAt: iso(state.offline.get(n.id)) }));
+      return json(res, 200, { ok: true, items });
+    }
+    if (has('offline') && seg[0] === 'nodes' && seg[2] === 'offline' && seg.length === 3) {
+      const id = Number(seg[1]);
+      if (req.method === 'DELETE') {
+        const removed = state.offline.delete(id);
+        return json(res, 200, { ok: true, id, offline: false, removed });
+      }
+      if (req.method === 'PUT') {
+        const n = get(id);
+        if (!n) return refuse(res, 404, 'not_found');
+        if (!state.offline.has(id)) {
+          if (state.offline.size >= (srv.offlineMax ?? 500)) return json(res, 400, { ok: false, code: 'invalid', field: 'offline', max: srv.offlineMax ?? 500 });
+          state.offline.set(id, Date.now());
+        }
+        return json(res, 200, { ok: true, node: { ...view(n), offline: true, offlineAt: iso(state.offline.get(id)) } });
+      }
+    }
+    const areasNow = () => (has('docAi') ? areas.map((a) => ({ ...a, docAi: !state.docAiOff.has(a.id), ...(has('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) })) : areas);
+    if (req.method === 'GET' && route === 'areas') return json(res, 200, { ok: true, areas: areasNow() });
+    // ── Drive 1.8 'docAi' ──
+    if (has('docAi') && seg[0] === 'areas' && seg[1] && req.method === 'PATCH') {
+      const a = areas.find((x) => x.id === decodeURIComponent(seg[1]));
+      if (!a) return refuse(res, 404, 'not_found');
+      if (!(a.role === 'write' || a.role === 'manage')) return refuse(res, 403, 'forbidden');
+      if (typeof body.deadlinesToCalendar === 'boolean' && has('deadlineCalendar')) {
+        if (body.deadlinesToCalendar && !srv.familie) return json(res, 409, { ok: false, code: 'familie_unavailable', reason: 'forbidden', error: 'familie_unavailable' });
+        if (body.deadlinesToCalendar) state.toCalendar.add(a.id); else state.toCalendar.delete(a.id);
+      }
+      if (typeof body.docAi === 'boolean') { if (body.docAi) state.docAiOff.delete(a.id); else state.docAiOff.add(a.id); }
+      return json(res, 200, { ok: true, area: { id: a.id, docAi: !state.docAiOff.has(a.id), ...(has('deadlineCalendar') ? { deadlinesToCalendar: state.toCalendar.has(a.id) } : {}) } });
+    }
+    if (seg[0] === 'nodes' && seg[2] === 'insight') {
+      if (!has('docAi')) return refuse(res, 404, 'not_found');
+      const n = get(seg[1]);
+      if (!n || n.isDir) return refuse(res, 404, 'not_found');
+      const dl = (id) => state.deadlines.filter((d) => d.nodeId === id).map(({ nodeId, ...d }) => d);
+      const full = () => {
+        if (n.encrypted || state.docAiOff.has(n.areaId)) return { status: 'off', kind: null, title: null, date: null, sender: null, amount: null, currency: null, error: null, at: null, suggestion: null, deadlines: n.encrypted ? [] : dl(n.id) };
+        const i = state.insights.get(n.id);
+        return i ? { ...i, deadlines: dl(n.id) } : { status: 'none', kind: null, title: null, date: null, sender: null, amount: null, currency: null, error: null, at: null, suggestion: null, deadlines: dl(n.id) };
+      };
+      if (seg.length === 3 && req.method === 'GET') return json(res, 200, { ok: true, ...full() });
+      if (n.encrypted) return refuse(res, 409, 'encrypted');
+      if (!writable(n)) return refuse(res, 403, 'forbidden');
+      if (seg.length === 3 && req.method === 'POST') {
+        if (n.mime !== 'application/pdf') return json(res, 422, { ok: false, code: 'unsupported', error: 'unsupported', reason: 'no_text' });
+        state.insights.set(n.id, { ...(state.insights.get(n.id) || {}), status: 'pending', kind: null, suggestion: null, at: iso(Date.now()) });
+        return json(res, 200, { ok: true, ...full() });
+      }
+      if (seg[3] === 'apply' && req.method === 'POST') {
+        const i = state.insights.get(n.id);
+        if (!i || i.status !== 'ready' || !i.suggestion) return json(res, 400, { ok: false, code: 'invalid', field: 'insight', error: 'invalid' });
+        if (body.name && i.suggestion.name) n.name = freeName(n.parentId, i.suggestion.name);
+        if (body.folder && i.suggestion.folderId) n.parentId = i.suggestion.folderId;
+        i.suggestion = { folderId: body.folder ? null : i.suggestion.folderId, folderPath: body.folder ? null : i.suggestion.folderPath, name: body.name ? null : i.suggestion.name };
+        if (!i.suggestion.folderId && !i.suggestion.name) i.suggestion = null;
+        logChange('move', n);
+        return json(res, 200, { ok: true, node: view(n), insight: full() });
+      }
+    }
+    if (has('docAi') && seg[0] === 'deadlines') {
+      if (seg.length === 1 && req.method === 'GET') {
+        const from = url.searchParams.get('from') || new Date().toISOString().slice(0, 10);
+        const to = url.searchParams.get('to') || '9999-12-31';
+        const list = state.deadlines.filter((d) => d.date >= from && d.date <= to && get(d.nodeId) && !get(d.nodeId).encrypted)
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id))
+          .map(({ nodeId, entries, ...d }) => ({ ...d, node: { ...view(get(nodeId)), path: '' } }));
+        return json(res, 200, { ok: true, deadlines: list });
+      }
+      const d = state.deadlines.find((x) => x.id === Number(seg[1]));
+      const plain = () => { const { nodeId, entries, ...x } = d; return x; };
+      // Drive 1.14 'deadlineCalendar'
+      if (seg.length === 2 && seg[1] === 'calendars' && req.method === 'GET' && has('deadlineMailCalendar')) {
+        return json(res, 200, { ok: true, family: srv.familie, mail: srv.mail ? srv.mailCalendars.map(({ writable, ...c }) => c) : [] });
+      }
+      if (seg.length === 2 && seg[1] === 'targets' && has('deadlineMailCalendar')) {
+        const rows = () => areasNow().filter((a) => a.docAi).map((a) => ({ areaId: a.id, label: a.label, target: state.targets.has(a.id) ? state.targets.get(a.id) : (state.toCalendar.has(a.id) ? { kind: 'family' } : null) }));
+        if (req.method === 'GET') return json(res, 200, { ok: true, targets: rows() });
+        if (req.method === 'PUT') {
+          for (const t of Array.isArray(body.targets) ? body.targets : []) {
+            if (!rows().some((r) => r.areaId === t.areaId)) return refuse(res, 404, 'not_found');
+            const tg = t.target;
+            if (tg && tg.kind === 'mail') {
+              const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
+              if (!c) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'not_found', error: 'mail_unavailable' });
+              state.targets.set(t.areaId, { kind: 'mail', calendarId: c.id, label: `${c.account.label} · ${c.name}` });
+            } else if (tg && tg.kind === 'family') state.targets.set(t.areaId, { kind: 'family' });
+            else if (tg === null) state.targets.set(t.areaId, null);
+            else return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
+          }
+          return json(res, 200, { ok: true, targets: rows() });
+        }
+      }
+      if (d && seg[2] === 'calendar' && req.method === 'POST' && has('deadlineCalendar')) {
+        state.calendarCalls.push(d.id);
+        state.calendarBodies.push(body);
+        const tg = body && body.target;
+        if (tg && tg.kind === 'mail' && has('deadlineMailCalendar')) {
+          d.entries = d.entries || {};
+          if (d.entries[tg.calendarId]) return json(res, 200, { ok: true, deadline: { ...plain(), calendar: d.entries[tg.calendarId] } });
+          if (!srv.mail) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'auth_expired', error: 'mail_unavailable' });
+          const c = srv.mailCalendars.find((x) => x.id === tg.calendarId);
+          if (!c) return json(res, 409, { ok: false, code: 'mail_unavailable', reason: 'not_found', error: 'mail_unavailable' });
+          d.entries[c.id] = { eventId: `mev-${d.id}`, at: iso(Date.now()), target: { kind: 'mail', label: `${c.account.label} · ${c.name}` } };
+          d.calendar = d.entries[c.id];
+          return json(res, 200, { ok: true, deadline: plain() });
+        }
+        // a second call answers the same
+        if (d.calendar) return json(res, 200, { ok: true, deadline: plain() });
+        if (!srv.familie) return json(res, 409, { ok: false, code: 'familie_unavailable', reason: 'forbidden', error: 'familie_unavailable' });
+        d.calendar = { eventId: `ev-${d.id}`, at: iso(Date.now()) };
+        return json(res, 200, { ok: true, deadline: plain() });
+      }
+      if (!d || seg[2] !== 'remind') return refuse(res, 404, 'not_found');
+      if (req.method === 'POST') {
+        const days = Number(body.daysBefore);
+        if (!Number.isInteger(days) || days < 0 || days > 90) return json(res, 400, { ok: false, code: 'invalid', field: 'daysBefore', error: 'invalid' });
+        // Drive 1.30.0 names who rings: 'notizen' while the hub reminds ('deadlineHub'); srv.remindBy = 'drive': a 1.30.0 that reminds itself
+        const by = srv.remindBy || (has('deadlineHub') ? 'notizen' : null);
+        d.reminder = { at: iso(Date.parse(`${d.date}T07:00:00Z`) - days * 86400000), daysBefore: days, sent: false, ...(by ? { by } : {}) };
+        return json(res, 200, { ok: true, deadline: plain() });
+      }
+      if (req.method === 'DELETE') { d.reminder = null; return json(res, 200, { ok: true, deadline: plain() }); }
+    }
+    // ── Drive 1.9 'office' ──
+    if (seg[0] === 'nodes' && seg[2] === 'office' && req.method === 'POST') {
+      if (!has('office')) return refuse(res, 404, 'not_found');
+      const n = get(seg[1]);
+      if (!n || n.isDir) return refuse(res, 404, 'not_found');
+      if (n.encrypted) return refuse(res, 409, 'encrypted');
+      if (!/\.(docx|xlsx|pptx|odt|ods|odp|csv)$/i.test(n.name)) return json(res, 409, { ok: false, code: 'office_unavailable', reason: 'type', error: 'office_unavailable' });
+      state.officeCalls.push(n.id);
+      return json(res, 200, { ok: true, url: `https://gc.example.com/plugin-public/gatecontrol-drive/office/open/${n.id}?access_token=tok`, mode: writable(n) ? 'edit' : 'view', expiresAt: iso(Date.now() + 120000) });
+    }
+    // ── Drive 1.9 'vault' ──
+    const vaultOfNode = (n) => (n && n.vaultId ? state.vaults.get(n.vaultId) : null);
+    const kvOf = (c) => Buffer.from(c, 'base64url').readUInt32BE(1);
+    if (has('vault') && seg[0] === 'vaults') {
+      const vaultView = (v) => {
+        const n = state.nodes.get(v.nodeId);
+        const devs = [...v.devices.values()];
+        const mine = devs.filter((d) => d.userId === 2);
+        return {
+          id: v.id, nodeId: v.nodeId, areaId: v.areaId, parentId: n.parentId, nameCipher: n.nameCipher, keyVersion: v.keyVersion, recoveryPub: v.recoveryPub,
+          recoveryHolder: v.recoveryBy, needsRotation: v.needsRotation, createdAt: iso(Date.now()), createdBy: 2, rotatedAt: null,
+          myDevices: mine.map((d) => ({ deviceId: d.deviceId, state: d.state, name: d.name })),
+          pending: mine.some((d) => d.state === 'approved') ? devs.filter((d) => d.state === 'pending').length : 0,
+        };
+      };
+      const devId = (pub) => crypto.createHash('sha256').update(Buffer.concat([Buffer.from('gcdrive-v1:device:'), Buffer.from(pub, 'base64url')])).digest().subarray(0, 16).toString('base64url');
+      const authHash = (a) => crypto.createHash('sha256').update(Buffer.from(String(a || ''), 'base64url')).digest('hex');
+      const wrapOk = (w) => typeof w === 'string' && Buffer.from(w, 'base64url').length === 81 && Buffer.from(w, 'base64url')[0] === 1;
+      if (seg.length === 1 && req.method === 'POST') {
+        let parent = get(body.parentId);
+        if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
+        if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        if (parent.vaultId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
+        // Drive 1.11: parentId only names the area; the vault goes into its top folder
+        if (has('vaultsApart')) parent = state.nodes.get(areaOf(parent).rootId);
+        if (!/^[A-Za-z0-9_-]{22}$/.test(String(body.id)) || !wrapOk(body.wrap) || !wrapOk(body.recoveryWrap) || !body.device || !body.nameCipher || kvOf(body.nameCipher) !== 1) return refuse(res, 400, 'invalid');
+        const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), isDir: true, encrypted: true, vaultId: body.id, nameCipher: body.nameCipher, keyVersion: 1 });
+        logChange('create', made);
+        const did = devId(body.device.publicKey);
+        const v = { id: body.id, nodeId: made.id, areaId: parent.areaId, keyVersion: 1, recoveryPub: body.recoveryPub, recoveryAuth: authHash(body.recoveryAuth), recoveryBy: 2, needsRotation: false, devices: new Map(), wraps: new Map() };
+        v.devices.set(did, { deviceId: did, userId: 2, name: body.device.name || null, platform: body.device.platform || null, publicKey: body.device.publicKey, state: 'approved', via: 'create', createdAt: iso(Date.now()), approvedAt: iso(Date.now()), approvedBy: 2, revokedAt: null });
+        v.wraps.set(`${did}|1`, body.wrap);
+        v.wraps.set('recovery|1', body.recoveryWrap);
+        state.vaults.set(v.id, v);
+        return json(res, 200, { ok: true, vault: vaultView(v), node: view(made) });
+      }
+      if (seg.length === 1 && req.method === 'GET') return json(res, 200, { ok: true, vaults: [...state.vaults.values()].filter((v) => get(v.nodeId)).map(vaultView) });
+      const v = state.vaults.get(seg[1]);
+      if (!v || !get(v.nodeId)) return refuse(res, 404, 'not_found');
+      const wrapsFor = (did) => [...v.wraps.entries()].filter(([k]) => k.split('|')[0] === did).map(([k, wrap]) => ({ keyVersion: Number(k.split('|')[1]), wrap })).sort((a, b) => a.keyVersion - b.keyVersion);
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, vault: vaultView(v) });
+      if (seg[2] === 'keys' && req.method === 'GET') {
+        const d = v.devices.get(url.searchParams.get('deviceId'));
+        if (!d || d.userId !== 2) return refuse(res, 404, 'not_found');
+        return json(res, 200, { ok: true, deviceId: d.deviceId, state: d.state, keyVersion: v.keyVersion, keys: d.state === 'approved' ? wrapsFor(d.deviceId) : [] });
+      }
+      if (seg[2] === 'recovery' && req.method === 'GET') return json(res, 200, { ok: true, recoveryPub: v.recoveryPub, keyVersion: v.keyVersion, keys: wrapsFor('recovery') });
+      if (seg[2] === 'devices' && seg.length === 3 && req.method === 'GET') return json(res, 200, { ok: true, devices: [...v.devices.values()] });
+      if (seg[2] === 'devices' && seg.length === 3 && req.method === 'POST') {
+        const did = devId(body.publicKey);
+        const have = v.devices.get(did);
+        if (have && have.state !== 'revoked') return json(res, 200, { ok: true, device: have });
+        const d = { deviceId: did, userId: 2, name: body.name || null, platform: body.platform || null, publicKey: body.publicKey, state: 'pending', via: null, createdAt: iso(Date.now()), approvedAt: null, approvedBy: null, revokedAt: null };
+        v.devices.set(did, d);
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'devices' && seg.length === 5 && seg[4] === 'approve' && req.method === 'POST') {
+        const d = v.devices.get(seg[3]);
+        if (!d || d.state === 'revoked') return refuse(res, 404, 'not_found');
+        const mine = [...v.devices.values()].some((x) => x.userId === 2 && x.state === 'approved');
+        const recovered = body.via === 'recovery' && authHash(body.recoveryAuth) === v.recoveryAuth;
+        if (body.via === 'recovery' && !recovered) return json(res, 403, { ok: false, code: 'forbidden', reason: 'recovery_auth', error: 'forbidden' });
+        if (!mine && !recovered) return refuse(res, 403, 'forbidden');
+        const list = Array.isArray(body.wraps) ? body.wraps : [{ keyVersion: v.keyVersion, wrap: body.wrap }];
+        if (!list.some((w) => w.keyVersion === v.keyVersion) || !list.every((w) => wrapOk(w.wrap) && w.keyVersion <= v.keyVersion)) return json(res, 400, { ok: false, code: 'invalid', field: 'wraps', error: 'invalid' });
+        for (const w of list) v.wraps.set(`${d.deviceId}|${w.keyVersion}`, w.wrap);
+        Object.assign(d, { state: 'approved', approvedAt: iso(Date.now()), approvedBy: 2, via: recovered ? 'recovery' : 'device' });
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'devices' && seg.length === 4 && req.method === 'DELETE') {
+        const d = v.devices.get(seg[3]);
+        if (!d) return refuse(res, 404, 'not_found');
+        if (d.state === 'approved') v.needsRotation = true;
+        Object.assign(d, { state: 'revoked', revokedAt: iso(Date.now()) });
+        for (const k of [...v.wraps.keys()]) if (k.startsWith(`${d.deviceId}|`)) v.wraps.delete(k);
+        return json(res, 200, { ok: true, device: d });
+      }
+      if (seg[2] === 'rotate' && req.method === 'POST') {
+        if (body.keyVersion !== v.keyVersion + 1) return json(res, 409, { ok: false, code: 'conflict', keyVersion: v.keyVersion, error: 'conflict' });
+        const want = [...v.devices.values()].filter((d) => d.state === 'approved').map((d) => d.deviceId).sort();
+        const got = (body.wraps || []).map((w) => w.deviceId).sort();
+        if (JSON.stringify(want) !== JSON.stringify(got)) return json(res, 409, { ok: false, code: 'conflict', devices: want, error: 'conflict' });
+        if (srv.recoveryRequired && !body.recovery) return json(res, 409, { ok: false, code: 'conflict', reason: 'recovery_required', error: 'conflict' });
+        for (const w of body.wraps) v.wraps.set(`${w.deviceId}|${body.keyVersion}`, w.wrap);
+        if (body.recovery) {
+          for (const k of [...v.wraps.keys()]) if (k.startsWith('recovery|')) v.wraps.delete(k);
+          for (const w of body.recovery.wraps) v.wraps.set(`recovery|${w.keyVersion}`, w.wrap);
+          Object.assign(v, { recoveryPub: body.recovery.pub, recoveryAuth: authHash(body.recovery.auth), recoveryBy: 2 });
+        } else v.wraps.set(`recovery|${body.keyVersion}`, body.recoveryWrap);
+        Object.assign(v, { keyVersion: body.keyVersion, needsRotation: false });
+        return json(res, 200, { ok: true, vault: vaultView(v) });
+      }
+      return refuse(res, 404, 'not_found');
+    }
+    // ── Drive 1.7 ──
+    if (has('timeTravel') && seg[0] === 'nodes' && seg[2] === 'timetravel') {
+      const folder = get(seg[1]);
+      if (!folder || !folder.isDir) return refuse(res, 404, 'not_found');
+      const atRaw = req.method === 'GET' ? url.searchParams.get('at') : body.at;
+      const at = Date.parse(atRaw);
+      if (!Number.isFinite(at)) return refuse(res, 400, 'invalid');
+      if (req.method === 'POST' && !writable(folder)) return refuse(res, 403, 'forbidden');
+      const plan = srv.timeTravelPlan(folder.id, at);
+      const sample = plan.slice(0, 10).map((x) => ({ op: x.op, name: x.then ? x.then.name : state.nodes.get(x.id).name, path: '' }));
+      const count = (op) => plan.filter((x) => x.op === op).length;
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, at: iso(at), historySince: iso(srv.startedAt), restore: count('restore'), revert: count('revert'), trash: count('trash'), move: count('move'), sample, limited: at < srv.startedAt, lost: 0, ops: plan.length, max: srv.timeTravelMax });
+      }
+      if (at >= Date.now()) return json(res, 400, { ok: false, code: 'invalid', field: 'at', error: 'invalid' });
+      if (plan.length > srv.timeTravelMax) return json(res, 400, { ok: false, code: 'invalid', field: 'at', ops: plan.length, max: srv.timeTravelMax, error: 'invalid' });
+      const before = Date.now() - 1;
+      for (const x of plan) {
+        const n = state.nodes.get(x.id);
+        if (x.op === 'trash') { n.deleted = true; n.deletedAt = iso(Date.now()); logChange('delete', n); continue; }
+        if (x.op === 'restore') n.deleted = false;
+        if (x.op === 'revert' || (x.op === 'restore' && x.then.mediaId !== n.mediaId)) {
+          (state.versions.get(n.id) || state.versions.set(n.id, []).get(n.id)).push({ id: ++nextId, rev: n.rev, size: n.size, at: iso(Date.now()), by: 2, mediaId: n.mediaId });
+          Object.assign(n, { mediaId: x.then.mediaId, size: x.then.size, sha256: x.then.sha256, rev: n.rev + 1 });
+        }
+        if (x.then && (x.then.name !== n.name || x.then.parentId !== n.parentId)) { n.name = x.then.name; n.parentId = x.then.parentId; }
+        logChange(x.op === 'restore' ? 'restore' : x.op === 'move' ? 'move' : 'update', n);
+      }
+      return json(res, 200, { ok: true, at: iso(at), before: iso(before), restored: count('restore'), reverted: count('revert'), trashed: count('trash'), moved: count('move'), failed: 0, lost: 0 });
+    }
+    const isMedia = (n) => !n.isDir && !n.deleted && /^(image|video)\//.test(n.mime || '');
+    const when = (n) => Date.parse(n.takenAt || n.mtime || n.createdAt);
+    const photo = (n) => ({ id: n.id, name: n.name, mime: n.mime, size: n.size, takenAt: new Date(when(n)).toISOString(), areaId: n.areaId, parentId: n.parentId, preview: /^image\//.test(n.mime || ''), ...(n.durationMs ? { durationMs: n.durationMs } : {}), ...(srv.photoMediaIds ? { mediaId: n.mediaId, previewUrl: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : {}) });
+    // Drive 1.25 'mediaFilter': media=image|video (else 400 invalid), recorded in srv.state.media… calls via requests
+    const kindOk = (n) => { const m = has('mediaFilter') ? url.searchParams.get('media') : null; return !m || (m === 'video' ? /^video\//.test(n.mime || '') : /^image\//.test(n.mime || '')); };
+    const photoList = (area) => [...state.nodes.values()].filter((n) => isMedia(n) && kindOk(n) && (!area || n.areaId === area)).sort((a, b) => when(b) - when(a) || b.id - a.id);
+    const pageOf = (list) => {
+      const before = url.searchParams.get('before');
+      const limit = Math.min(200, Number(url.searchParams.get('limit') || 100));
+      const rest = before ? list.filter((n) => when(n) < Date.parse(before)) : list;
+      const items = rest.slice(0, limit);
+      return { items: items.map(photo), next: rest.length > limit ? new Date(when(items[items.length - 1])).toISOString() : null };
+    };
+    // ── Drive 1.16 'photoPlaces' / 'photoPeople' ──
+    const fold = (v) => String(v || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const near = (a, b, d) => Math.abs(a.lat - b.lat) <= d && Math.abs(a.lon - b.lon) <= d;
+    const placeOfNode = (n) => {
+      if (!n.geo) return null;
+      const g = srv.gazetteer.find((x) => near(x, n.geo, 0.5));
+      if (!g) return null;
+      const d = g.districts.find((x) => near(x, n.geo, 0.012));
+      return { key: g.key, name: g.name, district: d ? d.name : null, region: g.region, country: g.country, g };
+    };
+    const alive = (nodeId) => { const n = state.nodes.get(nodeId); return n && !n.deleted ? n : null; };
+    const personNodes = (p) => [...new Set(p.faces.map((f) => f.nodeId))].filter(alive);
+    const onPhoto = (p, n) => p.faces.some((f) => f.nodeId === n.id);
+    const ppPhoto = (n, withPeople) => {
+      const out = photo(n);
+      if (has('photoPlaces')) {
+        const pl = placeOfNode(n);
+        out.geo = n.geo ? { lat: n.geo.lat, lon: n.geo.lon, place: pl ? { key: pl.key, name: pl.name, district: pl.district, region: pl.region, country: pl.country } : null } : null;
+        out.located = !!n.geo;
+      }
+      if (withPeople && has('photoPeople')) out.people = [...state.people.values()].filter((p) => p.name && !p.hidden && onPhoto(p, n)).map((p) => p.id);
+      return out;
+    };
+    const personView = (p) => {
+      const nodes = personNodes(p);
+      const f = p.faces.find((x) => alive(x.nodeId));
+      return { id: p.id, name: p.name, count: nodes.length, hidden: !!p.hidden, contact: p.contact || null, cover: f ? { faceId: f.faceId, nodeId: f.nodeId, box: f.box, item: photo(alive(f.nodeId)) } : null };
+    };
+    // q of Drive 1.16: every word matches a person's name, a place (name, district, region, country, also English) or a label
+    const wordStarts = (text, w) => fold(text).split(/[\s,.()-]+/).some((t) => t.startsWith(w));
+    const matchQ = (n, words) => {
+      const marks = { people: [], places: [] };
+      for (const w of words) {
+        const people = has('photoPeople') ? [...state.people.values()].filter((p) => p.name && !p.hidden && wordStarts(p.name, w) && onPhoto(p, n)) : [];
+        const pl = has('photoPlaces') ? placeOfNode(n) : null;
+        const place = pl && [pl.name, pl.g.en, pl.district, pl.region, pl.country === 'DE' ? 'Deutschland Germany' : pl.country === 'ES' ? 'Spanien Spain' : ''].some((x) => x && wordStarts(x, w)) ? pl : null;
+        const label = (state.labels.get(n.id) || []).some((l) => fold(l).includes(w));
+        if (!people.length && !place && !label) return null;
+        for (const p of people) if (!marks.people.some((x) => x.id === p.id)) marks.people.push({ id: p.id, name: p.name });
+        if (place && !marks.places.some((x) => x.key === place.key)) marks.places.push({ key: place.key, name: place.name });
+      }
+      return marks;
+    };
+    const pp = has('photoPlaces') || has('photoPeople');
+    const ppFilter = (list) => {
+      const sp = url.searchParams;
+      let out = list;
+      if (has('photoPlaces') && sp.get('place')) out = out.filter((n) => { const pl = placeOfNode(n); return pl && pl.key === sp.get('place'); });
+      if (has('photoPlaces') && sp.get('bbox')) {
+        const [w, s, e, nn] = sp.get('bbox').split(',').map(Number);
+        out = out.filter((n) => n.geo && n.geo.lat >= s && n.geo.lat <= nn && (w <= e ? n.geo.lon >= w && n.geo.lon <= e : n.geo.lon >= w || n.geo.lon <= e));
+      }
+      if (has('photoPeople') && sp.get('person')) {
+        const ids = sp.get('person').split(',').map(Number);
+        out = out.filter((n) => ids.every((id) => { const p = state.people.get(id); return p && onPhoto(p, n); }));
+      }
+      const marks = { people: [], places: [] };
+      if (sp.get('q')) {
+        const words = fold(sp.get('q')).split(/\s+/).filter(Boolean);
+        out = out.filter((n) => {
+          const m = matchQ(n, words);
+          if (!m) return false;
+          for (const p of m.people) if (!marks.people.some((x) => x.id === p.id)) marks.people.push(p);
+          for (const p of m.places) if (!marks.places.some((x) => x.key === p.key)) marks.places.push(p);
+          return true;
+        });
+      }
+      return { list: out, marks };
+    };
+    if (pp && has('photos') && req.method === 'GET' && route === 'photos' && ['q', 'place', 'bbox', 'person', 'with'].some((k) => url.searchParams.get(k))) {
+      const { list, marks } = ppFilter(photoList(url.searchParams.get('area')));
+      const page = pageOf(list);
+      const withPeople = url.searchParams.get('with') === 'people';
+      page.items = page.items.map((it) => ppPhoto(state.nodes.get(it.id), withPeople));
+      const out = { ok: true, ...page };
+      if (url.searchParams.get('q')) {
+        const words = fold(url.searchParams.get('q')).split(/\s+/).filter(Boolean);
+        const counts = new Map();
+        for (const n of list) for (const l of state.labels.get(n.id) || []) if (!words.some((w) => fold(l).includes(w))) counts.set(l, (counts.get(l) || 0) + 1);
+        out.terms = has('photoSearch') ? [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, count]) => ({ term: l.toLowerCase(), label: l.charAt(0).toUpperCase() + l.slice(1), count })) : [];
+        out.total = list.length;
+        out.search = { people: marks.people, places: marks.places, total: list.length };
+      }
+      if (url.searchParams.get('districts') === '1' && url.searchParams.get('place')) {
+        const d = new Map();
+        for (const n of list) { const pl = placeOfNode(n); if (pl && pl.district) d.set(pl.district, (d.get(pl.district) || 0) + 1); }
+        out.districts = [...d].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+      }
+      return json(res, 200, out);
+    }
+    if (has('photoPlaces') && has('photos') && req.method === 'GET' && route === 'photos' && !url.searchParams.get('q')) {
+      return json(res, 200, { ok: true, ...((pg) => ({ ...pg, items: pg.items.map((it) => ppPhoto(state.nodes.get(it.id), false)) }))(pageOf(photoList(url.searchParams.get('area')))) });
+    }
+    if (pp && has('photos') && req.method === 'GET' && route === 'photos/months' && ['q', 'place', 'person'].some((k) => url.searchParams.get(k))) {
+      const m = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
+      return json(res, 200, { ok: true, months: [...m].map(([month, count]) => ({ month, count })) });
+    }
+    if (has('photoPlaces') && req.method === 'GET' && route === 'photos/places') {
+      const by = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) {
+        const pl = placeOfNode(n);
+        if (!pl) continue;
+        const row = by.get(pl.key) || { key: pl.key, name: pl.name, region: pl.region, country: pl.country, count: 0, lat: pl.g.lat, lon: pl.g.lon, from: null, to: null, cover: ppPhoto(n, false) };
+        row.count++;
+        const t = when(n);
+        row.from = row.from === null || t < Date.parse(row.from) ? iso(t) : row.from;
+        row.to = row.to === null || t > Date.parse(row.to) ? iso(t) : row.to;
+        by.set(pl.key, row);
+      }
+      return json(res, 200, { ok: true, places: [...by.values()].sort((a, b) => b.count - a.count) });
+    }
+    if (has('photoPlaces') && req.method === 'GET' && route === 'photos/map') {
+      const z = Number(url.searchParams.get('zoom'));
+      const b = String(url.searchParams.get('bbox') || '').split(',').map(Number);
+      if (!(z >= 0 && z <= 19) || b.length !== 4 || b.some((x) => !Number.isFinite(x))) return json(res, 400, { ok: false, code: 'invalid', field: 'bbox', error: 'invalid' });
+      srv.mapCalls = (srv.mapCalls || 0) + 1;
+      const cell = 360 / 2 ** z / 4;
+      const cells = new Map();
+      for (const n of ppFilter(photoList(url.searchParams.get('area'))).list) {
+        if (!n.geo) continue;
+        const k = `${Math.floor(n.geo.lat / cell)}|${Math.floor(n.geo.lon / cell)}`;
+        const c = cells.get(k) || { lat: 0, lon: 0, count: 0, keys: new Set(), cover: ppPhoto(n, false) };
+        c.lat += n.geo.lat; c.lon += n.geo.lon; c.count++;
+        const pl = placeOfNode(n);
+        c.keys.add(pl ? pl.key : null);
+        cells.set(k, c);
+      }
+      const clusters = [...cells.values()].slice(0, 200).map((c) => ({ lat: c.lat / c.count, lon: c.lon / c.count, count: c.count, key: c.keys.size === 1 ? [...c.keys][0] : null, cover: c.cover }));
+      return json(res, 200, { ok: true, clusters });
+    }
+    if (pp && req.method === 'GET' && route === 'photos/suggest') {
+      const q = fold(url.searchParams.get('q')).trim();
+      const ppl = has('photoPeople') ? [...state.people.values()].filter((p) => p.name && !p.hidden && wordStarts(p.name, q)).slice(0, 5).map((p) => ({ id: p.id, name: p.name, count: personNodes(p).length })) : [];
+      const places = [];
+      if (has('photoPlaces')) {
+        for (const g of srv.gazetteer) {
+          const count = photoList(null).filter((n) => { const pl = placeOfNode(n); return pl && pl.key === g.key; }).length;
+          if (count && (wordStarts(g.name, q) || wordStarts(g.en, q))) places.push({ key: g.key, name: g.name, sub: g.region, count });
+        }
+      }
+      const lc = new Map();
+      for (const [, ls] of state.labels) for (const l of ls) if (fold(l).startsWith(q)) lc.set(l.toLowerCase(), (lc.get(l.toLowerCase()) || 0) + 1);
+      const labels = [...lc].slice(0, 5).map(([label, count]) => ({ label, text: label.charAt(0).toUpperCase() + label.slice(1), count }));
+      return json(res, 200, { ok: true, people: ppl, places: places.slice(0, 5), labels });
+    }
+    if (pp && route === 'photos/settings' && (req.method === 'GET' || req.method === 'PUT' || req.method === 'PATCH')) {
+      const st = state.photoSettings;
+      const view2 = (extra = {}) => ({ ok: true, keepGeo: st.keepGeo, ...(srv.stripGeo ? { stripGeoOnShare: st.stripGeoOnShare } : {}), people: st.people, peopleKids: st.peopleKids, workFolder: null, ...extra });
+      if (req.method === 'GET') return json(res, 200, view2());
+      for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) if (body[k] !== undefined && typeof body[k] !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: k, error: 'invalid' });
+      let deleted;
+      for (const k of ['keepGeo', 'stripGeoOnShare', 'people', 'peopleKids']) if (body[k] !== undefined) st[k] = body[k];
+      if (body.people === false) {
+        deleted = [...state.people.values()].reduce((a, p) => a + p.faces.length + p.uncertain.length, 0);
+        state.people.clear();
+        state.similar.clear();
+      }
+      return json(res, 200, view2(deleted !== undefined ? { deleted } : {}));
+    }
+    if (has('photoPlaces') && req.method === 'DELETE' && route === 'photos/geo') {
+      let deleted = 0;
+      for (const n of state.nodes.values()) if (n.geo && n.createdBy === 2) { n.geo = null; deleted++; }
+      return json(res, 200, { ok: true, deleted });
+    }
+    if (has('photoPeople') && seg[0] === 'people') {
+      if (seg.length === 1 && req.method === 'GET') {
+        return json(res, 200, { ok: true, people: [...state.people.values()].map(personView), progress: state.peopleProgress });
+      }
+      const p = state.people.get(Number(seg[1]));
+      if (!p) return refuse(res, 404, 'not_found');
+      if (seg.length === 2 && req.method === 'GET') {
+        const nodes = personNodes(p).map(alive);
+        const together = [...state.people.values()].filter((o) => o !== p && o.name && !o.hidden)
+          .map((o) => ({ id: o.id, name: o.name, count: nodes.filter((n) => onPhoto(o, n)).length })).filter((x) => x.count).sort((a, b) => b.count - a.count);
+        const pc = new Map();
+        for (const n of nodes) { const pl = placeOfNode(n); if (pl) pc.set(pl.key, { key: pl.key, name: pl.name, count: ((pc.get(pl.key) || {}).count || 0) + 1 }); }
+        const ys = nodes.map((n) => new Date(when(n)).getUTCFullYear());
+        return json(res, 200, { ok: true, ...personView(p), together, places: [...pc.values()].sort((a, b) => b.count - a.count), uncertain: p.uncertain.length, years: ys.length ? { from: Math.min(...ys), to: Math.max(...ys) } : null });
+      }
+      const mergeInto = (from, into) => {
+        into.faces.push(...from.faces);
+        into.uncertain.push(...from.uncertain.filter((f) => !into.faces.some((x) => x.nodeId === f.nodeId)));
+        state.people.delete(from.id);
+        state.similar.delete(from.id);
+      };
+      if (seg.length === 2 && req.method === 'PATCH') {
+        if (body.name !== undefined && (typeof body.name !== 'string' || body.name.length > 200)) return json(res, 400, { ok: false, code: 'invalid', field: 'name', error: 'invalid' });
+        if (body.hidden !== undefined && typeof body.hidden !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: 'hidden', error: 'invalid' });
+        if (body.hidden !== undefined) p.hidden = body.hidden;
+        if (body.contact !== undefined) p.contact = body.contact;
+        if (body.name !== undefined) {
+          const name = body.name.trim();
+          const other = name ? [...state.people.values()].find((o) => o !== p && o.name && o.name.toLowerCase() === name.toLowerCase()) : null;
+          if (other) { mergeInto(p, other); return json(res, 200, { ok: true, person: personView(other), mergedInto: other.id }); }
+          p.name = name || null;
+        }
+        return json(res, 200, { ok: true, person: personView(p), mergedInto: null });
+      }
+      if (seg[2] === 'merge' && req.method === 'POST') {
+        const into = state.people.get(Number(body.into));
+        if (!into || into === p) return json(res, 400, { ok: false, code: 'invalid', field: 'into', error: 'invalid' });
+        mergeInto(p, into);
+        return json(res, 200, { ok: true, person: personView(into) });
+      }
+      if (seg[2] === 'similar' && req.method === 'GET') {
+        const list = (state.similar.get(p.id) || []).map((s) => ({ ...s, o: state.people.get(s.id) })).filter((s) => s.o);
+        return json(res, 200, { ok: true, people: list.slice(0, 3).map((s) => ({ id: s.o.id, name: s.o.name, count: personNodes(s.o).length, score: s.score })) });
+      }
+      if (seg[2] === 'uncertain' && req.method === 'GET') {
+        const limit = Number(url.searchParams.get('limit') || 50);
+        return json(res, 200, { ok: true, faces: p.uncertain.filter((f) => alive(f.nodeId)).slice(0, limit).map((f) => ({ faceId: f.faceId, box: f.box, score: f.score, item: photo(alive(f.nodeId)) })) });
+      }
+      if (seg[2] === 'confirm' && req.method === 'POST') {
+        if (!Array.isArray(body.faceIds) || typeof body.yes !== 'boolean') return json(res, 400, { ok: false, code: 'invalid', field: 'faceIds', error: 'invalid' });
+        const ids = new Set(body.faceIds.map(Number));
+        const picked = p.uncertain.filter((f) => ids.has(f.faceId));
+        p.uncertain = p.uncertain.filter((f) => !ids.has(f.faceId));
+        if (body.yes) p.faces.push(...picked.map(({ faceId, nodeId, box }) => ({ faceId, nodeId, box })));
+        else for (const f of picked) state.refusedFaces.add(`${p.id}|${f.faceId}`);
+        return json(res, 200, { ok: true, person: personView(p) });
+      }
+    }
+    if (has('photoPeople') && seg[0] === 'faces' && seg[2] === 'move' && req.method === 'POST') {
+      const fid = Number(seg[1]);
+      const from = [...state.people.values()].find((p) => p.faces.some((f) => f.faceId === fid) || p.uncertain.some((f) => f.faceId === fid));
+      if (!from) return refuse(res, 404, 'not_found');
+      const face = from.faces.find((f) => f.faceId === fid) || from.uncertain.find((f) => f.faceId === fid);
+      from.faces = from.faces.filter((f) => f.faceId !== fid);
+      from.uncertain = from.uncertain.filter((f) => f.faceId !== fid);
+      state.refusedFaces.add(`${from.id}|${fid}`);
+      if (body.person !== null && body.person !== undefined) {
+        const to = state.people.get(Number(body.person));
+        if (!to) return json(res, 400, { ok: false, code: 'invalid', field: 'person', error: 'invalid' });
+        to.faces.push({ faceId: face.faceId, nodeId: face.nodeId, box: face.box });
+      }
+      return json(res, 200, { ok: true });
+    }
+    if (has('photos') && req.method === 'GET' && route === 'photos' && url.searchParams.get('q')) {
+      if (!has('photoSearch')) return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
+      const words = url.searchParams.get('q').toLowerCase().split(/\s+/).filter(Boolean);
+      const hits = photoList(url.searchParams.get('area')).filter((n) => words.every((w) => (state.labels.get(n.id) || []).some((l) => l.toLowerCase().includes(w))));
+      const counts = new Map();
+      for (const n of hits) for (const l of state.labels.get(n.id) || []) if (!words.some((w) => l.toLowerCase().includes(w))) counts.set(l, (counts.get(l) || 0) + 1);
+      const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6);
+      // the label is the word to add (lower case); `label` / `text` what is shown
+      const show = (l) => l.charAt(0).toUpperCase() + l.slice(1);
+      const terms = top.map(([l, count]) => ({ term: l.toLowerCase(), label: show(l), count }));
+      return json(res, 200, { ok: true, ...pageOf(hits), terms, total: hits.length, search: { terms: words, labels: words, total: hits.length, chips: top.map(([l, count]) => ({ label: l.toLowerCase(), text: show(l), count })) } });
+    }
+    if (has('photos') && req.method === 'GET' && route === 'photos') return json(res, 200, { ok: true, ...pageOf(photoList(url.searchParams.get('area'))) });
+    // ── Drive 1.14 'docAsk' / 'scanDocs' ──
+    if (req.method === 'POST' && route === 'ask' && has('docAsk')) {
+      state.askCalls.push(body);
+      if (typeof body.q !== 'string' || body.q.trim().length < 3 || body.q.length > 300) return json(res, 400, { ok: false, code: 'invalid', field: 'q', error: 'invalid' });
+      if (srv.askLimited) return json(res, 429, { ok: false, code: 'rate_limited', reason: 'questions', error: 'rate_limited' });
+      const a = typeof srv.answer === 'function' ? srv.answer(body.q) : null;
+      const where = areas.filter((x) => !body.area || x.id === body.area).map((x) => x.label);
+      return json(res, 200, { ok: true, ...(a || { status: 'not_found', answer: null, sources: [], terms: body.q.split(/\s+/).filter((w) => w.length > 3).slice(0, 4), areas: where, deadline: null }) });
+    }
+    if (req.method === 'POST' && route === 'scans/save' && has('scanDocs')) {
+      state.saveCalls.push(body);
+      const parent = get(body.folderId);
+      if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
+      if (!writable(parent)) return refuse(res, 403, 'forbidden');
+      const md = state.media.get(body.mediaId);
+      if (!md) return refuse(res, 409, 'upload_invalid');
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: body.mediaId, sha256: sha(md.data), text: body.text || null });
+      logChange('create', n);
+      let original = null;
+      const src = body.sourceId ? get(body.sourceId) : null;
+      if (src && !src.deleted && !src.isDir) {
+        original = view(src);
+        if (body.keepOriginal === false && writable(src)) { src.deleted = true; src.deletedAt = iso(Date.now()); logChange('delete', src); original = null; }
+      }
+      return json(res, 200, { ok: true, node: view(n), original });
+    }
+    if (req.method === 'POST' && seg[0] === 'scans' && has('scanDocs')) {
+      const ids = Array.isArray(body.mediaIds) ? body.mediaIds : [];
+      if (!ids.length || !ids.every((m) => state.media.has(m))) return json(res, 400, { ok: false, code: 'invalid', field: 'mediaIds', error: 'invalid' });
+      if (seg[1] === 'classify') {
+        state.classifyCalls.push(body);
+        if (srv.classifyRefused) return json(res, 422, { ok: false, code: 'unsupported', reason: 'media_disabled', error: 'unsupported' });
+        return json(res, 200, { ok: true, kind: srv.scanKind, confidence: 0.9, summary: srv.scanKind === 'table' ? '3 Spalten, 12 Zeilen, Summenzeile' : 'Gerade gerückt und aufgehellt' });
+      }
+      if (seg[1] === 'convert') {
+        state.convertCalls.push(body);
+        const parent = body.folderId ? get(body.folderId) : null;
+        if (body.folderId && (!parent || !parent.isDir)) return refuse(res, 404, 'not_found');
+        if (parent && !writable(parent)) return refuse(res, 403, 'forbidden');
+        const ext = { pdf: 'pdf', docx: 'docx', xlsx: 'xlsx' }[body.target];
+        const mime = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }[body.target];
+        if (!ext || (ext === 'xlsx' && body.kind !== 'table')) return json(res, 400, { ok: false, code: 'invalid', field: 'target', error: 'invalid' });
+        const images = Array.isArray(body.images) ? body.images.map((x) => Buffer.from(x, 'base64')) : [];
+        if (images.reduce((a, b) => a + b.length, 0) > srv.imagesMax) return json(res, 413, { ok: false, code: 'too_large', field: 'images', error: 'too_large' });
+        const text = body.text || (body.kind === 'table' ? 'Datum\tZähler\tStand' : 'Erkannter Text');
+        let data = null;
+        if (ext !== 'pdf') data = Buffer.from(`PK fake ${ext} ${images.length}`);
+        else if (images.length) data = Buffer.from(`%PDF-1.4 fake ${images.length} pages`);
+        const base = String(body.name || `Scan.${ext}`).replace(/\.[A-Za-z0-9]{1,5}$/, '');
+        const name = parent ? freeName(parent.id, `${base}.${ext}`) : `${base}.${ext}`;
+        const file = data ? { name, mime, size: data.length, sha256: sha(data), data: data.toString('base64') } : null;
+        return json(res, 200, { ok: true, kind: body.kind, target: body.target, title: null, name, folderId: parent ? parent.id : null, folderPath: parent ? parent.name : null, text, content: null, file, source: body.text ? 'device' : 'media', usage: { costCents: 0.1 } });
+      }
+    }
+    if (has('photos') && req.method === 'GET' && route === 'photos/months') {
+      const m = new Map();
+      for (const n of photoList(url.searchParams.get('area'))) { const k = new Date(when(n)).toISOString().slice(0, 7); m.set(k, (m.get(k) || 0) + 1); }
+      return json(res, 200, { ok: true, months: [...m].map(([month, count]) => ({ month, count })) });
+    }
+    // Drive 1.18 'overview': the overview the test put into srv.overview (the requests counted in srv.overviewCalls)
+    if (has('overview') && req.method === 'GET' && route === 'overview') {
+      srv.overviewCalls = (srv.overviewCalls || 0) + 1;
+      return json(res, 200, { ok: true, ...(srv.overview || { todo: null, recent: [], memories: [], people: null, places: null, activity: [], storage: null }) });
+    }
+    // Drive 1.13 'photoClasses': the counts of the chips (srv.classes)
+    if (has('photoClasses') && req.method === 'GET' && route === 'photos/classes') {
+      return json(res, 200, { ok: true, ...(srv.classes || { work: 0, private: 0, review: 0 }) });
+    }
+    // Drive 1.26 'memoryCollections': the collections the test put into srv.memoryCollections; the photos of one: every
+    // photo of srv.memoryPhotos[id] (ids of photos), page by page (newest first)
+    if (has('memoryCollections') && req.method === 'GET' && route === 'memories') {
+      return json(res, 200, { ok: true, date: url.searchParams.get('date') || new Date().toISOString().slice(0, 10), home: null, collections: [], ...(srv.memoryCollections || {}) });
+    }
+    if (has('memoryCollections') && req.method === 'GET' && route === 'memories/photos') {
+      const id = url.searchParams.get('id');
+      const ids = (srv.memoryPhotos || {})[id];
+      if (!ids) return json(res, 400, { ok: false, code: 'invalid', field: 'id', error: 'invalid' });
+      const limit = Number(url.searchParams.get('limit')) || 100;
+      const before = url.searchParams.get('before');
+      const all = ids.map((x) => state.nodes.get(x)).filter((n) => n && !n.deleted).sort((a, b) => when(b) - when(a));
+      const from = before ? all.filter((n) => when(n) < Date.parse(before)) : all;
+      const page = from.slice(0, limit);
+      return json(res, 200, { ok: true, id, items: page.map(photo), next: from.length > limit ? iso(when(page[page.length - 1])) : null });
+    }
+    if (has('photos') && req.method === 'GET' && route === 'photos/memories') {
+      const d = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const [y, mo, da] = d.split('-').map(Number);
+      const groups = new Map();
+      for (const n of photoList(null)) {
+        const t = new Date(when(n));
+        const ago = y - t.getUTCFullYear();
+        if (ago < 1) continue;
+        const same = Math.abs(Date.UTC(y, t.getUTCMonth(), t.getUTCDate()) - Date.UTC(y, mo - 1, da)) <= 86400000;
+        if (!same) continue;
+        if (!groups.has(ago)) groups.set(ago, { yearsAgo: ago, date: t.toISOString().slice(0, 10), items: [] });
+        groups.get(ago).items.push(photo(n));
+      }
+      return json(res, 200, { ok: true, date: d, groups: [...groups.values()] });
+    }
+    if (has('albums') && seg[0] === 'albums') {
+      const albumView = (a) => {
+        const ar = areas.find((x) => x.id === a.areaId);
+        const items = a.items.map((id) => state.nodes.get(id)).filter((n) => n && !n.deleted);
+        const canEdit = !!ar && !ar.archived && (ar.role === 'write' || ar.role === 'manage');
+        return { id: a.id, name: a.name, areaId: a.areaId, count: items.length, coverId: a.coverId || (items[0] ? items[0].id : null), coverUrl: null, frame: !!a.frame, updatedAt: iso(a.updatedAt), createdBy: 2, canEdit, canFrame: canEdit && has('frame') && !srv.noFrame };
+      };
+      if (seg.length === 1 && req.method === 'GET') return json(res, 200, { ok: true, albums: [...state.albums.values()].map(albumView) });
+      if (seg.length === 1 && req.method === 'POST') {
+        const areaId = body.areaId || 'mine:2';
+        const ar = areas.find((x) => x.id === areaId);
+        if (!ar || !(ar.role === 'write' || ar.role === 'manage')) return refuse(res, 403, 'forbidden');
+        if (!String(body.name || '').trim()) return refuse(res, 400, 'invalid');
+        const a = { id: ++nextId, name: String(body.name).trim(), areaId, items: [], coverId: null, frame: false, updatedAt: Date.now() };
+        state.albums.set(a.id, a);
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+      const a = state.albums.get(Number(seg[1]));
+      if (!a) return refuse(res, 404, 'not_found');
+      const canEdit = albumView(a).canEdit;
+      if (seg.length === 2 && req.method === 'GET') {
+        const list = a.items.map((id) => state.nodes.get(id)).filter((n) => n && isMedia(n)).sort((x, y) => when(y) - when(x));
+        return json(res, 200, { ok: true, album: albumView(a), ...pageOf(list) });
+      }
+      if (req.method !== 'GET' && !canEdit) return refuse(res, 403, 'forbidden');
+      if (seg.length === 2 && req.method === 'PATCH') {
+        if (body.name !== undefined) a.name = String(body.name).trim();
+        if (body.coverId !== undefined) a.coverId = body.coverId;
+        if (body.frame !== undefined) { if (!albumView(a).canFrame) return json(res, 403, { ok: false, code: 'forbidden', field: 'frame', error: 'forbidden' }); a.frame = body.frame === true; }
+        a.updatedAt = Date.now();
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+      if (seg.length === 2 && req.method === 'DELETE') { state.albums.delete(a.id); return json(res, 200, { ok: true, id: a.id }); }
+      if (seg[2] === 'items' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const q = url.searchParams.get('ids');
+        const ids = Array.isArray(body.ids) ? body.ids : q ? q.split(',').map(Number) : [];
+        if (!ids.length || ids.length > 500) return refuse(res, 400, 'invalid');
+        if (req.method === 'POST') { for (const id of ids) { const n = state.nodes.get(id); if (n && isMedia(n) && !a.items.includes(id)) a.items.push(id); } } else a.items = a.items.filter((id) => !ids.includes(id));
+        a.updatedAt = Date.now();
+        return json(res, 200, { ok: true, album: albumView(a) });
+      }
+    }
+    if (has('framePhotos') && route === 'frame/photos') {
+      const q = url.searchParams.get('ids');
+      const asked = q ? q.split(',').map(Number) : null;
+      const sent = body && Array.isArray(body.ids) ? body.ids : null;
+      state.frameCalls.push({ method: req.method, ids: sent || asked });
+      const view = () => (state.frame ? { id: state.frame.id, name: 'Fotorahmen', areaId: 'mine:2', count: state.frame.items.length, frame: true, canEdit: true, canFrame: true } : null);
+      const inFrame = () => (state.frame ? state.frame.items.map((id) => state.nodes.get(id)).filter((n) => n && !n.deleted).sort((x, y) => when(y) - when(x)).map((n) => n.id) : []);
+      if (req.method === 'GET') {
+        const all = inFrame();
+        const ids = asked ? all.filter((id) => asked.includes(id)) : all;
+        return json(res, 200, { ok: true, album: view(), ids, count: all.length });
+      }
+      if (req.method !== 'POST' && req.method !== 'DELETE') return refuse(res, 405, 'method');
+      if (srv.frameForbidden) return json(res, 403, { ok: false, code: 'forbidden', field: 'frame', error: 'forbidden' });
+      const ids = sent || asked || [];
+      if (!ids.length || ids.length > 500) return json(res, 400, { ok: false, code: 'invalid', field: 'ids', error: 'invalid' });
+      if (req.method === 'DELETE') {
+        const before = state.frame ? state.frame.items.length : 0;
+        if (state.frame) state.frame.items = state.frame.items.filter((id) => !ids.includes(id));
+        const all = inFrame();
+        return json(res, 200, { ok: true, album: view(), removed: before - (state.frame ? state.frame.items.length : 0), ids: all, count: all.length });
+      }
+      const skipped = [];
+      let added = 0;
+      for (const id of ids) {
+        const n = state.nodes.get(id);
+        let reason = null;
+        if (!n || n.deleted || n.isDir) reason = 'not_found';
+        else if (n.encrypted) reason = 'vault';
+        else if (!/^image\//.test(n.mime || '')) reason = 'not_image';
+        else if (srv.frameBlocked && srv.frameBlocked.has(id)) reason = 'blocked';
+        else if (srv.frameChild && srv.frameChild.has(id)) reason = 'child';
+        if (reason) { skipped.push({ id, reason }); continue; }
+        if (!state.frame) state.frame = { id: ++nextId, items: [] };
+        if (!state.frame.items.includes(id)) { state.frame.items.push(id); added++; }
+      }
+      const all = inFrame();
+      return json(res, 200, { ok: true, album: view(), added, skipped, ids: all, count: all.length });
+    }
+    if (has('storage') && req.method === 'GET' && route === 'storage') {
+      const all = url.searchParams.get('all') === '1';
+      const files = [...state.nodes.values()].filter((n) => !n.isDir);
+      const live = files.filter((n) => !n.deleted);
+      const pathOf = (n) => crumbs(n).map((c) => c.name).join('/');
+      const sum = (list) => list.reduce((x, n) => x + (n.size || 0), 0);
+      const versionsOf = (list) => list.reduce((x, n) => x + (state.versions.get(n.id) || []).reduce((y, v) => y + v.size, 0), 0);
+      const byArea = areas.map((a) => {
+        const l = live.filter((n) => n.areaId === a.id);
+        const d = files.filter((n) => n.deleted && n.areaId === a.id);
+        return { id: a.id, label: a.label, kind: a.kind, bytes: sum(l), files: l.length, versionsBytes: versionsOf(l), trashBytes: sum(d), quota: null, canPrune: a.role === 'manage' };
+      });
+      const groups = new Map();
+      for (const n of live) if (n.size > 0 && n.sha256) { const k = `${n.sha256}|${n.size}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(n); }
+      const item = (n) => ({ id: n.id, name: n.name, size: n.size, areaId: n.areaId, parentId: n.parentId, path: pathOf(n), updatedAt: n.updatedAt, canDelete: writable(n) });
+      const duplicates = [...groups.values()].filter((g) => g.length > 1).map((g) => ({ sha256: g[0].sha256, size: g[0].size, count: g.length, wasted: g[0].size * (g.length - 1), items: g.map(item) }))
+        .sort((x, y) => y.wasted - x.wasted).slice(0, 20);
+      return json(res, 200, {
+        ok: true,
+        all,
+        total: { bytes: sum(live), files: live.length, versionsBytes: versionsOf(live), trashBytes: sum(files.filter((n) => n.deleted)) },
+        limit: { maxBytes: 107374182400 },
+        areas: byArea,
+        people: all ? [{ user: 2, name: 'Marc', bytes: sum(live), files: live.length }] : [],
+        largest: live.slice().sort((x, y) => y.size - x.size).slice(0, 20).map(item),
+        duplicates,
+      });
+    }
+    if (has('storage') && req.method === 'POST' && route === 'storage/versions/prune') {
+      let removed = 0;
+      let freedBytes = 0;
+      for (const [id, list] of state.versions) {
+        const n = state.nodes.get(id);
+        if (!n || n.areaId !== body.areaId) continue;
+        list.sort((x, y) => y.rev - x.rev);
+        for (const v of list.splice(Number(body.keep) || 0)) { removed++; freedBytes += v.size; }
+      }
+      return json(res, 200, { ok: true, removed, freedBytes, more: false });
+    }
     if (req.method === 'GET' && route === 'search') {
       const q = String(url.searchParams.get('q') || '').toLowerCase();
-      const items = [...state.nodes.values()].filter((n) => !n.deleted && n.parentId && n.name.toLowerCase().includes(q)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
+      // Drive 1.25 'mediaFilter': only pictures or only videos (no folders); q may then be empty
+      const media = has('mediaFilter') ? url.searchParams.get('media') : null;
+      const kind = (n) => !media || (!n.isDir && (media === 'video' ? /^video\//.test(n.mime || '') : /^image\//.test(n.mime || '')));
+      const items = [...state.nodes.values()].filter((n) => !n.deleted && !n.encrypted && n.parentId && n.name.toLowerCase().includes(q) && kind(n)).map((n) => ({ ...view(n), path: crumbs(n).slice(1, -1).map((c) => c.name).join('/'), match: 'name' }));
       if (q === 'miete') items.push({ ...view(state.nodes.get(12)), path: 'Dokumente', match: 'text', snippet: '… die Miete für Oktober …' });
       return json(res, 200, { ok: true, items });
     }
@@ -364,13 +1459,21 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         cur = taken(cur.id, s);
         if (!cur) return refuse(res, 404, 'not_found');
       }
-      return json(res, 200, { ok: true, node: { ...view(cur), crumbs: crumbs(cur).slice(0, -1), role: area.role } });
+      return json(res, 200, { ok: true, node: { ...nodeAnswer(cur), role: area.role } });
     }
     if (seg[0] === 'nodes') {
       if (seg.length === 1 && req.method === 'POST') {
         const parent = get(body.parentId);
         if (!parent || !parent.isDir) return refuse(res, 404, 'not_found');
         if (!writable(parent)) return refuse(res, 403, 'forbidden');
+        if (parent.vaultId || body.encrypted) {
+          const v = state.vaults.get(parent.vaultId);
+          if (!v || body.encrypted !== true || !body.nameCipher) return json(res, 400, { ok: false, code: 'invalid', field: 'encrypted', error: 'invalid' });
+          if (body.keyVersion !== v.keyVersion || kvOf(body.nameCipher) !== v.keyVersion) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+          const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), isDir: true, encrypted: true, vaultId: v.id, nameCipher: body.nameCipher, keyVersion: body.keyVersion });
+          logChange('create', made);
+          return json(res, 200, { ok: true, node: view(made) });
+        }
         if (taken(parent.id, body.name) && !body.rename) return refuse(res, 409, 'exists');
         const made = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), isDir: true });
         logChange('create', made);
@@ -378,7 +1481,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       const n = get(seg[1]);
       if (!n) return refuse(res, 404, 'not_found');
-      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, node: { ...view(n), crumbs: crumbs(n), role: areaOf(n).role, path: '' } });
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, node: { ...nodeAnswer(n), role: areaOf(n).role, path: '' } });
       if (seg.length === 2 && req.method === 'PATCH') {
         if (!writable(n)) return refuse(res, 403, 'forbidden');
         if (features && features.includes('deleteAfter') && Object.prototype.hasOwnProperty.call(body, 'deleteAt') && body.deleteAt === null) {
@@ -387,10 +1490,23 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
           logChange('unmark', n);
           return json(res, 200, { ok: true, node: view(n) });
         }
+        if (body.nameCipher !== undefined || n.encrypted) {
+          const v = vaultOfNode(n);
+          if (has('vaultsApart') && v && v.nodeId === n.id && body.parentId && body.parentId !== n.parentId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
+          if (!v || (body.name && body.name !== n.name) || (body.parentId && (get(body.parentId) || {}).vaultId !== n.vaultId)) return json(res, 400, { ok: false, code: 'invalid', field: 'nameCipher', error: 'invalid' });
+          if (body.nameCipher) {
+            if (kvOf(body.nameCipher) !== v.keyVersion) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+            n.nameCipher = body.nameCipher;
+          }
+          if (body.parentId) n.parentId = body.parentId;
+          logChange('move', n);
+          return json(res, 200, { ok: true, node: view(n) });
+        }
         if (body.parentId) {
           const target = get(body.parentId);
           if (!target || !target.isDir) return refuse(res, 404, 'not_found');
           if (!writable(target)) return refuse(res, 403, 'forbidden');
+          if (target.vaultId) return json(res, 400, { ok: false, code: 'invalid', field: 'parentId', error: 'invalid' });
           n.parentId = target.id;
           n.areaId = target.areaId;
         }
@@ -417,15 +1533,30 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, id: n.id, trashed: true });
       }
       if (seg[2] === 'children' && req.method === 'GET') {
-        const all = children(n.id).map(view);
+        let kids = children(n.id);
+        // Drive 1.11 'vaultsApart': no vault folders outside a vault (vaults=1: as before); dirs=1: folders with hasDirs
+        if (has('vaultsApart') && !n.encrypted && url.searchParams.get('vaults') !== '1') kids = kids.filter((k) => !k.encrypted);
+        const dirs = has('vaultsApart') && url.searchParams.get('dirs') === '1';
+        if (dirs) kids = kids.filter((k) => k.isDir && !k.encrypted).sort((a, b) => a.name.localeCompare(b.name));
+        state.dirCalls = (state.dirCalls || 0) + (dirs ? 1 : 0);
+        const all = kids.map((k) => (dirs ? { ...view(k), hasDirs: children(k.id).some((c) => c.isDir && !c.encrypted) } : view(k)));
         const offset = Number(url.searchParams.get('offset') || 0);
         const limit = Math.min(srv.pageMax, Number(url.searchParams.get('limit') || 200));
         const items = all.slice(offset, offset + limit);
+        if (typeof srv.previewLan === 'function') {
+          for (const it of items) {
+            if (!it.preview || typeof it.preview !== 'object') continue;
+            const lan = srv.previewLan(it, req.headers['x-gc-local'] || null, 'small');
+            const largeLan = srv.previewLan(it, req.headers['x-gc-local'] || null, 'large');
+            it.preview = { ...it.preview, ...(lan ? { lan } : {}), ...(largeLan ? { largeLan } : {}) };
+          }
+        }
         return json(res, 200, { ok: true, items, total: all.length, next: offset + limit < all.length ? offset + limit : null, role: areaOf(n).role });
       }
       if (seg[2] === 'content' && req.method === 'GET') {
         if (!n.isDir && !n.mediaId && n.size === 0) return json(res, 200, { ok: true, url: 'data:,', name: n.name, mime: n.mime, size: 0, mediaId: null, empty: true });
-        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId });
+        const lan = typeof srv.lan === 'function' ? srv.lan(n, req.headers['x-gc-local'] || null) : null;
+        return json(res, 200, { ok: true, url: '/plugin-media/x', name: n.name, mime: n.mime, size: n.size, mediaId: n.mediaId, ...(n.encrypted ? { encrypted: true, vaultId: n.vaultId, nameCipher: n.nameCipher } : {}), ...(lan ? { lan } : {}) });
       }
       if (seg[2] === 'versions') {
         const list = state.versions.get(n.id) || [];
@@ -446,6 +1577,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, exists: !!t, same: !!t && !!body.sha256 && t.sha256 === body.sha256, node: t ? view(t) : null });
     }
     if (seg[0] === 'uploads' && seg[1] === 'commit') {
+      state.commits.push(body);
       const parent = get(body.parentId);
       if (!parent) return refuse(res, 404, 'not_found');
       if (!writable(parent)) return refuse(res, 403, 'forbidden');
@@ -453,14 +1585,41 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       const md = empty ? { data: Buffer.alloc(0), mime: 'application/octet-stream' } : state.media.get(body.mediaId);
       if (!md) return refuse(res, empty || body.size === 0 ? 400 : 409, body.size === 0 ? 'invalid' : 'upload_invalid');
       if (state.claimed && state.claimed.has(body.mediaId)) return refuse(res, 409, 'upload_invalid');
+      if (parent.vaultId || body.encrypted) {
+        const v = state.vaults.get(parent.vaultId);
+        if (!v || body.encrypted !== true || (body.name && !/^[0-9a-f]{32}$/.test(body.name))) return json(res, 400, { ok: false, code: 'invalid', field: 'encrypted', error: 'invalid' });
+        if (body.keyVersion !== v.keyVersion || (body.nameCipher && kvOf(body.nameCipher) !== v.keyVersion)) return json(res, 409, { ok: false, code: 'conflict', reason: 'stale_key', keyVersion: v.keyVersion, error: 'conflict' });
+        (state.claimed || (state.claimed = new Set())).add(body.mediaId);
+        const old = body.name ? taken(parent.id, body.name) : null;
+        if (old && body.onConflict === 'version') {
+          (state.versions.get(old.id) || state.versions.set(old.id, []).get(old.id)).push({ id: ++nextId, rev: old.rev, size: old.size, at: iso(Date.now()), by: 2, mediaId: old.mediaId });
+          Object.assign(old, { mediaId: body.mediaId, size: md.data.length, sha256: sha(md.data), rev: old.rev + 1, keyVersion: body.keyVersion, ...(body.nameCipher ? { nameCipher: body.nameCipher } : {}) });
+          logChange('update', old);
+          return json(res, 200, { ok: true, node: view(old), created: false });
+        }
+        if (!body.nameCipher) return json(res, 400, { ok: false, code: 'invalid', field: 'nameCipher', error: 'invalid' });
+        const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: crypto.randomBytes(16).toString('hex'), size: md.data.length, mime: 'application/octet-stream', mediaId: body.mediaId, sha256: sha(md.data), mtime: body.mtime ? iso(Number(body.mtime)) : null, encrypted: true, vaultId: v.id, nameCipher: body.nameCipher, keyVersion: body.keyVersion });
+        logChange('create', n);
+        return json(res, 200, { ok: true, node: view(n), created: true });
+      }
       const t = taken(parent.id, body.name);
       const mtime = body.mtime ? iso(Number(body.mtime)) : null;
+      if (body.takenAt !== undefined && !Number.isFinite(Date.parse(body.takenAt))) return json(res, 400, { ok: false, code: 'invalid', field: 'takenAt', error: 'invalid' });
+      const takenAt = body.takenAt !== undefined && features && features.includes('takenAt') ? iso(Date.parse(body.takenAt)) : null;
+      // Drive 1.16 'photoPlaces': WGS84, 6 decimals; dropped with the person's keepGeo off
+      if (body.geo !== undefined && features && features.includes('photoPlaces')) {
+        const g = body.geo;
+        if (!g || typeof g.lat !== 'number' || typeof g.lon !== 'number' || Math.abs(g.lat) > 90 || Math.abs(g.lon) > 180) return json(res, 400, { ok: false, code: 'invalid', field: 'geo', error: 'invalid' });
+      }
+      const geo = body.geo && features && features.includes('photoPlaces') && state.photoSettings.keepGeo ? { lat: Math.round(body.geo.lat * 1e6) / 1e6, lon: Math.round(body.geo.lon * 1e6) / 1e6 } : null;
       if (t && !t.isDir && ((body.baseRev != null && body.baseRev === t.rev) || body.onConflict === 'version')) {
         (state.versions.get(t.id) || state.versions.set(t.id, []).get(t.id)).push({ id: ++nextId, rev: t.rev, size: t.size, at: iso(Date.now()), by: 2, mediaId: t.mediaId });
         t.mediaId = empty ? null : body.mediaId;
         t.size = md.data.length;
         t.sha256 = empty ? EMPTY_SHA : sha(md.data);
         t.mtime = mtime;
+        t.takenAt = takenAt;
+        t.geo = geo;
         t.rev += 1;
         if (t.deleteAt) { t.deleteAt = null; t.deletedOnDevice = null; }
         if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
@@ -468,7 +1627,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, node: view(t), created: false });
       }
       if (t && body.onConflict !== 'rename') return json(res, 409, { ok: false, code: t.isDir ? 'exists' : 'conflict', error: 'conflict', current: view(t) });
-      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime });
+      const n = node({ id: ++nextId, areaId: parent.areaId, parentId: parent.id, name: freeName(parent.id, body.name), size: md.data.length, mime: md.mime, mediaId: empty ? null : body.mediaId, sha256: empty ? EMPTY_SHA : sha(md.data), mtime, takenAt, geo });
       if (!empty) (state.claimed || (state.claimed = new Set())).add(body.mediaId);
       logChange('create', n);
       return json(res, 200, { ok: true, node: view(n), created: true });
@@ -491,11 +1650,107 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         return json(res, 200, { ok: true, id: n.id, files: 1 });
       }
     }
+    // ── Drive 1.12 'bulk' / 'zip' / 'multiLink' ──
+    if (has('bulk') && seg[0] === 'ops') {
+      const opView = (o) => ({
+        id: o.id, kind: o.kind, state: o.state, items: o.ids.length, total: o.total, done: o.done, bytesTotal: o.bytesTotal, bytesDone: o.bytesDone,
+        label: o.label || null, onConflict: o.onConflict, targetId: o.targetId, targetPath: o.targetPath, targetName: o.targetName, undoOf: o.undoOf || null, undoneBy: o.undoneBy || null,
+        ...(o.kind === 'copy' ? { transfer: has('copyServer') ? 'server' : 'client', transfersLeft: 0 } : {}),
+        error: o.error || null,
+        results: { done: o.res.done, skipped: o.res.skipped, failedCount: o.res.failed.length, failed: o.res.failed, resultIds: o.res.resultIds },
+        undoUntil: o.state === 'done' && o.kind !== 'undo' && !o.undoneBy ? iso(o.finishedAt + srv.undoMs) : null,
+        createdAt: iso(o.createdAt),
+      });
+      if (seg[1] === 'check' && req.method === 'POST') {
+        const r = srv.opPlan(body);
+        if (r.error) return refuse(res, r.error[0], r.error[1]);
+        return json(res, 200, { ok: true, items: r.items.length, files: r.files, folders: r.folders, bytes: r.bytes, conflicts: r.conflicts, conflictsMore: 0, merges: r.merges, blocked: r.blocked, quota: r.quota, limit: r.limit, tooMany: r.tooMany });
+      }
+      if (seg.length === 1 && req.method === 'POST') {
+        const r = srv.opPlan(body);
+        if (r.error) return refuse(res, r.error[0], r.error[1]);
+        if ([...state.ops.values()].filter((o) => o.state === 'running').length >= srv.opsMax) return json(res, 409, { ok: false, code: 'job_limit', max: srv.opsMax, error: 'job_limit' });
+        const o = { id: `op${++nextId}`, kind: body.op, state: 'running', ids: body.ids, targetId: body.target || null, onConflict: body.onConflict || 'version', plan: r, total: r.files, done: 0, bytesTotal: r.bytes, bytesDone: 0, label: r.items[0] ? (r.items[0].encrypted ? null : r.items[0].name) : null, res: { done: 0, skipped: 0, failed: r.blocked.map((b) => ({ id: b.id, reason: b.reason })), resultIds: [] }, steps: [], createdAt: Date.now(), finishedAt: null };
+        const t = body.target ? get(body.target) : null;
+        o.targetName = t ? t.name : null;
+        o.targetPath = t ? crumbs(t).map((c) => c.name).join(' › ') : null;
+        state.ops.set(o.id, o);
+        state.opCalls.push({ op: body.op, ids: body.ids, target: body.target || null, onConflict: body.onConflict || null });
+        if (!srv.opAsync) srv.finishOp(o);
+        return json(res, 200, { ok: true, op: opView(o) });
+      }
+      if (seg.length === 1 && req.method === 'GET') {
+        const st = url.searchParams.get('state');
+        return json(res, 200, { ok: true, ops: [...state.ops.values()].filter((o) => !st || o.state === st).map(opView) });
+      }
+      const o = state.ops.get(seg[1]);
+      if (!o) return refuse(res, 404, 'not_found');
+      if (seg.length === 2 && req.method === 'GET') return json(res, 200, { ok: true, op: opView(o) });
+      if (seg.length === 2 && req.method === 'DELETE') {
+        if (o.state === 'running') { o.state = 'cancelled'; o.finishedAt = Date.now(); }
+        return json(res, 200, { ok: true, op: opView(o) });
+      }
+      if (seg[2] === 'undo' && req.method === 'POST') {
+        const why = o.state === 'running' ? 'running' : o.undoneBy ? 'undone' : o.state !== 'done' || Date.now() > o.finishedAt + srv.undoMs ? 'expired' : !o.steps.length ? 'nothing' : null;
+        if (why) return json(res, 409, { ok: false, code: 'conflict', reason: why, error: 'conflict' });
+        const u = { id: `op${++nextId}`, kind: 'undo', undoOf: o.id, state: 'done', ids: o.ids, targetId: null, total: o.steps.length, done: o.steps.length, bytesTotal: 0, bytesDone: 0, res: { done: 0, skipped: 0, failed: [], resultIds: [] }, steps: [], createdAt: Date.now(), finishedAt: Date.now() };
+        for (const s of o.steps.slice().reverse()) {
+          const n = state.nodes.get(s.id);
+          if (!n) { u.res.skipped++; continue; }
+          if (s.action === 'moved') { const nm = freeName(s.from.parentId, s.from.name); n.parentId = s.from.parentId; n.name = nm; setArea(n, s.from.areaId); logChange('move', n); }
+          else if (s.action === 'trashed') { n.deleted = false; for (const d of srv.below(n.id)) d.deleted = false; logChange('restore', n); }
+          else if (s.action === 'created') { n.deleted = true; n.deletedAt = iso(Date.now()); for (const d of srv.below(n.id)) d.deleted = true; logChange('delete', n); }
+          u.res.done++;
+        }
+        o.undoneBy = u.id;
+        state.ops.set(u.id, u);
+        return json(res, 200, { ok: true, op: opView(u) });
+      }
+      return refuse(res, 404, 'not_found');
+    }
+    if (has('zip') && seg[0] === 'zip' && req.method === 'POST') {
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const nodes = ids.map((id) => get(id));
+      if (!ids.length || nodes.some((n) => !n)) return refuse(res, 404, 'not_found');
+      if (nodes.some((n) => n.encrypted)) return refuse(res, 409, 'encrypted');
+      // without 'zipMixed': exactly one folder, or 1 … 20 files
+      if (!has('zipMixed')) {
+        if (nodes.some((n) => n.isDir) && nodes.length > 1) return json(res, 400, { ok: false, code: 'invalid', reason: 'mixed', error: 'invalid' });
+        if (nodes.length > 20) return json(res, 400, { ok: false, code: 'invalid', reason: 'too_many', max: 20, error: 'invalid' });
+      }
+      const names = [];
+      const walk = (n, prefix) => { if (n.isDir) { for (const c of children(n.id)) walk(c, `${prefix}${n.name}/`); } else names.push(`${prefix}${n.name}`); };
+      for (const n of nodes) walk(n, '');
+      const mediaId = crypto.randomBytes(16).toString('hex');
+      state.media.set(mediaId, { data: Buffer.from(`PK-fake\n${names.join('\n')}`), mime: 'application/zip' });
+      state.zips.push({ ids, names, mediaId });
+      state.zips[state.zips.length - 1].name = body.name || null;
+      const name = body.name ? `${body.name}.zip` : nodes.length === 1 ? `${nodes[0].name.replace(/\.[^.]+$/, '')}.zip` : 'Drive-Auswahl.zip';
+      return json(res, 200, { ok: true, url: srv.zipUrl ? srv.zipUrl(mediaId) : `${MEDIA}/${mediaId}`, name, expiresAt: iso(Date.now() + 900000), files: names.length, skipped: [] });
+    }
+    if (has('multiLink') && seg[0] === 'links' && seg.length === 1 && req.method === 'POST' && Array.isArray(body.nodeIds)) {
+      const nodes = body.nodeIds.map((id) => get(id));
+      if (!body.nodeIds.length || nodes.some((n) => !n)) return refuse(res, 404, 'not_found');
+      if (nodes.some((n) => n.isDir) && !has('zipMixed')) return json(res, 400, { ok: false, code: 'invalid', reason: 'mixed', error: 'invalid' });
+      if (nodes.length > 20 && !has('zipMixed')) return json(res, 400, { ok: false, code: 'invalid', reason: 'too_many', max: 20, error: 'invalid' });
+      if (body.mode === 'upload') return json(res, 400, { ok: false, code: 'invalid', field: 'mode', error: 'invalid' });
+      if (nodes.some((n) => !writable(n))) return refuse(res, 403, 'forbidden');
+      if (nodes.some((n) => n.encrypted)) return refuse(res, 409, 'encrypted');
+      const token = crypto.randomBytes(12).toString('base64url');
+      const link = {
+        token, url: `https://gc.example.com/s/${token}`, nodeId: nodes[0].id, nodeIds: nodes.map((n) => n.id), count: nodes.length, areaId: nodes[0].areaId, kind: 'files', mode: body.mode,
+        title: `${nodes.length} Dateien`, name: `${nodes.length} Dateien`, path: '', state: 'active', active: true, endedWhy: null,
+        expiresAt: body.expires === 'never' ? null : iso(Date.now() + 86400000), pin: !!body.pin, opens: 0, downloads: 0, createdAt: iso(Date.now()), createdBy: 2,
+      };
+      state.links.push(link);
+      return json(res, 200, { ok: true, link });
+    }
     if (seg[0] === 'links') {
       if (seg.length === 1 && req.method === 'POST') {
         const n = get(body.nodeId);
         if (!n) return refuse(res, 404, 'not_found');
         if (!writable(n)) return refuse(res, 403, 'forbidden');
+        if (n.encrypted) return refuse(res, 409, 'encrypted');
         const token = crypto.randomBytes(12).toString('base64url');
         const link = {
           token, url: `https://gc.example.com/s/${token}`, nodeId: n.id, areaId: n.areaId, kind: n.isDir ? 'folder' : 'files', mode: body.mode,

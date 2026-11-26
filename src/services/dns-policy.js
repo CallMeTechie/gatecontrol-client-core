@@ -17,9 +17,14 @@ const { execFile } = require('node:child_process');
  *
  * Behavior
  * --------
+ * - sync(rules): the rules of this client become exactly `rules` — one per
+ *   zone the server answers (GET /client/config → internalDns.domains).
+ *   Missing ones are added, own ones no longer listed are removed. Rules of
+ *   other software (no GateControl comment) are never touched.
  * - add(namespace, nameserver): idempotent — removes any pre-existing
  *   GateControl rule for the namespace, then adds the fresh one
- * - remove(namespace): best-effort cleanup on disconnect
+ * - remove(namespace): best-effort cleanup of one rule
+ * - removeAll(): cleanup on disconnect / quit
  * - All PowerShell calls are wrapped with timeouts so a hung DNS service
  *   can't block the tunnel lifecycle. Errors are logged but never thrown;
  *   NRPT is a best-effort enhancement, not a requirement for the VPN to
@@ -28,7 +33,18 @@ const { execFile } = require('node:child_process');
  * Requires Admin rights (Pro/Community run elevated via NSIS).
  */
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+// Only for servers that do not report their zone (GateControl < 1.195); every
+// other zone comes from the server.
 const LEGACY = { namespace: '.gc.internal', nameServer: '10.8.0.1' };
+// The server answers two zones today; anything far beyond that is not a zone list.
+const MAX_ZONES = 8;
+
+/** A zone as it may appear in a PowerShell command line: a plain DNS name, lowercased; else null. */
+function cleanZone(zone) {
+  if (typeof zone !== 'string' || zone.length > 253 || !DOMAIN_RE.test(zone)) return null;
+  return zone.toLowerCase();
+}
+
 
 function isIPv4(s) {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(s || ''));
@@ -71,7 +87,16 @@ function nameServerFromConfig(wgConfig) {
 class DnsPolicy {
   constructor(log) {
     this.log = log || console;
-    this.applied = new Set();
+    // namespace ('.zone') → name server, for the rules this process installed
+    this.applied = new Map();
+    this._queue = Promise.resolve();
+  }
+
+  /** sync() and removeAll() one after the other: a late sync must not re-add what a disconnect removed. */
+  _serial(fn) {
+    const run = this._queue.then(fn, fn);
+    this._queue = run.catch(() => {});
+    return run;
   }
 
   _runPs(script, timeoutMs = 8000) {
@@ -93,12 +118,13 @@ class DnsPolicy {
    */
   async add(namespace, nameServer) {
     if (!namespace || !nameServer) return;
-    const ns = namespace.startsWith('.') ? namespace : '.' + namespace;
+    const zone = cleanZone(String(namespace).replace(/^\./, ''));
     // Both end up inside a PowerShell command line.
-    if (!DOMAIN_RE.test(ns.slice(1)) || !isIPv4(nameServer)) {
-      this.log.warn('NRPT rule skipped, invalid namespace or name server: ' + ns + ' -> ' + nameServer);
+    if (!zone || !isIPv4(nameServer)) {
+      this.log.warn('NRPT rule skipped, invalid namespace or name server');
       return;
     }
+    const ns = '.' + zone;
     const comment = 'GateControl:' + ns;
 
     // Remove any prior rule for this namespace, including:
@@ -117,7 +143,7 @@ class DnsPolicy {
       this.log.warn('NRPT add failed for ' + ns + ': ' + (res.stderr || res.err.message));
       return;
     }
-    this.applied.add(ns);
+    this.applied.set(ns, nameServer);
     this.log.info('NRPT rule installed: ' + ns + ' -> ' + nameServer);
   }
 
@@ -127,7 +153,9 @@ class DnsPolicy {
    */
   async remove(namespace) {
     if (!namespace) return;
-    const ns = namespace.startsWith('.') ? namespace : '.' + namespace;
+    const zone = cleanZone(String(namespace).replace(/^\./, ''));
+    if (!zone) return; // ends up inside a PowerShell command line
+    const ns = '.' + zone;
     const comment = 'GateControl:' + ns;
     const res = await this._runPs(
       "Get-DnsClientNrptRule | Where-Object { $_.Comment -eq '" + comment + "' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
@@ -145,7 +173,11 @@ class DnsPolicy {
    * crash cleanup and before-quit so leftover rules from a killed process
    * don't silently reroute DNS on the user's next session.
    */
-  async removeAll() {
+  removeAll() {
+    return this._serial(() => this._removeAll());
+  }
+
+  async _removeAll() {
     // Match both 'GateControl:*' (current) and bare 'GateControl' (legacy
     // <=1.16) — the bare tag wouldn't match a 'GateControl:*' wildcard
     // and would survive uninstall/quit otherwise.
@@ -154,24 +186,125 @@ class DnsPolicy {
     );
     if (!res.err) this.applied.clear();
   }
+
+  /**
+   * Make the rules of this client exactly `rules` (DnsPolicy.rulesFor): add
+   * the missing ones, remove own ones that are no longer listed — the admin
+   * can change the zone while the tunnel is up. Only rules with a GateControl
+   * comment are looked at.
+   *
+   * Without `force` nothing is run while the installed rules already match
+   * (every config check calls this). `force` on connect: rules left over from
+   * a killed process are replaced as well.
+   *
+   * @param {Array<{ namespace: string, nameServer: string }>} rules
+   * @param {{ force?: boolean }} [opts]
+   * @returns {Promise<string[]>} namespaces with a rule afterwards
+   */
+  sync(rules, opts) {
+    return this._serial(() => this._sync(rules, opts));
+  }
+
+  async _sync(rules, { force = false } = {}) {
+    const wanted = new Map();
+    for (const rule of Array.isArray(rules) ? rules : []) {
+      const zone = cleanZone(String((rule && rule.namespace) || '').replace(/^\./, ''));
+      if (!zone || !isIPv4(rule.nameServer)) continue;
+      if (wanted.size >= MAX_ZONES) break;
+      wanted.set('.' + zone, rule.nameServer);
+    }
+
+    const same = wanted.size === this.applied.size
+      && [...wanted].every(([ns, server]) => this.applied.get(ns) === server);
+    if (same && !force) return [...this.applied.keys()];
+
+    // Own rules for zones that are not wanted any more (also the bare
+    // 'GateControl' tag of <=1.16). `keep` holds validated zones only.
+    const keep = [...wanted.keys()].map((ns) => "'GateControl:" + ns + "'").join(',');
+    const res = await this._runPs(
+      '$keep = @(' + keep + "); Get-DnsClientNrptRule | Where-Object { $_.Comment -like 'GateControl*' -and $keep -notcontains $_.Comment } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }"
+    );
+    if (res.err) {
+      this.log.debug('NRPT cleanup of old zones failed: ' + (res.stderr || res.err.message));
+    } else {
+      for (const ns of [...this.applied.keys()]) {
+        if (!wanted.has(ns)) {
+          this.applied.delete(ns);
+          this.log.info('NRPT rule removed: ' + ns);
+        }
+      }
+    }
+
+    for (const [ns, server] of wanted) {
+      if (force || this.applied.get(ns) !== server) await this.add(ns, server);
+    }
+    return [...this.applied.keys()];
+  }
+
+  /**
+   * Whether a rule of this client pins the zone of `name` (a host name such
+   * as "laptop.vpn.example.com") to the VPN resolver — only then the name
+   * resolves reliably on Windows.
+   */
+  coversName(name) {
+    const host = cleanZone(name);
+    if (!host) return false;
+    for (const ns of this.applied.keys()) {
+      if (host.length > ns.length && host.endsWith(ns)) return true;
+    }
+    return false;
+  }
 }
 
 /**
- * Which NRPT rule to install for the peers' hostnames.
+ * Which NRPT rules to install for the peers' hostnames.
  *
- * internalDns is what GET /client/config reported: { domain, server } from
- * the server's settings, null when its internal DNS is off (no rule), or
- * undefined when unknown (older server, or the config could not be fetched)
- * — then the server default domain and the resolver from the tunnel config.
+ * internalDns is what GET /client/config and /client/config/check reported:
+ * { domain, server, domains, primary } from the server's settings, null when
+ * its internal DNS is off (no rule), or undefined when unknown (older
+ * server, or the config could not be fetched) — then the server default
+ * domain and the resolver from the tunnel config.
+ *
+ * `domains` (GateControl >= 1.271) lists every zone the server answers: one
+ * rule each, all to `server`. Without it (older server) the one rule for
+ * `domain`, as before. Entries that are not plain DNS names are dropped —
+ * they would end up inside a PowerShell command line.
+ *
+ * @returns {Array<{ namespace: string, nameServer: string }>}
+ */
+DnsPolicy.rulesFor = function rulesFor({ internalDns, wgConfig } = {}) {
+  if (internalDns === null) return [];
+  if (internalDns && typeof internalDns === 'object' && isIPv4(internalDns.server)) {
+    const zones = [];
+    if (Array.isArray(internalDns.domains)) {
+      for (const entry of internalDns.domains.slice(0, 4 * MAX_ZONES)) {
+        const zone = cleanZone(entry);
+        if (zone && !zones.includes(zone)) zones.push(zone);
+        if (zones.length >= MAX_ZONES) break;
+      }
+    }
+    if (!zones.length) {
+      const zone = cleanZone(internalDns.domain);
+      if (zone) zones.push(zone);
+    }
+    if (zones.length) return zones.map((zone) => ({ namespace: '.' + zone, nameServer: internalDns.server }));
+  }
+  return [{ namespace: LEGACY.namespace, nameServer: nameServerFromConfig(wgConfig) }];
+};
+
+/**
+ * The one rule for `internalDns.domain` — what clients installed before the
+ * server listed its zones. Kept for callers that have not moved to
+ * rulesFor() / sync().
  *
  * @returns {{ namespace: string, nameServer: string } | null}
  */
 DnsPolicy.ruleFor = function ruleFor({ internalDns, wgConfig } = {}) {
   if (internalDns === null) return null;
-  if (internalDns && DOMAIN_RE.test(String(internalDns.domain || '')) && isIPv4(internalDns.server)) {
-    return { namespace: '.' + internalDns.domain.toLowerCase(), nameServer: internalDns.server };
-  }
-  return { namespace: LEGACY.namespace, nameServer: nameServerFromConfig(wgConfig) };
+  const single = internalDns && typeof internalDns === 'object'
+    ? { domain: internalDns.domain, server: internalDns.server }
+    : internalDns;
+  return DnsPolicy.rulesFor({ internalDns: single, wgConfig })[0];
 };
 
 module.exports = DnsPolicy;

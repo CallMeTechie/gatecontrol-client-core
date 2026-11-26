@@ -29,10 +29,21 @@
  *     reaction) show the server's title and body as they are, in a toast of
  *     their own per kind (tag `chat-<id>-<kind>`) that a new message of the
  *     chat does not replace; they are acked with the chat.
+ *   - Messenger 1.14: the push of a chat over a bridge (`data.bridge`) reads
+ *     „Kim Muster · WhatsApp“ (without preview „Neue Nachricht über
+ *     WhatsApp“ and no text); its actions carry `bridged: true` in their
+ *     body, sent on unchanged (1.20: with `channels: true` added — this app knows channels).
+ *   - Messenger 1.20: the push of a channel's post (`data.channel`, only while its bell is on) shows the server's
+ *     title „<Kanal> · Kanal über WhatsApp“ and the post; it has only „Als gelesen“ (no reply).
+ *   - Messenger 1.21: the push of a way of a person (`data.person` { id, conversationId }) keeps the server's title
+ *     „Jenny Backes · über WhatsApp“; a click opens the person's entry, the buttons stay on the message's way.
  *   - The rules of the other toasts apply (on/off, "Windows-Benachrichtigung
  *     anzeigen", topic muted, "Nicht stören", quiet hours = silent → no
  *     toast, replay/burst caps); no toast for the chat that is open and
  *     visible (its seqs are acked as read right away).
+ *   - Messenger 1.17: the push of „Verknüpfte Dienste“ (topic `bridge`, „WhatsApp: Handy seit N Tagen nicht
+ *     gesehen“) is no chat message: an inbox entry with its own toast (NotificationCenter); a click on it opens
+ *     „Verknüpfte Dienste“ — claimed here for the app route of the chats, context { type: 'bridges', bridge }.
  *
  * Events: 'navigate' ({ conversationId }) — show the chat in the app.
  */
@@ -42,7 +53,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { t } = require('../i18n');
-const { parseChatNotification, posInt, isAvatarPath } = require('../utils/messenger');
+const { parseChatNotification, posInt, isAvatarPath, bridgeLabel, bridgePushContext, APP_ROUTE } = require('../utils/messenger');
 const { buildChatToastXml, parseChatArgs } = require('../utils/toast-xml');
 
 const AVATAR_TIMEOUT_MS = 1500;
@@ -107,6 +118,13 @@ class ChatNotifier extends EventEmitter {
         protocol: (nonce) => this.handleProtocol(nonce),
       });
     }
+    if (this.nc && typeof this.nc.addClickRoute === 'function') {
+      try {
+        this._unsub.push(this.nc.addClickRoute(APP_ROUTE, (entry) => bridgePushContext(entry)));
+      } catch (err) {
+        this.log.warn(`Chat click route unavailable: ${err.message}`);
+      }
+    }
     const on = (emitter, ev, fn) => {
       if (!emitter || typeof emitter.on !== 'function') return;
       emitter.on(ev, fn);
@@ -167,9 +185,13 @@ class ChatNotifier extends EventEmitter {
     rec.seqs.set(p.id, p.seq);
     if (p.pushKind) rec.extras.set(p.pushKind, { latest: p, toast: (rec.extras.get(p.pushKind) || {}).toast || null });
     else rec.latest = p;
+    // Messenger 1.14: a chat over a bridge — the messenger marks its calls from now on (?bridged=1), so the reply
+    // from the toast, "Gelesen" and opening the chat work even before the chat list knew such a chat
+    if (p.bridge && this.messenger && typeof this.messenger.noteBridge === 'function') this.messenger.noteBridge();
 
     // The chat is on screen: nothing to show, it is read.
-    if (this.messenger && typeof this.messenger.isOpenAndVisible === 'function' && this.messenger.isOpenAndVisible(cid)) {
+    // Messenger 1.21: … or the person it is a way of
+    if (this.messenger && typeof this.messenger.isOpenAndVisible === 'function' && (this.messenger.isOpenAndVisible(cid) || (p.person && this.messenger.isOpenAndVisible(p.person.conversationId)))) {
       this.conversationRead(cid);
       return true;
     }
@@ -198,9 +220,15 @@ class ChatNotifier extends EventEmitter {
     const kind = p.pushKind;
     let title = p.title || sender || 'GateControl';
     let body = p.body || '';
-    if (p.isGroup && !kind) {
+    // Messenger 1.20: a channel's post (only with its bell on) keeps the server's „<Kanal> · Kanal über WhatsApp“ and text
+    if (p.channel && !kind) {
+      title = p.title || p.conversationTitle || title;
+      body = p.body || '';
+    } else if (p.isGroup && !kind) {
       title = p.conversationTitle || title;
       body = p.body ? (sender ? `${sender}: ${p.body}` : p.body) : p.title;
+      // Messenger 1.14: a group of another messenger keeps the service in its title („Grillen · WhatsApp“)
+      if (p.bridge && p.conversationTitle && p.body) title = `${p.conversationTitle} · ${bridgeLabel(p.bridge)}`;
     }
     const imagePath = (await this._avatarFile(p.sender.avatarUrl)) || this.toastImagePath;
     // Superseded while the picture loaded (a newer message / push of this kind).
@@ -252,7 +280,8 @@ class ChatNotifier extends EventEmitter {
     }
     if (kind) slot.toast = n;
     else rec.toast = n;
-    n.on('click', () => this.open(cid));
+    // Messenger 1.21: a message of a way of a person opens the person's entry
+    n.on('click', () => this.open(p.person ? p.person.conversationId : cid));
     n.on('failed', (_e, error) => this.log.warn(`Chat toast failed: ${error}`));
     try { n.show(); } catch (err) { this.log.warn(`Chat toast could not be shown: ${err.message}`); }
   }
@@ -314,8 +343,13 @@ class ChatNotifier extends EventEmitter {
 
   /** Show the app on this chat. */
   open(conversationId) {
-    const cid = posInt(conversationId);
-    if (!cid) return;
+    const asked = posInt(conversationId);
+    if (!asked) return;
+    // Messenger 1.21: a way of a person is shown as the person (the push named it, or the chat list knows it)
+    const rec = this._convs.get(asked);
+    const person = rec && rec.latest && rec.latest.person;
+    let cid = person ? person.conversationId : asked;
+    if (!person && this.messenger && typeof this.messenger.entryIdOf === 'function') cid = this.messenger.entryIdOf(asked) || asked;
     const now = this.now();
     if (this._lastOpen.id === cid && now - this._lastOpen.at < OPEN_DEDUPE_MS) return;
     this._lastOpen = { id: cid, at: now };

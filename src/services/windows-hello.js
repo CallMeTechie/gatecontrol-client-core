@@ -17,7 +17,8 @@
  *   ole32    CoGetApartmentType (COM on this thread? Electron's main thread is an STA already;
  *            plain Node gets RoInitialize(MTA)), CoTaskMemFree
  *   user32   GetSystemMetrics(SM_REMOTESESSION) (Hello does not work in a remote desktop session),
- *            FindWindowW / SetForegroundWindow (the Hello dialog in front of the app)
+ *            FindWindowW / GetForegroundWindow / SetForegroundWindow / BringWindowToTop / AllowSetForegroundWindow
+ *            (the Hello dialog in front of the app, see WinRt.focuser)
  *
  *   KeyCredentialManager  IsSupportedAsync · RequestCreateAsync(name, ReplaceExisting) · OpenAsync(name) · DeleteAsync(name)
  *   KeyCredential         RetrievePublicKey() (X.509 SubjectPublicKeyInfo) · RequestSignAsync(IBuffer)
@@ -41,6 +42,19 @@
  *   remove(name)            → { status }                           (no prompt)
  * status: 'ok' | 'cancelled' | 'prefers_password' | 'not_found' | 'locked' | 'exists' | 'unavailable' | 'failed'
  * Signatures and keys are never logged (only statuses and HRESULTs).
+ *
+ * createConsentVerifier() → provider (Drive vault folders: "Mit Windows Hello öffnen"), the same WinRT layer for
+ * Windows.Security.Credentials.UI.UserConsentVerifier — a yes / no confirmation by face, fingerprint or the Windows
+ * Hello PIN, no key material:
+ *   available()                 → { available, reason: null | 'unsupported_os' | 'not_set_up' | 'device_not_present' |
+ *                                   'disabled_by_policy' | 'device_busy' | 'error' }        (CheckAvailabilityAsync, no prompt)
+ *   verify(message, { window }) → { status: 'verified' | 'cancelled' | 'not_set_up' | 'device_not_present' |
+ *                                   'disabled_by_policy' | 'device_busy' | 'retries_exhausted' | 'unavailable' | 'failed' }
+ * With the app window's HWND (BrowserWindow.getNativeWindowHandle()) the dialog belongs to that window
+ * (IUserConsentVerifierInterop.RequestVerificationForWindowAsync, the way for desktop apps); without one, or when the
+ * interop is missing, RequestVerificationAsync. On both ways the dialog is brought to the front and kept there
+ * (WinRt.focuser): Windows opens it in another process and often behind the app's window, also when it belongs to the
+ * window.
  */
 
 // ── Windows constants ──────────────────────────────────────
@@ -50,16 +64,37 @@ const RPC_E_CHANGED_MODE = 0x80010106 | 0;
 const RO_INIT_MULTITHREADED = 1;
 const SM_REMOTESESSION = 0x1000;
 const HELLO_DIALOG_CLASS = 'Credential Dialog Xaml Host';
+const ASFW_ANY = 0xFFFFFFFF;  // AllowSetForegroundWindow: every process (the Hello dialog runs in CredentialUIBroker)
 
 const CLASS = {
   manager: 'Windows.Security.Credentials.KeyCredentialManager',
   buffer: 'Windows.Security.Cryptography.CryptographicBuffer',
+  consent: 'Windows.Security.Credentials.UI.UserConsentVerifier',
 };
+
+/**
+ * The IID of a parameterized WinRT interface (`pinterface(…)` signature): SHA-1 over the WinRT namespace GUID
+ * 11f47ad5-7b73-42c0-abae-878b1e16adee and the UTF-8 signature, as a version 5 GUID (what MIDL / C++/WinRT compute).
+ */
+function pinterfaceIid(signature) {
+  const ns = Buffer.from('11f47ad57b7342c0abae878b1e16adee', 'hex');
+  const h = require('crypto').createHash('sha1').update(Buffer.concat([ns, Buffer.from(signature, 'utf8')])).digest().subarray(0, 16);
+  h[6] = (h[6] & 0x0f) | 0x50;
+  h[8] = (h[8] & 0x3f) | 0x80;
+  const x = h.toString('hex').toUpperCase();
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
+const ASYNC_OPERATION = '{9fc2b0bb-e446-44e2-aa61-9cab8f636af2}';
 
 const IID = {
   IKeyCredentialManagerStatics: '6AAC468B-0EF1-4CE0-8290-4106DA6A63B5',
   ICryptographicBufferStatics: '320B7E22-3CB0-4CDF-8663-1D28910065EB',
   IAsyncInfo: '00000036-0000-0000-C000-000000000046',
+  IUserConsentVerifierStatics: 'AF4F3F91-564C-4DDC-B8B5-973447627C65',
+  IUserConsentVerifierInterop: '39E050C3-4E74-441A-8DC0-B81104DF949C',
+  // IAsyncOperation<UserConsentVerificationResult> / <UserConsentVerifierAvailability>
+  IAsyncVerificationResult: pinterfaceIid(`pinterface(${ASYNC_OPERATION};enum(Windows.Security.Credentials.UI.UserConsentVerificationResult;i4))`),
+  IAsyncAvailability: pinterfaceIid(`pinterface(${ASYNC_OPERATION};enum(Windows.Security.Credentials.UI.UserConsentVerifierAvailability;i4))`),
 };
 
 // vtable slots. IUnknown: 0 QueryInterface, 1 AddRef, 2 Release; IInspectable adds 3 GetIids,
@@ -83,6 +118,10 @@ const SLOT = {
   // ICryptographicBufferStatics: 6 Compare, 7 GenerateRandom, 8 GenerateRandomNumber, 9 CreateFromByteArray,
   // 10 CopyToByteArray, …
   bufferFromBytes: 9, bufferToBytes: 10,
+  // IUserConsentVerifierStatics: 6 CheckAvailabilityAsync, 7 RequestVerificationAsync(message)
+  consentAvailability: 6, consentRequest: 7,
+  // IUserConsentVerifierInterop (IInspectable): 6 RequestVerificationForWindowAsync(hwnd, message, riid, out)
+  consentForWindow: 6,
 };
 
 // AsyncStatus
@@ -91,12 +130,17 @@ const ASYNC = { started: 0, completed: 1, canceled: 2, error: 3 };
 const KEY_STATUS = ['ok', 'failed', 'not_found', 'cancelled', 'prefers_password', 'exists', 'locked'];
 // KeyCredentialCreationOption
 const REPLACE_EXISTING = 0;
+// UserConsentVerifierAvailability 0…4 / UserConsentVerificationResult 0…6
+const CONSENT_AVAILABILITY = ['available', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy'];
+const CONSENT_RESULT = ['verified', 'device_not_present', 'not_set_up', 'disabled_by_policy', 'device_busy', 'retries_exhausted', 'cancelled'];
 
 const DEFAULT_TIMING = {
   pollMs: 50,                 // IAsyncInfo.Status
   promptMs: 3 * 60 * 1000,    // a dialog the person answers
   quickMs: 20 * 1000,         // IsSupportedAsync, OpenAsync, DeleteAsync
-  focusMs: 4000,              // look for the Hello dialog this long
+  focusMs: 4000,              // after the Hello dialog appeared: bring it to the front this long
+  findMs: 10 * 1000,          // no dialog after this long → logged once (what the Protokoll shows)
+  pushMs: 250,                // the dialog to the front at most this often (never a fight over the foreground)
 };
 
 const MAX_BLOB = 16384;       // sanity bound for buffers read back (an RSA public key / signature is far smaller)
@@ -140,6 +184,7 @@ function protos(koffi) {
       ptrOut: koffi.proto('int32_t __stdcall (void *self, void *arg, _Out_ void **out)'),
       fromBytes: koffi.proto('int32_t __stdcall (void *self, uint32_t size, const uint8_t *data, _Out_ void **out)'),
       toBytes: koffi.proto('int32_t __stdcall (void *self, void *buffer, _Out_ uint32_t *size, _Out_ void **data)'),
+      forWindow: koffi.proto('int32_t __stdcall (void *self, intptr_t hwnd, void *message, const uint8_t *riid, _Out_ void **out)'),
     };
     PROTOS.set(koffi, p);
   }
@@ -161,6 +206,9 @@ function loadApi(koffi) {
     GetSystemMetrics: user32.func('int32_t __stdcall GetSystemMetrics(int32_t nIndex)'),
     FindWindowW: user32.func('void *__stdcall FindWindowW(const char16_t *lpClassName, const char16_t *lpWindowName)'),
     SetForegroundWindow: user32.func('int32_t __stdcall SetForegroundWindow(void *hWnd)'),
+    GetForegroundWindow: user32.func('void *__stdcall GetForegroundWindow()'),
+    BringWindowToTop: user32.func('int32_t __stdcall BringWindowToTop(void *hWnd)'),
+    AllowSetForegroundWindow: user32.func('int32_t __stdcall AllowSetForegroundWindow(uint32_t dwProcessId)'),
   };
 }
 
@@ -344,16 +392,83 @@ class WinRt {
     return this.api.GetSystemMetrics(SM_REMOTESESSION) !== 0;
   }
 
-  /** The Hello dialog in front of the app (it can open behind a desktop app's window). */
-  focuser() {
-    const until = Date.now() + this.timing.focusMs;
-    let done = false;
+  /** A window handle (koffi pointer, BigInt or number) → BigInt; 0n for none. */
+  handle(h) {
+    if (h == null) return 0n;
+    if (typeof h === 'bigint') return h;
+    if (typeof h === 'number') return BigInt(h);
+    try { return BigInt(this.koffi.address(h)); } catch { return 0n; }
+  }
+
+  _note(what) { if (this.log) this.log.info(`Windows Hello: ${what}`); }
+
+  /** Before a prompt: the Hello dialog (another process) may take the foreground from this app. */
+  allowForeground() {
+    try {
+      if (!this.api.AllowSetForegroundWindow(ASFW_ANY)) this._note('AllowSetForegroundWindow refused');
+    } catch (err) {
+      this._note(`AllowSetForegroundWindow: ${err.message}`);
+    }
+  }
+
+  /**
+   * A tick (finish() runs it on every poll) that brings the Hello dialog to the front and keeps it there. Windows
+   * opens the dialog in CredentialUIBroker and, for a desktop app, often behind the app's window — also when it
+   * belongs to that window (RequestVerificationForWindowAsync). Each tick finds the dialog; while it is not in front:
+   * for `focusMs` after it appeared, and later whenever the app's own window (`owner`, BigInt) is in front of it (the
+   * person clicked into the app because the dialog was hidden), SetForegroundWindow (BringWindowToTop when refused) —
+   * at most every `pushMs`, never taking the foreground from another app. Logs (no secrets): when the dialog
+   * showed, whether it got in front, how often it had to be brought back, or that no dialog showed.
+   */
+  focuser(owner = null) {
+    const start = Date.now();
+    const own = owner ? this.handle(owner) : 0n;
+    let seenAt = 0;
+    let lastPush = 0;
+    let pushes = 0;
+    let front = false;
+    let notFound = false;
+    let failed = false;
+    let refused = false;
+    const tick = () => {
+      const now = Date.now();
+      const dlg = this.api.FindWindowW(HELLO_DIALOG_CLASS, null);
+      const d = this.handle(dlg);
+      if (!d) {
+        if (!seenAt && !notFound && now - start > this.timing.findMs) {
+          notFound = true;
+          this._note(`no dialog after ${Math.round((now - start) / 1000)} s`);
+        }
+        return;
+      }
+      if (!seenAt) {
+        seenAt = now;
+        this._note(`dialog open after ${now - start} ms`);
+      }
+      const fg = this.handle(this.api.GetForegroundWindow());
+      if (fg === d) {
+        if (!front) this._note(pushes ? `dialog in front (brought to the front ${pushes}×)` : 'dialog in front');
+        front = true;
+        return;
+      }
+      if (front) front = false;
+      const early = now - seenAt <= this.timing.focusMs;
+      const behindApp = own !== 0n && fg === own;
+      if (!(early || behindApp) || now - lastPush < this.timing.pushMs) return;
+      lastPush = now;
+      pushes++;
+      const ok = this.api.SetForegroundWindow(dlg);
+      if (!ok) this.api.BringWindowToTop(dlg);
+      if (pushes === 1 || (!ok && !refused)) this._note(`dialog behind ${behindApp ? 'the app window' : 'another window'} → to the front (SetForegroundWindow ${ok ? 'ok' : 'refused'})`);
+      if (!ok) refused = true;
+    };
     return () => {
-      if (done || Date.now() > until) return;
-      const hwnd = this.api.FindWindowW(HELLO_DIALOG_CLASS, null);
-      if (hwnd == null || hwnd === 0n) return;
-      done = true;
-      this.api.SetForegroundWindow(hwnd);
+      try {
+        tick();
+      } catch (err) {
+        if (!failed) this._note(`dialog to the front: ${err.message}`);
+        failed = true;
+      }
     };
   }
 
@@ -414,6 +529,7 @@ class WinRt {
   }
 
   async create(name, challenge) {
+    this.allowForeground();
     const tick = this.focuser();
     const op = [null];
     this.withString(name, (h) => this.check(this.invoke(this.manager(), SLOT.requestCreateAsync, this.P.strI32Out, h, REPLACE_EXISTING, op), 'RequestCreateAsync'));
@@ -436,6 +552,7 @@ class WinRt {
     const r = this._retrieval(await this.finish(op[0], (o) => this.resultObject(o)));
     if (r.status !== 'ok') return { status: r.status };
     try {
+      this.allowForeground();
       return await this._sign(r.credential, challenge, this.focuser());
     } finally {
       this.release(r.credential);
@@ -456,6 +573,62 @@ class WinRt {
     this.withString(name, (h) => this.check(this.invoke(this.manager(), SLOT.deleteAsync, this.P.strOut, h, op), 'DeleteAsync'));
     await this.finish(op[0], (o) => { this.check(this.invoke(o, SLOT.getResults, this.P.call), 'GetResults'); });
   }
+
+  // ── UserConsentVerifier ──
+
+  consentStatics() {
+    return this.statics(CLASS.consent, IID.IUserConsentVerifierStatics);
+  }
+
+  /** The interop interface of the factory (desktop apps: the dialog owned by a window) or null. */
+  consentInterop() {
+    if (this._interop !== undefined) return this._interop;
+    try {
+      this._interop = this.queryInterface(this.consentStatics(), IID.IUserConsentVerifierInterop);
+    } catch {
+      this._interop = null;
+    }
+    return this._interop;
+  }
+
+  _i32Result(o) {
+    const v = [0];
+    this.check(this.invoke(o, SLOT.getResults, this.P.outI32, v), 'GetResults');
+    return v[0];
+  }
+
+  /** CheckAvailabilityAsync → 'available' | 'device_not_present' | 'not_set_up' | 'disabled_by_policy' | 'device_busy' */
+  async consentAvailability() {
+    const op = [null];
+    this.check(this.invoke(this.consentStatics(), SLOT.consentAvailability, this.P.outPtr, op), 'CheckAvailabilityAsync');
+    return this.finish(op[0], (o) => CONSENT_AVAILABILITY[this._i32Result(o)] || 'device_not_present');
+  }
+
+  /**
+   * The verification dialog → a CONSENT_RESULT status. `hwnd`: the owner window (BigInt) or null. On both ways the
+   * dialog is brought to the front (focuser; with the window: also whenever the app window gets in front of it).
+   */
+  async requestConsent(message, hwnd = null) {
+    const op = [null];
+    const interop = hwnd ? this.consentInterop() : null;
+    this.allowForeground();
+    if (interop) {
+      try {
+        this.withString(message, (h) => this.check(this.invoke(interop, SLOT.consentForWindow, this.P.forWindow, hwnd, h, guidBytes(IID.IAsyncVerificationResult), op), 'RequestVerificationForWindowAsync'));
+      } catch (err) {
+        // a window Windows does not take (or an older interop): the plain call below
+        if (this.log) this.log.warn(`Windows Hello (confirmation): for the window: ${err.message}`);
+        op[0] = null;
+      }
+    }
+    const forWindow = op[0] != null;
+    if (!forWindow) {
+      this.withString(message, (h) => this.check(this.invoke(this.consentStatics(), SLOT.consentRequest, this.P.strOut, h, op), 'RequestVerificationAsync'));
+    }
+    this._note(`confirmation requested (${forWindow ? 'for the app window' : hwnd ? 'without the app window: interop missing or refused' : 'without a window'})`);
+    const tick = this.focuser(hwnd);
+    return this.finish(op[0], (o) => CONSENT_RESULT[this._i32Result(o)] || 'failed', { timeoutMs: this.timing.promptMs, tick });
+  }
 }
 
 const validName = (n) => typeof n === 'string' && n.length > 0 && n.length <= 200;
@@ -466,7 +639,7 @@ const validData = (d) => (Buffer.isBuffer(d) || d instanceof Uint8Array) && d.le
  * @param {string} [opts.platform] - process.platform (tests)
  * @param {object} [opts.koffi] - koffi (tests; default require('koffi') on the first call)
  * @param {object} [opts.api] - the Win32 functions (tests; default loadApi(koffi))
- * @param {object} [opts.timing] - { pollMs, promptMs, quickMs, focusMs }
+ * @param {object} [opts.timing] - { pollMs, promptMs, quickMs, focusMs, findMs, pushMs }
  * @param {object} [opts.log]
  */
 function createWindowsHello({ platform = process.platform, koffi = null, api = null, timing = {}, log = null } = {}) {
@@ -570,8 +743,104 @@ function createWindowsHello({ platform = process.platform, koffi = null, api = n
   };
 }
 
+/** An HWND as BigInt from BrowserWindow.getNativeWindowHandle() (a Buffer), a BigInt or a number; else null. */
+function hwndOf(w) {
+  try {
+    if (typeof w === 'bigint') return w > 0n ? w : null;
+    if (typeof w === 'number') return Number.isSafeInteger(w) && w > 0 ? BigInt(w) : null;
+    if (Buffer.isBuffer(w) && (w.length === 8 || w.length === 4)) {
+      const v = w.length === 8 ? w.readBigUInt64LE(0) : BigInt(w.readUInt32LE(0));
+      return v > 0n ? v : null;
+    }
+  } catch { /* not a handle */ }
+  return null;
+}
+
+/**
+ * Windows Hello as a confirmation (UserConsentVerifier), see the head of this file. Same options as
+ * createWindowsHello(); one dialog at a time.
+ */
+function createConsentVerifier({ platform = process.platform, koffi = null, api = null, timing = {}, log = null } = {}) {
+  let rt = null;
+  let loadError = null;
+  let queue = Promise.resolve();
+
+  function runtime() {
+    if (rt) return rt;
+    if (loadError) throw loadError;
+    try {
+      const k = koffi || require('koffi');
+      rt = new WinRt({ koffi: k, api: api || loadApi(k), timing, log });
+      return rt;
+    } catch (err) {
+      loadError = err;
+      throw err;
+    }
+  }
+
+  const warn = (what, err) => { if (log) log.warn(`Windows Hello (confirmation): ${what}: ${err && err.message}`); };
+
+  function serial(fn) {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
+  }
+
+  async function available() {
+    if (platform !== 'win32') return { available: false, reason: 'unsupported_os' };
+    let r;
+    try {
+      r = runtime();
+      r.consentStatics();
+    } catch (err) {
+      warn('UserConsentVerifier not available', err);
+      return { available: false, reason: 'unsupported_os' };
+    }
+    try {
+      const a = await r.consentAvailability();
+      return a === 'available' ? { available: true, reason: null } : { available: false, reason: a };
+    } catch (err) {
+      warn('CheckAvailabilityAsync', err);
+      return { available: false, reason: 'error' };
+    }
+  }
+
+  function verify(message, { window = null } = {}) {
+    const text = typeof message === 'string' ? message.trim().slice(0, 200) : '';
+    if (!text) return Promise.resolve({ status: 'failed' });
+    return serial(async () => {
+      if (platform !== 'win32') return { status: 'unavailable' };
+      let r;
+      try {
+        r = runtime();
+        r.consentStatics();
+      } catch (err) {
+        warn('not loadable', err);
+        return { status: 'unavailable' };
+      }
+      try {
+        const a = await r.consentAvailability();
+        if (a !== 'available') return { status: a };
+        const status = await r.requestConsent(text, hwndOf(window));
+        if (log) log.info(`Windows Hello (confirmation): ${status}`);
+        return { status };
+      } catch (err) {
+        warn('RequestVerification', err);
+        return { status: 'failed' };
+      }
+    });
+  }
+
+  return { kind: 'windows-hello-consent', available, verify };
+}
+
 module.exports = {
   createWindowsHello,
+  createConsentVerifier,
+  pinterfaceIid,
+  hwndOf,
+  CONSENT_AVAILABILITY,
+  CONSENT_RESULT,
   WinRt,
   WinRtError,
   loadApi,

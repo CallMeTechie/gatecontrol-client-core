@@ -154,17 +154,19 @@ class ApiClient {
   /**
    * WireGuard-Config vom Server abrufen
    */
-  async fetchConfig() {
+  async fetchConfig({ timeout } = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');
     if (!this.peerId) throw new Error('Nicht registriert (keine Peer-ID)');
 
+    // `timeout` (ms): shorter than the client's own while a local config can be used instead (the connect waits for it)
     const { data } = await this.client.get('/api/v1/client/config', {
       params: { peerId: this.peerId },
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
     });
 
     if (data.config) {
       this.configHash = data.hash || null;
-      // { domain, server } | null; stays undefined for servers that do not send it.
+      // { domain, server, domains?, primary? } | null; stays undefined for servers that do not send it.
       this.internalDns = Object.prototype.hasOwnProperty.call(data, 'internalDns') ? data.internalDns : undefined;
       return data.config;
     }
@@ -184,9 +186,11 @@ class ApiClient {
       if (this.configHash) params.hash = this.configHash;
       const { data } = await this.client.get('/api/v1/client/config/check', { params });
 
+      // Also with `updated: false` (GateControl >= 1.271): the zones can change while the config hash stays.
+      if (data && Object.prototype.hasOwnProperty.call(data, 'internalDns')) this.internalDns = data.internalDns;
+
       if (data.updated && data.config) {
         this.configHash = data.hash;
-        if (Object.prototype.hasOwnProperty.call(data, 'internalDns')) this.internalDns = data.internalDns;
         this.log.info('New configuration available');
         return data.config;
       }
@@ -497,7 +501,9 @@ class ApiClient {
 
   /**
    * Device push preferences: PUT /api/v1/client/push/prefs → { ok }.
-   * @param {{ enabled?: boolean, mode?: 'always'|'vpn_only', muted_topics?: string[] }} prefs
+   * Since GateControl 1.225.0 also `email_topics: [{ id, enabled }]` (the
+   * person's e-mail channel of plugin topics).
+   * @param {{ enabled?: boolean, mode?: 'always'|'vpn_only', muted_topics?: string[], email_topics?: {id: string, enabled: boolean}[] }} prefs
    */
   async pushPrefs(prefs = {}) {
     if (!this.client) throw new Error('Server nicht konfiguriert');

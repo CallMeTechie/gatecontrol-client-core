@@ -255,6 +255,313 @@ routes, see notification-center.md § 10):
   „<Quelle>“; locked kinds with a lock ("immer GateControl"), without a sink
   the hint that the Messenger plugin is needed.
 
+## Messenger 1.11: the host's virus scan
+
+With `GET me` features `scan` (known, no update hint; GateControl 1.223.0):
+`message.media.scan { state, blocked, finding }` comes as the plugin sends it
+(blocked: no `url` / thumbnail, the media route answers 423); utils/scan.js
+`view(scan)` says what to show (`checking`, `malware`, `unscannable`,
+`warning`, `notCheckable`), the texts are the core's i18n `scan.*` (DE / EN).
+
+- Sending: 422 `infected` { finding } / 423 `scan_blocked` → the outbox entry
+  is `failed` with `error` and `finding` (never sent again by itself;
+  „Nicht gesendet – Schadsoftware gefunden“). A file still being checked is sent.
+- `message.update { scan }` → `changedSince` = editedAt − 1 s (the message's own
+  `editedAt` stays: not "edited"); a blocked file's bytes in the memory cache
+  are dropped.
+- `chat:media` / `chat:media:save` of a blocked file → `{ ok: false, code:
+  'scan_pending' | 'quarantined' | 'scan_blocked', scan?, finding?, retryAfter? }`.
+
+## Messenger 1.13 / 1.14: linked services and chats over a bridge
+
+Both parts are detected by feature words of `GET me`, never by a version:
+
+* `linked_services` (1.13) — the server offers a bridge to another messenger
+  (today WhatsApp). „Verknüpfte Dienste“ in the chat settings links the
+  person's OWN account: `bridges()`, `bridgeConsent(network)`,
+  `bridgeLogin(network, 'phone' | 'qr')`, `bridgeStep(network, processId,
+  stepId, { phone?, fieldId? })`, `bridgeCancel`, `bridgeUnlink`. A step comes
+  back normalized (`utils/messenger.js` `normalizeBridgeLogin`): `phone` (the
+  number is asked for), `code` (the pairing code), `qr` (the code's modules
+  `matrix: { size, rows }` — the page draws them, there is never a picture
+  address), `complete`, `unsupported`, or `{ waiting: true }` (ask again; the
+  server waits up to 15 s per call, so these calls get 30 s). The number is
+  checked in the main process (`bridgePhone`), sent once and never stored or
+  logged; the same holds for the pairing code and the QR content. Refusals:
+  `bridge_off`, `consent_required`, `bridge_locked`, `bridge_unsupported`,
+  `bridge_failed` (with `reason`, e.g. `timeout`), `bridge_unreachable`,
+  `rate_limited`; the IPC answer carries `reason` as well.
+* `bridge_chats` (1.14) — set only for a person who HAS a chat over a bridge.
+  Such a chat exists only for a client that says so: every call below
+  `conversations` and `messages` carries `?bridged=1` (`MessengerApi.bridged`)
+  as soon as the server names `linked_services` or `bridge_chats`, or an event
+  (`message.new` with `bridge`) or a chat push (`data.bridge`) named such a
+  chat (`MessengerService.noteBridge()` — it also reads `GET me` again, since
+  the word appears with the first chat). An older plugin never gets the mark;
+  its requests are byte for byte what they were.
+
+What a bridged chat looks like to the page: `conversation.bridge` (`network`,
+`label`, `state`: ok / unreachable / logged_out / unlinked / locked / off,
+`closed`), no `peer`, one member; `typingContacts` (`[{ contactId, name }]`)
+next to `typing`; `message.bridge` (`sender` — the contact, `remote`, `state`,
+`reason`, `placeholder`). `messageStatus()` answers `failed` / `pending` for
+the bridge's word on an own message. Only a text crosses a bridge: `send()`
+refuses everything else with `bridge_text_only` before it is queued, and the
+outbox does not retry a `bridge_*` refusal (the server keeps no queue for the
+other messenger) — the message shows why and can be sent again. A message the
+server stored but the bridge did not take (`bridge.state: failed`) goes out
+again with `resend(messageId)`.
+
+The push of such a chat reads „Kim Muster · WhatsApp“ (without preview „Neue
+Nachricht über WhatsApp“ and no text); a group keeps the service in its title.
+Its actions carry `bridged: true` in their body and are sent on unchanged.
+
+### Messenger 1.15: files, pictures and a new chat by number
+
+Again only feature words, set by the server together with `bridge_chats`:
+
+* `bridge_media` — files cross the bridge. Per chat only `conversation.bridge`
+  decides: `supports` adds `image`, `video`, `voice`, `file`, `mediaTypes`
+  names the types per kind (`null` = any; WhatsApp: no `audio/webm`).
+  `send()` lets a picture, voice message or file through when its kind and
+  type are named (`bridgeMediaRefusal`: a file of `video/*` is a video) and
+  refuses the rest before it is queued — `bridge_text_only`, or
+  `bridge_media_type` with `reason` image / voice / video. Should the server
+  still refuse the type, the pending message keeps `reason`. A `423
+  scan_pending` (the virus scan of the upload is not finished) is not a
+  failure: the outbox sends the same entry (same `clientId`, no new upload)
+  again after `Retry-After`, for up to about five minutes; this holds for
+  every chat. Files coming in arrive as `bridge.placeholder` (`state`
+  loading / failed + `reason` / null + `geo`) and, once fetched, as
+  `message.update { media: true }` — read like any edit. The chat's picture is
+  `conversation.avatarMediaId`, a contact's `message.bridge.sender.avatarMediaId`
+  (`media(id)` like a group picture).
+* `bridge_new_chat` — a chat by phone number: `bridgeResolve(network, number,
+  cc)` → `{ found, name, avatarMediaId, existing: { conversationId } | null }`
+  and `bridgeStartChat(network, number, cc)` → `{ conversation, created }`.
+  The number is normalized in the main process (`bridgeNumber`: `cc`, default
+  +49, for a number without one; a leading 0 goes; 00 and + keep their
+  country), sent once per call and never stored or logged. The new chat is
+  not in `GET conversations` until something was written in it, so a full
+  read of the list keeps it. `GET bridges` names per service `newChat`
+  (`available`, `reason`, `limit`; Messenger 1.16) — `null` from a plugin
+  without it. Refusals: `invalid_number`, `rate_limited` (with `retryAfterS`
+  and, 1.16, `perHour` in the IPC answer), `bridge_unlinked` (`reason`
+  unlinked), `bridge_logged_out` (1.16; 1.15: `bridge_unlinked` with `reason`
+  logged_out),
+  `bridge_locked`, `child_new_chat_off`, `bridge_unreachable`, `bridge_off`,
+  `not_found` (`reason: not_on_network`).
+
+### Messenger 1.17: older history, the phone, „Brücke veraltet“
+
+One feature word, `bridge_history` — set only for people who linked a
+service, and only when the server can take older messages over (`gc.bridges`
+version 5):
+
+* `GET bridges` → `history` `{ available, days, default, options, pending }`
+  (`normalizeBridgeHistory`; `null` = the server has none: the row is left
+  out). `setBridgeHistory(days)` — `0` (off), `30` (days), `-1` (everything),
+  checked before anything is asked — → `PUT bridges/history { days }` → the
+  new `history`. The choice holds at the next link (WhatsApp sends the
+  history only then); fewer days drop at once what still waits.
+* Older messages come at night, without push and without `message.new`, as
+  read: per chat and portion one `conversation.update { reason: history }`.
+  The chat that is open (`setOpen`) loads its newest messages again
+  (`messages` with `reason: 'history'`; the view stays where it is), any other
+  chat's cached messages are dropped and loaded when it opens. No toast, no
+  sound.
+* Files of the history wait for a click: `bridge.placeholder.state` is
+  `on_request`; `fetchBridgeFile(id)` → `POST messages/:id/fetch?bridged=1`
+  (empty body) → the message, its placeholder then `loading`; the file follows
+  like any other (`message.update { media: true }`). `400 invalid` when there
+  is nothing to fetch; very old files end as `failed` / `gone`.
+* Per service `phone` `{ offline, days, leftDays }` (`normalizePhone`; the
+  bridge warns after 12 days, WhatsApp ends the link after about 14) and
+  `clientOutdated` (WhatsApp refuses the bridge's version — shown like
+  `outdated`). The push of the new topic `bridge`
+  (`plugin:gatecontrol-messenger:bridge`, „WhatsApp: Handy seit N Tagen nicht
+  gesehen“, data
+  `{ deepLink: 'bridges', bridge }`) is an ordinary inbox entry with its toast;
+  `ChatNotifier` claims a click on it for the chats' app route
+  (`bridgePushContext` → navigate `{ route: 'plg-gatecontrol-messenger',
+  context: { type: 'bridges', bridge } }`): the app opens „Verknüpfte Dienste“.
+
+### Messenger 1.18: „Neuer Chat“ with contacts
+
+One feature word, `bridge_contacts` — set only for people who linked a
+service, and only when the server has `gc.bridges` version 6. Without it the
+new chat by number of 1.15 / 1.16 stays as it was.
+
+* `newChatContacts(network, q)` → `GET contacts/new-chat?network=&q=`
+  (`q` ≤ 100 characters, the search as typed) → `normalizeNewChatContacts`:
+  `{ network, query, gatecontrol, whatsapp, addressBook, addressBookReason,
+  number, numberEntry, limit }`. `gatecontrol` are the accounts as in
+  `GET people` (+ `conversationId`), `whatsapp` `null` (left out) or
+  `{ state: ok | unreachable | logged_out, total, items }` — the contacts of
+  the bridge, by name, with a sealed `ref` and never a number
+  (`alsoInAddressBook`, `avatarMediaId`, `conversationId`). `addressBook`
+  (`null` without WhatsApp, Mail or numbers) follows the WhatsApp `state`;
+  its `phones` are sorted mobile, work, home, other (`key`, `kind`, `number`,
+  `e164`, `landline`, `notOnNetwork`). `number` `{ e164, show,
+  conversationId }` when the search looks like a number, `numberEntry` =
+  offer „Nicht dabei? Nummer eingeben“. Listing and searching ask the
+  service nothing.
+* `bridgeContactChat(network, contact)` → `POST bridges/:network/chats` with
+  `{ ref }` (a WhatsApp contact: started at once, nothing checked or counted)
+  or `{ contactId, phoneKind }` (an address book number: checked now, counted
+  in the brake of „Nummer eingeben“) → `{ conversation, created }`, kept in
+  the list like a chat by number. Refusals: `contact_expired` (the reference
+  ran out — load the list again), `not_found` with `reason` `not_on_network`
+  (`remembered: true` = from the server's 30-day memory, nothing asked) or
+  `contact_gone`, `rate_limited` (`retryAfterS`, `perHour`),
+  `bridge_unreachable` / `bridge_off`, `bridge_logged_out`, `mail_missing`,
+  and those of 1.15.
+* Neither the search nor a name or number is logged or kept in the main
+  process.
+
+### Messenger 1.20: channels, read-only groups, format, link previews
+
+One feature word, `bridge_channels` — for the same people as `bridge_chats`, on a server with `gc.bridges` version 7.
+Without it everything stays as it was (a channel is then a read-only chat in the list, as in older apps).
+
+* With the word the calls carry `?channels=1` next to `?bridged=1` (and a push button with `bridged: true` in its body
+  gets `channels: true`). `GET conversations` has **no channels** then — they are not in `listConversations()`, not in
+  `unreadTotal()` (nav badge, tray) — but `channels: { count, unread }` (`normalizeChannelSummary`).
+* `refreshChannels()` → `GET channels` (`{ channels, removed, unread }`), read whenever that summary differs from the
+  cached channels; `listChannels()` (channels with a post, the newest first), `channelSummary()` → `{ count, unread }` or
+  `null` without the word; `status().channels` the same. A live event of a conversation not cached yet fetches it
+  (`GET conversations/:id`) — a channel (`isChannel`: `bridge.channel`) goes to the channels. IPC `chat:channels`
+  (`{ refresh }` → `{ ok, channels, summary }`), `chat:conversations` also answers `channels`.
+* Conversations: `bridge.channel`, `bridge.readOnly`, `bridge.reactions` (`own` | `off`), `can.sendReason`
+  (`channel` | `admins_only` | `null`), `can.react`. Sending into one → `409 bridge_read_only` with `reason`; reacting in
+  a channel while off → the same with `reason: reactions_off`. The bell is `updateConversation(id, { notify })`.
+* Messages: `marks` (bold, italic, strike, code, link — UTF-16 offsets into `text`) and `preview` (`url`, `title`,
+  `description`, `site`, `image: { mediaId, mime, w, h, state }`) are passed through as the server sends them; the
+  apps draw them (never as HTML). `bridge.channel: true` — a post of the channel (no sender name).
+* The push of a channel's post (`data.channel`, only while its bell is on): the server's title „<Kanal> · Kanal über
+  WhatsApp“ and the post, only „Als gelesen“ (`parseChatNotification` → `channel`).
+* Independent of the word (since 1.19): `fetchBridgeFile(id)` (`POST messages/:id/fetch`) also fetches a file whose
+  placeholder `failed` with `retry: true` once more — for every app that shows chats over a bridge.
+
+### Messenger 1.21: persons („Personen zusammenführen“)
+
+One feature word, `chat_people` — for the same people as `bridge_chats`. Without it everything stays as it was: the
+ways of a person are separate chats in the list (as for older apps, and as the other person always sees them).
+
+* With the word every call carries `?people=1` next to `?bridged=1` (a push button with `bridged: true` in its body
+  gets `people: true`). `GET conversations` has **one entry per person**: the view of its lead conversation (the
+  GateControl chat, else the oldest way) with `person` { id, name, nameFrom, userId, conversationId, names, ways, reply }
+  — its `id` is the lead's; the other ways come as `folded` and leave the cache (`isPerson`, `personWayIds`).
+* `GET conversations/:id` of a way names `person` → the service reads `GET persons/:id` and keeps the entry (a plain
+  view never replaces a person's entry); `entryIdOf(id)` maps a way to its entry.
+* Messages of an entry: `GET persons/:id/messages` — all ways mixed by time (`createdAt`, a tie by id; `mergeMessages(…,
+  { byTime: true })`), `way` on each message, cursors of any way. `setWay(id, way)` (IPC `chat:person:way`) — the
+  source chips: a filter loads its own page (`?way=`), is not stored and is never read there; `messagesView().way`.
+  The ticks of GateControl messages come from `ways[gatecontrol].readUpTo / deliveredUpTo`.
+* `send()` to an entry → the outbox posts `POST persons/:id/messages` (`personId`): the server picks the way (the way of
+  the newest incoming message, a tie or none: GateControl; an answer the way of its message). The checks of the
+  composer use that way (`replyWay(id)` → { way, label, conversationId, bridge, can }). After sending the entry is read
+  again (`person.reply` may change).
+* `markRead(entry)` → `POST persons/:id/read { upTo: newest shown }` (only in „Alle“); a way's id (a push's „Gelesen“)
+  reads only that way. `setOpen()` pings `active` on every way; `typing()` goes to the way of the answer.
+* `updateConversation(entry, { notify, mutedUntil })` → `PATCH persons/:id`; `archive()` → `POST persons/:id/archive`;
+  `search()` → `GET persons/:id/search`; `pin()` pins in the message's way.
+* Live events come per way → applied to the entry (a message, typing, read marks of the GateControl way);
+  `conversation.update { reason: person }` (merged, renamed, split) → the list in full again and the suggestions.
+* `suggestions({ refresh })` (`GET persons/suggestions`, at most every 15 min; event `suggestions`),
+  `answerSuggestion(id, 'later' | 'never')`, `mergePersons({ conversationIds, userId?, name })` (`POST persons`; 409
+  `cannot_merge` with `reason`), `splitPerson(entry, conversationId?)` („Trennen“, `DELETE persons/:id/ways/:cid`, the
+  list again), `renamePerson(entry, 'account' | conversationId)`, `personCandidates(id)` (`GET persons/candidates`).
+* `bridges()` carries `recognition` { available, network, asked, allowed } when GateControl has the call
+  (`gc.bridges` version 9); `setRecognition(allowed)` → `PUT bridges/recognition` — asked once after WhatsApp was linked.
+* The push of a way (`data.person` { id, conversationId }): the server's title „Jenny Backes · über WhatsApp“; a click
+  opens the entry, the buttons stay on the message's way. A push of the open person shows no toast.
+
+### Messenger 1.23: Signal (Brücken Stufe 7a)
+
+Needs GateControl with `gc.bridges` version 10 and Messenger ≥ 1.23.0; recognised by fields and the network name
+`signal` only.
+
+* `bridges()` → each network carries `flows` (Signal: `['qr']` only — a linked device; missing: both ways),
+  `history` { maxDays, phoneConfirms } (Signal: at most 30 days, the phone asks at the link whether it hands the
+  history over — later nothing comes) and `recognition` (the consent „Erkennen“ of that service, null: not offered);
+  `handoff` { network, target, expiresAt } while a „am PC fortsetzen“ of the person runs (left out otherwise).
+* `setRecognition(allowed, network?)` → `PUT bridges/recognition { allowed, network }` (network left out for
+  WhatsApp, as before) → the consent of that service.
+* `bridgeHandoff(network, 'portal' | 'windows')` → `POST bridges/:network/handoff` (the phone app's „Im Portal
+  fortsetzen“ / „Im Windows-Client fortsetzen“) → { network, target, expiresAt, portalPath }; `bridgeHandoffEnd(network)`
+  → `DELETE …/handoff` (never throws).
+* The live event `bridge.handoff` becomes the event `handoff` { network, target, expiresAt, portalPath } (`target: null`:
+  it is over) — the Windows app opens „Signal verknüpfen“ at the QR code when `target` is `windows`.
+* Texts: `chat.br.*_signal`, `chat.br.phone_history*`, `chat.br.hist_once`, `chat.bc.signal_safety`, `chat.bc.timer`,
+  `chat.bc.ph.view_once`, `chat.sys.disOnNet` / `disOffNet`, `chat.dis.minutes|hours|days|weeks`,
+  `chat.person.rec*_signal`.
+
+### Messenger 1.24: Telegram (Brücken Stufe 7b)
+
+Needs GateControl with `gc.bridges` version 11 and Messenger ≥ 1.24.0; recognised by fields and the network name
+`telegram` only.
+
+* `bridges()` → a network may carry `needs: 'app'` — Telegram is not set up on the server yet (an administrator enters
+  the application id once in the Messenger's settings); the apps show „Noch nicht eingerichtet (Admin).“ and offer no
+  link. Telegram's `flows` are `['qr', 'phone']`; the Windows app preselects the QR code.
+* `bridgeLogin('telegram', 'phone' | 'qr')`, then `bridgeStep`: after the number (`{ phone, fieldId }`) the step
+  `{ type: 'secret', kind: 'code', fieldId, retry }` asks for the code from the Telegram app, with two-step verification
+  `{ type: 'secret', kind: 'password', … }` follows (also after the QR code). `bridgeStep(network, processId, stepId,
+  { secret, fieldId })` answers it (1–256 characters); a wrong one comes back as the same kind with `retry: true`.
+  The code and the password go to the server once and are never kept, logged or put into an error.
+* Chats over Telegram may carry `bridge.bot` (a bot: the tag „Bot“) and `bridge.members` (large groups: „N Mitglieder ·
+  …“ in the list); Telegram channels are on the channels page like WhatsApp's, with one chip per service there.
+* Texts: `chat.br.*_telegram`, `chat.br.code_wrong`, `chat.br.pw_*`, `chat.br.next_step`, `chat.br.other_number`,
+  `chat.br.sub_noapp`, `chat.br.pill_noapp`, `chat.bc.bot`, `chat.bc.members`, `chat.ch.filter`, `chat.person.rec*_telegram`.
+
+### Messenger 1.25: WhatsApp-Status in der Status-Reihe
+
+One feature word, `bridge_status` — for people who linked WhatsApp, on a server with `gc.bridges` version 12 (the room of
+the contacts' status updates is no chat any more). Without it everything stays as it was.
+
+* `statusFeed()` → also `bridged: [{ network, contact: { id, name, avatarMediaId, avatarUrl }, chatId, canReply, stories:
+  [{ id, kind: text | image | video | unsupported, text, mediaId, thumbMediaId, video, url, thumbUrl, createdAt,
+  expiresAt, seen }], unseen }]` (`bridgedFeedOf`: checked and capped; `[]` without the word). A contact is no account:
+  the views mix the entries into the strip themselves (Pro: `GCChatState.mixFeed`, unseen first, then the newest; key
+  `wa:<contactId>`) with the WhatsApp logo at the ring.
+* `bridgedStorySeen(id)` — shown in the viewer (the cached feed marks it seen). WhatsApp learns it only when the person
+  turned `prefs.privacy.bridgedStatusSeen` on (default off, only with read receipts; the server decides).
+* `bridgedStoryReply(id, { text } | { emoji })` — an answer or a reaction goes as a message into the WhatsApp chat with
+  the contact (a reaction as „❤️ auf deinen Status“: the bridge cannot react to a status). The viewer says so under the
+  field; it shows no viewers. `canReply: false`: no way to the contact — only that line.
+* `setPrefs({ privacy: { bridgedStatusSeen } })` (PREF_RULES), the live event `story.bridged` refreshes the feed.
+* Texts: `chat.st.bridged*`, `chat.story.bridged*`, `chat.set.statusSec`, `chat.set.bridgedSeen*`,
+  `chat.set.statusDigestHintBridged`.
+
+### Messenger 1.27: Versandweg, Plus-Menü, Standort über Brücken
+
+One feature word, `placeMessages` (known: no update hint). It brings `person.replyPref` and the plus menu with
+everything; a location over a bridge is read per chat from `bridge.supports` (`location`, `gc.bridges` version 14:
+WhatsApp, Telegram — never Signal), not from the word.
+
+* `setReplyPref(id, pref)` — „Nachrichten senden über“ of a person: `'auto'` (also null), `'gatecontrol'` or a network
+  the person has (`replyPrefBody`; else `invalid` before the server sees it) → `PUT persons/:id { replyPref }`, the entry
+  (its `person.reply` follows the choice). Without the word: `unsupported`.
+* `replyWay(id)` → also `pref` (`personReplyPref`) and `fallback` („Immer <Netz>“ cannot send right now, GateControl
+  took over — the view says „<Netz> nicht verbunden …“ under the composer).
+* `send()` to a person whose text goes over a bridge: what only GateControl carries — a poll, an event, a home action,
+  a reply to a story, a location the bridge cannot send (`needsGcWay`) — goes straight to the person's GateControl way
+  (`personGcWay`; outbox `wayId` → `POST conversations/<way>/messages`), shown in the person as before; a quoted message
+  of another way is dropped there. Without a GateControl way it stays `bridge_text_only`.
+* „Nur diese Nachricht über …“ (Schnellwechsel im Schreibfeld): `send({ …, way })` with `'gatecontrol'` or a network of
+  the person sends this one message over that way (`personSendWay`: a way of that kind that can send now, else
+  `way_unavailable`) — straight to its chat (outbox `wayId`) when it is not the way the server picks anyway.
+  `person.replyPref` stays as it is. An answer (`replyTo`) still goes its message's way (`way` is ignored then); `way`
+  on a chat that is no person is `invalid`.
+* A location crosses a bridge whose `supports` names `location` (`bridgeTakesLocation`): `{ lat, lon, label }` only
+  (`accuracy` is left out). An incoming location of a bridge arrives as `kind: "location"` (the map, as any location;
+  old messages stay the placeholder with `geo`).
+* `message.placeMessage` `{ name, trigger }` — only in the sender's view: the line „Ortsnachricht · <Ort>“ (display only;
+  place messages are made and run on the phone).
+* Texts: `chat.person.reply*`, `chat.person.once*`, `chat.person.viaGc`, `chat.attachMenu.gcNote`,
+  `chat.msg.placeMessage`, `chat.error.bad_request`, `chat.error.way_unavailable`.
+
 ## Locations ("Standort senden")
 
 A location message is `kind: "location"` with `location: { lat, lon,
@@ -346,6 +653,7 @@ macro formats (`messengerUtil.unsafeToOpen`); those can only be saved.
 | `start()` / `stop()` | check + live / timers off, cache saved |
 | `check({ force })` / `status()` / `available()` | availability (above); status: `{ state, reason, stale, version, label, me: { user, prefs, features, limits, license }, unread, live, outbox }` |
 | `listConversations()` / `getConversation(id)` / `refreshConversations({ full })` | conversations with `typing` (user ids) and `outbox` (pending count) |
+| `listChannels()` / `channelSummary()` / `refreshChannels()` | Messenger 1.20 (`bridge_channels`): the page „Kanäle“ — channels with a post, `{ count, unread }` (null without the word), `GET channels` |
 | `getMessages(id, { before, after, around })` / `messagesView(id)` | `{ conversationId, messages, pending, hasMore, hasMoreAfter, detached, offline }` |
 | `supports(feature)` | `GET me` `features[feature] === true`, e.g. `video_meta`, `file_thumbs` |
 | `updateHint()` / `dismissUpdateHint()` | unknown features switched on → `{ features, key }` / hide the banner for that set |
@@ -382,12 +690,25 @@ Events: `state`, `conversations` `{ ids, removed }`, `messages`
 `deleteReminder`, `suggest`, `toList`, `toCalendar`, `places`, `poll(id, op,
 args)`, `event(id, op, args)`, `stopArrival`, `actions`, `action(id, op,
 args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
-(`{ mime, data: Uint8Array }`), `storage`,
-`clearCache`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
+(`{ mime, data: Uint8Array }`), 1.13 / 1.14: `bridges`, `bridgeConsent`,
+`bridgeLogin`, `bridgeStep`, `bridgeCancel`, `bridgeUnlink`, `resend`, 1.15:
+`bridgeResolve(network, number, cc)`, `bridgeNewChat(network, number, cc)`,
+1.17: `bridgeHistory(days)`, `fetchFile(id)`, 1.18: `newChatContacts(network, q)`,
+`bridgeContactChat(network, contact)`, `storage`, `clearCache`, 1.23: `bridgeRecognition(allowed, network?)`,
+`bridgeHandoff(network, target)`, `bridgeHandoffEnd(network)`, 1.25: `bridgedStorySeen(id)`, `bridgedStoryReply(id, { text | emoji })`, 1.27: `setReplyPref(id, pref)`; events `onState`, `onConversations`, `onMessages`, `onTyping`,
 `onUnread`, `onOutbox`, `onNavigate` (`{ conversationId }`, toast click),
-`onFeed`, `onLists`, `onReminders`. Arguments and answers:
+`onFeed`, `onLists`, `onReminders`, 1.23: `onHandoff`. Arguments and answers:
 `src/ipc/messenger-handlers.js`. Every call resolves; failures are
 `{ ok: false, code, error }` — `chat.error.<code>` has the text.
+
+## Messenger 1.28: „Meine Orte“ in the place choice
+
+With the word `profilePlaces`, `chat:places { all: true }` (preload `chat.pickPlaces()`) reads `GET places`: the
+person's own places of GateControl's profile and Familie's places, each with `ref` (`profile:<id>` | `home` |
+`place:<id>`), `source`, `icon`, `usageCount`, `lastUsedAt` — in the Messenger's order (most used here in the last 90
+days first). Without the word it answers Familie's places as before (`source: 'familie'`, `profile: false`).
+`chat:places` without `all` is unchanged. An event's place keeps a copy (`{ label, lat, lon }`; a Familie place with
+`familiePlaceId`). See docs/places.md.
 
 ## Known limits
 
@@ -400,7 +721,11 @@ args)`, `cardImage` (`{ mime, data: Uint8Array }`), 1.6: `noticeImage(path)`
 * The toast reply field needs Electron's `Notification.handleActivation`
   (Electron 44 in both apps) and the app's start-menu shortcut (AUMID), like
   every Windows toast; the portable build shows no toasts.
-* Bridges (WhatsApp, Signal, …) and end-to-end encryption are not part of V1.
+* End-to-end encryption is not part of V1. Chats over a bridge carry text
+  only with Messenger 1.14; files, voice messages, pictures of contacts and
+  "new chat with a number" come with 1.15 (`bridge_media`, `bridge_new_chat`),
+  older history with 1.17 (`bridge_history`), „Neuer Chat“ with contacts with
+  1.18 (`bridge_contacts`).
 * Live arrival is shown, not sent: Windows PCs have no reliable GPS. The
   departure hint push of an event opens the chat.
 * Server storage: the server reports only whether the chat file quota is

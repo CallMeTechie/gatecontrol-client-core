@@ -99,7 +99,9 @@ async function serviceSetup(opts = {}, { shell = null, dialog = null, pushClient
   const apiClient = new ApiClient(srv.url, 'gc_token', log);
   if (portalUrl) apiClient.portalUrl = portalUrl;
   const api = new DriveApi({ apiClient, log, getLang: () => 'de', sleep: async () => {} });
-  const svc = new DriveService({ apiClient, api, log, shell, dialog, pushClient, tempDir: () => tmpDir('drive-tmp-'), timing: { progressMs: 0 }, ...(readPdfText !== undefined ? { readPdfText } : {}) });
+  // one temp folder: a new one per call would come after the cleanup (svc.stop() asks for it) and stay behind
+  const tmp = tmpDir('drive-tmp-');
+  const svc = new DriveService({ apiClient, api, log, shell, dialog, pushClient, tempDir: () => tmp, timing: { progressMs: 0 }, ...(readPdfText !== undefined ? { readPdfText } : {}) });
   svc.start();
   cleanup.push(() => svc.stop());
   await svc.check();

@@ -231,10 +231,12 @@ class GateDropListener extends EventEmitter {
    * @param {string} t.ticket
    * @param {Buffer} t.key
    * @param {Array<{ index, name, bytes }>} t.items - announced by the plugin (may be empty: then the headers count)
+   * @param {number} [t.count] - how many items, when the push left the list out (`itemCount`): ends the transfer
+   *   once that many arrived
    * @param {(meta: { index, name, bytes }) => Promise<{ stream, commit(): Promise<string>, abort(): Promise<void> }>} t.sink
    * @param {number} [t.expiresAt]
    */
-  expectIncoming({ transferId, ticket, key, items = [], sink, expiresAt = null }) {
+  expectIncoming({ transferId, ticket, key, items = [], count = null, sink, expiresAt = null }) {
     if (!gd.isTransferId(transferId) || !gd.isTicket(ticket) || !Buffer.isBuffer(key) || key.length !== 32 || typeof sink !== 'function') {
       throw new TypeError('expectIncoming: transferId, ticket, key and sink required');
     }
@@ -246,7 +248,7 @@ class GateDropListener extends EventEmitter {
     const t = {
       transferId, ticket, key, sink, resolve, reject, done,
       items: new Map(items.map((it) => [it.index, it])),
-      count: items.length || null,
+      count: items.length || (Number.isSafeInteger(count) && count > 0 && count <= gd.MAX_ITEMS ? count : null),
       received: new Map(),   // index → { name, path, bytes }
       busy: new Set(),
       expiresAt: Math.min(expiresAt || Infinity, this.now() + this.timing.ticketTtlMs),
@@ -407,10 +409,18 @@ class GateDropListener extends EventEmitter {
     }
   }
 
-  /** The device announced how many items it sends with the push; without a count the service ends it. */
+  /**
+   * The device announced how many items it sends with the push; without a count the service ends it. Known count
+   * and not all of them there: the transfer fails ('incomplete') — never a part of it as if it were all (GateDrop
+   * 1.5: the receiving end's ok is the pick-up). Without a count the service checks what arrived.
+   */
   finishIncoming(transferId) {
     const t = this._incoming.get(transferId);
     if (!t || t.busy.size) return null;
+    if (t.count !== null && t.received.size < t.count) {
+      this._failIncoming(transferId, 'incomplete');
+      return null;
+    }
     this._incoming.delete(transferId);
     const items = [...t.received.values()].sort((a, b) => a.index - b.index);
     t.resolve(items);

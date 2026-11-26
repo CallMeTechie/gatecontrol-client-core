@@ -41,7 +41,18 @@
  * dialog, 'progress' ({ id, dir, phase, sent, total, name }), 'received'
  * (record), 'changed' ({ kind }), 'navigate' ({ tab, sendId }).
  * Phases out: upload → sent → direct / failed (direct failed, the server takes
- * over) → done | error; in: download / direct → done | failed.
+ * over) → done | error; in: download / direct → done | failed. GateDrop 1.4: 'scanning' while
+ * the host still checks a file (423 scan_pending, sent again); 'error' of a scan refusal carries
+ * { code: 'infected' | 'scan_blocked', name, finding } (utils/scan.js refusalFields). A received
+ * record lists the files the virus scan blocks in `blocked` [{ index, name, scan }].
+ *
+ * GateDrop 1.5 (the pick-up): a send saved from a push is acknowledged at once (POST sends/<id>/opened); a direct
+ * transfer to this PC reports ok only with every file and always with `bytes` (else 'incomplete'); after its own
+ * ok as the sender this PC asks GET sends/<id> until the receiver decided and uploads the files (POST
+ * sends/<id>/items) when the delivery waits for them (pending + direct_failed).
+ * GateDrop 1.6: our ok leaves the delivery 'direct' until the receiver confirms (then 'delivered' / 'opened' with
+ * pickedAt); without a confirmation 20 s later the plugin takes the server way (pending + direct_failed → upload). The
+ * ~30 s of asking show phase 'sent' ("Wird übertragen …") instead of an early "direkt gesendet".
  *
  * Waiting for the other end of a direct transfer (a device pulls from us, or
  * pushes to us) GET transfers/<id> is asked every few seconds: when that end
@@ -61,6 +72,8 @@ const directDefault = require('./gatedrop-direct');
 const gd = require('../utils/gatedrop');
 const { buildToastXml } = require('../utils/toast-xml');
 const { isSafeExternalUrl } = require('../utils/external-url');
+const SC = require('../utils/scan');
+const { userPath } = require('../utils/user-folders');
 
 const { GateDropError } = GateDropApi;
 
@@ -79,6 +92,14 @@ const DEFAULT_TIMING = {
   preparedTtlMs: 60 * 60 * 1000,
   pendingDebounceMs: 2000,     // GET pending: triggers close together → one poll
   resumeDelayMs: 5000,         // after resume from sleep: give the network a moment
+  scanWaitMs: 10 * 60 * 1000,  // GateDrop 1.4: a send refused with 423 scan_pending is sent again (Retry-After, ~5 s) this long
+  scanRecheckMs: [10000, 20000, 40000, 60000, 120000, 120000, 120000, 120000], // a received file still being checked: look again
+  scanRecheckLateMs: 5 * 60 * 1000, // … then every 5 minutes
+  scanRecheckMax: 8 + 48,           // … for about 4 hours in all (afterwards: GET pending at the next connect)
+  // GateDrop 1.5/1.6: after this PC's own ok of a direct transfer, GET sends/<id> at these waits (ms, ~30 s in all — the
+  // 1.6 plugin falls back after 20 s) until the receiving end decided — it confirmed (pickedAt), or not everything
+  // arrived / no confirmation and the files must go up (pending + direct_failed)
+  directVerifyMs: [0, 1000, 2000, 3000, 5000, 8000, 11000],
 };
 const MAX_SAVED = 100;
 const MAX_HANDLED = 500;
@@ -89,8 +110,9 @@ const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 function noopLog() { return { info() {}, warn() {}, debug() {}, error() {} }; }
 
+/** Downloads\GateControl of the person signed in (also when the app runs as another Windows user). */
 function defaultDownloadsDir() {
-  return path.join(os.homedir(), 'Downloads', 'GateControl');
+  return path.join(userPath('downloads'), 'GateControl');
 }
 
 class GateDropService extends EventEmitter {
@@ -105,7 +127,8 @@ class GateDropService extends EventEmitter {
    * @param {object|false} [opts.listener] - GateDropListener; false: no listener
    * @param {object|null} [opts.firewall] - GateDropFirewall (Windows): checks / repairs the
    *   inbound rule for the listener once it runs; null: not checked (tests, other platforms)
-   * @param {() => string} [opts.downloadsDir] - default %USERPROFILE%\Downloads\GateControl
+   * @param {() => string} [opts.downloadsDir] - default Downloads\GateControl of the person signed in
+   *   (utils/user-folders.js); the folder chosen on the page (store `folderKey`) comes first
    * @param {object} [opts.shell] - Electron shell (openPath, showItemInFolder, openExternal)
    * @param {object} [opts.clipboard] - Electron clipboard (writeText)
    * @param {Function} [opts.Notification] - Electron Notification
@@ -120,6 +143,7 @@ class GateDropService extends EventEmitter {
    * @param {() => number} [opts.now]
    * @param {string} [opts.storeKey] - saved files (default `gatedropSaved`)
    * @param {string} [opts.handledKey] - handled send ids (default `gatedropHandled`)
+   * @param {string} [opts.folderKey] - the folder for received files chosen on the page (default `gatedropFolder`)
    * @param {object|null} [opts.powerMonitor] - Electron powerMonitor ('resume'); default: electron's, when there
    */
   constructor({
@@ -127,7 +151,7 @@ class GateDropService extends EventEmitter {
     downloadsDir = defaultDownloadsDir, shell = null, clipboard = null, Notification = null, platform = process.platform,
     protocol = null, toastImagePath = null, showWindow = null, direct = null, resolveCandidate = gd.parseCandidate,
     getInterfaces = () => os.networkInterfaces(), timing = {}, now = Date.now, storeKey = 'gatedropSaved',
-    handledKey = 'gatedropHandled', powerMonitor, firewall = null,
+    handledKey = 'gatedropHandled', folderKey = 'gatedropFolder', powerMonitor, firewall = null,
   } = {}) {
     super();
     this.log = log || noopLog();
@@ -135,6 +159,7 @@ class GateDropService extends EventEmitter {
     this.store = store;
     this.storeKey = storeKey;
     this.handledKey = handledKey;
+    this.folderKey = folderKey;
     this._powerMonitor = powerMonitor;
     this.notificationCenter = notificationCenter;
     this.pushClient = pushClient;
@@ -177,6 +202,7 @@ class GateDropService extends EventEmitter {
     this._handled = null;        // Set of handled send ids (store `gatedropHandled`), loaded on first use
     this._inflight = new Map();  // send id → Promise of its running download (push and poll share it)
     this._failToasted = new Set(); // sends whose failure was already shown (a poll retries quietly)
+    this._receiveErrors = new Map(); // send id → why its automatic download failed (the page shows it, inbox())
     this._acked = new Set();     // sends acknowledged (POST opened) in this session
     this._polling = null;        // running GET pending
     this._pollAgain = false;     // a trigger came in while it ran
@@ -289,7 +315,10 @@ class GateDropService extends EventEmitter {
       addresses: l.addresses.map((a) => ({ ip: a.ip, prefix: a.prefix })),
       // Why direct receiving is off / at risk ({ state: on|warn|off, reason, detail }).
       direct: gd.directState({ available: this.available(), listener: l, firewall: this._firewall }),
-      folder: this.downloadsDir(),
+      // where received files go (the chosen folder or Downloads\GateControl) and whether it was chosen
+      folder: this.folder(),
+      folderCustom: !!this._customFolder(),
+      folderDefault: this.downloadsDir(),
     };
   }
 
@@ -486,6 +515,9 @@ class GateDropService extends EventEmitter {
       for (const s of out) {
         const rec = saved.find((r) => r.sendId === s.id);
         s.local = rec ? rec.files.filter((f) => this._exists(f.path)).map((f) => ({ name: f.name, path: f.path, bytes: f.bytes })) : [];
+        // the automatic download failed (not saved here): why — the page says so and offers "Speichern"
+        const why = this._receiveErrors.get(s.id);
+        if (why && !s.local.length) s.receiveError = why;
       }
       // Direct transfers the server lists later (or never): show what we saved.
       const known = new Set(out.map((s) => s.id));
@@ -670,12 +702,12 @@ class GateDropService extends EventEmitter {
         else body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
       }
       try {
-        result = await this.api.createSend(body);
+        result = await this._scanWait(() => this.api.createSend(body), jobId, total);
       } catch (err) {
         // 409 upload_required: a target needs the files on the server after all.
         if (!(localOk && err && err.code === 'upload_required')) throw err;
         body.items = (await upload.run()).map((it) => ({ mediaId: it.mediaId, name: it.name }));
-        result = await this.api.createSend(body);
+        result = await this._scanWait(() => this.api.createSend(body), jobId, total);
       }
     } catch (err) {
       // 409 unavailable (GateDrop 1.2.0): another person's device was closed for others meanwhile.
@@ -684,7 +716,8 @@ class GateDropService extends EventEmitter {
         err.code = body.to.drive && !body.to.devices.length ? 'drive_unavailable' : 'target_unavailable';
         this._targets = null;
       }
-      end('error', { code: (err && err.code) || 'failed' });
+      // GateDrop 1.4: 422 infected / 423 scan_blocked { name } — nothing was sent
+      end('error', { code: (err && err.code) || 'failed', ...SC.refusalFields(err) });
       throw err;
     }
     this._inbox.delete('sent');
@@ -738,9 +771,16 @@ class GateDropService extends EventEmitter {
       // One file after the other (progress, bandwidth); a failed one may be tried again.
       const p = chain.then(async () => {
         const start = base;
-        const r = await this.api.upload(f, {
-          onProgress: (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'upload', sent: Math.min(total, start + sent), total, name: f.name }),
-        });
+        let r;
+        try {
+          r = await this.api.upload(f, {
+            onProgress: (sent) => this.emit('progress', { id: jobId, dir: 'out', phase: 'upload', sent: Math.min(total, start + sent), total, name: f.name }),
+          });
+        } catch (err) {
+          // 422 infected (the host's virus scan): which file — „<Name> abgelehnt – Schadsoftware gefunden“
+          if (err && SC.isScanCode(err.code) && !err.fileName) Object.defineProperty(err, 'fileName', { value: f.name, enumerable: false });
+          throw err;
+        }
         base += f.size;
         return { index, mediaId: r.mediaId, name: f.name };
       });
@@ -853,18 +893,96 @@ class GateDropService extends EventEmitter {
       this.log.info(`GateDrop direct to ${d.deviceId || 'device'} failed (${GateDropService._why(error, peer)}) – server path`);
     }
     const answer = await this._report(d.transferId, ok ? { ok: true, bytes } : { ok: false, error });
-    if (ok) return { ok: true, via: 'direct' };
-    // fallback 'server': the files are on the server, the plugin delivers.
-    // fallback 'upload': upload the `missing` local items, then POST sends/<id>/items.
     let indexes = null;
-    if (answer && answer.fallback === 'upload') indexes = answer.missing && answer.missing.length ? answer.missing : list.map((_, i) => i);
-    else if (!answer && local) indexes = list.map((_, i) => i); // no answer: the files must get there anyway
+    if (ok) {
+      // GateDrop 1.5/1.6: the receiving end decides — it may report that not everything arrived (also after our ok)
+      const after = await this._afterDirectOk(d, answer, sendId,
+        () => this.emit('progress', { id: jobId, dir: 'out', phase: 'sent', sent: total, total, sendId, deviceId: d.deviceId, handover: true }));
+      if (!after.upload) return { ok: true, via: after.via };
+      indexes = Array.isArray(after.missing) ? after.missing : list.map((_, i) => i);
+      this.log.info(`GateDrop direct to ${d.deviceId || 'device'}: the receiver did not get everything – server path`);
+    } else if (answer && answer.fallback === 'upload') {
+      // fallback 'server': the files are on the server, the plugin delivers.
+      // fallback 'upload': upload the `missing` local items, then POST sends/<id>/items.
+      indexes = answer.missing && answer.missing.length ? answer.missing : list.map((_, i) => i);
+    } else if (!answer && local) indexes = list.map((_, i) => i); // no answer: the files must get there anyway
     if (indexes && indexes.length && sendId) {
       this.emit('progress', { id: jobId, dir: 'out', phase: 'failed', sent: 0, total });
       const items = await upload.run(indexes);
-      await this.api.addItems(sendId, items.map((it) => ({ index: it.index, mediaId: it.mediaId })));
+      await this._scanWait(() => this.api.addItems(sendId, items.map((it) => ({ index: it.index, mediaId: it.mediaId }))), jobId, total);
     }
     return { ok: true, via: 'server' };
+  }
+
+  /**
+   * After this PC's own ok of a direct transfer: only the receiving device's confirmation is the pick-up. GateDrop 1.5
+   * marks the delivery 'delivered' (pickedAt null) on our ok, 1.6 leaves it 'direct' until the receiver confirms
+   * ('delivered' / 'opened' with pickedAt); without a confirmation 20 s after our ok 1.6 takes the server way itself.
+   * Its failure ('incomplete', no confirmation, …) waits for the files (pending + direct_failed — what
+   * `fallback: 'upload'` means): they go up. Our own answer says so when the receiver was first; else GET sends/<id> is
+   * asked at `timing.directVerifyMs` (~30 s) until it decided. Meanwhile the job shows phase 'sent' ("Wird übertragen …",
+   * `onWait`). An older plugin (no pickedAt) is not waited for.
+   * → { via: 'direct' | 'server', upload?: true, missing?: [indexes] }
+   */
+  async _afterDirectOk(d, answer, sendId, onWait = () => {}) {
+    const missingOf = (send) => (send ? send.items.filter((it) => !it.mediaId && !SC.isBlocked(it.scan)).map((it) => it.index) : null);
+    const own = answer && answer.delivery;
+    if (own && own.status === 'pending' && own.error === 'direct_failed') {
+      let send = null;
+      try { send = await this.api.send(sendId); } catch { send = null; }
+      return { via: 'server', upload: true, missing: missingOf(send) };
+    }
+    if (own && (own.pickedAt || own.status === 'opened')) return { via: 'direct' };
+    if (!sendId || !d.deviceId) return { via: 'direct' };
+    const waits = Array.isArray(this.timing.directVerifyMs) ? this.timing.directVerifyMs : [];
+    let waiting = false;
+    for (const ms of waits) {
+      if (ms > 0) await this._sleep(ms);
+      let send = null;
+      try { send = await this.api.send(sendId); } catch (err) { this.log.debug(`GateDrop send ${sendId}: ${err.code || err.message}`); continue; }
+      const verdict = GateDropService._pickup(send, d.deviceId);
+      if (verdict === 'upload') return { via: 'server', upload: true, missing: missingOf(send) };
+      if (verdict === 'server') return { via: 'server' }; // the files were on the server: it delivered
+      if (verdict === 'direct') return { via: 'direct' };
+      if (!waiting) { waiting = true; onWait(); }
+    }
+    this.log.info(`GateDrop direct to ${d.deviceId}: no confirmation of the receiver – done as sent`);
+    return { via: 'direct' };
+  }
+
+  /**
+   * Where the delivery of `send` (GET sends/<id>) to the device `deviceId` stands after this PC's ok:
+   * 'upload' (pending + direct_failed: the files still on this PC must go up), 'server' (delivered via the server),
+   * 'wait' (not confirmed yet: 'direct' since 1.6, 'delivered' via direct without pickedAt in 1.5) or 'direct' (done:
+   * confirmed, opened, nothing more to do — failed / expired / removed — or an older plugin without pickedAt).
+   */
+  static _pickup(send, deviceId) {
+    const dl = send && !send.removed ? send.deliveries.find((x) => x.kind === 'device' && x.target === deviceId) : null;
+    if (!dl) return 'direct';
+    if (dl.status === 'pending' && dl.error === 'direct_failed') return 'upload';
+    if (dl.status === 'delivered' && dl.via === 'server') return 'server';
+    if (!('pickedAt' in dl) || dl.pickedAt || dl.status === 'opened') return 'direct';
+    if (dl.status === 'direct' || dl.status === 'delivered') return 'wait';
+    return 'direct';
+  }
+
+  _sleep(ms) {
+    return new Promise((r) => { const tm = setTimeout(r, ms); if (tm.unref) tm.unref(); });
+  }
+
+  /**
+   * GateDrop 1.4: POST sends (or sends/<id>/items) refused with 423 scan_pending — the host still checks a file —
+   * is sent again after its Retry-After (~5 s), for at most `timing.scanWaitMs` (the portal: every 5 s, 10 min);
+   * meanwhile the job shows phase 'scanning'. Other refusals (422 infected, 423 scan_blocked) are thrown.
+   */
+  _scanWait(fn, jobId, total) {
+    const wait = Math.max(0, this.timing.scanWaitMs || 0);
+    return SC.retryWhilePending(fn, {
+      sleep: (ms) => this._sleep(ms),
+      tries: Math.max(1, Math.ceil(wait / 1000) + 1),
+      maxWaitMs: wait,
+      onWait: () => this.emit('progress', { id: jobId, dir: 'out', phase: 'scanning', sent: 0, total }),
+    });
   }
 
   // ── Receive ──────────────────────────────────────────────
@@ -929,7 +1047,7 @@ class GateDropService extends EventEmitter {
         const onItem = (e) => { if (e.transferId === p.transferId) progress(e.bytes); };
         this.listener.on('incoming-item', onItem);
         const waiting = this.listener.expectIncoming({
-          transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, expiresAt: p.expiresAt,
+          transferId: p.transferId, ticket: p.ticket, key: p.key, items: p.items, count: p.itemCount || null, expiresAt: p.expiresAt,
           sink: (meta) => this._sink(meta),
         });
         // The sender reports a failed push to the plugin right away: stop waiting then (not 10 minutes).
@@ -951,12 +1069,16 @@ class GateDropService extends EventEmitter {
         });
         saved = r.items;
       }
+      // GateDrop 1.5: ok only with every file — a part (an unknown count, a missing item) is no success
+      const missing = await this._missingOf(p, saved);
+      if (missing) throw Object.assign(new Error(`incomplete (${missing})`), { code: 'incomplete', saved });
     } catch (err) {
       error = err.code || err.message || 'failed';
       // Files that did arrive before it broke off: the server path brings all again.
       for (const f of err.saved || err.received || []) { try { await fs.promises.unlink(f.path); } catch { /* gone */ } }
       saved = [];
     }
+    // ok always with `bytes`: the plaintext size of every file (the plugin compares it with the send's files)
     const bytes = saved.reduce((s, f) => s + f.bytes, 0);
     try {
       await this.api.transferResult(p.transferId, error ? { ok: false, error } : { ok: true, bytes });
@@ -976,13 +1098,40 @@ class GateDropService extends EventEmitter {
   }
 
   /**
+   * Did a direct transfer to this PC bring every file? → null (all there) or why not: 'unknown' (the count is not
+   * known — the push left the items out and GET transfers/<id> did not say), 'missing' (an item is not there) or
+   * 'size' (an item has fewer bytes than announced).
+   */
+  async _missingOf(p, saved) {
+    let items = p.items;
+    if (!items.length) {
+      try {
+        const full = await this.api.transfer(p.transferId);
+        if (full && full.items.length) items = full.items;
+      } catch (err) {
+        this.log.debug(`GateDrop transfer ${p.transferId}: ${err.code || err.message}`);
+      }
+    }
+    if (!items.length) return p.itemCount && saved.length >= p.itemCount ? null : 'unknown';
+    const got = new Map(saved.map((f) => [f.index, f]));
+    for (const it of items) {
+      const f = got.get(it.index);
+      if (!f) return 'missing';
+      if (Number.isSafeInteger(it.bytes) && f.bytes !== it.bytes) return 'size';
+    }
+    return null;
+  }
+
+  /**
    * A send to fetch from the server: GET sends/<id> (unless the push has it), download every item.
    * @param {object} p - { sendId, send?, from?, quiet? } (parsePushData kind 'send', or a send of GET pending)
    * @param {object} [o]
    * @param {boolean} [o.failToast=true] - toast "… konnte nicht geladen werden" on failure
    * @param {boolean} [o.resume=false] - keep the items an earlier attempt saved (only the missing ones
    *   are downloaded; nothing new and nothing failed → { ok: true, skipped: 'saved' } without a toast)
-   * @returns {Promise<{ ok, record?, failed?, error?, skipped? }>} ok with failed > 0: some items are missing
+   * @returns {Promise<{ ok, record?, failed?, error?, skipped?, blocked? }>} ok with failed > 0: some items are missing.
+   *   GateDrop 1.4: files the virus scan blocks are not loaded (record.blocked); only blocked files → { ok: true,
+   *   skipped: 'blocked', blocked } (still being checked: { ok: false, error: 'scan_pending' }, looked at again later)
    */
   async receiveSend(p, { failToast = true, resume = false } = {}) {
     let send = p.send && (p.send.items.length || p.send.text || p.send.link) ? p.send : null;
@@ -1002,8 +1151,11 @@ class GateDropService extends EventEmitter {
     const total = send.items.reduce((s, it) => s + (it.bytes || 0), 0);
     let base = 0;
     let failed = 0;
+    // GateDrop 1.4: files the host's virus scan blocks are not loaded; one still being checked is looked at again
+    const blocked = send.items.filter((it) => SC.isBlocked(it.scan)).map((it) => ({ index: it.index, name: it.name, scan: it.scan }));
+    this._scanRecheck(p, send, blocked);
     for (const it of send.items) {
-      if (!it.mediaId || !it.available) continue; // local on the sender's device / removed
+      if (!it.mediaId || !it.available) continue; // local on the sender's device / removed / blocked
       if (haveIdx.has(it.index)) continue; // saved by an earlier attempt
       let target = null;
       try {
@@ -1019,20 +1171,27 @@ class GateDropService extends EventEmitter {
         this.log.warn(`GateDrop item ${it.name} could not be loaded: ${err.code || err.message}`);
       }
     }
+    // GateDrop 1.4: a file the host still checks (pending) is loaded once it is clean
+    const checking = blocked.some((b) => b.scan && b.scan.state === 'pending');
+    if (!files.length && !have.length && !send.text && !send.link && blocked.length && !failed) {
+      // only blocked files: nothing to save (the inbox shows them as blocked); done with it unless one is still checked
+      return checking ? { ok: false, error: 'scan_pending', blocked } : { ok: true, failed: 0, skipped: 'blocked', blocked };
+    }
     if (!files.length && !have.length && !send.text && !send.link && (failed || send.items.length)) {
       if (failToast) this._toastFailed(from, { quiet: p.quiet === true });
       return { ok: false, error: 'download_failed' };
     }
     // Saved before (all of it, or the text / link): nothing new to show.
-    if (prior && !files.length) return failed ? { ok: false, error: 'download_failed', failed } : { ok: true, record: prior, failed: 0, skipped: 'saved' };
+    if (prior && !files.length) return failed ? { ok: false, error: 'download_failed', failed } : { ok: true, record: prior, failed: 0, skipped: 'saved', ...(checking ? { checking: true } : {}) };
     const all = [...have, ...files].sort((a, b) => a.index - b.index);
-    const rec = this._record({ key: send.id, sendId: send.id, from, files: all, text: send.text, link: send.link, note: send.note, via: 'server' });
+    const rec = this._record({ key: send.id, sendId: send.id, from, files: all, text: send.text, link: send.link, note: send.note, via: 'server', blocked });
     this._inbox.delete('received');
     this.emit('progress', { id: send.id, dir: 'in', phase: 'done', sent: total, total });
     // A second attempt names only what it added.
     const fresh = new Set(files.map((f) => f.path));
     this._toastReceived(have.length ? { ...rec, files: rec.files.filter((f) => fresh.has(f.path)), text: null, link: null, note: null } : rec, { quiet: p.quiet === true });
-    return { ok: true, record: rec, failed };
+    // a file still being checked comes later: the send is not done yet (not handled, not acknowledged)
+    return { ok: true, record: rec, failed, ...(checking ? { checking: true } : {}) };
   }
 
   // ── Handled sends / GET pending ──────────────────────────
@@ -1069,19 +1228,24 @@ class GateDropService extends EventEmitter {
    * One download per send, whichever path asks first (push or GET pending):
    * handled → { ok, skipped: 'handled' }; running → that same promise.
    * Handled once every item is saved; a failure toast only the first time.
+   * Handled → acknowledged right away with POST sends/<id>/opened (GateDrop 1.5: the pick-up — the sender sees
+   * "empfangen" at once, not only after the next GET pending in up to 5 minutes); a failed receipt is tried
+   * again by the next poll.
    */
-  _receiveOnce(p) {
+  _receiveOnce(p, { failToast: toast = true } = {}) {
     const id = p.sendId;
     if (this._isHandled(id)) return Promise.resolve({ ok: true, skipped: 'handled' });
     const running = this._inflight.get(id);
     if (running) return running;
-    const failToast = !this._failToasted.has(id);
+    const failToast = toast && !this._failToasted.has(id);
     const run = this.receiveSend(p, { failToast, resume: true })
       .catch((err) => ({ ok: false, error: (err && err.code) || 'failed' }))
-      .then((r) => {
-        if (r.ok && !r.failed) {
+      .then(async (r) => {
+        this._noteReceive(id, r);
+        if (r.ok && !r.failed && !r.checking) {
           this._markHandled(id);
           this._failToasted.delete(id);
+          await this._ack(id);
         } else {
           this._failToasted.add(id);
           while (this._failToasted.size > MAX_HANDLED) this._failToasted.delete(this._failToasted.values().next().value);
@@ -1091,6 +1255,16 @@ class GateDropService extends EventEmitter {
       .finally(() => this._inflight.delete(id));
     this._inflight.set(id, run);
     return run;
+  }
+
+  /** Remembers why the download of send `id` failed (inbox() → receiveError), forgets it once it worked. */
+  _noteReceive(id, r) {
+    if (typeof id !== 'string' || !id) return;
+    if (r && r.ok && !r.failed) { this._receiveErrors.delete(id); return; }
+    const why = r && r.failed ? 'download_failed' : (r && typeof r.error === 'string' && r.error) || 'failed';
+    this._receiveErrors.set(id, why.slice(0, 40));
+    while (this._receiveErrors.size > MAX_HANDLED) this._receiveErrors.delete(this._receiveErrors.keys().next().value);
+    if (this._receiveErrors.get(id) !== 'scan_pending') this.emit('changed', { kind: 'received' });
   }
 
   /** Poll GET pending soon (triggers close together → one poll). */
@@ -1159,7 +1333,8 @@ class GateDropService extends EventEmitter {
       const r = await this._receiveOnce({ kind: 'send', sendId: send.id, send, from: send.from });
       if (r.ok && !r.failed) {
         if (!r.skipped) received++;
-        await this._ack(send.id);
+        // a file still being checked: stays in the pending list until it came too
+        if (!r.checking) await this._ack(send.id);
       } else {
         failed++;
       }
@@ -1188,7 +1363,8 @@ class GateDropService extends EventEmitter {
     const send = await this.api.send(sendId);
     if (!send) throw new GateDropError('send not found', { code: 'not_found' });
     const r = await this.receiveSend({ kind: 'send', sendId: send.id, send, from: send.from });
-    if (r.ok && !r.failed) this._markHandled(send.id);
+    this._noteReceive(send.id, r);
+    if (r.ok && !r.failed && !r.checking) this._markHandled(send.id);
     return r;
   }
 
@@ -1197,7 +1373,7 @@ class GateDropService extends EventEmitter {
    * as <name>.gdpart first and renamed when complete.
    */
   async _sink({ name }) {
-    const dir = this.downloadsDir();
+    const dir = await this._receiveDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const base = gd.safeFileName(name, 'datei');
     let finalPath = null;
@@ -1243,13 +1419,18 @@ class GateDropService extends EventEmitter {
     }
   }
 
-  _record({ key, sendId = null, transferId = null, from = null, files = [], text = null, link = null, note = null, via }) {
+  _record({ key, sendId = null, transferId = null, from = null, files = [], text = null, link = null, note = null, via, blocked = [] }) {
     const rec = {
       key: String(key), sendId, transferId, at: this.now(),
       from: from ? { id: from.id || null, name: from.name || null, deviceId: from.deviceId || null, deviceName: from.deviceName || null, own: typeof from.own === 'boolean' ? from.own : null } : null,
       files: files.map((f) => ({ ...(Number.isSafeInteger(f.index) ? { index: f.index } : {}), name: f.name, path: f.path, bytes: f.bytes })),
       text: text || null, link: link || null, note: note || null, via,
     };
+    // GateDrop 1.4: files of the send the virus scan blocks (not saved) — [{ index, name, scan }]
+    const saved = new Set(rec.files.map((f) => f.index));
+    const bl = (Array.isArray(blocked) ? blocked : []).filter((b) => !saved.has(b.index)).slice(0, gd.MAX_ITEMS)
+      .map((b) => ({ index: b.index, name: b.name, scan: b.scan }));
+    if (bl.length) rec.blocked = bl;
     const list = this._savedList().filter((r) => r.key !== rec.key && !(rec.sendId && r.sendId === rec.sendId));
     list.unshift(rec);
     if (this.store) {
@@ -1270,8 +1451,78 @@ class GateDropService extends EventEmitter {
     return this._savedList().some((r) => r.files.some((f) => f.path === p));
   }
 
+  // ── Folder for received files ────────────────────────────
+
+  /** The folder chosen on the page (store `gatedropFolder`), or null. */
+  _customFolder() {
+    let v = null;
+    try { v = this.store ? this.store.get(this.folderKey) : null; } catch { v = null; }
+    return typeof v === 'string' && v && path.isAbsolute(v) ? v : null;
+  }
+
+  /** Where received files go: the folder chosen on the page, else Downloads\GateControl. */
+  folder() {
+    return this._customFolder() || this.downloadsDir();
+  }
+
+  /**
+   * The folder to write into now: the chosen one while it is there (a USB
+   * drive, a share …); when it is gone, Downloads\GateControl (said in the log).
+   */
+  async _receiveDir() {
+    const custom = this._customFolder();
+    if (!custom) return this.downloadsDir();
+    const ok = await fs.promises.stat(custom).then((st) => st.isDirectory(), () => false);
+    if (ok) return custom;
+    const fallback = this.downloadsDir();
+    this.log.warn(`GateDrop: chosen folder "${custom}" is not there – "${fallback}" instead`);
+    return fallback;
+  }
+
+  /** → { ok, folder, custom, defaultFolder } */
+  folderInfo() {
+    return { ok: true, folder: this.folder(), custom: !!this._customFolder(), defaultFolder: this.downloadsDir() };
+  }
+
+  /**
+   * "Speicherort für empfangene Dateien": an existing folder this process can
+   * write into (checked with a file it makes and deletes) → folderInfo().
+   */
+  async setFolder(dir) {
+    if (typeof dir !== 'string' || !dir || dir.length > 4096 || !path.isAbsolute(dir) || dir.includes('\0')) throw new GateDropError('invalid folder', { code: 'invalid' });
+    const target = path.resolve(dir);
+    const st = await fs.promises.stat(target).catch(() => null);
+    if (!st || !st.isDirectory()) throw new GateDropError('folder not found', { code: 'folder_missing' });
+    const probe = path.join(target, `.gatecontrol-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    try {
+      const fh = await fs.promises.open(probe, 'wx');
+      await fh.close();
+      await fs.promises.unlink(probe);
+    } catch (err) {
+      await fs.promises.unlink(probe).catch(() => {});
+      throw new GateDropError(`folder not writable (${err.code || err.message})`, { code: 'folder_readonly' });
+    }
+    if (!this.store) throw new GateDropError('no store', { code: 'unsupported' });
+    this.store.set(this.folderKey, target);
+    this.log.info(`GateDrop: received files go to "${target}"`);
+    this.emit('state', this.status());
+    return this.folderInfo();
+  }
+
+  /** "Zurücksetzen": back to Downloads\GateControl → folderInfo(). */
+  resetFolder() {
+    if (this.store) {
+      try {
+        if (typeof this.store.delete === 'function') this.store.delete(this.folderKey);
+        else this.store.set(this.folderKey, null);
+      } catch (err) { this.log.warn(`GateDrop folder could not be reset: ${err.message}`); }
+    }
+    this.emit('state', this.status());
+    return this.folderInfo();
+  }
+
   async openFolder() {
-    const dir = this.downloadsDir();
+    const dir = await this._receiveDir();
     await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
     if (this.shell && typeof this.shell.openPath === 'function') {
       const err = await this.shell.openPath(dir);
@@ -1332,7 +1583,7 @@ class GateDropService extends EventEmitter {
       else if (a.type === 'show') this.showItem(a.path);
       else if (a.type === 'copy') this.copyText(a.text);
       else if (a.type === 'open') await this.openLink(a.url);
-      if (a.sendId && a.type !== 'copy') await this.api.opened(a.sendId).catch(() => {});
+      if (a.sendId && a.type !== 'copy') await this._ack(a.sendId);
     };
     run().catch((err) => this.log.warn(`GateDrop toast action failed: ${err.message}`));
     return true;
@@ -1360,8 +1611,8 @@ class GateDropService extends EventEmitter {
     return (own && from.deviceName) || from.name || from.deviceName || t('gatedrop.someone');
   }
 
-  _folderLabel() {
-    const dir = this.downloadsDir();
+  _folderLabel(file = null) {
+    const dir = file ? path.dirname(file) : this.folder();
     return `${path.basename(path.dirname(dir))}\\${path.basename(dir)}`;
   }
 
@@ -1374,7 +1625,7 @@ class GateDropService extends EventEmitter {
       title = rec.files.length === 1
         ? t('gatedrop.toast.receivedFile', { from, name: rec.files[0].name })
         : t('gatedrop.toast.receivedFiles', { from, count: rec.files.length });
-      body = t('gatedrop.toast.savedIn', { folder: this._folderLabel() });
+      body = t('gatedrop.toast.savedIn', { folder: this._folderLabel(rec.files[0].path) });
       buttons.push({ label: t('gatedrop.toast.openFolder'), action: { type: 'folder', sendId: rec.sendId } });
       buttons.push({ label: t('gatedrop.toast.show'), action: { type: 'show', path: rec.files[0].path, sendId: rec.sendId } });
     } else if (rec.link) {
@@ -1393,6 +1644,30 @@ class GateDropService extends EventEmitter {
     return this._showToast({ title, body, buttons, quiet, context: { tab: 'received', sendId: rec.sendId } });
   }
 
+  /**
+   * GateDrop 1.4 (no live event of its own): a received file the host still checks (scan pending + blocked) is
+   * looked at again after `timing.scanRecheckMs[n]` — once it is clean it is loaded like the others (resume).
+   */
+  _scanRecheck(p, send, blocked) {
+    const key = `scan:${send.id}`;
+    this._scanTries = this._scanTries || new Map();
+    const pending = blocked.some((b) => b.scan && b.scan.state === 'pending');
+    clearTimeout(this._timers[key]);
+    delete this._timers[key];
+    const steps = Array.isArray(this.timing.scanRecheckMs) ? this.timing.scanRecheckMs : [];
+    const n = this._scanTries.get(send.id) || 0;
+    const max = Math.max(steps.length, Number(this.timing.scanRecheckMax) || 0);
+    if (!pending || !this._started || n >= max) { this._scanTries.delete(send.id); return; }
+    const wait = n < steps.length ? steps[n] : Number(this.timing.scanRecheckLateMs) || steps[steps.length - 1] || 60000;
+    this._scanTries.set(send.id, n + 1);
+    while (this._scanTries.size > 50) this._scanTries.delete(this._scanTries.keys().next().value);
+    this._timers[key] = setTimeout(() => {
+      delete this._timers[key];
+      this._receiveOnce({ kind: 'send', sendId: send.id, from: p.from, quiet: true }, { failToast: false }).catch(() => {});
+    }, wait);
+    if (this._timers[key].unref) this._timers[key].unref();
+  }
+
   _toastFailed(from, { quiet = false } = {}) {
     return this._showToast({
       quiet,
@@ -1408,6 +1683,10 @@ class GateDropService extends EventEmitter {
     if (!decision.show) return null;
     const N = this._NotificationClass();
     if (!N || (typeof N.isSupported === 'function' && !N.isSupported())) return null;
+    // Windows refuses the app's toasts (NotificationCenter.toastBlocked): the app shows it itself
+    const nc = this.notificationCenter && typeof this.notificationCenter.fallback === 'function' ? this.notificationCenter : null;
+    const fallback = () => nc.fallback({ title, body, route: gd.APP_ROUTE, context });
+    if (nc && typeof nc.toastBlocked === 'function' && nc.toastBlocked()) { fallback(); return null; }
     let options;
     if (this.platform === 'win32') {
       const btns = this.protocol ? buttons.map((b) => ({ label: b.label, nonce: this._nonce(b.action) })) : [];
@@ -1430,7 +1709,12 @@ class GateDropService extends EventEmitter {
       this.emit('navigate', context);
     });
     n.on('close', forget);
-    n.on('failed', forget);
+    n.on('failed', (_e, error) => {
+      forget();
+      this.log.warn(`GateDrop toast failed: ${error}`);
+      if (nc && typeof nc.reportToastFailure === 'function' && nc.reportToastFailure(error)) fallback();
+    });
+    n.on('show', () => { if (nc && typeof nc.reportToastShown === 'function') nc.reportToastShown(); });
     try { n.show(); } catch (err) { this.log.warn(`GateDrop toast: ${err.message}`); }
     while (this._toasts.size > 20) this._toasts.delete(this._toasts.values().next().value);
     return n;

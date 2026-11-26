@@ -14,6 +14,9 @@
  * and side-effect free (unit-tested directly).
  */
 
+const { createHash } = require('crypto');
+const SC = require('./scan');
+
 const PLUGIN_ID = 'gatecontrol-drive';
 const APP_ROUTE = `plg-${PLUGIN_ID}`;
 const PLUGINS_PATH = '/api/v1/client/plugins';
@@ -35,7 +38,8 @@ const LINK_MODES = Object.freeze(['view', 'download', 'upload']);
 const LINK_EXPIRES = Object.freeze(['1d', '7d', '30d', 'never']);
 const LINK_KINDS = Object.freeze(['files', 'folder', 'upload']);
 // Drive 1.5: `mark` / `unmark` – a file is marked for a delayed delete (deleteAt) or no longer
-const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark']);
+// 'scan' (Drive 1.19): the host's virus scan changed `scan` of the node — no new content, `rev` stays
+const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark', 'scan']);
 const CHANGES_MAX = 1000;
 
 const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
@@ -133,6 +137,10 @@ function normalizeArea(v) {
     archived,
     writable: !archived && (role === 'write' || role === 'manage'),
     storage: storageOf(a.storage),
+    // Drive 1.8 ('docAi'): AI for documents on in this area (null: the Drive does not say)
+    docAi: typeof a.docAi === 'boolean' ? a.docAi : null,
+    // Drive 1.14 ('deadlineCalendar'): new deadlines of this area into the family calendar on their own (null: not told)
+    deadlinesToCalendar: typeof a.deadlinesToCalendar === 'boolean' ? a.deadlinesToCalendar : null,
   };
 }
 
@@ -155,11 +163,14 @@ function normalizeNode(v) {
   if (!o) return null;
   const id = posId(o.id);
   const areaId = areaIdOf(o.areaId);
-  const name = line(o.name, NAME_MAX);
-  if (!id || !areaId || !name) return null;
   const isDir = bool(o.isDir);
+  // The top folder of an area has no name in Drive (`name: ''`, no parent): the apps show the area's label for it.
+  const root = isDir && (o.parentId === null || o.parentId === undefined) && o.name === '';
+  const name = root ? '' : line(o.name, NAME_MAX);
+  if (!id || !areaId || (!name && !root)) return null;
   const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
   const match = o.match === 'text' || o.match === 'name' ? o.match : null;
+  const scan = isDir ? null : SC.normalizeScan(o.scan);
   return {
     id,
     areaId,
@@ -176,8 +187,8 @@ function normalizeNode(v) {
     createdAt: msOf(o.createdAt),
     deleted: bool(o.deleted),
     sha256: sha256Of(o.sha256),
-    // A preview picture exists (or is being made); the app loads it by mediaId.
-    preview: !isDir && !!mediaId && !!obj(o.preview),
+    // A preview picture exists (or is being made); the app loads it by mediaId — never of a file the virus scan blocks.
+    preview: !isDir && !!mediaId && !!obj(o.preview) && !SC.isBlocked(scan),
     // search: the folder path and where it matched (Drive 1.3: in the recognised text, with a snippet)
     path: line(o.path, 2000),
     match,
@@ -189,6 +200,23 @@ function normalizeNode(v) {
     // Drive 1.5 ('deleteAfter'): goes into the trash at this time (deleted on a device that backs it up)
     deleteAt: msOf(o.deleteAt),
     deletedOnDevice: line(o.deletedOnDevice, 128),
+    // Drive 1.7 ('takenAt'): when a photo / video was taken (EXIF, else mtime) or null
+    takenAt: msOf(o.takenAt),
+    // Drive 1.25 ('mediaFilter'): how long a video runs (ms) or null
+    durationMs: isDir ? null : durationOf(o.durationMs),
+    // Drive 1.8 ('docAi'): the short form of the recognition { status, kind } on files while the feature is on
+    insight: insightShort(o.insight),
+    // Drive 1.19 ('scan'): the host's virus scan { state, blocked, finding } (utils/scan.js); absent: nothing known
+    ...(scan ? { scan } : {}),
+    // Drive 1.20 ('offline'): marked "offline verfügbar" by the person (GET offline, PUT nodes/<id>/offline)
+    ...(o.offline === true ? { offline: true, offlineAt: msOf(o.offlineAt) } : {}),
+    // Drive 1.9 ('vault'): a node of a vault folder — `name` is opaque, the device decrypts nameCipher
+    ...(o.encrypted === true ? {
+      encrypted: true,
+      vaultId: VAULT_ID_RE.test(String(o.vaultId || '')) ? o.vaultId : null,
+      nameCipher: typeof o.nameCipher === 'string' && o.nameCipher.length <= 2000 && /^[A-Za-z0-9_-]+$/.test(o.nameCipher) ? o.nameCipher : null,
+      keyVersion: posId(o.keyVersion),
+    } : { encrypted: false }),
   };
 }
 
@@ -197,18 +225,21 @@ function normalizeItems(raw, max = 1000) {
   return arr(r.items).slice(0, max).map(normalizeNode).filter(Boolean);
 }
 
+/** The folders above a node, the area's top folder first (its name '' as Drive sends it). */
 function crumbsOf(v) {
-  return arr(v).slice(0, 100).map((c) => {
+  return arr(v).slice(0, 100).map((c, i) => {
     const o = obj(c);
     const id = o && posId(o.id);
-    const name = o && line(o.name, NAME_MAX);
-    return id && name ? { id, name } : null;
+    const name = o && (i === 0 && o.name === '' ? '' : line(o.name, NAME_MAX));
+    return id && (name || name === '') ? { id, name } : null;
   }).filter(Boolean);
 }
 
 /**
  * `GET nodes/<id>` + `GET nodes/<id>/children` → { node, crumbs, role,
- * writable, items, total, next } or null.
+ * writable, items, total, next } or null. `crumbs`: the area's top folder
+ * first, the folder itself last — Drive's `crumbs` are the folders above it
+ * (the top folder with the name ''), the folder is added here when missing.
  */
 function normalizeFolder(nodeAnswer, childrenAnswer) {
   const na = obj(nodeAnswer) || {};
@@ -220,9 +251,11 @@ function normalizeFolder(nodeAnswer, childrenAnswer) {
   const items = normalizeItems(ca);
   const roleRaw = ca.role || n.role || na.role;
   const role = ROLES.includes(roleRaw) ? roleRaw : 'read';
+  const crumbs = crumbsOf(n.crumbs || na.crumbs);
+  if (!crumbs.length || crumbs[crumbs.length - 1].id !== node.id) crumbs.push({ id: node.id, name: node.name });
   return {
     node,
-    crumbs: crumbsOf(n.crumbs || na.crumbs),
+    crumbs,
     role,
     writable: role === 'write' || role === 'manage',
     items,
@@ -244,13 +277,16 @@ function normalizeMe(raw) {
       name: line(me.name, 200),
       seat: me.seat === 'family' || me.seat === 'business' ? me.seat : null,
       deviceId: line(me.deviceId, 128),
+      // an administrator of GateControl (Drive 1.7 'storage': "Alle")
+      admin: bool(me.admin),
     },
     licence: { valid: bool(lic.valid), tier: line(lic.tier, 20) },
     // Drive 1.5: what this Drive can ('devices', 'deleteAfter', 'emptyFiles', …); older ones send none
     features: arr(r.features).slice(0, 50).filter((f) => typeof f === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(f)),
     areas: sortAreas(arr(r.areas).slice(0, 500).map(normalizeArea).filter(Boolean)),
     latest: count(r.latest) || 0,
-    settings: { trashDays: count(st.trashDays), versionsDays: count(st.versionsDays) },
+    // Drive 1.14: scanKeepOriginal — the default of "Original-Scan behalten" (null: not told)
+    settings: { trashDays: count(st.trashDays), versionsDays: count(st.versionsDays), scanKeepOriginal: typeof st.scanKeepOriginal === 'boolean' ? st.scanKeepOriginal : null },
     limits: { maxBytes: count(lim.maxBytes) },
     people: arr(r.people).slice(0, 2000).map((p) => {
       const o = obj(p);
@@ -481,6 +517,991 @@ function savedOf(raw) {
   return { nodeId: posId(s.nodeId), name: line(s.name, NAME_MAX), where: line(s.where, 600) };
 }
 
+// ── Drive 1.7: time travel, photos, albums, storage ────────
+
+const TT_OPS = Object.freeze(['restore', 'revert', 'trash', 'move']);
+const CURSOR_RE = /^[A-Za-z0-9:._+|,-]{1,100}$/;
+const ALBUM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+/** An ISO time for a query (`at`, `before`): a Date, ms or an ISO string → ISO string, else null. */
+function isoOf(v) {
+  const ms = v instanceof Date ? v.getTime() : msOf(v);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const d = new Date(ms);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+/** A paging cursor of the plugin (kept as it came: a time or an opaque token) or null. */
+function cursorOf(v) {
+  if (Number.isFinite(v) && v > 0) return String(Math.round(v));
+  return typeof v === 'string' && CURSOR_RE.test(v) ? v : null;
+}
+
+/** An album id (number or token) or null. */
+function albumIdOf(v) {
+  return posId(v) || (typeof v === 'string' && ALBUM_ID_RE.test(v) ? v : null);
+}
+
+/**
+ * GET nodes/<id>/timetravel?at= → { at, historySince, restore, revert, trash, move, total, sample: [{ op, name, path }], limited,
+ * lost, ops, max } or null. lost: files whose content of then is gone already (they stay as they are); ops / max: the steps
+ * of this time travel and the most the plugin does at once (more: 400 invalid { field: 'at' }).
+ */
+function normalizeTimeTravelPreview(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const n = (k) => count(r[k]) || 0;
+  const sample = arr(r.sample).slice(0, 50).map((x) => {
+    const o = obj(x);
+    const name = o && line(o.name, NAME_MAX);
+    if (!name) return null;
+    return { op: TT_OPS.includes(o.op) ? o.op : null, name, path: line(o.path, 2000) };
+  }).filter(Boolean);
+  const out = { at: msOf(r.at), historySince: msOf(r.historySince), restore: n('restore'), revert: n('revert'), trash: n('trash'), move: n('move'), sample, limited: bool(r.limited), lost: n('lost') };
+  out.total = out.restore + out.revert + out.trash + out.move;
+  out.ops = count(r.ops) ?? out.total;
+  out.max = count(r.max) || null;
+  return out;
+}
+
+/** POST nodes/<id>/timetravel → { at, before, restored, reverted, trashed, moved, failed, lost } or null (`before`: ms, "Rückgängig"). */
+function normalizeTimeTravelResult(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const n = (k) => (Array.isArray(r[k]) ? r[k].length : count(r[k]) || 0);
+  return { at: msOf(r.at), before: msOf(r.before), restored: n('restored'), reverted: n('reverted'), trashed: n('trashed'), moved: n('moved'), failed: n('failed'), lost: n('lost') };
+}
+
+/** A photo / video of GET photos, an album or memories → clean object or null. */
+function normalizePhoto(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const id = posId(o.id);
+  const name = line(o.name, NAME_MAX);
+  if (!id || !name) return null;
+  const mime = line(o.mime, 100);
+  const mediaId = isMediaId(o.mediaId) ? o.mediaId : null;
+  const geo = photoGeoOf(o.geo);
+  const scan = SC.normalizeScan(o.scan);
+  const blocked = SC.isBlocked(scan);
+  return {
+    id,
+    name,
+    mime,
+    kind: /^video\//i.test(mime || '') ? 'video' : 'image',
+    size: count(o.size) || 0,
+    takenAt: msOf(o.takenAt),
+    areaId: areaIdOf(o.areaId),
+    parentId: posId(o.parentId),
+    // Drive 1.7: a boolean (1.1.0 nodes: an object) – the picture is loaded by mediaId, or by the node
+    preview: !blocked && (o.preview === true || !!obj(o.preview)),
+    mediaId: blocked ? null : mediaId,
+    // Drive 1.19 ('scan'): blocked by the virus scan — no picture, not opened or shared
+    ...(scan ? { scan } : {}),
+    // Drive 1.16 'photoPlaces': where it was taken ({ lat, lon, place }) or null
+    geo,
+    located: o.located === undefined ? !!geo : bool(o.located),
+    // Drive 1.16 'photoPeople' (with=people): the named people on it, else null
+    people: Array.isArray(o.people) ? o.people.slice(0, 50).map(personIdOf).filter(Boolean) : null,
+    // Drive 1.25 'mediaFilter': how long a video runs (ms), when the device that sent it said so; else null
+    durationMs: durationOf(o.durationMs),
+  };
+}
+
+/** The longest video length taken from the server (7 days, as Drive keeps them). */
+const DURATION_MAX_MS = 7 * 24 * 3600 * 1000;
+
+/** A video's length (ms) from Drive (1.25 `durationMs`) → a whole number of ms, or null. */
+function durationOf(v) {
+  return Number.isSafeInteger(v) && v > 0 && v <= DURATION_MAX_MS ? v : null;
+}
+
+/** `media` of the photos and the search (Drive 1.25 'mediaFilter'): 'image' | 'video', else null (both). */
+function mediaOf(v) {
+  return v === 'image' || v === 'video' ? v : null;
+}
+
+/** A video's length as on its tile: "0:07", "1:23", "1:02:03"; '' when unknown. */
+function durationText(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const t = Math.round(ms / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  const two = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
+}
+
+function photoList(v, max) {
+  return arr(v).slice(0, max).map(normalizePhoto).filter(Boolean);
+}
+
+/**
+ * GET photos → { items, next } (next: the cursor for `before`, or null); Drive 1.14 'photoSearch' with `q`: also
+ * `terms` (the hit chips) and `total` (the number of hits, when the plugin tells it).
+ */
+function normalizePhotos(raw) {
+  const r = obj(raw) || {};
+  const out = { items: photoList(r.items, 500), next: cursorOf(r.next) };
+  const se = obj(r.search);
+  if (r.terms !== undefined) out.terms = photoTerms(r.terms);
+  else if (se && se.chips !== undefined) out.terms = photoTerms(arr(se.chips).map((c) => (obj(c) ? { term: c.label, label: c.text || c.label, count: c.count } : c)));
+  const total = count(r.total) !== null ? count(r.total) : se ? count(se.total) : null;
+  if (total !== null) out.total = total;
+  // Drive 1.16: the people and places a search recognised (marks), the districts of a place (districts=1)
+  if (se && (se.people !== undefined || se.places !== undefined)) out.marks = searchMarks(se);
+  if (r.districts !== undefined) out.districts = districtsOf(r.districts);
+  return out;
+}
+
+/** GET photos/months → { months: [{ month: 'YYYY-MM', count }] } (newest first) */
+function normalizeMonths(raw) {
+  const r = obj(raw) || {};
+  const months = arr(r.months).slice(0, 2400).map((m) => {
+    const o = obj(m);
+    return o && typeof o.month === 'string' && MONTH_RE.test(o.month) ? { month: o.month, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
+  months.sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0));
+  return { months };
+}
+
+/** GET photos/memories → { date, groups: [{ yearsAgo, date, items }] } (the closest year first; date: the day asked for) */
+function normalizeMemories(raw) {
+  const r = obj(raw) || {};
+  const groups = arr(r.groups).slice(0, 100).map((g) => {
+    const o = obj(g);
+    const yearsAgo = o && posId(o.yearsAgo);
+    if (!yearsAgo) return null;
+    const items = photoList(o.items, 30);
+    return items.length ? { yearsAgo, date: typeof o.date === 'string' && DATE_RE.test(o.date.slice(0, 10)) ? o.date.slice(0, 10) : null, items } : null;
+  }).filter(Boolean);
+  groups.sort((a, b) => a.yearsAgo - b.yearsAgo);
+  return { date: typeof r.date === 'string' && DATE_RE.test(r.date.slice(0, 10)) ? r.date.slice(0, 10) : null, groups };
+}
+
+// ── Drive 1.26 'memoryCollections': the page „Erinnerungen“ ──────────────
+
+/** The kinds of the collections, in the order of the page. */
+const MEMORY_KINDS = Object.freeze(['day', 'trip', 'person', 'month', 'year', 'place']);
+/** „Heute vor X Jahren“ only with more than this many photos that day (± 1 day) — as Drive 1.26 decides. */
+const MEMORY_DAY_MORE_THAN = 10;
+const MEMORY_ID_RE = /^(?:day:\d{4}-\d{2}-\d{2}|trip:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}|person:\d{1,15}|month:\d{4}-\d{2}|year:\d{4}|place:geonames:\d{1,10})$/;
+
+/** A collection's id (day:…, trip:…, person:…, month:…, year:…, place:geonames:…) or null. */
+const memoryIdOf = (v) => (typeof v === 'string' && MEMORY_ID_RE.test(v) ? v : null);
+
+/**
+ * One collection of GET memories → { id, kind, count, cover, from, to, yearsAgo, date, month, year, place, places,
+ * days, firstDay, lastDay, person } or null (an unknown kind, no id, no photo).
+ */
+function normalizeMemoryCollection(v) {
+  const o = obj(v);
+  const id = o && memoryIdOf(o.id);
+  if (!id || !MEMORY_KINDS.includes(o.kind) || id.split(':')[0] !== o.kind) return null;
+  const n = count(o.count);
+  if (!n) return null;
+  const day = (x) => (typeof x === 'string' && DATE_RE.test(x) ? x : null);
+  const pl = obj(o.place);
+  const pe = obj(o.person);
+  return {
+    id,
+    kind: o.kind,
+    count: n,
+    cover: normalizePhoto(o.cover),
+    from: msOf(o.from),
+    to: msOf(o.to),
+    yearsAgo: posId(o.yearsAgo),
+    date: day(o.date),
+    month: typeof o.month === 'string' && MONTH_RE.test(o.month) ? o.month : null,
+    year: Number.isInteger(o.year) && o.year > 0 && o.year < 10000 ? o.year : null,
+    place: pl && line(pl.name, NAME_MAX) ? { key: placeKeyOf(pl.key), name: line(pl.name, NAME_MAX) } : null,
+    places: arr(o.places).map((x) => line(x, NAME_MAX)).filter(Boolean).slice(0, 3),
+    days: posId(o.days),
+    firstDay: day(o.firstDay),
+    lastDay: day(o.lastDay),
+    person: pe && personIdOf(pe.id) ? { id: personIdOf(pe.id), name: line(pe.name, NAME_MAX) } : null,
+  };
+}
+
+/** GET memories → { date, home: { key, name } | null, collections } (the server's order, at most 500). */
+function normalizeMemoryCollections(raw) {
+  const r = obj(raw) || {};
+  const h = obj(r.home);
+  return {
+    date: typeof r.date === 'string' && DATE_RE.test(r.date) ? r.date : null,
+    home: h && line(h.name, NAME_MAX) ? { key: placeKeyOf(h.key), name: line(h.name, NAME_MAX) } : null,
+    collections: arr(r.collections).slice(0, 500).map(normalizeMemoryCollection).filter(Boolean),
+  };
+}
+
+/**
+ * An album → { id, name, areaId, count, coverId, frame, updatedAt, canEdit, canFrame, createdBy } or null.
+ * canFrame: may switch the photo frame (Drive decides; canEdit alone is not enough).
+ */
+function normalizeAlbum(v) {
+  const o = obj(v);
+  const id = o && albumIdOf(o.id);
+  const name = o && line(o.name, 200);
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    areaId: areaIdOf(o.areaId),
+    count: count(o.count) || 0,
+    coverId: posId(o.coverId),
+    frame: bool(o.frame),
+    updatedAt: msOf(o.updatedAt),
+    canEdit: bool(o.canEdit),
+    canFrame: bool(o.canFrame),
+    createdBy: posId(o.createdBy),
+  };
+}
+
+/** GET albums → { albums } (by name) */
+function normalizeAlbums(raw) {
+  const r = obj(raw) || {};
+  const albums = arr(r.albums).slice(0, 1000).map(normalizeAlbum).filter(Boolean);
+  albums.sort((a, b) => a.name.localeCompare(b.name));
+  return { albums };
+}
+
+/** GET albums/<id> → { album, items, next } or null. */
+function normalizeAlbumPage(raw) {
+  const r = obj(raw) || {};
+  const album = normalizeAlbum(r.album);
+  if (!album) return null;
+  return { album, items: photoList(r.items, 500), next: cursorOf(r.next) };
+}
+
+// ── Drive 1.31 'framePhotos': photos of the person for the photo frame (GateControl TV) ──
+
+/** Why POST frame/photos left out a photo. */
+const FRAME_SKIP_REASONS = ['not_found', 'not_image', 'vault', 'blocked', 'child'];
+
+/** The album „Fotorahmen“ of an answer: an album (normalizeAlbum), else its bare id → { id }, else null. */
+function frameAlbumOf(v) {
+  if (obj(v)) {
+    const a = normalizeAlbum(v);
+    if (a) return a;
+    const id = albumIdOf(v.id);
+    return id ? { id } : null;
+  }
+  const id = albumIdOf(v);
+  return id ? { id } : null;
+}
+
+/**
+ * GET / POST / DELETE frame/photos → { album, ids, count, added, removed, skipped: [{ id, reason }] }.
+ * ids: the photos in the frame (newest first; with `?ids=` only those of them asked for). A reason this app does not know
+ * stays as it came (lower case, ≤ 40) so the page can still say "übersprungen".
+ */
+function normalizeFramePhotos(raw) {
+  const r = obj(raw) || {};
+  const ids = [...new Set(arr(r.ids).map(posId).filter(Boolean))].slice(0, 100000);
+  const skipped = arr(r.skipped).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    if (!id) return null;
+    const reason = typeof o.reason === 'string' && /^[a-z_]{1,40}$/.test(o.reason) ? o.reason : 'unknown';
+    return { id, reason };
+  }).filter(Boolean).slice(0, 500);
+  return {
+    album: frameAlbumOf(r.album),
+    ids,
+    count: count(r.count) ?? ids.length,
+    added: count(r.added) || 0,
+    removed: count(r.removed) || 0,
+    skipped,
+  };
+}
+
+function storageNode(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const name = o && line(o.name, NAME_MAX);
+  if (!id || !name) return null;
+  return { id, name, size: count(o.size) || 0, areaId: areaIdOf(o.areaId), parentId: posId(o.parentId), path: line(o.path, 2000), updatedAt: msOf(o.updatedAt), canDelete: bool(o.canDelete) };
+}
+
+/** GET storage → { all, total, limit, areas, people, largest, duplicates } or null (all: every area of the server was counted). */
+function normalizeStorage(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const t = obj(r.total) || {};
+  const lim = obj(r.limit);
+  const nums = (o) => ({ bytes: count(o.bytes) || 0, files: count(o.files) || 0, versionsBytes: count(o.versionsBytes) || 0, trashBytes: count(o.trashBytes) || 0 });
+  const areas = arr(r.areas).slice(0, 500).map((a) => {
+    const o = obj(a);
+    const id = o && areaIdOf(o.id);
+    if (!id) return null;
+    return { id, label: line(o.label, 200) || id, kind: AREA_KINDS.includes(o.kind) ? o.kind : null, ...nums(o), quota: count(o.quota) || null, canPrune: bool(o.canPrune) };
+  }).filter(Boolean);
+  areas.sort((a, b) => b.bytes - a.bytes);
+  const people = arr(r.people).slice(0, 2000).map((p) => {
+    const o = obj(p);
+    const user = o && posId(o.user);
+    return user ? { user, name: line(o.name, 200), bytes: count(o.bytes) || 0, files: count(o.files) || 0 } : null;
+  }).filter(Boolean);
+  people.sort((a, b) => b.bytes - a.bytes);
+  const largest = arr(r.largest).slice(0, 100).map(storageNode).filter(Boolean);
+  const duplicates = arr(r.duplicates).slice(0, 100).map((d) => {
+    const o = obj(d);
+    const items = o ? arr(o.items).slice(0, 200).map(storageNode).filter(Boolean) : [];
+    if (items.length < 2) return null;
+    return { sha256: sha256Of(o.sha256), size: count(o.size) || 0, count: count(o.count) || items.length, wasted: count(o.wasted) || 0, items };
+  }).filter(Boolean);
+  return {
+    all: bool(r.all),
+    total: nums(t),
+    limit: lim && count(lim.maxBytes) ? { maxBytes: count(lim.maxBytes) } : null,
+    areas,
+    people,
+    largest,
+    duplicates,
+  };
+}
+
+// ── Drive 1.8: AI for documents, deadlines, the import ─────
+
+const INSIGHT_STATUS = Object.freeze(['none', 'pending', 'ready', 'failed', 'off']);
+const DOC_KINDS = Object.freeze(['invoice', 'contract', 'notice', 'medical', 'certificate', 'statement', 'insurance', 'warranty', 'other']);
+// Drive 1.14: warranty (Garantieende) and renewal (Vertragsverlängerung: the date is the last day to cancel)
+const DEADLINE_KINDS = Object.freeze(['payment', 'cancellation', 'objection', 'warranty', 'renewal']);
+const DAY_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const dayOf = (v) => (typeof v === 'string' && DAY_RE.test(v) ? v : null);
+
+/** node.insight → { status, kind } or null (older Drives, the feature off, a folder). */
+function insightShort(v) {
+  const o = obj(v);
+  if (!o || !INSIGHT_STATUS.includes(o.status)) return null;
+  return { status: o.status, kind: o.status === 'ready' && DOC_KINDS.includes(o.kind) ? o.kind : null };
+}
+
+// ── Drive 1.17 'deadlineMailCalendar': deadlines into a calendar of the mail plugin too ──
+
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Where deadlines go → null (off) | { kind: 'family', label } | { kind: 'mail', calendarId, label }. The entry of a
+ * deadline names only kind and label (calendarId null).
+ */
+function normalizeDeadlineTarget(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const label = line(o.label, 200);
+  if (o.kind === 'family') return { kind: 'family', label };
+  if (o.kind === 'mail') return { kind: 'mail', calendarId: line(o.calendarId, 200), label };
+  return null;
+}
+
+/** A target as Drive takes it (null: off) or undefined when it is not one. */
+function deadlineTargetBody(t) {
+  if (t === null) return null;
+  const o = obj(t);
+  if (!o) return undefined;
+  if (o.kind === 'family') return { kind: 'family' };
+  const calendarId = o.kind === 'mail' ? line(o.calendarId, 200) : null;
+  if (!calendarId) return undefined;
+  const label = line(o.label, 200);
+  return label ? { kind: 'mail', calendarId, label } : { kind: 'mail', calendarId };
+}
+
+/** GET deadlines/calendars → { family, mail: [{ id, name, account: { id, label, kind }, color }] } (one row per id). */
+function normalizeDeadlineCalendars(raw) {
+  const r = obj(raw) || {};
+  const seen = new Set();
+  const mail = [];
+  for (const v of arr(r.mail).slice(0, 200)) {
+    const c = obj(v);
+    const id = c && line(c.id, 200);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const a = obj(c.account) || {};
+    mail.push({
+      id,
+      name: line(c.name, 200) || id,
+      account: { id: line(a.id, 200) || '', label: line(a.label, 200) || '', kind: line(a.kind, 40) },
+      color: typeof c.color === 'string' && COLOR_RE.test(c.color) ? c.color : null,
+    });
+  }
+  return { family: bool(r.family), mail };
+}
+
+/** GET|PUT deadlines/targets → { targets: [{ areaId, label, target }] } (the person's own target per area). */
+function normalizeDeadlineTargets(raw) {
+  const r = obj(raw) || {};
+  const seen = new Set();
+  const targets = [];
+  for (const v of arr(r.targets).slice(0, 200)) {
+    const t = obj(v);
+    const areaId = t && areaIdOf(t.areaId);
+    if (!areaId || seen.has(areaId)) continue;
+    seen.add(areaId);
+    targets.push({ areaId, label: line(t.label, 200) || areaId, target: normalizeDeadlineTarget(t.target) });
+  }
+  return { targets };
+}
+
+/**
+ * A deadline → { id, kind, date: 'YYYY-MM-DD', label, reminder: { at, daysBefore, sent, by } | null,
+ * calendar: { eventId, at, target } | null, node? } or null. calendar (Drive 1.14 'deadlineCalendar'): the person's
+ * entry in the family calendar; Drive 1.17 names its target ({ kind, label }; null: the family calendar, older Drives).
+ * reminder.by (Drive 1.30.0): 'notizen' — „Notizen & Aufgaben“ rings this reminder (a task there, Drive sends no
+ * message of its own) | 'drive' — Drive reminds itself (also every older Drive, which names nobody).
+ */
+function normalizeDeadline(v) {
+  const o = obj(v);
+  const id = o && posId(o.id);
+  const date = o && dayOf(o.date);
+  if (!id || !date || !DEADLINE_KINDS.includes(o.kind)) return null;
+  const r = obj(o.reminder);
+  const days = r ? count(r.daysBefore) : null;
+  const c = obj(o.calendar);
+  const eventId = c ? line(c.eventId, 100) : null;
+  const out = {
+    id,
+    kind: o.kind,
+    date,
+    label: line(o.label, 200),
+    reminder: r && days !== null && days <= 90 ? { at: msOf(r.at), daysBefore: days, sent: bool(r.sent), by: r.by === 'notizen' ? 'notizen' : 'drive' } : null,
+    calendar: c && (eventId || c.at) ? { eventId, at: msOf(c.at), target: normalizeDeadlineTarget(c.target) } : null,
+  };
+  if (o.node !== undefined) out.node = normalizeNode(o.node);
+  return out;
+}
+
+/** GET deadlines → { deadlines } (by date; rows without their file dropped). */
+function normalizeDeadlines(raw) {
+  const r = obj(raw) || {};
+  const list = arr(r.deadlines).slice(0, 500).map(normalizeDeadline).filter((d) => d && d.node);
+  list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id));
+  return { deadlines: list };
+}
+
+/**
+ * GET / POST nodes/<id>/insight → { status, kind, title, date, sender, amount, currency, error, at,
+ * suggestion: { folderId, folderPath, name } | null, deadlines } or null.
+ */
+function normalizeInsight(raw) {
+  const r = obj(raw);
+  if (!r || !INSIGHT_STATUS.includes(r.status)) return null;
+  const s = obj(r.suggestion);
+  const folderId = s ? posId(s.folderId) : null;
+  const name = s ? line(s.name, NAME_MAX) : null;
+  const amount = typeof r.amount === 'number' && Number.isFinite(r.amount) && Math.abs(r.amount) < 1e12 ? r.amount : null;
+  const currency = typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : null;
+  return {
+    status: r.status,
+    kind: DOC_KINDS.includes(r.kind) ? r.kind : null,
+    title: line(r.title, 200),
+    date: dayOf(r.date),
+    sender: line(r.sender, 200),
+    amount,
+    currency: amount === null ? null : currency,
+    error: codeOf(r.error),
+    at: msOf(r.at),
+    // folderPath: relative to the area's root ('' the top folder)
+    suggestion: folderId || name ? { folderId, folderPath: folderId ? (typeof s.folderPath === 'string' ? s.folderPath.replace(CTRL_LINE_RE, ' ').slice(0, 2000) : '') : null, name } : null,
+    deadlines: arr(r.deadlines).slice(0, 20).map(normalizeDeadline).filter(Boolean).map(({ node, ...d }) => d),
+  };
+}
+
+// ── Drive 1.14: questions to the documents, scans become documents, photos by content ──
+
+const ASK_STATUS = Object.freeze(['answered', 'not_found']);
+const ASK_MAX = 500;
+const SCAN_KINDS = Object.freeze(['printed', 'handwriting', 'table', 'whiteboard', 'other']);
+const SCAN_TARGETS = Object.freeze(['pdf', 'docx', 'xlsx']);
+const SCAN_PAGES_MAX = 8;            // Drive: ≤ 8 pictures a scan
+const SCAN_IMAGES_MAX_BYTES = 600 * 1024;   // scans/convert `images` together (else 413 too_large)
+const TERM_MAX = 40;
+
+/** One line of text with its line breaks kept (an answer, a quote) ≤ max, or null. */
+function textBlock(v, max) {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, ' ').trim().slice(0, max);
+  return s || null;
+}
+
+/** A search term / photo label: a short single line, or null. */
+function termOf(v) {
+  return line(v, TERM_MAX);
+}
+
+/**
+ * POST ask → { status: 'answered' | 'not_found', answer, sources: [{ nodeId, name, path, areaId, page, quote }], terms,
+ * areas: [label] (where it searched), deadline: a deadline of a source the answer names (with nodeId) | null } or null.
+ * An answer without text counts as not found; sources without their file are dropped.
+ */
+function normalizeAsk(raw) {
+  const r = obj(raw);
+  if (!r || !ASK_STATUS.includes(r.status)) return null;
+  const answer = textBlock(r.answer, 4000);
+  const sources = arr(r.sources).slice(0, 8).map((v) => {
+    const o = obj(v);
+    const nodeId = o && posId(o.nodeId);
+    const name = o && line(o.name, NAME_MAX);
+    if (!nodeId || !name) return null;
+    return { nodeId, name, path: line(o.path, 2000), areaId: areaIdOf(o.areaId), page: posId(o.page), quote: textBlock(o.quote, 600) };
+  }).filter(Boolean);
+  const status = r.status === 'answered' && answer ? 'answered' : 'not_found';
+  const dl = status === 'answered' && obj(r.deadline) ? normalizeDeadline(r.deadline) : null;
+  const deadline = dl ? { ...dl, nodeId: posId(r.deadline.nodeId) } : null;
+  return {
+    status,
+    answer: status === 'answered' ? answer : null,
+    sources: status === 'answered' ? sources : [],
+    terms: arr(r.terms).slice(0, 20).map(termOf).filter(Boolean),
+    areas: arr(r.areas).slice(0, 20).map((x) => line(x, 200)).filter(Boolean),
+    deadline,
+  };
+}
+
+/** POST scans/classify → { kind, confidence: 0…1, summary } or null. */
+function normalizeScanClass(raw) {
+  const r = obj(raw);
+  if (!r || !SCAN_KINDS.includes(r.kind)) return null;
+  const c = typeof r.confidence === 'number' && Number.isFinite(r.confidence) ? Math.min(1, Math.max(0, r.confidence)) : null;
+  return { kind: r.kind, confidence: c, summary: line(r.summary, 300) };
+}
+
+const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+const SCAN_FILE_MAX = 50 * 1024 * 1024;
+
+/**
+ * POST scans/convert → { kind, target, title, name, folderId, folderPath, text, file: { name, mime, size, sha256, data:
+ * Buffer } | null } or null. Drive writes no file itself: `file` holds the document's bytes (checked against size and
+ * sha256) for the media upload and scans/save; null: nothing to file (a PDF without pictures).
+ */
+function normalizeScanConvert(raw) {
+  const r = obj(raw);
+  if (!r || !SCAN_TARGETS.includes(r.target)) return null;
+  let file = null;
+  const f = obj(r.file);
+  if (f) {
+    const size = count(f.size);
+    const data = typeof f.data === 'string' && f.data.length <= SCAN_FILE_MAX * 1.4 && B64_RE.test(f.data) ? Buffer.from(f.data, 'base64') : null;
+    const sha = sha256Of(f.sha256);
+    const name = safeName(line(f.name, NAME_MAX) || '');
+    if (!data || !data.length || size !== data.length || !name || (sha && createHash('sha256').update(data).digest('hex') !== sha)) return null;
+    file = { name, mime: line(f.mime, 120), size, sha256: sha, data };
+  }
+  return {
+    kind: SCAN_KINDS.includes(r.kind) ? r.kind : null,
+    target: r.target,
+    title: line(r.title, 200),
+    name: safeName(line(r.name, NAME_MAX) || ''),
+    folderId: posId(r.folderId),
+    folderPath: line(r.folderPath, 2000),
+    text: typeof r.text === 'string' ? r.text.slice(0, TEXT_MAX) : null,
+    file,
+  };
+}
+
+/** POST scans/save → { node, original } (original: the scan's file while it stays) or null. */
+function normalizeScanSave(raw) {
+  const r = obj(raw) || {};
+  const node = normalizeNode(r.node);
+  if (!node) return null;
+  return { node, original: normalizeNode(r.original) };
+}
+
+/**
+ * The hit chips of GET photos?q= (the most frequent other labels of the hits): [{ term (the word to add to q), label
+ * (shown, in the person's language), count }] — also plain strings.
+ */
+function photoTerms(v) {
+  const out = [];
+  for (const x of arr(v).slice(0, 30)) {
+    const o = obj(x);
+    const term = termOf(o ? (o.term !== undefined ? o.term : o.label) : x);
+    if (!term || out.some((t) => t.term.toLowerCase() === term.toLowerCase())) continue;
+    out.push({ term, label: (o && termOf(o.label)) || term, count: o ? count(o.count) : null });
+  }
+  return out;
+}
+
+/**
+ * The portal's page of the import (Drive 1.8 'cloudImport'): `/portal?drive=import#plg-gatecontrol-drive` on the
+ * origin of `base` (me.links.drive, else the portal's address) → https URL or null.
+ */
+function importLink(base) {
+  const u = httpsUrl(base);
+  if (!u) return null;
+  return `${new URL(u).origin}/portal?drive=import#${APP_ROUTE}`;
+}
+
+// ── Drive 1.16: places and people ('photoPlaces', 'photoPeople') ──
+
+const PLACE_KEY_RE = /^[A-Za-z0-9:_.-]{1,100}$/;
+const PERSON_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const COUNTRY_RE = /^[A-Z]{2}$/;
+const CONTACT_KINDS = Object.freeze(['family', 'contact']);
+const FACE_MODEL = 'sface-2021dec';
+const PEOPLE_MAX = 5000;
+
+const placeKeyOf = (v) => (typeof v === 'string' && PLACE_KEY_RE.test(v) ? v : null);
+/** A person's or a face's id (number or token) or null. */
+const personIdOf = (v) => posId(v) || (typeof v === 'string' && PERSON_ID_RE.test(v) ? v : null);
+const faceIdOf = personIdOf;
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
+
+/** WGS84 → { lat, lon } (6 decimals, like the plugin keeps them) or null (out of range, 0/0). */
+function latLonOf(lat, lon) {
+  const a = num(lat);
+  const o = num(lon);
+  if (a === null || o === null || Math.abs(a) > 90 || Math.abs(o) > 180 || (a === 0 && o === 0)) return null;
+  return { lat: Math.round(a * 1e6) / 1e6, lon: Math.round(o * 1e6) / 1e6 };
+}
+
+/** `geo` of uploads/commit and PUT nodes/<id>/geo: { lat, lon } → the body, else null. */
+function geoBody(v) {
+  const o = obj(v);
+  return o ? latLonOf(o.lat, o.lon) : null;
+}
+
+/** A bounding box [w, s, e, n] (or "w,s,e,n") → "w,s,e,n" for a query, else null (w > e: across the date line). */
+function bboxOf(v) {
+  const parts = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : [];
+  if (parts.length !== 4) return null;
+  const [w, s, e, n] = parts.map(num);
+  if ([w, s, e, n].some((x) => x === null) || Math.abs(w) > 180 || Math.abs(e) > 180 || Math.abs(s) > 90 || Math.abs(n) > 90 || s > n) return null;
+  return [w, s, e, n].map((x) => String(Math.round(x * 1e6) / 1e6)).join(',');
+}
+
+/** `place` of a photo's geo → { key, name, district, region, country } or null. */
+function placeOf(v) {
+  const o = obj(v);
+  const key = o && placeKeyOf(o.key);
+  const name = o && line(o.name, 200);
+  if (!key || !name) return null;
+  return {
+    key,
+    name,
+    district: line(o.district, 200),
+    region: line(o.region, 200),
+    country: typeof o.country === 'string' && COUNTRY_RE.test(o.country.toUpperCase()) ? o.country.toUpperCase() : null,
+  };
+}
+
+/** `geo` of a photo / node → { lat, lon, place } or null. */
+function photoGeoOf(v) {
+  const o = obj(v);
+  const p = o && latLonOf(o.lat, o.lon);
+  return p ? { ...p, place: placeOf(o.place) } : null;
+}
+
+/** A face's box [x, y, w, h] (0 … 1 of the upright picture) or null. */
+function faceBoxOf(v) {
+  if (!Array.isArray(v) || v.length !== 4) return null;
+  const b = v.map(num);
+  if (b.some((x) => x === null || x < -0.05 || x > 1.05) || b[2] <= 0 || b[3] <= 0) return null;
+  return b.map((x) => Math.min(1, Math.max(0, Math.round(x * 1e4) / 1e4)));
+}
+
+/** A person's link to a family member or a contact → { kind, id, name } or null. */
+function contactOf(v) {
+  const o = obj(v);
+  if (!o || !CONTACT_KINDS.includes(o.kind)) return null;
+  const id = posId(o.id) || (typeof o.id === 'string' && /^[A-Za-z0-9:_.@-]{1,120}$/.test(o.id) ? o.id : null);
+  const name = line(o.name, 200);
+  return id && name ? { kind: o.kind, id, name } : null;
+}
+
+/** `contact` for PATCH people/<id>: { kind, id, name } | null → the body's value; undefined when not valid. */
+function contactBody(v) {
+  if (v === null) return null;
+  return contactOf(v) || undefined;
+}
+
+/** A face shown cut out of a photo: { faceId, nodeId, box, item } (cover of a person) or null. */
+function faceCoverOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const box = faceBoxOf(o.box);
+  const item = normalizePhoto(o.item);
+  if (!box || !item) return null;
+  return { faceId: faceIdOf(o.faceId), nodeId: posId(o.nodeId) || item.id, box, item };
+}
+
+/** A person of GET people → { id, name, count, hidden, cover, contact } or null. */
+function normalizePerson(v) {
+  const o = obj(v);
+  const id = o && personIdOf(o.id);
+  if (!id) return null;
+  return { id, name: line(o.name, 200), count: count(o.count) || 0, hidden: bool(o.hidden), cover: faceCoverOf(o.cover), contact: contactOf(o.contact) };
+}
+
+/** { id, name, count } rows (together with, similar …) */
+function personRefs(v, max = 50) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const id = o && personIdOf(o.id);
+    if (!id) return null;
+    const out = { id, name: line(o.name, 200), count: count(o.count) || 0 };
+    if (num(o.score) !== null) out.score = Math.max(-1, Math.min(1, num(o.score)));
+    return out;
+  }).filter(Boolean);
+}
+
+/** { key, name, count } rows (the places of a person) */
+function placeRefs(v, max = 50) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const key = o && placeKeyOf(o.key);
+    const name = o && line(o.name, 200);
+    return key && name ? { key, name, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
+}
+
+/** GET people → { people, progress: { done, total } | null } */
+function normalizePeople(raw) {
+  const r = obj(raw) || {};
+  const p = obj(r.progress);
+  const done = p && count(p.done);
+  const total = p && count(p.total);
+  return {
+    people: arr(r.people).slice(0, PEOPLE_MAX).map(normalizePerson).filter(Boolean),
+    progress: done !== null && total !== null && p ? { done: Math.min(done, total), total } : null,
+  };
+}
+
+/** GET people/<id> → { person, together, places, uncertain, years: { from, to } | null } or null (the person flat or as `person`). */
+function normalizePersonDetail(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const person = normalizePerson(obj(r.person) || r);
+  if (!person) return null;
+  const src = obj(r.person) && r.together === undefined ? r.person : r;
+  const y = obj(src.years);
+  const year = (v) => { const n = count(v); return n !== null && n >= 1800 && n <= 2200 ? n : null; };
+  const years = y && year(y.from) && year(y.to) ? { from: Math.min(year(y.from), year(y.to)), to: Math.max(year(y.from), year(y.to)) } : null;
+  return { person, together: personRefs(src.together), places: placeRefs(src.places), uncertain: count(src.uncertain) || 0, years };
+}
+
+/** PATCH people/<id> → { person, mergedInto } (mergedInto: the person it went into because the name was taken) */
+function normalizePersonUpdate(raw) {
+  const r = obj(raw) || {};
+  const person = normalizePerson(r.person);
+  return person ? { person, mergedInto: personIdOf(r.mergedInto) } : null;
+}
+
+/** GET people/<id>/similar → { people: [{ id, name, count, score }] } (≤ 3, the closest first) */
+function normalizeSimilar(raw) {
+  const r = obj(raw) || {};
+  return { people: personRefs(r.people, 3).sort((a, b) => (b.score || 0) - (a.score || 0)) };
+}
+
+/** GET people/<id>/uncertain → { faces: [{ faceId, box, item, score }] } */
+function normalizeUncertain(raw) {
+  const r = obj(raw) || {};
+  return {
+    faces: arr(r.faces).slice(0, 200).map((x) => {
+      const o = obj(x);
+      const faceId = o && faceIdOf(o.faceId);
+      const box = o && faceBoxOf(o.box);
+      const item = o && normalizePhoto(o.item);
+      return faceId && box && item ? { faceId, box, item, score: num(o.score) } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** GET photos/places → { places: [{ key, name, region, country, count, lat, lon, from, to, cover }] } (most photos first) */
+function normalizePlaces(raw) {
+  const r = obj(raw) || {};
+  const places = arr(r.places).slice(0, 2000).map((x) => {
+    const o = obj(x);
+    const key = o && placeKeyOf(o.key);
+    const name = o && line(o.name, 200);
+    const p = o && latLonOf(o.lat, o.lon);
+    if (!key || !name) return null;
+    return {
+      key, name,
+      region: line(o.region, 200),
+      country: typeof o.country === 'string' && COUNTRY_RE.test(o.country.toUpperCase()) ? o.country.toUpperCase() : null,
+      count: count(o.count) || 0,
+      lat: p ? p.lat : null, lon: p ? p.lon : null,
+      from: msOf(o.from), to: msOf(o.to),
+      cover: normalizePhoto(o.cover),
+    };
+  }).filter(Boolean);
+  places.sort((a, b) => b.count - a.count);
+  return { places };
+}
+
+/** GET photos/map → { clusters: [{ lat, lon, count, key, cover }] } (≤ 200 from the plugin; a few more are kept) */
+function normalizeMap(raw) {
+  const r = obj(raw) || {};
+  return {
+    clusters: arr(r.clusters).slice(0, 500).map((x) => {
+      const o = obj(x);
+      const p = o && latLonOf(o.lat, o.lon);
+      const n = o && posId(o.count);
+      return p && n ? { lat: p.lat, lon: p.lon, count: n, key: placeKeyOf(o.key), cover: normalizePhoto(o.cover) } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** GET photos/suggest → { people: [{ id, name, count }], places: [{ key, name, sub, count }], labels: [{ label, text, count }] } */
+function normalizeSuggest(raw) {
+  const r = obj(raw) || {};
+  return {
+    people: personRefs(r.people, 5).filter((p) => p.name),
+    places: arr(r.places).slice(0, 5).map((x) => {
+      const o = obj(x);
+      const key = o && placeKeyOf(o.key);
+      const name = o && line(o.name, 200);
+      return key && name ? { key, name, sub: line(o.sub, 200), count: count(o.count) || 0 } : null;
+    }).filter(Boolean),
+    labels: arr(r.labels).slice(0, 5).map((x) => {
+      const o = obj(x);
+      const label = o && termOf(o.label);
+      return label ? { label, text: line(o.text, 100) || label, count: count(o.count) || 0 } : null;
+    }).filter(Boolean),
+  };
+}
+
+/** The marks of a search (GET photos?q= `search.people` / `search.places`) → { people: [{ id, name }], places: [{ key, name }] } */
+function searchMarks(se) {
+  const o = obj(se);
+  if (!o) return { people: [], places: [] };
+  return {
+    people: personRefs(o.people, 10).filter((p) => p.name).map((p) => ({ id: p.id, name: p.name })),
+    places: placeRefs(o.places, 10).map((p) => ({ key: p.key, name: p.name })),
+  };
+}
+
+/**
+ * GET / PUT photos/settings (per person) → { keepGeo, stripGeoOnShare, people, peopleKids, deleted } — stripGeoOnShare
+ * null when the plugin does not report it (then the switch is not shown); deleted: what `people: false` /
+ * DELETE photos/geo removed, else null. Other settings (Drive 1.13 work folder …) are left out.
+ */
+function normalizePhotoSettings(raw) {
+  const r = obj(raw) || {};
+  const s = obj(r.settings) || r;
+  return {
+    keepGeo: s.keepGeo !== false,
+    stripGeoOnShare: typeof s.stripGeoOnShare === 'boolean' ? s.stripGeoOnShare : null,
+    people: bool(s.people),
+    peopleKids: bool(s.peopleKids),
+    deleted: count(r.deleted !== undefined ? r.deleted : s.deleted),
+  };
+}
+
+/** The districts of a place (GET photos?place=&districts=1) → [{ name, count }] */
+function districtsOf(v) {
+  return arr(v).slice(0, 200).map((x) => {
+    const o = obj(x);
+    const name = o && line(o.name, 200);
+    return name ? { name, count: count(o.count) || 0 } : null;
+  }).filter(Boolean);
+}
+
+// ── Drive 1.9: vault folders, office ───────────────────────
+
+const VAULT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+const VAULT_DEVICE_RE = /^[A-Za-z0-9_-]{22}$/;
+const VAULT_DEVICE_STATES = Object.freeze(['approved', 'pending', 'revoked']);
+const B64U_RE = /^[A-Za-z0-9_-]+$/;
+const b64uOf = (v, max) => (typeof v === 'string' && v.length <= max && B64U_RE.test(v) ? v : null);
+const vaultIdOf = (v) => (typeof v === 'string' && VAULT_ID_RE.test(v) ? v : null);
+const vaultDeviceIdOf = (v) => (typeof v === 'string' && VAULT_DEVICE_RE.test(v) ? v : null);
+
+/** A vault → { id, nodeId, areaId, parentId, nameCipher, keyVersion, recoveryPub, recoveryHolder, needsRotation, createdAt, createdBy, rotatedAt, myDevices, pending } or null. */
+function normalizeVault(v) {
+  const o = obj(v);
+  const id = o && vaultIdOf(o.id);
+  const nodeId = o && posId(o.nodeId);
+  if (!id || !nodeId) return null;
+  return {
+    id,
+    nodeId,
+    areaId: areaIdOf(o.areaId),
+    parentId: posId(o.parentId),
+    nameCipher: b64uOf(o.nameCipher, 2000),
+    keyVersion: posId(o.keyVersion) || 1,
+    recoveryPub: b64uOf(o.recoveryPub, 43),
+    recoveryHolder: posId(o.recoveryHolder),
+    needsRotation: bool(o.needsRotation),
+    createdAt: msOf(o.createdAt),
+    createdBy: posId(o.createdBy),
+    rotatedAt: msOf(o.rotatedAt),
+    myDevices: arr(o.myDevices).slice(0, 200).map((d) => {
+      const x = obj(d);
+      const did = x && vaultDeviceIdOf(x.deviceId);
+      return did && VAULT_DEVICE_STATES.includes(x.state) ? { deviceId: did, state: x.state, name: line(x.name, 80) } : null;
+    }).filter(Boolean),
+    pending: count(o.pending) || 0,
+  };
+}
+
+/** A device of a vault → { deviceId, userId, name, platform, publicKey, state, via, createdAt, approvedAt, approvedBy, revokedAt } or null. */
+function normalizeVaultDevice(v) {
+  const o = obj(v);
+  const deviceId = o && vaultDeviceIdOf(o.deviceId);
+  const publicKey = o && b64uOf(o.publicKey, 43);
+  if (!deviceId || !publicKey || publicKey.length !== 43 || !VAULT_DEVICE_STATES.includes(o.state)) return null;
+  return {
+    deviceId,
+    userId: posId(o.userId),
+    name: line(o.name, 80),
+    platform: typeof o.platform === 'string' && /^[a-z]{1,16}$/.test(o.platform) ? o.platform : null,
+    publicKey,
+    state: o.state,
+    via: ['create', 'device', 'recovery'].includes(o.via) ? o.via : null,
+    createdAt: msOf(o.createdAt),
+    approvedAt: msOf(o.approvedAt),
+    approvedBy: posId(o.approvedBy),
+    revokedAt: msOf(o.revokedAt),
+  };
+}
+
+/** The wraps of GET vaults/<id>/keys or …/recovery → [{ keyVersion, wrap }] (by version). */
+function wrapsOf(v) {
+  const out = arr(v).slice(0, 10000).map((w) => {
+    const o = obj(w);
+    const kv = o && posId(o.keyVersion);
+    const wrap = o && b64uOf(o.wrap, 108);
+    return kv && wrap && wrap.length === 108 ? { keyVersion: kv, wrap } : null;
+  }).filter(Boolean);
+  out.sort((a, b) => a.keyVersion - b.keyVersion);
+  return out;
+}
+
+/** GET vaults/<id>/keys?deviceId= → { deviceId, state, keyVersion, keys } or null. */
+function normalizeVaultKeys(raw) {
+  const r = obj(raw);
+  if (!r || !VAULT_DEVICE_STATES.includes(r.state)) return null;
+  return { deviceId: vaultDeviceIdOf(r.deviceId), state: r.state, keyVersion: posId(r.keyVersion), keys: wrapsOf(r.keys) };
+}
+
+/** GET vaults/<id>/recovery → { recoveryPub, keyVersion, keys } or null. */
+function normalizeVaultRecovery(raw) {
+  const r = obj(raw);
+  const pub = r && b64uOf(r.recoveryPub, 43);
+  if (!pub) return null;
+  return { recoveryPub: pub, keyVersion: posId(r.keyVersion), keys: wrapsOf(r.keys) };
+}
+
+/** The documents office in the browser opens (contract): word processing, spreadsheets, presentations, CSV. */
+const OFFICE_EXTS = Object.freeze(['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'csv']);
+
+/** Is `name` a document "Im Browser bearbeiten" offers? */
+function isOfficeName(name) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(typeof name === 'string' ? name : '');
+  return !!m && OFFICE_EXTS.includes(m[1].toLowerCase());
+}
+
+/** POST nodes/<id>/office → { url, mode: 'edit' | 'view', expiresAt } or null (an https URL only). */
+function normalizeOffice(raw) {
+  const r = obj(raw);
+  const url = r && httpsUrl(r.url);
+  if (!url) return null;
+  return { url, mode: r.mode === 'edit' ? 'edit' : 'view', expiresAt: msOf(r.expiresAt) };
+}
+
 // ── Requests ───────────────────────────────────────────────
 
 /** Children query: sort, order, offset, limit (≤ 1000) — unknown values fall back to name / asc. */
@@ -490,6 +1511,31 @@ function childrenQuery({ sort, order, offset, limit } = {}) {
   const off = count(offset) || 0;
   const lim = Math.min(1000, posId(limit) || 500);
   return { sort: s, order: o, offset: off, limit: lim };
+}
+
+/**
+ * Drive 1.11 ('vaultsApart'): vault folders are not part of the files any more (only the menu "Tresore" shows them).
+ * Without the feature the app leaves them out itself: in a folder outside a vault every encrypted node is a vault's
+ * own folder (or lies in one) → the list without them.
+ */
+function withoutVaults(items, { inVault = false } = {}) {
+  const list = arr(items);
+  return inVault ? list : list.filter((n) => !(n && n.encrypted));
+}
+
+/**
+ * The folder tree of the menu: `GET nodes/<id>/children?dirs=1` (Drive 1.11: folders only, no vaults, each with
+ * `hasDirs`) or a plain children page (older Drives: hasDirs unknown → null) → { items: [{ id, name, hasDirs }], next }.
+ */
+function normalizeDirs(raw, max = 1000) {
+  const r = obj(raw) || {};
+  const items = [];
+  for (const v of arr(r.items).slice(0, max)) {
+    const n = normalizeNode(v);
+    if (!n || !n.isDir || n.deleted || n.encrypted) continue;
+    items.push({ id: n.id, name: n.name, hasDirs: typeof v.hasDirs === 'boolean' ? v.hasDirs : null });
+  }
+  return { items, next: count(r.next) };
 }
 
 /** Link body → { nodeId, mode, expires, pin? } or null when invalid. */
@@ -504,12 +1550,277 @@ function linkBody({ nodeId, mode, expires, pin } = {}) {
   return body;
 }
 
+// ── Drive 1.12: jobs for many nodes at once, ZIP, one link for many ──
+
+const OP_KINDS = Object.freeze(['move', 'copy', 'trash', 'restore', 'purge']);
+const OP_STATES = Object.freeze(['running', 'done', 'failed', 'cancelled']);
+const OP_CONFLICT = Object.freeze(['version', 'rename', 'skip']);
+const OP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const REASON_RE = /^[a-z_]{1,40}$/;
+const OP_IDS_MAX = 10000;          // ids of one request (the plugin limits the nodes after expanding folders itself)
+const LINK_IDS_MAX = 5000;      // one link for several: with 'zipMixed' up to 5000 files
+
+/** A job's id (number or token) → string, else null. */
+function opIdOf(v) {
+  const n = posId(v);
+  if (n) return String(n);
+  return typeof v === 'string' && OP_ID_RE.test(v) ? v : null;
+}
+
+/** Distinct positive node ids (at most `max`), or null when none, too many or one is not an id. */
+function idList(ids, max = OP_IDS_MAX) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > max) return null;
+  const list = ids.map(posId);
+  if (list.some((x) => !x)) return null;
+  return [...new Set(list)];
+}
+
+const reasonOf = (v) => (typeof v === 'string' && REASON_RE.test(v) ? v : 'failed');
+const countOrLength = (v) => (Array.isArray(v) ? v.length : count(v) || 0);
+
+/** [{ id, reason, name? }] of a check / a job's report. */
+function blockedList(v, max = 1000) {
+  return arr(v).slice(0, max).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    if (!id) return null;
+    const out = { id, reason: reasonOf(o.reason || o.code) };
+    const name = line(o.name, NAME_MAX);
+    if (name) out.name = name;
+    return out;
+  }).filter(Boolean);
+}
+
+/**
+ * POST ops/check → { items, files, folders, bytes, conflicts: [{ id, name, path, isDir, size, mtime, existing: { id, size,
+ * mtime, isDir }, same }], conflictsMore, merges, blocked: [{ id, reason, name? }], quota: { needed, free } | null, limit,
+ * tooMany } or null. `same`: the file there has the same content (counts as done, never stored twice); folders of the
+ * same name are merged (`merges`), their files in conflicts with their `path`.
+ */
+function normalizeOpCheck(raw) {
+  const r = obj(raw);
+  if (!r) return null;
+  const conflicts = arr(r.conflicts).slice(0, 1000).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    const name = o && line(o.name, NAME_MAX);
+    if (!id || !name) return null;
+    const e = obj(o.existing) || {};
+    return {
+      id,
+      name,
+      // inside a merged folder: "Ordner/datei"
+      path: line(o.path, 2000),
+      isDir: bool(o.isDir),
+      size: count(o.size),
+      mtime: msOf(o.mtime),
+      existing: { id: posId(e.id), size: count(e.size), mtime: msOf(e.mtime), isDir: bool(e.isDir) },
+      same: bool(o.same),
+    };
+  }).filter(Boolean);
+  const q = obj(r.quota);
+  return {
+    items: count(r.items),
+    files: count(r.files) || 0,
+    folders: count(r.folders) || 0,
+    bytes: count(r.bytes) || 0,
+    conflicts,
+    conflictsMore: count(r.conflictsMore) || 0,
+    merges: count(r.merges) || 0,
+    blocked: blockedList(r.blocked),
+    // copy / move into another area: { needed, free } (free null: unknown)
+    quota: q ? { needed: count(q.needed) || 0, free: count(q.free) } : null,
+    limit: count(r.limit),
+    tooMany: bool(r.tooMany),
+  };
+}
+
+/**
+ * A job (POST ops, GET ops/<id>, live event `op`) → { id, kind, state, total, done, bytesTotal, bytesDone, targetId,
+ * targetPath, targetName, name, count, results: { done, skipped, failed: [{ id, reason }] } | null, undoUntil, undoOf, code } or null.
+ */
+function normalizeOp(raw) {
+  const r = obj(raw);
+  const o = (r && obj(r.op)) || r;
+  const id = o && opIdOf(o.id);
+  if (!id) return null;
+  const res = obj(o.results);
+  const failed = res ? blockedList(res.failed, 100) : [];
+  return {
+    id,
+    // 'undo': the job that undoes another one (undoOf)
+    kind: OP_KINDS.includes(o.kind) || o.kind === 'undo' ? o.kind : (OP_KINDS.includes(o.op) ? o.op : null),
+    state: OP_STATES.includes(o.state) ? o.state : 'running',
+    total: count(o.total) || 0,
+    done: count(o.done) || 0,
+    bytesTotal: count(o.bytesTotal) || 0,
+    bytesDone: count(o.bytesDone) || 0,
+    targetId: posId(o.targetId) || posId(o.target),
+    targetPath: line(o.targetPath, 2000),
+    targetName: line(o.targetName, NAME_MAX),
+    // the first node's name (null in a vault)
+    name: line(o.label, NAME_MAX) || line(o.name, NAME_MAX),
+    // the ids asked for ("N Elemente …"); total / done count files
+    count: count(o.items) ?? count(o.count),
+    results: res ? {
+      done: countOrLength(res.done),
+      skipped: countOrLength(res.skipped),
+      failed,
+      failedCount: Math.max(count(res.failedCount) || 0, failed.length),
+      // the top nodes made / moved at the target ("neu hier")
+      resultIds: arr(res.resultIds).slice(0, 500).map(posId).filter(Boolean),
+    } : null,
+    undoUntil: msOf(o.undoUntil),
+    undoOf: opIdOf(o.undoOf),
+    undoneBy: opIdOf(o.undoneBy),
+    // copy: who brings the bytes ('server' with GateControl's media copy; 'client' is not done by this app)
+    transfer: o.transfer === 'client' || o.transfer === 'server' ? o.transfer : null,
+    transfersLeft: count(o.transfersLeft) || 0,
+    code: codeOf(o.error) || codeOf(o.code),
+  };
+}
+
+/** GET ops?state=running → [job] */
+function normalizeOps(raw) {
+  const r = obj(raw) || {};
+  return arr(r.ops).slice(0, 100).map(normalizeOp).filter(Boolean);
+}
+
+/** POST ops / ops/check body { op, ids, target?, onConflict? } or null when invalid. */
+function opBody({ op, ids, target = null, onConflict = null } = {}) {
+  const list = idList(ids);
+  if (!OP_KINDS.includes(op) || !list) return null;
+  const body = { op, ids: list };
+  if (op === 'move' || op === 'copy') {
+    const tg = posId(target);
+    if (!tg) return null;
+    body.target = tg;
+  }
+  if (onConflict !== null && onConflict !== undefined) {
+    if (!OP_CONFLICT.includes(onConflict)) return null;
+    body.onConflict = onConflict;
+  }
+  return body;
+}
+
+/**
+ * POST zip → { url, name, expiresAt, files, skipped } or null: `url` the short-lived address of the ZIP — Drive 1.12 an
+ * absolute bearer address of GateControl (`https://<GateControl>/s/<token>/zip`, no login), or a path on the server;
+ * `name` its file name (…zip).
+ */
+function normalizeZip(raw) {
+  const r = obj(raw) || {};
+  const z = obj(r.zip) || r;
+  let url = null;
+  if (typeof z.url === 'string' && z.url.length <= LINK_URL_MAX) {
+    if (/^\/[A-Za-z0-9/_.~%?=&:+,-]*$/.test(z.url) && !z.url.includes('..') && !z.url.startsWith('//')) url = z.url;
+    else if (/^https?:\/\//i.test(z.url)) { try { url = new URL(z.url).href; } catch { url = null; } }
+  }
+  if (!url) return null;
+  const name = safeName(line(z.name, NAME_MAX) || '') || 'Drive.zip';
+  return { url, name: /\.zip$/i.test(name) ? name : `${name}.zip`, expiresAt: msOf(z.expiresAt), files: count(z.files), skipped: blockedList(z.skipped) };
+}
+
+/** Body of one link for several files: { nodeIds, mode: 'view' | 'download', expires, pin? } or null. */
+function multiLinkBody({ ids, mode, expires, pin } = {}) {
+  const list = idList(ids, LINK_IDS_MAX);
+  if (!list || (mode !== 'view' && mode !== 'download') || !LINK_EXPIRES.includes(expires)) return null;
+  const body = { nodeIds: list, mode, expires };
+  if (pin !== undefined && pin !== null && pin !== '') {
+    if (typeof pin !== 'string' || !PIN_RE.test(pin)) return null;
+    body.pin = pin;
+  }
+  return body;
+}
+
 /** The plugin's error code of a failure (or 'failed'). */
 function errorCode(err) {
   return (err && codeOf(err.code)) || 'failed';
 }
 
 module.exports = {
+  CONTACT_KINDS,
+  FACE_MODEL,
+  placeKeyOf,
+  durationOf,
+  mediaOf,
+  durationText,
+  DURATION_MAX_MS,
+  personIdOf,
+  faceIdOf,
+  latLonOf,
+  geoBody,
+  bboxOf,
+  photoGeoOf,
+  faceBoxOf,
+  contactOf,
+  contactBody,
+  normalizePerson,
+  normalizePeople,
+  normalizePersonDetail,
+  normalizePersonUpdate,
+  normalizeSimilar,
+  normalizeUncertain,
+  normalizePlaces,
+  normalizeMap,
+  normalizeSuggest,
+  normalizePhotoSettings,
+  searchMarks,
+  districtsOf,
+  ASK_STATUS,
+  SCAN_KINDS,
+  SCAN_TARGETS,
+  SCAN_PAGES_MAX,
+  normalizeAsk,
+  normalizeScanClass,
+  normalizeScanConvert,
+  normalizeScanSave,
+  SCAN_IMAGES_MAX_BYTES,
+  photoTerms,
+  termOf,
+  INSIGHT_STATUS,
+  DOC_KINDS,
+  DEADLINE_KINDS,
+  insightShort,
+  normalizeInsight,
+  normalizeDeadline,
+  normalizeDeadlines,
+  normalizeDeadlineTarget,
+  deadlineTargetBody,
+  normalizeDeadlineCalendars,
+  normalizeDeadlineTargets,
+  importLink,
+  VAULT_ID_RE,
+  VAULT_DEVICE_RE,
+  vaultIdOf,
+  vaultDeviceIdOf,
+  normalizeVault,
+  normalizeVaultDevice,
+  normalizeVaultKeys,
+  normalizeVaultRecovery,
+  OFFICE_EXTS,
+  isOfficeName,
+  normalizeOffice,
+  isoOf,
+  cursorOf,
+  albumIdOf,
+  normalizeTimeTravelPreview,
+  normalizeTimeTravelResult,
+  normalizePhoto,
+  normalizePhotos,
+  normalizeMonths,
+  normalizeMemories,
+  normalizeMemoryCollections,
+  normalizeMemoryCollection,
+  memoryIdOf,
+  MEMORY_KINDS,
+  MEMORY_DAY_MORE_THAN,
+  normalizeAlbum,
+  normalizeAlbums,
+  normalizeAlbumPage,
+  normalizeFramePhotos,
+  FRAME_SKIP_REASONS,
+  normalizeStorage,
   normalizeLinks16,
   nodeLink,
   allowedLink,
@@ -564,6 +1875,22 @@ module.exports = {
   normalizeLinks,
   savedOf,
   childrenQuery,
+  withoutVaults,
+  normalizeDirs,
   linkBody,
   errorCode,
+  OP_KINDS,
+  OP_STATES,
+  OP_CONFLICT,
+  OP_IDS_MAX,
+  LINK_IDS_MAX,
+  opIdOf,
+  idList,
+  normalizeOpCheck,
+  normalizeOp,
+  normalizeOps,
+  opBody,
+  normalizeZip,
+  blockedList,
+  multiLinkBody,
 };

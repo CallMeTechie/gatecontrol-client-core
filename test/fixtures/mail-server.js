@@ -1,0 +1,635 @@
+'use strict';
+
+// A fake GateControl server with the plugin gatecontrol-mail (client API "C2" of the Mail contract) for the
+// MailService tests: the plugin list, me / settings / providers / discover, accounts (password, Microsoft code
+// with PKCE checked against the verifier, change, remove), folders, lists with a cursor (Relevant / Sonstige,
+// Alle Posteingänge), search, threads, a mail (HTML with img/<token> and cid:, imagesBlocked), the image proxy
+// img/<token> and cid/<m>/<a> (PNG, client sign-in required), flags / move / archive / delete / junk / tab,
+// attachments as media, drafts (reply filled by the server), send with undo / sendAt, outbox, contacts, AI,
+// Drive suggest / save / save-all, filing, and the core media routes (PUT, GET). Phase 2 (calendar, invitations,
+// contacts, groups — client API "C3") in test/fixtures/mail-pim-server.js: srv.state.pim.
+//
+//   const srv = await mailServer({ plugin, allowed, features, invite, contactsMaster, plan });   invite: mail 106 with an invitation;
+//   contactsMaster: contacts as Mail 1.4.0 has them (mail-pim-server.js); plan: Mail 1.9.0 — free/busy, shared
+//   calendars, resources and bookings (mail-plan-server.js, srv.state.plan)
+//   srv.url, srv.state (requests, accounts, messages, drafts, outbox, media, uploads, …),
+//   srv.state.fail = { '<METHOD> <route>': { status, code, extra } } — refuse a route with { error: { code, …extra } }
+//   (e.g. 'GET cid/:id/:id': { code: 'busy', extra: { reason: 'loading', retryAfter: 5 } }),
+//   srv.down = true — every request fails (connection closed), srv.close()
+//   Mail 1.13 (with the features of MAIL13_FEATURES, e.g. `features: [...default, ...MAIL13_FEATURES]`): copy, undo
+//   tokens (srv.state.undo), GET messages/ids, threads: true, the bulk answers with count / ids / undo / purged,
+//   settings.swipe { left, right } with seven actions + confirmDelete (swipeLeft / swipeRight as the plugin maps them)
+
+const http = require('node:http');
+const crypto = require('node:crypto');
+const { pimState, pimRoute, contactSuggestions, invitationView } = require('./mail-pim-server');
+const { planState, planRoute, PLAN_FEATURES } = require('./mail-plan-server');
+
+const MAIL13_FEATURES = ['copy', 'swipeV2', 'undo', 'bulkAll', 'threadScope'];
+const SWIPES_OLD = ['archive', 'delete', 'read', 'none'];
+const SWIPES_V2 = ['archive', 'delete', 'read', 'flag', 'move', 'junk', 'none'];
+
+const PLUGIN = 'gatecontrol-mail';
+const API = `/api/v1/client/plugins/${PLUGIN}/api/`;
+const MEDIA = `/api/v1/client/plugins/${PLUGIN}/media`;
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+const DAY = 24 * 60 * 60 * 1000;
+
+async function mailServer({ plugin = true, allowed = true, features = ['mail', 'ai', 'microsoft', 'drive', 'familyCalendar', 'images', 'calendar', 'contacts', 'dav', 'familyOverlay'], clientId = 'abcd-1234-efgh-5678', token = 'gc_token', now = Date.now(), invite = false, contactsMaster = false, plan = false } = {}) {
+  let nextId = 1000;
+  const state = {
+    plugin,
+    allowed,
+    // Mail 1.9.0 (`plan: true`): free/busy, sharing, resources and the requests to decide on (mail-plan-server.js)
+    features: plan ? [...new Set([...features, ...PLAN_FEATURES])] : features,
+    requests: [],
+    fail: {},
+    media: new Map(),       // mediaId → { bytes, mime }
+    uploads: [],
+    settings: { threads: true, swipeLeft: 'archive', swipeRight: 'read' },
+    undo: new Map(),        // Mail 1.13: token → { kind, items: [{ id, newId, from, to, snapshot }], expiresAt, used }
+    accounts: [
+      { id: 1, provider: 'gmx', email: 'max@gmx.de', name: 'Privat · GMX', color: '#F5B544', kind: 'personal', state: 'ok', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: 'Max', calendar: { sync: true, state: 'ok', readOnly: false, server: 'caldav.gmx.net' }, contacts: { sync: true, state: 'ok', readOnly: true, server: 'carddav.gmx.net' }, missingScopes: [] },
+      { id: 2, provider: 'm365', email: 'max@firma.de', name: 'Firma · M365', color: '#79B8FF', kind: 'business', state: 'ok', error: null, push: 'all', ai: true, attachments: 'auto', signature: '', avatar: { mediaId: 'avatar2abcdef', mime: 'image/png' }, calendar: { sync: true, state: 'ok', readOnly: false, server: null }, contacts: { sync: true, state: 'ok', readOnly: false, server: null }, missingScopes: [] },
+    ],
+    passwords: new Map([[1, 'geheim']]),
+    folders: [
+      { id: 11, accountId: 1, name: 'Posteingang', path: 'INBOX', role: 'inbox', parentId: null },
+      { id: 12, accountId: 1, name: 'Gesendet', path: 'Sent', role: 'sent', parentId: null },
+      { id: 13, accountId: 1, name: 'Papierkorb', path: 'Trash', role: 'trash', parentId: null },
+      { id: 14, accountId: 1, name: 'Archiv', path: 'Archive', role: 'archive', parentId: null },
+      { id: 15, accountId: 1, name: 'Rechnungen', path: 'Archive/Rechnungen', role: null, parentId: 14 },
+      { id: 21, accountId: 2, name: 'Inbox', path: 'INBOX', role: 'inbox', parentId: null },
+      { id: 23, accountId: 2, name: 'Deleted', path: 'Deleted', role: 'trash', parentId: null },
+      { id: 24, accountId: 2, name: 'Archive', path: 'Archive', role: 'archive', parentId: null },
+    ],
+    messages: new Map(),
+    drafts: new Map(),
+    outbox: new Map(),
+    ai: new Map(),
+    filing: [
+      { id: 501, messageId: 101, attachmentId: 1, accountId: 1, name: 'Beitragsrechnung_2027.pdf', from: { name: 'Sportverein', address: 'kasse@verein.de' }, date: now - DAY, suggestion: { folderId: 77, areaId: 'mine', path: 'Finanzen › Mitgliedschaften', where: 'Meine Dateien › Finanzen › Mitgliedschaften', name: 'Beitragsrechnung_2027.pdf', confidence: 0.72, reason: 'ai' } },
+    ],
+    microsoft: [],          // { code, codeVerifier, redirectUri }
+    msCodes: new Map(),     // code → challenge
+    todos: [],
+    pim: pimState(now, { master: contactsMaster }),     // Phase 2: calendar and contacts (mail-pim-server.js); 1.4.0 with contactsMaster
+    plan: planState(now),                                // Mail 1.9.0 (mail-plan-server.js); answered only with its features
+  };
+  if (plan) {
+    // the settings of 1.9.0 and a calendar of the Microsoft 365 account that belongs to another mailbox
+    Object.assign(state.pim.calPrefs, { freeBusy: true, workHours: { days: [1, 2, 3, 4, 5], from: '08:00', to: '18:00' } });
+    state.pim.calendars.push(state.plan.accountCalendar);
+  }
+  // the Microsoft account's picture (Account.avatar, Mail 1.1.2)
+  state.media.set('avatar2abcdef', { bytes: PNG, mime: 'image/png' });
+  const addMsg = (m) => state.messages.set(m.id, {
+    threadId: m.id, threadCount: 1, to: [{ name: 'Max', address: 'max@gmx.de' }], cc: [], bcc: [], replyTo: [], answered: false,
+    flagged: false, hasAttachments: false, savedToDrive: false, ai: null, tab: 'relevant', unread: false, attachments: [],
+    html: null, text: 'Hallo', imagesBlocked: false, trackers: 0, listUnsubscribe: null, imagesAllowed: false, ...m,
+  });
+  addMsg({
+    id: 101, accountId: 1, folderId: 11, from: { name: 'Stadtwerke', address: 'rechnung@stadtwerke.de' }, subject: 'Ihre Rechnung November',
+    snippet: 'Im Anhang finden Sie Ihre Rechnung.', date: now - 60 * 60 * 1000, unread: true, hasAttachments: true,
+    html: '<p>Sehr geehrte Kundin,</p><p><img src="img/tok_logo" alt="Logo"><img src="cid:sig@stadtwerke"></p><a href="https://stadtwerke.de/portal" target="_blank" rel="noopener noreferrer">Portal</a>',
+    text: 'Sehr geehrte Kundin, im Anhang finden Sie Ihre Rechnung.', imagesBlocked: true, trackers: 2,
+    attachments: [
+      { id: 1, name: 'Rechnung_2026_11.pdf', mime: 'application/pdf', size: 212000, inline: false, cid: null, savedTo: null, suggestion: { folderId: 77, areaId: 'mine', path: 'Finanzen › Strom', where: 'Meine Dateien › Finanzen › Strom', name: '2026-11-03 Stadtwerke Rechnung.pdf', confidence: 0.95, reason: 'learned' } },
+      { id: 2, name: 'sig.png', mime: 'image/png', size: 900, inline: true, cid: '<sig@stadtwerke>', savedTo: null, suggestion: null },
+    ],
+    listUnsubscribe: { url: 'https://stadtwerke.de/abmelden', mail: 'mailto:abmelden@stadtwerke.de?subject=stop' },
+  });
+  addMsg({ id: 102, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Projektbesprechung Dienstag', snippet: 'Passt dir Dienstag 10 Uhr?', date: now - 2 * 60 * 60 * 1000, unread: true, threadId: 900, threadCount: 2 });
+  addMsg({ id: 103, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Projektbesprechung', snippet: 'Erste Mail', date: now - 3 * DAY, threadId: 900, threadCount: 2 });
+  addMsg({ id: 104, accountId: 1, folderId: 11, from: { name: 'Elektromarkt', address: 'news@elektromarkt.de' }, subject: 'Nur heute: 20 %', snippet: 'Newsletter', date: now - 5 * 60 * 60 * 1000, tab: 'other', unread: true });
+  // a mail whose body is not in the server's copy (bodyMissing)
+  addMsg({ id: 105, accountId: 2, folderId: 21, from: { name: 'Tim Brandt', address: 'tim@firma.de' }, subject: 'Alte Unterlagen', snippet: 'Inhalt fehlt', date: now - 6 * 60 * 60 * 1000, bodyMissing: true });
+  // Phase 2 (`invite: true`): an invitation (the card above the text; Summary.invite labels the row)
+  if (invite) addMsg({ id: 106, accountId: 2, folderId: 21, from: { name: 'Sabine Keller', address: 'sabine@firma.de' }, subject: 'Einladung: Sprint-Review', snippet: 'Sabine Keller hat dich eingeladen', date: now - 30 * 60 * 1000, unread: true, invite: 'request', inviteId: 701, text: 'Bitte die Zahlen mitbringen.' });
+  // older inbox mails of account 1 (pages, the offline cache fills 30 days back)
+  for (let i = 0; i < 60; i += 1) {
+    addMsg({ id: 200 + i, accountId: 1, folderId: 11, from: { name: `Absender ${i}`, address: `a${i}@example.com` }, subject: `Alte Mail ${i}`, snippet: 'alt', date: now - (i + 1) * DAY });
+  }
+  state.ai.set(101, { status: 'done', summary: 'Rechnung über 84,20 € für Strom im Oktober, wird am 28.11. abgebucht.', todos: [{ kind: 'deadline', text: 'Abbuchung am 28.11.', date: '2026-11-28' }, { kind: 'amount', text: '84,20 €', amount: 84.2, currency: 'EUR' }], replies: [{ label: 'Danke', text: 'Danke, ist angekommen.' }] });
+
+  const sum = (m) => ({
+    id: m.id, accountId: m.accountId, folderId: m.folderId, threadId: m.threadId, threadCount: m.threadCount, from: m.from,
+    to: m.to.slice(0, 3), subject: m.subject, snippet: m.snippet, date: m.date, unread: m.unread, flagged: m.flagged, answered: m.answered,
+    hasAttachments: m.hasAttachments, tab: m.tab, savedToDrive: m.savedToDrive, ai: m.ai, invite: m.invite || null,
+  });
+  // since Mail 1.1.2 a body not here after ~12 s comes as bodyMissing with the snippet as text
+  const full = (m) => ({
+    ...sum(m), cc: m.cc, bcc: m.bcc, replyTo: m.replyTo, text: m.bodyMissing ? m.snippet : m.text, trackers: m.trackers,
+    imagesBlocked: m.imagesBlocked && !m.imagesAllowed,
+    html: m.bodyMissing ? null : m.html, attachments: m.attachments, listUnsubscribe: m.listUnsubscribe, bodyMissing: !!m.bodyMissing,
+    invite: m.inviteId && state.pim.invitations.has(m.inviteId) && state.features.includes('calendar') ? invitationView(state.pim, state.pim.invitations.get(m.inviteId)) : null,
+  });
+  const inbox = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'inbox');
+  const has13 = (f) => state.features.includes(f);
+  /** GET me's settings: with `swipeV2` the full sides in `swipe`, the old fields only with the old four. */
+  const settingsOut = () => {
+    const st = state.settings;
+    if (!has13('swipeV2')) return { threads: st.threads, swipeLeft: st.swipeLeft, swipeRight: st.swipeRight };
+    const old = (v) => (SWIPES_OLD.includes(v) ? v : 'none');
+    return { threads: st.threads, swipeLeft: old(st.swipeLeft), swipeRight: old(st.swipeRight), swipe: { left: st.swipeLeft, right: st.swipeRight }, confirmDelete: st.confirmDelete === true };
+  };
+  const trash = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'trash');
+  const archive = (accountId) => state.folders.find((f) => f.accountId === accountId && f.role === 'archive');
+
+  function json(res, status, body) {
+    const buf = Buffer.from(JSON.stringify(body));
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': buf.length });
+    res.end(buf);
+  }
+  const err = (res, status, code, extra = {}) => json(res, status, { error: { code, ...extra } });
+
+  function readBody(req) {
+    return new Promise((resolve) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+  }
+
+  function draftOut(d) {
+    return { id: d.id, accountId: d.accountId, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, html: d.html, attachments: d.attachments.map(({ device, ...a }) => a), warnings: d.warnings };
+  }
+
+  function applyAtts(d, list) {
+    const out = [];
+    for (const a of list || []) {
+      if (a.id) { const keep = d.attachments.find((x) => x.id === a.id); if (keep) out.push(keep); continue; }
+      if (a.mediaId) {
+        const m = state.media.get(a.mediaId);
+        if (!m) return 'invalid';
+        out.push({ id: ++nextId, name: a.name || m.name || 'datei', size: m.bytes.length, mime: m.mime, as: 'copy', device: true });
+      } else if (a.messageId) {
+        const msg = state.messages.get(a.messageId);
+        const att = msg && msg.attachments.find((x) => x.id === a.attachmentId);
+        if (!att) return 'invalid';
+        out.push({ id: ++nextId, name: att.name, size: att.size, mime: att.mime, as: 'copy' });
+      } else if (a.driveNodeId) {
+        const big = a.driveNodeId === 9999;
+        out.push({ id: ++nextId, name: big ? 'Preisliste 2027.xlsx' : `Datei ${a.driveNodeId}.pdf`, size: big ? 46e6 : 340000, mime: 'application/pdf', as: big ? 'link' : a.as, url: a.as === 'link' || big ? `https://drive.example.com/s/${a.driveNodeId}` : undefined });
+        if (big && a.as === 'copy') d.warnings.push({ kind: 'too_large', text: 'Preisliste 2027.xlsx ist zu groß und wird als Link geschickt.' });
+      }
+    }
+    d.attachments = out;
+    return null;
+  }
+
+  const server = http.createServer(async (req, res) => {
+    if (srv.down) { req.socket.destroy(); return; }
+    const url = new URL(req.url, 'http://x');
+    const p = url.pathname;
+    const raw = await readBody(req);
+    state.requests.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), auth: req.headers['x-api-token'] || req.headers.authorization || null });
+    const authed = (req.headers['x-api-token'] || '') === token || (req.headers.authorization || '') === `Bearer ${token}`;
+    if (!authed) return json(res, 401, { error: 'unauthorized' });
+
+    if (req.method === 'GET' && p === '/api/v1/client/plugins') {
+      return json(res, 200, { plugins: state.plugin ? [{ id: PLUGIN, version: '1.0.0', tab: { label: 'Mail' } }] : [] });
+    }
+    if (!state.plugin) return json(res, 404, { error: 'not found' });
+
+    // ── core media routes ──
+    if (req.method === 'PUT' && p === MEDIA) {
+      const mediaId = `m${crypto.randomBytes(8).toString('hex')}`;
+      state.media.set(mediaId, { bytes: raw, mime: req.headers['content-type'] || 'application/octet-stream', device: true });
+      state.uploads.push({ mediaId, bytes: raw.length });
+      return json(res, 200, { mediaId, mime: req.headers['content-type'], bytes: raw.length });
+    }
+    if (req.method === 'GET' && p.startsWith(`${MEDIA}/`)) {
+      const m = state.media.get(p.slice(MEDIA.length + 1));
+      if (!m) return json(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'Content-Type': m.mime, 'Content-Length': m.bytes.length });
+      return res.end(m.bytes);
+    }
+
+    if (!p.startsWith(API)) return json(res, 404, { error: 'not found' });
+    const route = p.slice(API.length);
+    const seg = route.split('/');
+    let body = {};
+    if (raw.length) { try { body = JSON.parse(raw.toString('utf8')); } catch { return err(res, 400, 'invalid'); } }
+    const failKey = `${req.method} ${seg.map((s) => (/^\d+$/.test(s) ? ':id' : s)).join('/')}`;
+    if (state.fail[failKey]) {
+      const f = state.fail[failKey];
+      return err(res, f.status || 409, f.code || 'failed', f.extra || {});
+    }
+    if (!state.allowed) return err(res, 403, 'not_allowed');
+
+    // ── account ──
+    if (req.method === 'GET' && route === 'me') {
+      const byAccount = {};
+      for (const a of state.accounts) byAccount[a.id] = [...state.messages.values()].filter((m) => m.accountId === a.id && m.folderId === inbox(a.id).id && m.unread).length;
+      return json(res, 200, {
+        features: state.features,
+        limits: { accountsMax: 5, quotaBytes: 5 * 1024 ** 3, usedBytes: 123456789, retentionMonths: 12 },
+        microsoft: {
+          clientId: state.features.includes('microsoft') ? clientId : null, authority: 'https://login.microsoftonline.com/common',
+          scopes: ['openid', 'profile', 'email', 'offline_access', 'User.Read', 'Mail.ReadWrite', 'Mail.Send', ...(state.features.includes('calendar') ? ['Calendars.ReadWrite'] : []), ...(state.features.includes('contacts') ? ['Contacts.ReadWrite'] : [])],
+          adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?client_id=abcd-1234-efgh-5678',
+        },
+        accounts: state.accounts,
+        unread: { all: Object.values(byAccount).reduce((a, b) => a + b, 0), byAccount },
+        settings: settingsOut(),
+        extra: 'ignored',
+      });
+    }
+    if (req.method === 'PUT' && route === 'settings') {
+      if (has13('swipeV2')) {
+        const sw = body.swipe || {};
+        for (const [side, legacy] of [['left', 'swipeLeft'], ['right', 'swipeRight']]) {
+          if (sw[side] !== undefined && !SWIPES_V2.includes(sw[side])) return err(res, 400, 'invalid', { field: `swipe.${side}` });
+          if (body[legacy] !== undefined && !SWIPES_V2.includes(body[legacy])) return err(res, 400, 'invalid', { field: legacy });
+          const now = state.settings[legacy];
+          if (sw[side] !== undefined) state.settings[legacy] = sw[side];
+          // an old app sending "none" back does not overwrite flag / move / junk
+          else if (body[legacy] !== undefined && !(body[legacy] === 'none' && !SWIPES_OLD.includes(now))) state.settings[legacy] = body[legacy];
+        }
+        if (body.confirmDelete !== undefined) {
+          if (typeof body.confirmDelete !== 'boolean') return err(res, 400, 'invalid', { field: 'confirmDelete' });
+          state.settings.confirmDelete = body.confirmDelete;
+        }
+        if (body.threads !== undefined) state.settings.threads = body.threads;
+      } else {
+        for (const k of ['threads', 'swipeLeft', 'swipeRight']) if (body[k] !== undefined) state.settings[k] = body[k];
+      }
+      state.lastSettingsBody = body;
+      return json(res, 200, { settings: settingsOut() });
+    }
+    if (req.method === 'GET' && route === 'providers') {
+      return json(res, 200, [
+        { id: 'm365', label: 'Microsoft 365 · outlook.com', auth: 'microsoft', hint: null, help: null },
+        { id: 'gmx', label: 'GMX', auth: 'password', hint: { de: 'Bei GMX zuerst im Webmail IMAP erlauben.', en: 'Allow IMAP in GMX webmail first.' }, help: 'https://hilfe.gmx.net/pop-imap/imap/imap-serverdaten.html' },
+        { id: 'gmail', label: 'Gmail', auth: 'app_password', hint: { de: 'App-Passwort (2FA nötig).', en: 'App password (needs 2FA).' }, help: 'javascript:alert(1)' },
+        { id: 'imap', label: 'Andere / eigene Domain', auth: 'imap', hint: null, help: null },
+        { id: 'bogus', label: 'X', auth: 'password' },
+      ]);
+    }
+    if (req.method === 'POST' && route === 'accounts/discover') {
+      return json(res, 200, { provider: 'imap', auth: 'imap', imap: { host: 'imap.example.org', port: 993, security: 'tls' }, smtp: { host: 'smtp.example.org', port: 587, security: 'starttls' }, hint: null });
+    }
+    if (req.method === 'POST' && route === 'accounts') {
+      if (!body.email || !body.password) return err(res, 400, 'invalid');
+      if (body.password === 'falsch') return err(res, 409, 'auth_failed', { hint: { de: 'Passwort prüfen.', en: 'Check the password.' } });
+      if (state.accounts.length >= 5) return err(res, 403, 'limit');
+      const a = { id: ++nextId, provider: body.provider, email: body.email, name: body.name || body.email, color: body.color || '#B79CFF', kind: body.kind || 'personal', state: 'syncing', error: null, push: 'relevant', ai: true, attachments: 'suggest', signature: '' };
+      state.accounts.push(a);
+      state.passwords.set(a.id, body.password);
+      state.lastAccountBody = body;
+      return json(res, 200, { account: a });
+    }
+    if (req.method === 'POST' && (route === 'accounts/microsoft' || /^accounts\/\d+\/microsoft$/.test(route))) {
+      state.microsoft.push(body);
+      const challenge = state.msCodes.get(body.code);
+      const ok = challenge && crypto.createHash('sha256').update(body.codeVerifier).digest('base64url') === challenge;
+      if (!ok) return err(res, 409, 'auth_failed');
+      if (seg.length === 3) {
+        const a = state.accounts.find((x) => x.id === Number(seg[1]));
+        if (!a) return err(res, 404, 'not_found');
+        a.state = 'ok';
+        // signed in again: the rights granted now (state.grantScopes = false: the company still blocks them)
+        if (state.grantScopes !== false) a.missingScopes = [];
+        return json(res, 200, { account: a });
+      }
+      const a = { id: ++nextId, provider: 'm365', email: 'neu@firma.de', name: body.name || 'Firma', color: body.color || '#79B8FF', kind: body.kind || 'business', state: 'syncing', error: null, push: 'all', ai: true, attachments: 'suggest', signature: '' };
+      state.accounts.push(a);
+      return json(res, 200, { account: a });
+    }
+    if (seg[0] === 'accounts' && /^\d+$/.test(seg[1] || '') && seg.length === 2) {
+      const a = state.accounts.find((x) => x.id === Number(seg[1]));
+      if (!a) return err(res, 404, 'not_found');
+      if (req.method === 'PATCH') {
+        for (const k of ['name', 'color', 'kind', 'push', 'ai', 'attachments', 'signature']) if (body[k] !== undefined) a[k] = body[k];
+        if (body.password) state.passwords.set(a.id, body.password);
+        return json(res, 200, { account: a });
+      }
+      if (req.method === 'DELETE') {
+        state.accounts = state.accounts.filter((x) => x !== a);
+        return json(res, 200, { ok: true });
+      }
+    }
+
+    // ── folders, lists ──
+    if (req.method === 'GET' && route === 'folders') {
+      return json(res, 200, {
+        accounts: state.accounts.map((a) => ({
+          accountId: a.id,
+          folders: state.folders.filter((f) => f.accountId === a.id).map((f) => {
+            const ms = [...state.messages.values()].filter((m) => m.folderId === f.id);
+            return { id: f.id, name: f.name, path: f.path, role: f.role, parentId: f.parentId, unread: ms.filter((m) => m.unread).length, total: ms.length };
+          }),
+        })),
+      });
+    }
+    if (req.method === 'GET' && route === 'messages') {
+      const q = Object.fromEntries(url.searchParams);
+      const box = q.box || 'all';
+      let list = [...state.messages.values()];
+      if (box === 'all') list = list.filter((m) => inbox(m.accountId) && m.folderId === inbox(m.accountId).id);
+      else if (q.folder) list = list.filter((m) => m.accountId === Number(box) && m.folderId === Number(q.folder));
+      else list = list.filter((m) => m.accountId === Number(box) && m.folderId === inbox(Number(box)).id);
+      const isInbox = !q.folder || state.folders.find((f) => f.id === Number(q.folder) && f.role === 'inbox');
+      const counts = { relevant: list.filter((m) => m.tab === 'relevant' && m.unread).length, other: list.filter((m) => m.tab === 'other' && m.unread).length };
+      if (isInbox && (q.tab === 'relevant' || q.tab === 'other')) list = list.filter((m) => m.tab === q.tab);
+      if (q.unread) list = list.filter((m) => m.unread);
+      if (q.flagged) list = list.filter((m) => m.flagged);
+      if (q.attachments) list = list.filter((m) => m.hasAttachments);
+      list.sort((a, b) => b.date - a.date || b.id - a.id);
+      if (q.before) { const [d, id] = q.before.split('.').map(Number); list = list.filter((m) => m.date < d || (m.date === d && m.id < id)); }
+      const limit = Number(q.limit) || 50;
+      const page = list.slice(0, limit);
+      const last = page[page.length - 1];
+      return json(res, 200, { items: page.map(sum), next: list.length > limit ? `${last.date}.${last.id}` : null, counts });
+    }
+    if (req.method === 'GET' && route === 'search') {
+      const q = String(url.searchParams.get('q') || '').toLowerCase();
+      // from: part of the sender's address (as the plugin's LIKE); box: one account; cursor <date>.<id>; pages of `limit` (50)
+      const from = String(url.searchParams.get('from') || '').toLowerCase();
+      const box = url.searchParams.get('box');
+      const cur = /^(\d+)\.(\d+)$/.exec(url.searchParams.get('cursor') || '');
+      const limit = Number(state.searchLimit) || 50;
+      const items = [...state.messages.values()]
+        .filter((m) => `${m.subject} ${m.snippet} ${m.from.name}`.toLowerCase().includes(q))
+        .filter((m) => !from || String(m.from.address || m.from.email || '').toLowerCase().includes(from))
+        .filter((m) => !box || box === 'all' || m.accountId === Number(box))
+        .sort((a, b) => b.date - a.date || b.id - a.id)
+        .filter((m) => !cur || m.date < Number(cur[1]) || (m.date === Number(cur[1]) && m.id < Number(cur[2])));
+      const page = items.slice(0, limit);
+      const last = page[page.length - 1];
+      return json(res, 200, { items: page.map(sum), next: items.length > limit ? `${last.date}.${last.id}` : null, remote: !from && items.length === 0 });
+    }
+    if (req.method === 'GET' && seg[0] === 'threads' && seg.length === 2) {
+      const items = [...state.messages.values()].filter((m) => m.threadId === Number(seg[1])).sort((a, b) => a.date - b.date);
+      return items.length ? json(res, 200, { items: items.map(full) }) : err(res, 404, 'not_found');
+    }
+    if (seg[0] === 'messages' && /^\d+$/.test(seg[1] || '')) {
+      const m = state.messages.get(Number(seg[1]));
+      if (!m) return err(res, 404, 'not_found');
+      if (req.method === 'GET' && seg.length === 2) return json(res, 200, full(m));
+      if (req.method === 'POST' && seg[2] === 'images') {
+        if (body.allow !== 'once' && body.allow !== 'sender') return err(res, 400, 'invalid');
+        m.imagesAllowed = true;
+        return json(res, 200, full(m));
+      }
+      if (seg[2] === 'attachments' && /^\d+$/.test(seg[3] || '')) {
+        const a = m.attachments.find((x) => x.id === Number(seg[3]));
+        if (!a) return err(res, 404, 'not_found');
+        if (req.method === 'GET' && seg.length === 4) {
+          const mediaId = `att${m.id}x${a.id}`;
+          state.media.set(mediaId, { bytes: Buffer.from(`%PDF-1.4 ${a.name}`), mime: a.mime });
+          return json(res, 200, { mediaId, name: a.name, mime: a.mime, size: a.size });
+        }
+        if (req.method === 'POST' && seg[4] === 'drive' && seg[5] === 'suggest') return json(res, 200, { suggestion: a.suggestion, duplicate: false });
+        if (req.method === 'POST' && seg[4] === 'drive' && seg[5] === 'save') {
+          if (!state.features.includes('drive')) return err(res, 409, 'drive_unavailable');
+          const where = body.folderId && body.folderId !== 77 ? 'Meine Dateien › Anderer Ordner' : (a.suggestion && a.suggestion.where) || 'Meine Dateien › Mail';
+          a.savedTo = { nodeId: 4000 + a.id, where };
+          m.savedToDrive = true;
+          state.lastSave = body;
+          return json(res, 200, { savedTo: a.savedTo });
+        }
+      }
+      if (req.method === 'POST' && seg[2] === 'drive' && seg[3] === 'save-all') {
+        const saved = [];
+        const failed = [];
+        for (const a of m.attachments) {
+          if (a.inline) continue;
+          a.savedTo = { nodeId: 4000 + a.id, where: 'Meine Dateien › Mail' };
+          saved.push({ attachmentId: a.id, savedTo: a.savedTo });
+        }
+        failed.push({ attachmentId: 99, code: 'too_large' });
+        return json(res, 200, { saved, failed });
+      }
+    }
+    // Mail 1.13: every id of a list ("Alle N auswählen")
+    if (req.method === 'GET' && route === 'messages/ids' && has13('bulkAll')) {
+      const q = Object.fromEntries(url.searchParams);
+      const box = q.box || 'all';
+      let list = [...state.messages.values()];
+      if (box === 'all') list = list.filter((m) => inbox(m.accountId) && m.folderId === inbox(m.accountId).id);
+      else if (q.folder) list = list.filter((m) => m.accountId === Number(box) && m.folderId === Number(q.folder));
+      else list = list.filter((m) => m.accountId === Number(box) && m.folderId === inbox(Number(box)).id);
+      const isInbox = !q.folder || state.folders.find((f) => f.id === Number(q.folder) && f.role === 'inbox');
+      if (isInbox && (q.tab === 'relevant' || q.tab === 'other')) list = list.filter((m) => m.tab === q.tab);
+      if (q.unread) list = list.filter((m) => m.unread);
+      if (q.flagged) list = list.filter((m) => m.flagged);
+      if (q.attachments) list = list.filter((m) => m.hasAttachments);
+      list.sort((a, b) => b.date - a.date || b.id - a.id);
+      const max = Number(state.idsMax) || 2000;
+      return json(res, 200, { ids: list.slice(0, max).map((m) => m.id), total: list.length, max, truncated: list.length > max });
+    }
+    if (req.method === 'POST' && route === 'messages/undo' && has13('undo')) {
+      if (typeof body.token !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(body.token)) return err(res, 400, 'invalid', { field: 'token' });
+      const u = state.undo.get(body.token);
+      if (!u || u.used) return err(res, 404, 'not_found', { field: 'token' });
+      if (Date.now() > u.expiresAt) return err(res, 410, 'undo_expired');
+      u.used = true;
+      const items = [];
+      let restored = 0;
+      for (const x of u.items) {
+        if (u.kind === 'copy') { if (state.messages.delete(x.newId)) restored += 1; continue; }
+        let m = state.messages.get(x.id);
+        if (!m) { m = { ...x.snapshot }; state.messages.set(m.id, m); }
+        m.folderId = x.from;
+        restored += 1;
+        items.push(sum(m));
+      }
+      return json(res, 200, { ok: true, kind: u.kind, restored, failed: 0, items });
+    }
+    if (req.method === 'POST' && seg[0] === 'messages' && seg.length === 2) {
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      if (ids.length > 500) return err(res, 400, 'invalid', { field: 'ids' });
+      let ms = ids.map((id) => state.messages.get(id)).filter(Boolean);
+      if (!ms.length) return err(res, has13('copy') ? 404 : 400, has13('copy') ? 'not_found' : 'invalid');
+      if (has13('threadScope') && body.threads === true) {
+        // the whole conversation in the folder of each chosen mail
+        const all = new Set(ms);
+        for (const m of ms) for (const x of state.messages.values()) if (x.threadId === m.threadId && x.folderId === m.folderId) all.add(x);
+        ms = [...all];
+      }
+      if (has13('copy')) {
+        state.bulkCalls = (state.bulkCalls || []).concat([{ path: seg[1], ids: ms.map((m) => m.id), body }]);
+        const before = ms.map((m) => ({ id: m.id, from: m.folderId, snapshot: { ...m } }));
+        const purged = [];
+        const done = (kind, extra = {}) => {
+          const items = before.filter((b) => !purged.includes(b.id)).map((b) => ({ ...b, to: (state.messages.get(b.newId || b.id) || {}).folderId || b.to || null, newId: b.newId || b.id }));
+          let undo = null;
+          if (kind && has13('undo') && items.length) {
+            const token = crypto.randomBytes(12).toString('base64url');
+            state.undo.set(token, { kind, items, expiresAt: Date.now() + 120000, used: false });
+            undo = { token, kind, count: items.length, expiresAt: Date.now() + 120000, items: items.map((x) => ({ id: x.id, newId: x.newId, accountId: x.snapshot.accountId, fromFolderId: x.from, toFolderId: x.to })) };
+          }
+          const shown = kind === 'copy' ? items.map((x) => state.messages.get(x.newId)) : ms.filter((m) => state.messages.has(m.id));
+          return json(res, 200, { ok: true, items: shown.filter(Boolean).map(sum), count: ms.length, ids: ms.map((m) => m.id), undo, ...extra });
+        };
+        if (seg[1] === 'flags') {
+          for (const m of ms) { if (typeof body.unread === 'boolean') m.unread = body.unread; if (typeof body.flagged === 'boolean') m.flagged = body.flagged; }
+          return done(null);
+        }
+        if (seg[1] === 'move' || seg[1] === 'copy') {
+          const f = state.folders.find((x) => x.id === body.folderId);
+          if (!f) return err(res, 404, 'not_found', { field: 'folderId' });
+          if (ms.some((m) => m.accountId !== f.accountId)) return err(res, 400, 'invalid', { field: 'folderId', reason: 'account' });
+          if (seg[1] === 'move') { for (const m of ms) m.folderId = f.id; return done('move'); }
+          for (const b of before) { const id = ++nextId; state.messages.set(id, { ...b.snapshot, id, folderId: f.id }); b.newId = id; b.to = f.id; }
+          return done('copy');
+        }
+        if (seg[1] === 'archive') { for (const m of ms) m.folderId = archive(m.accountId).id; return done('archive'); }
+        if (seg[1] === 'delete') {
+          for (const m of ms) { if (m.folderId === trash(m.accountId).id) { state.messages.delete(m.id); purged.push(m.id); } else m.folderId = trash(m.accountId).id; }
+          return done('delete', { purged });
+        }
+        if (seg[1] === 'junk') { for (const b of before) { state.messages.delete(b.id); b.to = null; } return done('junk'); }
+        if (seg[1] === 'tab') { for (const m of ms) m.tab = body.tab; return done(null); }
+      }
+      if (seg[1] === 'flags') {
+        for (const m of ms) { if (typeof body.unread === 'boolean') m.unread = body.unread; if (typeof body.flagged === 'boolean') m.flagged = body.flagged; }
+        return json(res, 200, { ok: true, items: ms.map(sum) });
+      }
+      if (seg[1] === 'move') { for (const m of ms) m.folderId = body.folderId; return json(res, 200, { ok: true }); }
+      if (seg[1] === 'archive') { for (const m of ms) m.folderId = archive(m.accountId).id; return json(res, 200, { ok: true }); }
+      if (seg[1] === 'delete') {
+        for (const m of ms) { if (m.folderId === trash(m.accountId).id) state.messages.delete(m.id); else m.folderId = trash(m.accountId).id; }
+        return json(res, 200, { ok: true });
+      }
+      if (seg[1] === 'junk') { for (const m of ms) state.messages.delete(m.id); return json(res, 200, { ok: true }); }
+      if (seg[1] === 'tab') { for (const m of ms) m.tab = body.tab; return json(res, 200, { ok: true, items: ms.map(sum) }); }
+    }
+
+    // ── pictures ──
+    // GET img/<token> → { mime, size, data (base64) }; ≤ 700 KB, else 413 too_large
+    if (req.method === 'GET' && seg[0] === 'img' && seg.length === 2) {
+      if (seg[1] === 'tok_svg') return json(res, 200, { mime: 'image/svg+xml', size: 20, data: Buffer.from('<svg onload="x()"/>').toString('base64') });
+      if (seg[1] === 'tok_big') return err(res, 413, 'too_large', { max: 716800 });
+      return json(res, 200, { mime: 'image/png', size: PNG.length, data: PNG.toString('base64') });
+    }
+    // GET cid/<m>/<a> → { mediaId, mime, size, url }; the apps load media/<mediaId>
+    if (req.method === 'GET' && seg[0] === 'cid' && seg.length === 3) {
+      const m = state.messages.get(Number(seg[1]));
+      const a = m && m.attachments.find((x) => x.id === Number(seg[2]));
+      if (!a) return err(res, 404, 'not_found');
+      const mediaId = `cid${m.id}x${a.id}`;
+      state.media.set(mediaId, { bytes: PNG, mime: 'image/png' });
+      return json(res, 200, { mediaId, mime: 'image/png', size: PNG.length, url: `https://portal.example/signed/${mediaId}` });
+    }
+
+    // ── writing ──
+    if (req.method === 'POST' && route === 'drafts') {
+      const d = { id: ++nextId, accountId: body.accountId || 1, to: body.to || [], cc: body.cc || [], bcc: body.bcc || [], subject: body.subject || '', html: body.html || '', attachments: [], warnings: [] };
+      if (body.mode && body.replyTo) {
+        const src = state.messages.get(body.replyTo);
+        if (!src) return err(res, 404, 'not_found');
+        d.accountId = src.accountId;
+        if (!body.to && body.mode !== 'forward') d.to = [src.from];
+        if (!body.subject) d.subject = `${body.mode === 'forward' ? 'WG' : 'AW'}: ${src.subject}`;
+        if (!body.html) d.html = `<p></p><blockquote>${src.text}</blockquote>`;
+      }
+      const bad = applyAtts(d, body.attachments || []);
+      if (bad && body.attachments && body.attachments.length) return err(res, 400, bad);
+      if (!d.subject) d.warnings.push({ kind: 'no_subject', text: 'Kein Betreff' });
+      state.drafts.set(d.id, d);
+      state.lastDraftBody = body;
+      return json(res, 200, { draft: draftOut(d) });
+    }
+    if (seg[0] === 'drafts' && /^\d+$/.test(seg[1] || '')) {
+      const d = state.drafts.get(Number(seg[1]));
+      if (!d) return err(res, 404, 'not_found');
+      if (req.method === 'GET' && seg.length === 2) return json(res, 200, { draft: draftOut(d) });
+      if (req.method === 'DELETE' && seg.length === 2) { state.drafts.delete(d.id); return json(res, 200, { ok: true }); }
+      if (req.method === 'PUT' && seg.length === 2) {
+        for (const k of ['accountId', 'to', 'cc', 'bcc', 'subject', 'html']) if (body[k] !== undefined) d[k] = body[k];
+        d.warnings = [];
+        if (body.attachments !== undefined) {
+          const bad = applyAtts(d, body.attachments);
+          if (bad) return err(res, 400, bad);
+        }
+        const acc = state.accounts.find((x) => x.id === d.accountId);
+        if (acc && (acc.provider === 'm365' || acc.provider === 'outlook') && d.attachments.some((a) => a.device)) {
+          d.warnings.push({ kind: 'too_large', text: 'Microsoft-Konten können Dateien vom Gerät nicht mitsenden.' });
+        }
+        if (d.attachments.reduce((s, a) => s + (a.as === 'copy' ? a.size : 0), 0) > 20e6) return err(res, 413, 'too_large');
+        state.lastDraftBody = body;
+        return json(res, 200, { draft: draftOut(d) });
+      }
+      if (req.method === 'POST' && seg[2] === 'send') {
+        const acc = state.accounts.find((x) => x.id === d.accountId);
+        if (acc && (acc.provider === 'm365' || acc.provider === 'outlook') && d.attachments.some((a) => a.device)) return err(res, 409, 'attachments_unsupported');
+        const id = ++nextId;
+        const at = Date.now();
+        state.outbox.set(id, { id, draftId: d.id, accountId: d.accountId, subject: d.subject, sendAt: body.sendAt || at + 10000, state: 'waiting' });
+        return json(res, 200, { outboxId: id, undoUntil: at + 10000, sendAt: body.sendAt || at + 10000 });
+      }
+    }
+    if (req.method === 'POST' && seg[0] === 'outbox' && seg[2] === 'cancel') {
+      const o = state.outbox.get(Number(seg[1]));
+      if (!o) return err(res, 404, 'not_found');
+      state.outbox.delete(o.id);
+      return json(res, 200, { draftId: o.draftId });
+    }
+    if (req.method === 'GET' && route === 'outbox') return json(res, 200, { items: [...state.outbox.values()] });
+    if (req.method === 'GET' && route === 'contacts') {
+      const q = String(url.searchParams.get('q') || '').toLowerCase();
+      const all = [{ name: 'Tim Brandt', email: 'tim@firma.de', source: 'person' }, { name: 'Sabine Keller', email: 'sabine@firma.de', source: 'recent' }, { name: 'Kaputt', email: 'no-at-sign', source: 'recent' }];
+      const own = contactSuggestions(state, q);
+      return json(res, 200, { items: [...own, ...all.filter((c) => `${c.name} ${c.email}`.toLowerCase().includes(q) && !own.some((x) => x.email === c.email))].slice(0, 10) });
+    }
+
+    // ── AI ──
+    if (seg[0] === 'ai' && /^\d+$/.test(seg[1] || '')) {
+      const id = Number(seg[1]);
+      if (!state.features.includes('ai')) return err(res, 409, 'ai_off');
+      if (req.method === 'GET' && seg.length === 2) return json(res, 200, state.ai.get(id) || { status: 'none' });
+      if (req.method === 'POST' && seg.length === 2) {
+        if (state.ai.has(id) && body.again !== true) return json(res, 200, state.ai.get(id));
+        state.aiRuns = (state.aiRuns || 0) + 1;
+        const r = { status: 'done', summary: null, todos: [], replies: [{ label: 'OK', text: 'Passt, danke!' }] };
+        state.ai.set(id, r);
+        return json(res, 200, r);
+      }
+      if (req.method === 'POST' && seg[2] === 'todo') {
+        state.todos.push({ id, index: Number(seg[3]), body });
+        if (body.action === 'calendar') return json(res, 200, { where: 'Privat · 28.11.', eventId: 999 });
+        if (!state.features.includes('familyCalendar')) return err(res, 409, 'familie_unavailable');
+        return json(res, 200, { where: 'Familienkalender · 28.11.' });
+      }
+    }
+
+    // ── filing ──
+    if (req.method === 'GET' && route === 'filing') return json(res, 200, { items: state.filing });
+    if (req.method === 'POST' && seg[0] === 'filing' && /^\d+$/.test(seg[1] || '')) {
+      const f = state.filing.find((x) => x.id === Number(seg[1]));
+      if (!f) return err(res, 404, 'not_found');
+      state.filing = state.filing.filter((x) => x !== f);
+      if (seg[2] === 'confirm') return json(res, 200, { savedTo: { nodeId: 7001, where: body.folderId ? 'Meine Dateien › Gewählt' : f.suggestion.where } });
+      return json(res, 200, { ok: true });
+    }
+
+    // ── Mail 1.9.0: free/busy, shared calendars, resources (before Phase 2: it adds to GET calendars / events) ──
+    if (planRoute({ req, seg, url, body, state, json: (st, b) => json(res, st, b), err: (st, code, extra) => err(res, st, code, extra), sum, pimRoute })) return undefined;
+
+    // ── Phase 2: calendar and contacts ──
+    if (pimRoute({ req, route, seg, url, body, state, json: (st, b) => json(res, st, b), err: (st, code, extra) => err(res, st, code, extra), sum })) return undefined;
+
+    return err(res, 404, 'not_found');
+  });
+
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const srv = {
+    url: `http://127.0.0.1:${server.address().port}`,
+    state,
+    down: false,
+    /** Microsoft would answer this code for this PKCE challenge. */
+    issueCode(challenge) {
+      const code = `M.C${crypto.randomBytes(12).toString('hex')}`;
+      state.msCodes.set(code, challenge);
+      return code;
+    },
+    close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
+  };
+  return srv;
+}
+
+module.exports = {
+  MAIL13_FEATURES, mailServer, PLUGIN, API, MEDIA, PNG };

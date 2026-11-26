@@ -12,6 +12,8 @@
  *       (requested_at 'YYYY-MM-DD HH:MM:SS' UTC, same value as peer-info)
  *     { type: 'peer_state', enabled }                 → peer disabled: same as peer-info
  *     { type: 'config_changed' }                      → the app's config check
+ *     { type: 'places', ids, deleted }                → nothing here: services/places.js listens to the push client
+ *       itself (the pages of „Meine Orte“ load again); passed on as 'control'
  *   hello.state (on every connect; catches up what happened while offline)
  *     { policy_version, peer_enabled, support_bundle_requested,
  *       support_bundle_requested_at, config_hash }
@@ -154,6 +156,8 @@ class PushControl extends EventEmitter {
         break;
       case 'config_changed':
         this._configChanged('push');
+        break;
+      case 'places':
         break;
       default:
         return;

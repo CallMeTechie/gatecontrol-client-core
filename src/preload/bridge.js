@@ -89,6 +89,15 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       get: (opts) => ipcRenderer.invoke('logs:get', opts),
       export: () => ipcRenderer.invoke('logs:export'),
       show: () => ipcRenderer.invoke('logs:show'),
+      // "Export": save a copy where the person picks, shown in the Explorer → { ok, path } | { ok: false, cancelled | code }
+      save: () => ipcRenderer.invoke('logs:save'),
+    },
+
+    // ── System ───────────────────────────────────────────
+    // → { processUser, sessionUser, differs, profile, sessionProfile, downloads, downloadsSource, unreachable }:
+    // does the app run as another Windows user, and whose folders are used (utils/user-folders.js)?
+    system: {
+      runAs: () => ipcRenderer.invoke('system:run-as'),
     },
 
     // ── Support bundle ───────────────────────────────────
@@ -159,6 +168,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       quiet:     (opts) => ipcRenderer.invoke('notify:quiet', opts),
       // "Im Portal ändern" → portal tab "Meine Benachrichtigungen" (auto-login)
       openQuietHours: () => ipcRenderer.invoke('notify:quiet:open'),
+      // „Auch per E-Mail“ of plugin topics (per person, GateControl 1.225.0):
+      // { refresh } → { ok, known, topics: [{ id, label, enabled }], to, ready }
+      email:    (opts) => ipcRenderer.invoke('notify:email', opts),
+      setEmail: (id, enabled) => ipcRenderer.invoke('notify:email:set', { id, enabled }),
       // Where each kind of notification appears (core 1.191): GateControl,
       // the family chat or an own chat → { ok, routes } | { ok: false, error };
       // setRoute also gives `chat` (the own chat on 'own', else null)
@@ -171,6 +184,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onUpdate:   (cb) => subscribe('notify:update', cb),
       onStatus:   (cb) => subscribe('notify:status', cb),
       onNavigate: (cb) => subscribe('notify:navigate', cb),
+      // Windows refused a toast (E_ACCESSDENIED): { title, body, route?, id? } for the app to show itself
+      onFallback: (cb) => subscribe('notify:fallback', cb),
     },
 
     // ── Chats (messenger) ────────────────────────────────
@@ -180,6 +195,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       status:        () => ipcRenderer.invoke('chat:status'),
       check:         () => ipcRenderer.invoke('chat:check'),
       conversations: (opts) => ipcRenderer.invoke('chat:conversations', opts),
+      // Messenger 1.20 (status().me.features.bridge_channels): the page „Kanäle“ → { ok, channels, summary }
+      channels:      (opts) => ipcRenderer.invoke('chat:channels', opts),
       conversation:  (id, opts) => ipcRenderer.invoke('chat:conversation', { ...(opts || {}), id }),
       messages:      (id, opts) => ipcRenderer.invoke('chat:messages', { ...(opts || {}), id }),
       send:          (msg) => ipcRenderer.invoke('chat:send', msg),
@@ -218,6 +235,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       storySeen:     (id) => ipcRenderer.invoke('chat:story:seen', { id }),
       storyViewers:  (id) => ipcRenderer.invoke('chat:story:viewers', { id }),
       storyReact:    (id, emoji) => ipcRenderer.invoke('chat:story:react', { id, emoji }),
+      // Messenger 1.25: a contact's WhatsApp status (status().me.features.bridge_status)
+      bridgedStorySeen:  (id) => ipcRenderer.invoke('chat:story:bridged:seen', { id }),
+      bridgedStoryReply: (id, reply) => ipcRenderer.invoke('chat:story:bridged:reply', { id, text: reply && reply.text, emoji: reply && reply.emoji }),
       blocks:        () => ipcRenderer.invoke('chat:blocks'),
       block:         (userId, blocked) => ipcRenderer.invoke('chat:block', { userId, blocked: blocked !== false }),
       archive:       (id, archived) => ipcRenderer.invoke('chat:archive', { id, archived: archived === true }),
@@ -234,6 +254,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Messenger 1.10: the file of a message into Drive (folderId: a folder picked, else Meine Dateien › Messenger)
       toDrive:       (id, folderId) => ipcRenderer.invoke('chat:to-drive', { id, folderId: folderId || null }),
       places:        () => ipcRenderer.invoke('chat:places'),
+      // „Meine Orte“ (Messenger 1.28 `profilePlaces`): the source of the place choice — the person's own places of the
+      // profile and Familie's places, each with `ref`, in the Messenger's order (most used here first). Without the
+      // feature: Familie's places as before (source 'familie')
+      pickPlaces:    () => ipcRenderer.invoke('chat:places', { all: true }),
       poll:          (id, op, args) => ipcRenderer.invoke('chat:poll', { ...(args || {}), id, op }),
       event:         (id, op, args) => ipcRenderer.invoke('chat:event', { ...(args || {}), id, op }),
       stopArrival:   (id) => ipcRenderer.invoke('chat:arrival:stop', { id }),
@@ -242,6 +266,44 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       cardImage:     (id) => ipcRenderer.invoke('chat:card:image', { id }),
       // Messenger 1.6 notice cards: the notification's picture (/notify-media/… of the own server)
       noticeImage:   (path) => ipcRenderer.invoke('chat:notice:image', { path }),
+      // Messenger 1.13 „Verknüpfte Dienste“ (status().me.features.linked_services): the own account at another
+      // messenger. step() without `phone` waits for the phone (≤ 15 s); number and code are never stored
+      bridges:       () => ipcRenderer.invoke('chat:bridges'),
+      bridgeConsent: (network) => ipcRenderer.invoke('chat:bridge:consent', { network }),
+      bridgeLogin:   (network, flow) => ipcRenderer.invoke('chat:bridge:login', { network, flow }),
+      bridgeStep:    (network, processId, stepId, input) => ipcRenderer.invoke('chat:bridge:step', { ...(input || {}), network, processId, stepId }),
+      bridgeCancel:  (network, processId) => ipcRenderer.invoke('chat:bridge:cancel', { network, processId }),
+      bridgeUnlink:  (network, loginId) => ipcRenderer.invoke('chat:bridge:unlink', { network, loginId }),
+      // Messenger 1.14: an own message of a chat over a bridge that was not sent, once more
+      resend:        (id) => ipcRenderer.invoke('chat:resend', { id }),
+      // Messenger 1.15 (status().me.features.bridge_new_chat): a new chat by phone number — checked on request only
+      bridgeResolve: (network, number, cc) => ipcRenderer.invoke('chat:bridge:resolve', { network, number, cc }),
+      bridgeNewChat: (network, number, cc) => ipcRenderer.invoke('chat:bridge:chat', { network, number, cc }),
+      // Messenger 1.17 (status().me.features.bridge_history): „Älteren Verlauf laden“, a file of the older history now
+      bridgeHistory: (days) => ipcRenderer.invoke('chat:bridge:history', { days }),
+      fetchFile:     (id) => ipcRenderer.invoke('chat:fetch', { id }),
+      // Messenger 1.18 (status().me.features.bridge_contacts): „Neuer Chat“ with contacts; a contact's chat
+      // ({ ref } | { contactId, phoneKind }) — an address book number is checked only here, on tap
+      newChatContacts:   (network, q) => ipcRenderer.invoke('chat:bridge:contacts', { network, q }),
+      bridgeContactChat: (network, contact) => ipcRenderer.invoke('chat:bridge:contact-chat', { network, contact }),
+      // Messenger 1.21 (status().me.features.chat_people): persons — the source chips (way null: all), the suggestions,
+      // merging („Zusammenführen“, a suggestion or by hand), „Trennen“, the name; the question after linking WhatsApp
+      personWay:      (id, way) => ipcRenderer.invoke('chat:person:way', { id, way: way || null }),
+      suggestions:    (opts) => ipcRenderer.invoke('chat:suggestions', opts),
+      answerSuggestion: (id, action) => ipcRenderer.invoke('chat:suggestion:answer', { id, action }),
+      mergePersons:   (req) => ipcRenderer.invoke('chat:person:merge', req),
+      splitPerson:    (id, conversationId) => ipcRenderer.invoke('chat:person:split', { id, conversationId: conversationId == null ? null : conversationId }),
+      renamePerson:   (id, name) => ipcRenderer.invoke('chat:person:name', { id, name }),
+      personCandidates: (id) => ipcRenderer.invoke('chat:person:candidates', { id }),
+      // Messenger 1.27 (status().me.features.placeMessages): „Nachrichten senden über“ — 'auto' | 'gatecontrol' | network
+      setReplyPref:   (id, pref) => ipcRenderer.invoke('chat:person:reply-pref', { id, pref: pref || 'auto' }),
+      // Messenger 1.23: per service (network: 'signal'; missing → WhatsApp); „Im Portal / Windows-Client fortsetzen“
+      // of a service with the QR code only, and the event when another device sends that step here
+      bridgeRecognition: (allowed, network) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true, ...(typeof network === 'string' ? { network } : {}) }),
+      bridgeHandoff:    (network, target) => ipcRenderer.invoke('chat:bridge:handoff', { network, target }),
+      bridgeHandoffEnd: (network) => ipcRenderer.invoke('chat:bridge:handoff:end', { network }),
+      onHandoff:        (cb) => subscribe('chat:handoff', cb),
+      onSuggestions:  (cb) => subscribe('chat:suggestions', cb),
       storage:       () => ipcRenderer.invoke('chat:storage'),
       clearCache:    () => ipcRenderer.invoke('chat:cache:clear'),
       onFeed:          (cb) => subscribe('chat:feed', cb),
@@ -273,6 +335,119 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onPush:    (cb) => subscribe('school:push', cb),
     },
 
+    // ── Familie (plugin gatecontrol-familie: "Internet zu Hause") ─
+    // Served when the app passes a FamilieService to registerBaseHandlers
+    // (ipc/familie-handlers.js lists arguments and answers).
+    familie: {
+      status:    () => ipcRenderer.invoke('familie:status'),
+      check:     () => ipcRenderer.invoke('familie:check'),
+      internet:  (opts) => ipcRenderer.invoke('familie:internet', { refresh: !!(opts && opts.refresh) }),
+      // how: exactly one of { minutes } | { until: 'HH:MM' | ISO } | { add }
+      pause:     (childId, how) => ipcRenderer.invoke('familie:internet:pause', { childId, ...(how && typeof how === 'object' ? { minutes: how.minutes, until: how.until, add: how.add } : {}) }),
+      resume:    (childId) => ipcRenderer.invoke('familie:internet:resume', { childId }),
+      // "Heute länger": minutes 0 ends it; fromNow: count from now, not from the start of the blocked time
+      extend:    (childId, minutes, opts) => ipcRenderer.invoke('familie:internet:extend', { childId, minutes, fromNow: !!(opts && opts.fromNow) }),
+      rules:       (opts) => ipcRenderer.invoke('familie:rules', { refresh: !!(opts && opts.refresh) }),
+      ruleOptions: (opts) => ipcRenderer.invoke('familie:rules:options', { refresh: !!(opts && opts.refresh) }),
+      setRuleActive:  (id, active) => ipcRenderer.invoke('familie:rules:active', { id, active }),
+      // actions: every action of the rule (the `input` of those kept, the changed one)
+      setRuleActions: (id, actions) => ipcRenderer.invoke('familie:rules:actions', { id, actions }),
+      presence:  (opts) => ipcRenderer.invoke('familie:presence', { refresh: !!(opts && opts.refresh) }),
+      setShare:  (share) => ipcRenderer.invoke('familie:presence:share', { share }),
+      wifi:      (opts) => ipcRenderer.invoke('familie:wifi', { refresh: !!(opts && opts.refresh) }),
+      setWifi:   (enabled) => ipcRenderer.invoke('familie:wifi:set', { enabled }),
+      setWifiDevice: (id, counts) => ipcRenderer.invoke('familie:wifi:device', { id, counts }),
+      avatar:    (url) => ipcRenderer.invoke('familie:avatar', { url }),
+      onState:   (cb) => subscribe('familie:state', cb),
+      onPush:    (cb) => subscribe('familie:push', cb),
+    },
+
+    // ── Drucken (plugin gatecontrol-print: the printers at home) ─
+    // Served when the app passes a PrintService to registerBaseHandlers
+    // (ipc/print-handlers.js lists arguments and answers). The page never
+    // names a file by its path: pick / addDropped / addDrive answer tokens.
+    print: {
+      status:    () => ipcRenderer.invoke('print:status'),
+      check:     () => ipcRenderer.invoke('print:check'),
+      overview:  (opts) => ipcRenderer.invoke('print:overview', { refresh: !!(opts && opts.refresh) }),
+      job:       (id) => ipcRenderer.invoke('print:job', { id }),
+      cancel:    (id) => ipcRenderer.invoke('print:cancel', { id }),
+      // file dialog → { ok, files: [{ token, name, size, type, kind, from, vault, pages }], rejected }
+      pick:      () => ipcRenderer.invoke('print:pick'),
+      // dropped File objects (drag & drop from the Explorer) → the same as pick(). The path comes from Electron's
+      // webUtils only — never from a property of the object, which a page script could set to any path.
+      addDropped: (fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : ''; } catch { p = ''; }
+          if (typeof p === 'string' && p) paths.push(p);
+        }
+        return ipcRenderer.invoke('print:dropped', { paths });
+      },
+      // files of Drive (node ids); opts.vault: the person said yes to printing vault files
+      addDrive:  (ids, opts) => ipcRenderer.invoke('print:drive', { ids, vault: !!(opts && opts.vault) }),
+      forget:    (tokens) => ipcRenderer.invoke('print:forget', { tokens }),
+      // { tokens, deviceId, copies, color, duplex, media?, source? } → { ok, transfers }
+      submit:    (job) => {
+        const j = job && typeof job === 'object' ? job : {};
+        return ipcRenderer.invoke('print:submit', { tokens: j.tokens, deviceId: j.deviceId, copies: j.copies, color: j.color, duplex: j.duplex, media: j.media, source: j.source });
+      },
+      transfers: () => ipcRenderer.invoke('print:transfers'),
+      cancelTransfer: (id) => ipcRenderer.invoke('print:transfer:cancel', { id }),
+      // "Erneut drucken": { jobId } | { transferId } → { ok, files, rejected, options }; opts.vault: the yes for a vault file
+      again:     (ref, opts) => ipcRenderer.invoke('print:again', { jobId: ref && ref.jobId, transferId: ref && ref.transferId, vault: !!(opts && opts.vault) }),
+      sources:   () => ipcRenderer.invoke('print:sources'),
+      onState:   (cb) => subscribe('print:state', cb),
+      onPush:    (cb) => subscribe('print:push', cb),
+      onTransfers: (cb) => subscribe('print:transfers', cb),
+      onJob:     (cb) => subscribe('print:job', cb),
+    },
+
+    // ── DNS-Schutz (the DNS filter of the VPN devices, plugin gatecontrol-dns) ─
+    // Served when the app passes a DnsProtectService to registerBaseHandlers
+    // (ipc/dns-protect-handlers.js lists arguments and answers).
+    dnsProtect: {
+      status:    () => ipcRenderer.invoke('dnsprotect:status'),
+      check:     () => ipcRenderer.invoke('dnsprotect:check'),
+      refresh:   () => ipcRenderer.invoke('dnsprotect:refresh'),
+      // how: exactly one of { minutes } | { forever: true } | { extend }
+      pause:     (how) => ipcRenderer.invoke('dnsprotect:pause', how && typeof how === 'object' ? { minutes: how.minutes, forever: how.forever, extend: how.extend } : {}),
+      resume:    () => ipcRenderer.invoke('dnsprotect:resume'),
+      // the card is on screen: the status is asked more often
+      watch:     (on) => ipcRenderer.invoke('dnsprotect:watch', { on: on === true }),
+      onChange:  (cb) => subscribe('dnsprotect:change', cb),
+    },
+
+    // ── Schnellaktionen (the plugins' quick actions: light, shutters, heating, chains …) ─
+    // Served when the app passes a QuickActionsService to registerBaseHandlers
+    // (ipc/quick-actions-handlers.js lists arguments and answers).
+    quickActions: {
+      list:      () => ipcRenderer.invoke('quickactions:list'),
+      // how: {} (a button), { state: 'on'|'off' } (a toggle) or { control, value } (a control of its widget)
+      run:       (plugin, id, how) => {
+        const h = how && typeof how === 'object' ? how : {};
+        return ipcRenderer.invoke('quickactions:run', { plugin, id, control: h.control, value: h.value, state: h.state });
+      },
+    },
+
+    // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
+    // Served when the app passes a CamerasService to registerBaseHandlers
+    // (ipc/camera-handlers.js lists arguments and answers). Pictures and
+    // video are gccam:// addresses of the answers (no IPC).
+    cameras: {
+      status:    () => ipcRenderer.invoke('cameras:status'),
+      check:     () => ipcRenderer.invoke('cameras:check'),
+      list:      (opts) => ipcRenderer.invoke('cameras:list', { refresh: !!(opts && opts.refresh) }),
+      live:      (id) => ipcRenderer.invoke('cameras:live', { id }),
+      // day: 'YYYY-MM-DD' (default: today of the plugin)
+      clips:     (id, day, opts) => ipcRenderer.invoke('cameras:clips', { id, ...(day ? { day } : {}), refresh: !!(opts && opts.refresh) }),
+      saveStill: (id) => ipcRenderer.invoke('cameras:still:save', { id }),
+      setPush:   (id, push) => ipcRenderer.invoke('cameras:push:set', { id, push: push === true }),
+      onState:   (cb) => subscribe('cameras:state', cb),
+      onPush:    (cb) => subscribe('cameras:push', cb),
+    },
+
     // ── GateDrop (plugin gatecontrol-gatedrop) ───────────
     // Served when the app passes a GateDropService to registerBaseHandlers
     // (ipc/gatedrop-handlers.js lists arguments and answers).
@@ -300,6 +475,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       saveSend:    (id) => ipcRenderer.invoke('gatedrop:send:save', { id }),
       endLink:     (token) => ipcRenderer.invoke('gatedrop:link:end', { token }),
       openFolder:  () => ipcRenderer.invoke('gatedrop:folder'),
+      // "Speicherort für empfangene Dateien": folder dialog / back to Downloads\GateControl → { ok, folder, custom, defaultFolder }
+      pickFolder:  () => ipcRenderer.invoke('gatedrop:folder:pick'),
+      resetFolder: () => ipcRenderer.invoke('gatedrop:folder:reset'),
       showItem:    (path) => ipcRenderer.invoke('gatedrop:show', { path }),
       openItem:    (path) => ipcRenderer.invoke('gatedrop:open', { path }),
       copy:        (text) => ipcRenderer.invoke('gatedrop:copy', { text }),
@@ -403,7 +581,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       areas:        () => ipcRenderer.invoke('drive:areas'),
       // opts: { sort: 'name' | 'mtime' | 'size' | 'updated', order: 'asc' | 'desc', offset, limit }
       folder:       (id, opts) => ipcRenderer.invoke('drive:folder', { ...(opts || {}), id }),
-      search:       (q, area) => ipcRenderer.invoke('drive:search', { q, area: area || null }),
+      // Drive 1.25 'mediaFilter': media 'image' | 'video' (q may then be '')
+      search:       (q, area, media) => ipcRenderer.invoke('drive:search', { q, area: area || null, ...(media ? { media } : {}) }),
       mkdir:        (parentId, name) => ipcRenderer.invoke('drive:mkdir', { parentId, name }),
       rename:       (id, name) => ipcRenderer.invoke('drive:rename', { id, name }),
       move:         (id, parentId) => ipcRenderer.invoke('drive:move', { id, parentId }),
@@ -415,6 +594,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       restoreVersion: (id, versionId) => ipcRenderer.invoke('drive:version:restore', { id, versionId }),
       links:        (nodeId) => ipcRenderer.invoke('drive:links', { nodeId: nodeId || null }),
       // { nodeId, mode: 'view' | 'download' | 'upload', expires: '1d' | '7d' | '30d' | 'never', pin? }
+      // Drive 1.12 'multiLink': { ids, mode: 'view' | 'download', expires, pin? } — one link for several files
       createLink:   (opts) => ipcRenderer.invoke('drive:link:create', { ...(opts || {}) }),
       endLink:      (token) => ipcRenderer.invoke('drive:link:end', { token }),
       preview:      (mediaId, opts) => ipcRenderer.invoke('drive:preview', { mediaId, large: !!(opts && opts.large) }),
@@ -439,6 +619,11 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       clearTransfers: () => ipcRenderer.invoke('drive:transfers:clear'),
       open:         (id, versionId) => ipcRenderer.invoke('drive:open', { id, versionId: versionId || null }),
       saveAs:       (id, versionId) => ipcRenderer.invoke('drive:save-as', { id, versionId: versionId || null }),
+      // the viewer (Drive 1.21): a gcdrive: address for <img> / <video> (streamed, Range), and its end
+      stream:       (id) => ipcRenderer.invoke('drive:stream', { id }),
+      endStream:    (url) => ipcRenderer.invoke('drive:stream:end', { url }),
+      // the viewer of PDFs, texts and Markdown (not of a vault): bytes / text of the copy "Öffnen" loads too
+      docView:      (id) => ipcRenderer.invoke('drive:doc-view', { id }),
       showItem:     (path) => ipcRenderer.invoke('drive:show', { path }),
       // the folder last picked in "In Drive speichern"
       lastFolder:   () => ipcRenderer.invoke('drive:last-folder'),
@@ -454,6 +639,132 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       guard:        (fresh) => ipcRenderer.invoke('drive:guard', { fresh: !!fresh }),
       guardDecide:  (id, decision) => ipcRenderer.invoke('drive:guard:decide', { id, decision }),
       onGuard:      (cb) => subscribe('drive:guard', cb),
+      // Drive 1.7 'timeTravel': a folder back to how it was at `at` (preview first; "Rückgängig": at = before)
+      timeTravelPreview: (id, at) => ipcRenderer.invoke('drive:timetravel:preview', { id, at }),
+      timeTravel:   (id, at) => ipcRenderer.invoke('drive:timetravel', { id, at }),
+      // Drive 1.7 'photos' / 'albums' / 'frame'
+      photos:       (opts) => ipcRenderer.invoke('drive:photos', { ...(opts || {}) }),
+      photoMonths:  (area) => ipcRenderer.invoke('drive:photos:months', { area: area || null }),
+      memories:     (date) => ipcRenderer.invoke('drive:photos:memories', { date: date || null }),
+      // Drive 1.26 'memoryCollections': the page „Erinnerungen“ — the collections, the photos of one
+      memoryCollections: (date) => ipcRenderer.invoke('drive:memories', { date: date || null }),
+      memoryPhotos: (id, opts) => ipcRenderer.invoke('drive:memories:photos', { ...(opts || {}), id }),
+      previewOf:    (id, opts) => ipcRenderer.invoke('drive:preview:node', { id, large: !!(opts && opts.large) }),
+      albums:       () => ipcRenderer.invoke('drive:albums'),
+      album:        (id, opts) => ipcRenderer.invoke('drive:album', { ...(opts || {}), id }),
+      createAlbum:  (name, areaId) => ipcRenderer.invoke('drive:album:create', { name, areaId: areaId || null }),
+      // patch: { name?, coverId?, frame? }
+      updateAlbum:  (id, patch) => ipcRenderer.invoke('drive:album:update', { ...(patch || {}), id }),
+      deleteAlbum:  (id) => ipcRenderer.invoke('drive:album:delete', { id }),
+      addToAlbum:   (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids }),
+      removeFromAlbum: (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids, remove: true }),
+      // Drive 1.31 'framePhotos': photos for the photo frame (framePhotos(ids): only those of `ids` in it)
+      framePhotos:  (ids) => ipcRenderer.invoke('drive:frame:photos', { ids: ids || null }),
+      addToFrame:   (ids) => ipcRenderer.invoke('drive:frame:set', { ids }),
+      removeFromFrame: (ids) => ipcRenderer.invoke('drive:frame:set', { ids, remove: true }),
+      // Drive 1.16 'photoPlaces' / 'photoPeople': photos(opts) also takes place, bbox, person, districts, withPeople;
+      // filter: { area?, q?, person? }
+      photoMonthsBy: (area, filter) => ipcRenderer.invoke('drive:photos:months', { ...(filter || {}), area: area || null }),
+      photoPlaces:  (filter) => ipcRenderer.invoke('drive:photos:places', { ...(filter || {}) }),
+      photoMap:     (bbox, zoom, filter) => ipcRenderer.invoke('drive:photos:map', { ...(filter || {}), bbox, zoom }),
+      photoSuggest: (q) => ipcRenderer.invoke('drive:photos:suggest', { q }),
+      photoSettings: () => ipcRenderer.invoke('drive:photos:settings'),
+      // patch: { keepGeo?, stripGeoOnShare?, people?, peopleKids? } — people: false deletes all face data
+      setPhotoSettings: (patch) => ipcRenderer.invoke('drive:photos:settings:set', { ...(patch || {}) }),
+      deletePhotoGeo: () => ipcRenderer.invoke('drive:photos:geo:delete'),
+      people:       () => ipcRenderer.invoke('drive:people'),
+      // Drive 1.18: the page "Übersicht" (with 'overview' in one call, else built from the rest)
+      overview:     () => ipcRenderer.invoke('drive:overview'),
+      person:       (id) => ipcRenderer.invoke('drive:person', { id }),
+      // patch: { name?, hidden?, contact?: { kind: 'family' | 'contact', id, name } | null }
+      updatePerson: (id, patch) => ipcRenderer.invoke('drive:person:update', { ...(patch || {}), id }),
+      mergePerson:  (id, into) => ipcRenderer.invoke('drive:person:merge', { id, into }),
+      similarPeople: (id) => ipcRenderer.invoke('drive:person:similar', { id }),
+      uncertainFaces: (id, limit) => ipcRenderer.invoke('drive:person:uncertain', { id, limit: limit || null }),
+      confirmFaces: (id, faceIds, yes) => ipcRenderer.invoke('drive:person:confirm', { id, faceIds, yes: !!yes }),
+      // person null: "Nicht diese Person"
+      moveFace:     (faceId, person) => ipcRenderer.invoke('drive:face:move', { id: faceId, person: person === undefined ? null : person }),
+      // an OpenStreetMap tile of the photo map (the main process loads it, like the chats' maps)
+      mapTile:      (z, x, y) => ipcRenderer.invoke('drive:map:tile', { z, x, y }),
+      // Drive 1.7 'storage' (all: administrators)
+      storage:      (all) => ipcRenderer.invoke('drive:storage', { all: !!all }),
+      pruneVersions: (areaId, keep) => ipcRenderer.invoke('drive:storage:prune', { areaId, keep }),
+      // Drive 1.8 'docAi': what Drive recognised in a document, its deadlines and reminders
+      insight:      (id) => ipcRenderer.invoke('drive:insight', { id }),
+      recognize:    (id) => ipcRenderer.invoke('drive:insight:run', { id }),
+      applyInsight: (id, opts) => ipcRenderer.invoke('drive:insight:apply', { id, name: !!(opts && opts.name), folder: !!(opts && opts.folder) }),
+      deadlines:    (range) => ipcRenderer.invoke('drive:deadlines', { from: (range && range.from) || null, to: (range && range.to) || null }),
+      // daysBefore null: no reminder
+      remind:       (id, daysBefore) => ipcRenderer.invoke('drive:deadline:remind', { id, daysBefore: daysBefore === undefined ? null : daysBefore }),
+      setDocAi:     (areaId, on) => ipcRenderer.invoke('drive:area:docai', { areaId, on: !!on }),
+      // Drive 1.14: a deadline into the family calendar ('deadlineCalendar'), a question to the documents ('docAsk'),
+      // "In Dokument umwandeln" of pictures ('scanDocs': prepare → save as pdf / docx / xlsx / image, or discard)
+      calendar:     (id, target) => ipcRenderer.invoke('drive:deadline:calendar', target ? { id, target } : { id }),
+      setDeadlinesToCalendar: (areaId, on) => ipcRenderer.invoke('drive:area:calendar', { areaId, on: !!on }),
+      // Drive 1.17 'deadlineMailCalendar': the calendars to choose (family, mail), the person's target per area
+      deadlineCalendars: () => ipcRenderer.invoke('drive:deadline:calendars'),
+      deadlineTargets: () => ipcRenderer.invoke('drive:deadline:targets'),
+      setDeadlineTarget: (areaId, target) => ipcRenderer.invoke('drive:deadline:target', { areaId, target: target || null }),
+      ask:          (q, area) => ipcRenderer.invoke('drive:ask', { q, area: area || null }),
+      scan: {
+        status:  () => ipcRenderer.invoke('drive:scan:status'),
+        prepare: (ids) => ipcRenderer.invoke('drive:scan:prepare', { ids }),
+        // opts: { target: 'pdf' | 'docx' | 'xlsx' | 'image', folderId?, name?, keepOriginal }
+        save:    (scanId, opts) => ipcRenderer.invoke('drive:scan:save', { ...(opts || {}), scanId }),
+        discard: (scanId) => ipcRenderer.invoke('drive:scan:discard', { scanId }),
+      },
+      // Drive 1.8 'cloudImport': the portal's import page in the browser
+      openImport:   () => ipcRenderer.invoke('drive:import'),
+      // Drive 1.9 'office': "Im Browser bearbeiten / ansehen"
+      office:       (id) => ipcRenderer.invoke('drive:office', { id }),
+      // Drive 1.20 'offline': "offline verfügbar" → { ok, items, ids } · on: true | false → { ok, id, offline, node }
+      offline:      () => ipcRenderer.invoke('drive:offline'),
+      setOffline:   (id, on) => ipcRenderer.invoke('drive:offline:set', { id, on: on === true }),
+      // Drive 1.11: the menu's folder tree, the cache on this PC
+      tree:         (id) => ipcRenderer.invoke('drive:tree', { id }),
+      cache:        () => ipcRenderer.invoke('drive:cache'),
+      clearCache:   () => ipcRenderer.invoke('drive:cache:clear'),
+      // Drive 1.12 'bulk': jobs for many nodes — check first (conflicts, blocked), then start; the job is a row of the
+      // transfer list (dir 'op'), onOp(row) when it ended ("Rückgängig" until row.undoUntil)
+      ops: {
+        check:  (op, ids, target) => ipcRenderer.invoke('drive:ops:check', { op, ids, target: target || null }),
+        // opts: { target?, onConflict?: 'version' | 'rename' | 'skip', meta?: { name, count, target, parents } }
+        start:  (op, ids, opts) => ipcRenderer.invoke('drive:ops:start', { ...(opts || {}), op, ids }),
+        cancel: (id) => ipcRenderer.invoke('drive:ops:cancel', { id }),
+        undo:   (id) => ipcRenderer.invoke('drive:ops:undo', { id }),
+      },
+      onOp:         (cb) => subscribe('drive:op', cb),
+      // Drive 1.12 'zip': "Speichern unter …", then the ZIP of the nodes
+      zip:          (ids, name) => ipcRenderer.invoke('drive:zip', { ids, name: name || null }),
+      // Drive 1.9 'vault': end-to-end encrypted folders (keys stay in the main process)
+      vault: {
+        status:   () => ipcRenderer.invoke('drive:vault:status'),
+        list:     () => ipcRenderer.invoke('drive:vaults'),
+        // Drive 1.11: create(name, { areaId }) — always in the top folder of that area; create(parentId, name) as before
+        create:   (a, b) => ipcRenderer.invoke('drive:vault:create', typeof a === 'string' ? { name: a, areaId: (b && b.areaId) || null } : { parentId: a, name: b }),
+        open:     (vaultId) => ipcRenderer.invoke('drive:vault:open', { vaultId }),
+        request:  (vaultId) => ipcRenderer.invoke('drive:vault:request', { vaultId }),
+        devices:  (vaultId) => ipcRenderer.invoke('drive:vault:devices', { vaultId }),
+        approve:  (vaultId, deviceId, safetyNumber) => ipcRenderer.invoke('drive:vault:approve', { vaultId, deviceId, safetyNumber }),
+        decline:  (vaultId, deviceId) => ipcRenderer.invoke('drive:vault:decline', { vaultId, deviceId }),
+        recover:  (vaultId, recoveryKey) => ipcRenderer.invoke('drive:vault:recover', { vaultId, recoveryKey }),
+        rotate:   (vaultId) => ipcRenderer.invoke('drive:vault:rotate', { vaultId }),
+        onEvent:  (cb) => subscribe('drive:vault', cb),
+        // Drive 1.11: the vault lock (Windows Hello first)
+        lockStatus:   () => ipcRenderer.invoke('drive:vault:lock-status'),
+        unlock:       (vaultId) => ipcRenderer.invoke('drive:vault:unlock', { vaultId: vaultId || null }),
+        lock:         () => ipcRenderer.invoke('drive:vault:lock'),
+        lockSettings: (patch) => ipcRenderer.invoke('drive:vault:lock-settings', { ...(patch || {}) }),
+        touch:        () => ipcRenderer.invoke('drive:vault:touch'),
+        helloSettings: () => ipcRenderer.invoke('drive:hello-settings'),
+        // Drive plugin 1.22: the viewer of vault files (decrypted in memory, gcvault://v/<token>)
+        view:         (id, versionId) => ipcRenderer.invoke('drive:vault:view', { id, versionId: versionId || null }),
+        viewClose:    (token) => ipcRenderer.invoke('drive:vault:view:close', { token }),
+        protect:      (on) => ipcRenderer.invoke('drive:vault:protect', { on: on === true }),
+        onLock:       (cb) => subscribe('drive:vault-lock', cb),
+        // "In Tresor verschieben": a batch is through (moved, deleted, kept, keptFiles, notMoved, folders)
+        onMove:       (cb) => subscribe('drive:vault-move', cb),
+      },
       // "Ordner sichern" (ipc/drive-handlers.js drive:sync:*)
       sync: {
         status:   () => ipcRenderer.invoke('drive:sync:status'),
@@ -470,6 +781,311 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         open:     (id) => ipcRenderer.invoke('drive:sync:open', { id }),
         onChange: (cb) => subscribe('drive:sync', cb),
       },
+    },
+
+    // ── Mail (plugin gatecontrol-mail) ───────────────────
+    // Served when the app passes a MailService to registerBaseHandlers
+    // (ipc/mail-handlers.js lists arguments and answers).
+    mail: {
+      status:       () => ipcRenderer.invoke('mail:status'),
+      check:        () => ipcRenderer.invoke('mail:check'),
+      me:           () => ipcRenderer.invoke('mail:me'),
+      // { threads?, swipeLeft?, swipeRight? }
+      settings:     (patch) => ipcRenderer.invoke('mail:settings', { ...(patch || {}) }),
+      providers:    () => ipcRenderer.invoke('mail:providers'),
+      discover:     (email) => ipcRenderer.invoke('mail:discover', { email }),
+      addAccount:   (input) => ipcRenderer.invoke('mail:account:add', { ...(input || {}) }),
+      // "Mit Microsoft anmelden" in the default browser: { accountId? (sign in again), name?, color?, kind? }
+      microsoft:    (opts) => ipcRenderer.invoke('mail:account:microsoft', { ...(opts || {}) }),
+      cancelSignIn: () => ipcRenderer.invoke('mail:signin:cancel'),
+      updateAccount: (id, patch) => ipcRenderer.invoke('mail:account:update', { ...(patch || {}), id }),
+      deleteAccount: (id) => ipcRenderer.invoke('mail:account:delete', { id }),
+      avatar:       (mediaId) => ipcRenderer.invoke('mail:avatar', { mediaId }),
+      folders:      () => ipcRenderer.invoke('mail:folders'),
+      // { box: 'all' | accountId, folder?, tab?, unread?, flagged?, attachments?, before?, limit? }
+      list:         (query) => ipcRenderer.invoke('mail:list', { ...(query || {}) }),
+      search:       (query) => ipcRenderer.invoke('mail:search', { ...(query || {}) }),
+      thread:       (id) => ipcRenderer.invoke('mail:thread', { id }),
+      message:      (id, opts) => ipcRenderer.invoke('mail:message', { id, markRead: !(opts && opts.markRead === false) }),
+      allowImages:  (id, allow) => ipcRenderer.invoke('mail:images', { id, allow }),
+      // patch: { unread?, flagged?, threads? } — ids: ≤ 2000 (the core sends parts of 500)
+      flags:        (ids, patch) => ipcRenderer.invoke('mail:flags', { ...(patch || {}), ids }),
+      // 'archive' | 'delete' | 'junk' | 'move' (folderId) | 'copy' (folderId, Mail 1.13) | 'tab' (tab); opts.threads
+      act:          (action, ids, opts) => ipcRenderer.invoke('mail:act', { ...(opts || {}), action, ids }),
+      // Mail 1.13: take a bulk action back (its undo.tokens); every id of a list (GET messages/ids)
+      undo:         (tokens) => ipcRenderer.invoke('mail:undo', { tokens: Array.isArray(tokens) ? tokens : [tokens] }),
+      ids:          (query) => ipcRenderer.invoke('mail:ids', { ...(query || {}) }),
+      openAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:open', { ...(opts || {}), id, attachmentId }),
+      saveAttachment: (id, attachmentId, opts) => ipcRenderer.invoke('mail:attachment:save', { ...(opts || {}), id, attachmentId }),
+      // file dialog → { ok, paths }; then upload(paths) → { ok, items: [{ mediaId, … }], rejected }
+      pick:         () => ipcRenderer.invoke('mail:pick'),
+      upload:       (paths) => ipcRenderer.invoke('mail:upload', { paths }),
+      uploadDropped: (fileList) => {
+        const paths = [];
+        for (const f of Array.from(fileList || [])) {
+          let p = '';
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
+          if (p) paths.push(p);
+        }
+        return paths.length ? ipcRenderer.invoke('mail:upload', { paths: paths.slice(0, 20) }) : Promise.resolve({ ok: true, items: [], rejected: [] });
+      },
+      editor:       (html) => ipcRenderer.invoke('mail:editor', { html: html || '' }),
+      createDraft:  (input) => ipcRenderer.invoke('mail:draft:create', { ...(input || {}) }),
+      updateDraft:  (id, input) => ipcRenderer.invoke('mail:draft:update', { ...(input || {}), id }),
+      draft:        (id) => ipcRenderer.invoke('mail:draft:get', { id }),
+      deleteDraft:  (id) => ipcRenderer.invoke('mail:draft:delete', { id }),
+      send:         (id, sendAt) => ipcRenderer.invoke('mail:send', { id, sendAt: sendAt || null }),
+      cancelSend:   (outboxId) => ipcRenderer.invoke('mail:send:cancel', { outboxId }),
+      outbox:       () => ipcRenderer.invoke('mail:outbox'),
+      contacts:     (q) => ipcRenderer.invoke('mail:contacts', { q }),
+      ai:           (id) => ipcRenderer.invoke('mail:ai', { id }),
+      // an existing result as it is; again: true asks the AI anew ("Neu erstellen")
+      runAi:        (id, again) => ipcRenderer.invoke('mail:ai:run', { id, again: again === true }),
+      // into the family calendar; { action: 'calendar', calendarId? } into the person's own calendar (Phase 2)
+      todo:         (id, index, opts) => ipcRenderer.invoke('mail:ai:todo', { ...(opts || {}), id, index }),
+      suggest:      (id, attachmentId) => ipcRenderer.invoke('mail:drive:suggest', { id, attachmentId }),
+      // { folderId?, name?, remember? }
+      saveToDrive:  (id, attachmentId, opts) => ipcRenderer.invoke('mail:drive:save', { ...(opts || {}), id, attachmentId }),
+      saveAll:      (id) => ipcRenderer.invoke('mail:drive:save-all', { id }),
+      filing:       () => ipcRenderer.invoke('mail:filing'),
+      confirmFiling: (id, opts) => ipcRenderer.invoke('mail:filing:confirm', { ...(opts || {}), id }),
+      dismissFiling: (id) => ipcRenderer.invoke('mail:filing:dismiss', { id }),
+      onState:      (cb) => subscribe('mail:state', cb),
+      // lists to reload: { accountId, folderId, messageId, threadId, attachmentId } (null: all)
+      onChanged:    (cb) => subscribe('mail:changed', cb),
+      onOutbox:     (cb) => subscribe('mail:outbox', cb),
+      onLoading:    (cb) => subscribe('mail:loading', cb),
+
+      // ── Calendar (Phase 2; ipc/mail-handlers.js) ──
+      calendars:      () => ipcRenderer.invoke('mail:cal:list'),
+      createCalendar: (input) => ipcRenderer.invoke('mail:cal:create', { ...(input || {}) }),
+      updateCalendar: (id, patch) => ipcRenderer.invoke('mail:cal:update', { ...(patch || {}), id }),
+      deleteCalendar: (id) => ipcRenderer.invoke('mail:cal:delete', { id }),
+      subscribe:      (input) => ipcRenderer.invoke('mail:cal:subscribe', { ...(input || {}) }),
+      calSettings:    (patch) => ipcRenderer.invoke('mail:cal:settings', { ...(patch || {}) }),
+      updateOverlay:  (id, patch) => ipcRenderer.invoke('mail:overlay:update', { ...(patch || {}), id }),
+      // { from, to (ms, ≤ 62 days), calendars?: [id | overlay id] }
+      events:         (query) => ipcRenderer.invoke('mail:events', { ...(query || {}) }),
+      event:          (id, occurrence) => ipcRenderer.invoke('mail:event:get', { id, occurrence: occurrence || null }),
+      createEvent:    (input) => ipcRenderer.invoke('mail:event:create', { ...(input || {}) }),
+      updateEvent:    (id, input) => ipcRenderer.invoke('mail:event:update', { ...(input || {}), id }),
+      // { scope: 'occurrence' | 'series', occurrence?, notify?, comment? }
+      deleteEvent:    (id, opts) => ipcRenderer.invoke('mail:event:delete', { ...(opts || {}), id }),
+      respondEvent:   (id, input) => ipcRenderer.invoke('mail:event:respond', { ...(input || {}), id }),
+      invitations:    (state) => ipcRenderer.invoke('mail:invitations', { state: state === 'all' ? 'all' : 'open' }),
+      invitation:     (id) => ipcRenderer.invoke('mail:invitation:get', { id }),
+      respondInvitation: (id, input) => ipcRenderer.invoke('mail:invitation:respond', { ...(input || {}), id }),
+      applyInvitation:   (id) => ipcRenderer.invoke('mail:invitation:apply', { id }),
+      dismissInvitation: (id, decline) => ipcRenderer.invoke('mail:invitation:dismiss', { id, decline: decline === true }),
+      // live: { kind: 'changed', calendarId, … } | { kind: 'calendars' } | { kind: 'invitation', … } | { kind: 'conflict', eventId }
+      //       | 1.9.0: { kind: 'shares', calendarId }
+      onCalendar:     (cb) => subscribe('mail:calendar', cb),
+
+      // ── Free/busy, shared calendars, resources (Mail 1.9.0; only with the features of me) ──
+      // { from, to, attendees: [email], resources?: [id] } → rows (the asker first, never titles)
+      freeBusy:       (query) => ipcRenderer.invoke('mail:freebusy', { ...(query || {}) }),
+      // { duration (min), from?, to?, attendees, resources?, limit? }
+      suggestTimes:   (query) => ipcRenderer.invoke('mail:freebusy:suggest', { ...(query || {}) }),
+      shares:         (calendarId) => ipcRenderer.invoke('mail:shares', { calendarId }),
+      addShare:       (calendarId, input) => ipcRenderer.invoke('mail:share:add', { ...(input || {}), calendarId }),
+      updateShare:    (calendarId, shareId, level) => ipcRenderer.invoke('mail:share:update', { calendarId, shareId, level }),
+      removeShare:    (calendarId, shareId) => ipcRenderer.invoke('mail:share:delete', { calendarId, shareId }),
+      shared:         () => ipcRenderer.invoke('mail:shared'),
+      updateShared:   (id, patch) => ipcRenderer.invoke('mail:shared:update', { ...(patch || {}), id }),
+      principals:     (q) => ipcRenderer.invoke('mail:principals', { q: typeof q === 'string' ? q : '' }),
+      // { from?, to?, kind? } — with from / to each resource's busy times
+      resources:      (query) => ipcRenderer.invoke('mail:resources', { ...(query || {}) }),
+      book:           (id, input) => ipcRenderer.invoke('mail:resource:book', { ...(input || {}), id }),
+      // 'open' | 'done' | 'mine'
+      bookings:       (state) => ipcRenderer.invoke('mail:bookings', { state: state || 'mine' }),
+      booking:        (id) => ipcRenderer.invoke('mail:booking:get', { id }),
+      // { decision: 'approve' | 'decline', comment?, override? }
+      decide:         (id, input) => ipcRenderer.invoke('mail:booking:decide', { ...(input || {}), id }),
+      cancelBooking:  (id) => ipcRenderer.invoke('mail:booking:cancel', { id }),
+      // live: { kind: 'request' | 'booking', bookingId, resourceId, state } | { kind: 'resources' }
+      onResources:    (cb) => subscribe('mail:resources', cb),
+
+      // ── Contacts (Phase 2) ──
+      addressbooks:   () => ipcRenderer.invoke('mail:books'),
+      updateAddressbook: (id, patch) => ipcRenderer.invoke('mail:book:update', { ...(patch || {}), id }),
+      cardSettings:   (patch) => ipcRenderer.invoke('mail:card:settings', { ...(patch || {}) }),
+      // { q?, book?: 'all' | id, group? } — searched on this PC in the summaries kept current
+      cards:          (query) => ipcRenderer.invoke('mail:cards', { ...(query || {}) }),
+      card:           (id) => ipcRenderer.invoke('mail:card:get', { id }),
+      createCard:     (input) => ipcRenderer.invoke('mail:card:create', { ...(input || {}) }),
+      updateCard:     (id, input) => ipcRenderer.invoke('mail:card:update', { ...(input || {}), id }),
+      // opts.linked (Mail 1.4.0): 'keep' (default) | 'delete' — the linked cards at their providers too
+      deleteCard:     (id, opts) => ipcRenderer.invoke('mail:card:delete', { id, linked: (opts && opts.linked) || null }),
+      cardPhoto:      (id, etag) => ipcRenderer.invoke('mail:card:photo', { id, etag: etag || null }),
+      setCardPhoto:   (id) => ipcRenderer.invoke('mail:card:photo:set', { id }),
+      deleteCardPhoto: (id) => ipcRenderer.invoke('mail:card:photo:delete', { id }),
+      lookup:         (email) => ipcRenderer.invoke('mail:card:lookup', { email }),
+      activity:       (id) => ipcRenderer.invoke('mail:card:activity', { id }),
+      cardDraft:      (email, messageId) => ipcRenderer.invoke('mail:card:draft', { email, messageId: messageId || null }),
+      // opts.details (Mail 1.4.0): each card in full with its source and the preview of the merge
+      duplicates:     (opts) => ipcRenderer.invoke('mail:card:duplicates', { details: !!(opts && opts.details) }),
+      merge:          (input) => ipcRenderer.invoke('mail:card:merge', { ...(input || {}) }),
+      ignoreDuplicates: (ids) => ipcRenderer.invoke('mail:card:ignore', { ids }),
+      // Mail 1.4.0: the GC contact as the master ({ ok, unsupported } from servers before)
+      mergePreview:   (ids) => ipcRenderer.invoke('mail:card:preview', { ids }),
+      autoMerge:      () => ipcRenderer.invoke('mail:card:merge:auto'),
+      merges:         (limit) => ipcRenderer.invoke('mail:card:merges', { limit: limit || 50 }),
+      undoMerge:      (id, opts) => ipcRenderer.invoke('mail:card:merge:undo', { ...(opts || {}), id }),
+      unmerge:        (id, opts) => ipcRenderer.invoke('mail:card:unmerge', { ...(opts || {}), id }),
+      conflicts:      () => ipcRenderer.invoke('mail:card:conflicts'),
+      acceptConflict: (id, conflictId, mode) => ipcRenderer.invoke('mail:card:conflict:accept', { id, conflictId, mode: mode || null }),
+      dismissConflict: (id, conflictId) => ipcRenderer.invoke('mail:card:conflict:dismiss', { id, conflictId }),
+      setFavorite:    (id, on) => ipcRenderer.invoke('mail:card:favorite', { id, on: on === true }),
+      setMainPhone:   (id, value) => ipcRenderer.invoke('mail:card:main-phone', { id, value: typeof value === 'string' ? value : null }),
+      favorites:      () => ipcRenderer.invoke('mail:favorites'),
+      setFavorites:   (ids) => ipcRenderer.invoke('mail:favorites:set', { ids }),
+      // { days?: 1…7 (2), limit?: 1…20 (8) } — the calendar widget of the start page
+      upcoming:       (query) => ipcRenderer.invoke('mail:upcoming', { ...(query || {}) }),
+      importVcf:      (addressbookId) => ipcRenderer.invoke('mail:card:import', { addressbookId: addressbookId || null }),
+      exportVcf:      (opts) => ipcRenderer.invoke('mail:card:export', { ...(opts || {}) }),
+      createGroup:    (input) => ipcRenderer.invoke('mail:group:create', { ...(input || {}) }),
+      updateGroup:    (id, input) => ipcRenderer.invoke('mail:group:update', { ...(input || {}), id }),
+      deleteGroup:    (id) => ipcRenderer.invoke('mail:group:delete', { id }),
+      group:          (id) => ipcRenderer.invoke('mail:group:get', { id }),
+      groupMembers:   (id, change) => ipcRenderer.invoke('mail:group:members', { ...(change || {}), id }),
+      call:           (number) => ipcRenderer.invoke('mail:call', { number }),
+      // live: { kind: 'changed', addressbookId, contactIds } | { kind: 'addressbooks' } | { kind: 'groups' }
+      //       | 1.4.0: { kind: 'merged', masterId, contactIds, auto } | { kind: 'conflicts', contactIds } | { kind: 'favorites' }
+      onContacts:     (cb) => subscribe('mail:contacts', cb),
+    },
+
+    // ── Notizen & Aufgaben (plugin gatecontrol-notizen) ──
+    // Served when the app passes a NotesService to registerBaseHandlers
+    // (ipc/notes-handlers.js lists arguments and answers).
+    notes: {
+      status:        () => ipcRenderer.invoke('notes:status'),
+      check:         () => ipcRenderer.invoke('notes:check'),
+      me:            (opts) => ipcRenderer.invoke('notes:me', { refresh: !!(opts && opts.refresh) }),
+      nav:           (area) => ipcRenderer.invoke('notes:nav', { area }),
+      // 'myday' | 'important' | 'planned' | 'assigned' | 'list:<id>' | 'source:<plugin>'
+      view:          (name, area) => ipcRenderer.invoke('notes:view', { name, area }),
+      parse:         (text, area, listId) => ipcRenderer.invoke('notes:parse', { text, area, listId: listId || null }),
+      people:        () => ipcRenderer.invoke('notes:people'),
+      search:        (q, area) => ipcRenderer.invoke('notes:search', { q, area }),
+      prefs:         () => ipcRenderer.invoke('notes:prefs'),
+      setPrefs:      (patch) => ipcRenderer.invoke('notes:prefs:set', { patch: { ...(patch || {}) } }),
+      sources:       () => ipcRenderer.invoke('notes:sources'),
+      syncSource:    (plugin) => ipcRenderer.invoke('notes:sources:sync', { plugin }),
+      lists:         (area) => ipcRenderer.invoke('notes:lists', { area }),
+      createList:    (input) => ipcRenderer.invoke('notes:list:create', { ...(input || {}) }),
+      updateList:    (id, patch) => ipcRenderer.invoke('notes:list:update', { id, patch: { ...(patch || {}) } }),
+      deleteList:    (id) => ipcRenderer.invoke('notes:list:delete', { id }),
+      listMembers:   (id, members) => ipcRenderer.invoke('notes:list:members', { id, members }),
+      createGroup:   (input) => ipcRenderer.invoke('notes:group:create', { ...(input || {}) }),
+      updateGroup:   (id, input) => ipcRenderer.invoke('notes:group:update', { ...(input || {}), id }),
+      deleteGroup:   (id) => ipcRenderer.invoke('notes:group:delete', { id }),
+      // { text } (the quick entry, read by the server) or { title, … }
+      createTask:    (task) => ipcRenderer.invoke('notes:task:create', { task: { ...(task || {}) } }),
+      task:          (id) => ipcRenderer.invoke('notes:task', { id }),
+      updateTask:    (id, patch) => ipcRenderer.invoke('notes:task:update', { id, patch: { ...(patch || {}) } }),
+      // userId (plugin 1.6.0): a parent ticks a task of the family's list off for this member of the family
+      completeTask:  (id, done, userId) => ipcRenderer.invoke('notes:task:complete', { id, done: done !== false, userId: userId || null }),
+      familySeen:    () => ipcRenderer.invoke('notes:family:seen'),
+      deleteTask:    (id) => ipcRenderer.invoke('notes:task:delete', { id }),
+      // „Gestern offen geblieben“ (plugin 1.3.0): to → 'today' | 'tomorrow' | 'weekend' | 'YYYY-MM-DD'
+      moveTask:      (id, to) => ipcRenderer.invoke('notes:task:move', { id, to }),
+      yesterday:     (area) => ipcRenderer.invoke('notes:yesterday', { area: area || null }),
+      // { action: 'done' | 'today' | 'move', to?, ids?, area? } — every task of the card (or `ids`) at once
+      decideYesterday: (input) => ipcRenderer.invoke('notes:yesterday:decide', { ...(input || {}) }),
+      // shopping lists of the hub (plugin 1.4.0, feature `shoppingLists`): every list with its items; operations
+      // ({ op: 'item_check', id, checked } …, new rows get their id in the main process) are queued and sent in order
+      shopping:      (opts) => ipcRenderer.invoke('notes:shopping', { full: !!(opts && opts.full) }),
+      shoppingOps:   (ops) => ipcRenderer.invoke('notes:shopping:ops', { ops: Array.isArray(ops) ? ops.map((o) => ({ ...(o || {}) })) : [] }),
+      shoppingFamily: (id, on) => ipcRenderer.invoke('notes:shopping:family', { id, on: on === true }),
+      shoppingGoing: (id) => ipcRenderer.invoke('notes:shopping:going', { id }),
+      shoppingAssign: (id, input) => ipcRenderer.invoke('notes:shopping:assign', { ...(input || {}), id }),
+      // a shopping list deleted by mistake, by its number (`listId`) — its owner, within 30 days
+      shoppingRestore: (listId) => ipcRenderer.invoke('notes:shopping:restore', { listId }),
+      // plugin 1.5.0 (`places`, `placeSearch`): „Meine Orte“, the search near one of them (this PC sends no position),
+      // the consent for a place someone else set. The reminder itself comes on the phone
+      places:        () => ipcRenderer.invoke('notes:places'),
+      createPlace:   (place) => ipcRenderer.invoke('notes:place:create', { place: { ...(place || {}) } }),
+      updatePlace:   (id, patch) => ipcRenderer.invoke('notes:place:update', { id, patch: { ...(patch || {}) } }),
+      // plugin 1.8.0 (`profilePlaces`): a place another plugin still uses answers code 'in_use' with `usedBy`;
+      // { force: true } deletes it all the same
+      deletePlace:   (id, opts) => ipcRenderer.invoke('notes:place:delete', { id, force: !!(opts && opts.force === true) }),
+      setPlaceFav:   (key, placeId) => ipcRenderer.invoke('notes:place:fav', { key, placeId: placeId || null }),
+      searchPlaces:  (input) => ipcRenderer.invoke('notes:place:search', { ...(input || {}) }),
+      placeConsent:  (id, accept) => ipcRenderer.invoke('notes:task:place:consent', { id, accept: accept === true }),
+      item:          (id) => ipcRenderer.invoke('notes:item', { id }),
+      completeItem:  (id, done) => ipcRenderer.invoke('notes:item:complete', { id, done: done !== false }),
+      carryItem:     (id) => ipcRenderer.invoke('notes:item:carry', { id }),
+      notebooks:     (area) => ipcRenderer.invoke('notes:notebooks', { area }),
+      // { name, area, color?, vault? } — a Tresor notebook answers its recoveryKey once
+      createNotebook: (input) => ipcRenderer.invoke('notes:notebook:create', { ...(input || {}) }),
+      updateNotebook: (id, patch) => ipcRenderer.invoke('notes:notebook:update', { id, patch: { ...(patch || {}) } }),
+      deleteNotebook: (id) => ipcRenderer.invoke('notes:notebook:delete', { id }),
+      notebookMembers: (id, members) => ipcRenderer.invoke('notes:notebook:members', { id, members }),
+      // { area?, notebook?, tag?, pinned?, before?, limit? }
+      notes:         (query) => ipcRenderer.invoke('notes:notes', { query: { ...(query || {}) } }),
+      note:          (id) => ipcRenderer.invoke('notes:note', { id }),
+      createNote:    (note) => ipcRenderer.invoke('notes:note:create', { note: { ...(note || {}) } }),
+      updateNote:    (id, patch) => ipcRenderer.invoke('notes:note:update', { id, patch: { ...(patch || {}) } }),
+      deleteNote:    (id) => ipcRenderer.invoke('notes:note:delete', { id }),
+      checkNote:     (id, line, done) => ipcRenderer.invoke('notes:note:check', { id, line, done: done === true }),
+      noteToTask:    (id, line, opts) => ipcRenderer.invoke('notes:note:task', { ...(opts || {}), id, line }),
+      // the file dialog, then the files go up (a Tresor's encrypted here)
+      attach:        (kind, refId, opts) => ipcRenderer.invoke('notes:attach', { kind, refId, images: !!(opts && opts.images) }),
+      attachmentImage: (id, vaultId) => ipcRenderer.invoke('notes:attachment:image', { id, vaultId: vaultId || null }),
+      openAttachment: (id, vaultId) => ipcRenderer.invoke('notes:attachment:open', { id, vaultId: vaultId || null }),
+      saveAttachment: (id, vaultId) => ipcRenderer.invoke('notes:attachment:save', { id, vaultId: vaultId || null }),
+      deleteAttachment: (id) => ipcRenderer.invoke('notes:attachment:delete', { id }),
+      vaultStatus:   () => ipcRenderer.invoke('notes:vault:status'),
+      vaultUnlock:   (vaultId) => ipcRenderer.invoke('notes:vault:unlock', { vaultId: vaultId || null }),
+      vaultLock:     () => ipcRenderer.invoke('notes:vault:lock'),
+      vaultSettings: (patch) => ipcRenderer.invoke('notes:vault:settings', { patch: { ...(patch || {}) } }),
+      vaultInfo:     (vaultId) => ipcRenderer.invoke('notes:vault:info', { vaultId }),
+      vaultOpen:     (vaultId) => ipcRenderer.invoke('notes:vault:open', { vaultId }),
+      vaultRequest:  (vaultId) => ipcRenderer.invoke('notes:vault:request', { vaultId }),
+      vaultDevices:  (vaultId) => ipcRenderer.invoke('notes:vault:devices', { vaultId }),
+      vaultApprove:  (vaultId, deviceId, safetyNumber) => ipcRenderer.invoke('notes:vault:approve', { vaultId, deviceId, safetyNumber }),
+      vaultDecline:  (vaultId, deviceId) => ipcRenderer.invoke('notes:vault:decline', { vaultId, deviceId }),
+      vaultRecover:  (vaultId, text) => ipcRenderer.invoke('notes:vault:recover', { vaultId, text }),
+      vaultRotate:   (vaultId) => ipcRenderer.invoke('notes:vault:rotate', { vaultId }),
+      msAccounts:    () => ipcRenderer.invoke('notes:mstodo:accounts'),
+      msConsent:     (accountId) => ipcRenderer.invoke('notes:mstodo:consent', { accountId }),
+      msPoll:        (accountId, deviceId) => ipcRenderer.invoke('notes:mstodo:poll', { accountId, deviceId }),
+      msOpen:        (uri) => ipcRenderer.invoke('notes:mstodo:open', { uri }),
+      msPreview:     (accountId) => ipcRenderer.invoke('notes:mstodo:preview', { accountId }),
+      msStart:       (input) => ipcRenderer.invoke('notes:mstodo:start', { ...(input || {}) }),
+      job:           (id) => ipcRenderer.invoke('notes:job', { id }),
+      msLinks:       () => ipcRenderer.invoke('notes:mstodo:links'),
+      msUnlink:      (id) => ipcRenderer.invoke('notes:mstodo:unlink', { id }),
+      // the .nsx export: picked and read on this PC, then imported in the background (onImport)
+      dsPick:        () => ipcRenderer.invoke('notes:dsnote:pick'),
+      dsImport:      (opts) => ipcRenderer.invoke('notes:dsnote:import', { ...(opts || {}) }),
+      dsCancel:      () => ipcRenderer.invoke('notes:dsnote:cancel'),
+      onState:       (cb) => subscribe('notes:state', cb),
+      onChanged:     (cb) => subscribe('notes:changed', cb),
+      onVault:       (cb) => subscribe('notes:vault', cb),
+      onVaultLock:   (cb) => subscribe('notes:vault-lock', cb),
+      onImport:      (cb) => subscribe('notes:import', cb),
+    },
+
+    // ── Meine Orte (Mein Profil › Meine Orte, GateControl 1.299.0) ──
+    // The person's own places of the profile; the forms of Chats and Notizen choose from them. Windows watches no
+    // places (the phone does). A search only on „Suchen“ / Enter, from 3 characters; `near` ({ lat, lon }) is rounded
+    // to ~1 km before it leaves the PC. While the server's address search is off, this PC's map service answers
+    // (`via: 'device'`).
+    places: {
+      status:        () => ipcRenderer.invoke('places:status'),
+      list:          (opts) => ipcRenderer.invoke('places:list', { refresh: !!(opts && opts.refresh), shared: !!(opts && opts.shared) }),
+      get:           (id) => ipcRenderer.invoke('places:get', { id }),
+      create:        (place) => ipcRenderer.invoke('places:create', { place: { ...(place || {}) } }),
+      update:        (id, patch) => ipcRenderer.invoke('places:update', { id, patch: { ...(patch || {}) } }),
+      remove:        (id, opts) => ipcRenderer.invoke('places:delete', { id, force: !!(opts && opts.force === true) }),
+      markUsed:      (id) => ipcRenderer.invoke('places:used', { id }),
+      search:        (q, near, lang) => ipcRenderer.invoke('places:search', { q, near: near && typeof near === 'object' ? { lat: near.lat, lon: near.lon } : undefined, lang }),
+      mapTile:       (z, x, y) => ipcRenderer.invoke('places:map:tile', { z, x, y }),
+      mapReverse:    (lat, lon, lang) => ipcRenderer.invoke('places:map:reverse', { lat, lon, lang }),
+      // { ids, deleted, origin: 'local' | 'push' | 'reconnect' | 'reset' } — load the lists again
+      onChanged:     (cb) => subscribe('places:changed', cb),
+      onState:       (cb) => subscribe('places:state', cb),
     },
 
     // ── Shell ────────────────────────────────────────────
@@ -536,4 +1152,62 @@ function createSubscriber(ipcRenderer) {
   };
 }
 
-module.exports = { createBridgeApi, createSubscriber };
+/**
+ * "Medien" (Stufe 4e, Pro only — decision 26 a): the app preload adds it as `api.media = createMediaBridge(ipcRenderer)`
+ * when the app passes a MediaService to registerBaseHandlers (ipc/media-handlers.js lists arguments and answers).
+ * Pictures and video are gcmedia:// addresses of the answers (no IPC, no access in the page).
+ */
+function createMediaBridge(ipcRenderer) {
+  const subscribe = createSubscriber(ipcRenderer);
+  const inv = (ch, arg) => ipcRenderer.invoke(ch, arg);
+  return {
+    status:        () => inv('media:status'),
+    setCaps:       (caps) => inv('media:caps:set', caps && typeof caps === 'object' ? caps : {}),
+    setQuality:    (quality) => inv('media:quality:set', { quality }),
+    check:         (id, opts) => inv('media:check', { id, force: !!(opts && opts.force) }),
+    networkChanged: () => inv('media:network'),
+    // Medien-Plugin (W1): the sources come from the server — read only
+    sources: {
+      status:  () => inv('media:sources:status'),
+      refresh: () => inv('media:sources:refresh'),
+      onState: (cb) => subscribe('media:sources:state', cb),
+    },
+    setAlwaysOriginal: (id, on) => inv('media:source:original', { id, on: on === true }),
+    resume:        (id, limit) => inv('media:resume', { id, limit }),
+    latest:        (id, limit) => inv('media:latest', { id, limit }),
+    movies:        (id, opts) => inv('media:movies', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    series:        (id, opts) => inv('media:series', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    seasons:       (id, seriesId) => inv('media:seasons', { id, seriesId }),
+    episodes:      (id, seriesId, seasonId) => inv('media:episodes', { id, seriesId, seasonId: seasonId || null }),
+    search:        (id, q) => inv('media:search', { id, q }),
+    detail:        (id, itemId) => inv('media:detail', { id, itemId }),
+    play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
+    report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),
+    setPlayed:     (id, itemId, played) => inv('media:played', { id, itemId, played: played === true }),
+    endStream:     (urlOrPlayId) => inv('media:stream:end', String(urlOrPlayId || '').startsWith('gcmedia:') ? { url: urlOrPlayId } : { playId: urlOrPlayId }),
+    shareList:     (id, dir) => inv('media:share:list', { id, dir: dir || '' }),
+    shareOpen:     (id, path) => inv('media:share:open', { id, path }),
+    // 4h: the format check before the start, "In VLC öffnen" / "In anderer App öffnen" (app 'vlc' | 'default')
+    shareCheck:    (id, itemId) => inv('media:share:check', { id, itemId }),
+    shareExternal: (id, itemId, app, title) => inv('media:share:external', { id, itemId, app, title: title || null }),
+    externalInfo:  () => inv('media:external:info'),
+    tracks:        (seriesId) => inv('media:tracks', { seriesId }),
+    setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
+    onState:       (cb) => subscribe('media:state', cb),
+    onLink:        (cb) => subscribe('media:link', cb),
+    // the tunnel started for Medien: { state: 'connecting' | 'up' | 'failed' }
+    onVpn:         (cb) => subscribe('media:vpn', cb),
+    // "Auf TV/PC abspielen": this PC as the receiver of the phone (services/media-cast.js)
+    cast: {
+      status:    () => inv('media:cast:status'),
+      opened:    (session) => inv('media:cast:opened', { session }),
+      state:     (session, st) => inv('media:cast:state', { ...(st && typeof st === 'object' ? st : {}), session }),
+      closed:    (session, o) => inv('media:cast:closed', { ...(o && typeof o === 'object' ? o : {}), session }),
+      onPlay:    (cb) => subscribe('media:cast:play', cb),
+      onCommand: (cb) => subscribe('media:cast:command', cb),
+      onSession: (cb) => subscribe('media:cast:session', cb),
+    },
+  };
+}
+
+module.exports = { createBridgeApi, createSubscriber, createMediaBridge };

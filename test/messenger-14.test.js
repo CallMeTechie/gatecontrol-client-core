@@ -76,6 +76,20 @@ describe('Messenger 1.4.0 – me, prefs, feature gates', () => {
     assert.equal((await ipc('chat:prefs', { privacy: { lastSeen: 'nobodyx' } })).code, 'invalid');
   });
 
+  it('Messenger 1.22: avatarInProfile and the profile level of „Wer sieht dein Bild?“ reach the window', async () => {
+    const { srv, m } = await setup();
+    assert.equal(m.status().me.avatarInProfile, false, 'an older messenger: no');
+    srv.state.avatarInProfile = true;
+    srv.state.prefs = { ...srv.state.prefs, privacy: { lastSeen: 'all', avatar: 'family', avatarProfile: 'contacts' } };
+    await m.check({ force: true }); // a check already in flight answers with the old me
+    await waitFor(() => m.status().me.avatarInProfile === true, 3000, 'avatarInProfile');
+    assert.equal(m.status().me.prefs.privacy.avatarProfile, 'contacts');
+    srv.state.prefs = { ...srv.state.prefs, privacy: { avatar: 'all', avatarProfile: 'everyone' } };
+    await m.check({ force: true });
+    await waitFor(() => m.status().me.prefs.privacy.avatar === 'all', 3000, 'prefs again');
+    assert.equal(m.status().me.prefs.privacy.avatarProfile, undefined, 'an unknown level is dropped');
+  });
+
   it('features absent → every 1.4.0 call answers unsupported, poll sends are refused', async () => {
     const { srv, ipc } = await setup({ features: { direct: true, groups: true }, familie: false });
     for (const [ch, arg] of [['chat:status:feed', {}], ['chat:actions', {}], ['chat:lists', {}], ['chat:blocks', {}]]) {

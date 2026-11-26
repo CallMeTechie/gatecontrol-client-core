@@ -36,4 +36,50 @@ function shouldOpenPortal({ portalUrl, autoOpenPortal, connectedSince, lastOpene
   return Boolean(portalUrl) && autoOpenPortal === true && connectedSince !== lastOpenedSince;
 }
 
-module.exports = { reconnectDelay, shouldOpenPortal };
+/**
+ * Durations of the steps of a connect, for the app log:
+ *
+ *   const steps = connectSteps();
+ *   … steps.done('config', 'server') … steps.done('adapter') …
+ *   log.info(steps.summary())   // "Connect steps: config 812 ms (server), adapter 640 ms, … total 2391 ms"
+ *
+ * @param {() => number} [now=Date.now]
+ */
+function connectSteps(now = Date.now) {
+  const start = now();
+  let last = start;
+  const list = [];
+  return {
+    /** Ends step `name` (the time since the previous one); `note` e.g. 'local' / 'timeout'. → its ms */
+    done(name, note = null) {
+      const t = now();
+      const ms = Math.max(0, t - last);
+      last = t;
+      list.push({ name: String(name), ms, ...(note ? { note: String(note) } : {}) });
+      return ms;
+    },
+    steps: () => list.map((x) => ({ ...x })),
+    total: () => Math.max(0, now() - start),
+    summary(label = 'Connect steps') {
+      const parts = list.map((x) => `${x.name} ${x.ms} ms${x.note ? ` (${x.note})` : ''}`);
+      return `${label}: ${parts.join(', ')}${parts.length ? ', ' : ''}total ${Math.max(0, now() - start)} ms`;
+    },
+  };
+}
+
+/**
+ * Waits for the first WireGuard handshake: asks `getStats()` every `intervalMs` (was 2 s fixed before the first look)
+ * until `timeoutMs` → true when it came. A handshake usually takes well under a second.
+ */
+async function waitForHandshake(getStats, { timeoutMs = 10000, intervalMs = 250, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
+  const end = now() + timeoutMs;
+  for (;;) {
+    let stats = null;
+    try { stats = await getStats(); } catch { stats = null; }
+    if (stats && stats.handshake) return true;
+    if (now() >= end) return false;
+    await sleep(Math.min(intervalMs, Math.max(0, end - now())));
+  }
+}
+
+module.exports = { reconnectDelay, shouldOpenPortal, connectSteps, waitForHandshake };

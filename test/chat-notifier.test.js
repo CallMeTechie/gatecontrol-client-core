@@ -289,4 +289,35 @@ describe('ChatNotifier', () => {
     await tick();
     assert.equal(nc.list().items.length, 1);
   });
+  it('Messenger 1.14: the push of a chat over a bridge names the service and marks the messenger', async () => {
+    const { N, push, messenger } = setup();
+    let noted = 0;
+    messenger.noteBridge = () => { noted += 1; };
+    const bridged = (seq, extra = {}) => {
+      const p = chatPush(seq, { title: 'Kim Muster · WhatsApp', ...extra });
+      p.data = { ...p.data, bridge: 'whatsapp', conversation: { id: '12', title: null, isGroup: false }, sender: { id: 'ext-12', name: 'Kim Muster', avatarUrl: null },
+        actions: [{ type: 'reply', label: 'Antworten', path: 'conversations/12/messages', body: { bridged: true } }, { type: 'mark_read', label: 'Gelesen', path: 'conversations/12/read', body: { upTo: 4700 + seq, bridged: true } }], ...(extra.data || {}) };
+      return p;
+    };
+    push.emit('notification', bridged(1));
+    await tick();
+    assert.equal(noted, 1);
+    assert.match(N.created[0].opts.toastXml, /<text hint-maxLines="1">Kim Muster · WhatsApp<\/text>/);
+    assert.match(N.created[0].opts.toastXml, /<text>Text 1<\/text>/);
+    // without preview: a neutral title and no text
+    push.emit('notification', bridged(2, { title: 'Neue Nachricht über WhatsApp', body: '' }));
+    await tick();
+    assert.match(N.created[1].opts.toastXml, /Neue Nachricht über WhatsApp/);
+    assert.doesNotMatch(N.created[1].opts.toastXml, /Text 2/);
+    // a group of the service keeps the service in its title
+    push.emit('notification', bridged(3, { data: { conversation: { id: '12', title: 'Grillen', isGroup: true } } }));
+    await tick();
+    assert.match(N.created[2].opts.toastXml, /<text hint-maxLines="1">Grillen · WhatsApp<\/text>/);
+    assert.match(N.created[2].opts.toastXml, /<text>Kim Muster: Text 3<\/text>/);
+    // the reply goes through the messenger (its calls carry the mark from now on)
+    const args = /arguments="(gcchat\|reply\|[^"]+)"/.exec(N.created[2].opts.toastXml)[1];
+    N.activate({ arguments: args.replace(/&amp;/g, '&'), type: 'foreground', userInputs: { reply: 'Bin dabei' } });
+    await tick();
+    assert.equal(messenger.sent.at(-1).text, 'Bin dabei');
+  });
 });

@@ -34,6 +34,7 @@ const path = require('path');
 const fs = require('fs');
 const qr = require('../utils/totp-qr');
 const { t } = require('../i18n');
+const { dialogPath: defaultDialogPath } = require('../utils/user-folders');
 
 const SOURCES = ['screen', 'clipboard', 'file'];
 const CODES = ['none_found', 'hotp', 'invalid_code', 'no_image', 'unsupported', 'cancelled', 'failed'];
@@ -132,9 +133,11 @@ function decodeInWorker(bmp, { Worker = null } = {}) {
  * @param {Function} [opts.decode] - bitmap → Promise<string[]> (tests; default: worker thread)
  * @param {object} [opts.log]
  * @param {string} [opts.platform]
+ * @param {(key: string) => string|undefined} [opts.dialogPath] - where the file dialog starts (utils/user-folders
+ *   dialogPath: the Pictures of the person signed in, also when the app runs as another Windows user)
  * @returns {Promise<string[]>} otpauth://totp URIs (at least one)
  */
-async function scanTotpQr({ source, getWindow = null, electron = null, decode = null, log = null, platform = process.platform } = {}) {
+async function scanTotpQr({ source, getWindow = null, electron = null, decode = null, log = null, platform = process.platform, dialogPath = defaultDialogPath } = {}) {
   if (!SOURCES.includes(source)) throw err('failed');
   const el = electron || require('electron');
   const win = () => {
@@ -172,7 +175,9 @@ async function scanTotpQr({ source, getWindow = null, electron = null, decode = 
 
   if (source === 'file') {
     const parent = win();
+    const start = typeof dialogPath === 'function' ? dialogPath('pictures') : undefined;
     const opts = {
+      ...(start ? { defaultPath: start } : {}),
       title: t('vault.qrFileTitle'),
       properties: ['openFile'],
       filters: [{ name: t('vault.qrFileFilter'), extensions: FILE_TYPES }],

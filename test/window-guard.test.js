@@ -182,6 +182,30 @@ describe('guardWebContents', () => {
     assert.deepEqual(opened, ['https://example.com/help']);
   });
 
+  it('will-frame-navigate: a frame keeps its srcdoc, links go to the browser, the rest is blocked (Mail reading frame)', async () => {
+    const { wc, opened, log } = setup();
+    const main = fakeEvent({ url: 'https://example.com/', isMainFrame: true });
+    wc.emit('will-frame-navigate', main);
+    assert.equal(main.defaultPrevented, false, 'the main frame is will-navigate\'s');
+    for (const url of ['about:srcdoc', 'about:blank']) {
+      const e = fakeEvent({ url, isMainFrame: false });
+      wc.emit('will-frame-navigate', e);
+      assert.equal(e.defaultPrevented, false, url);
+    }
+    const link = fakeEvent({ url: 'https://shop.example.com/angebot?u=1', isMainFrame: false });
+    wc.emit('will-frame-navigate', link);
+    assert.equal(link.defaultPrevented, true);
+    const own = fakeEvent({ url: page('index.html'), isMainFrame: false });
+    wc.emit('will-frame-navigate', own);
+    assert.equal(own.defaultPrevented, true, 'no app page inside a frame');
+    const js = fakeEvent({ url: 'javascript:alert(1)', isMainFrame: false });
+    wc.emit('will-frame-navigate', js);
+    assert.equal(js.defaultPrevented, true);
+    await tick();
+    assert.deepEqual(opened, ['https://shop.example.com/angebot?u=1']);
+    assert.ok(log.lines.some((l) => /frame navigation to javascript: blocked/.test(l)));
+  });
+
   it('will-attach-webview is blocked', () => {
     const { wc, log } = setup();
     const e = fakeEvent();

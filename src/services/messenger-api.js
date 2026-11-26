@@ -22,9 +22,17 @@
 
 const {
   PLUGIN_ID, API_BASE, MEDIA_BASE, PLUGINS_PATH, MEDIA_KINDS, isMediaId, isAvatarPath, isNotifyMediaPath, isApiPath, posInt, baseMime, toBuffer, prefsBody,
+  BRIDGE_FLOWS, isBridgeNet, isBridgeId,
 } = require('../utils/messenger');
+const scan = require('../utils/scan');
 
 const JSON_TIMEOUT_MS = 15000;
+// POST bridges/:network/login/:process/:step waits at the server for the phone (up to 15 s per call).
+const BRIDGE_WAIT_TIMEOUT_MS = 30000;
+// Routes that know chats over a bridge (Messenger 1.14): they carry ?bridged=1 while `bridged` is set — and (1.20, while
+// `channels` is set as well) ?channels=1: GET conversations leaves the channels out, GET channels lists them.
+// Messenger 1.21: … and (while `persons` is set) ?people=1 — one entry per person, `way` on every message, persons/….
+const BRIDGED_ROUTE_RE = /^(?:conversations|messages|channels|persons)(?:\/|$)/;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DOWNLOAD = 64 * 1024 * 1024;
@@ -32,11 +40,13 @@ const AVATAR_MAX = 2 * 1024 * 1024;
 const NOTICE_IMAGE_MAX = 1024 * 1024;
 
 class MessengerError extends Error {
-  constructor(message, { status = null, code = 'failed', body = null } = {}) {
+  constructor(message, { status = null, code = 'failed', body = null, retryAfter = null } = {}) {
     super(message);
     this.name = 'MessengerError';
     this.status = status;
     this.code = code;
+    // Seconds of a `Retry-After` (423 scan_pending: the host's virus scan is still running); not enumerable.
+    if (Number.isSafeInteger(retryAfter) && retryAfter > 0) Object.defineProperty(this, 'retryAfter', { value: retryAfter, enumerable: false, writable: true });
     // The refusal's JSON body (extra fields such as Vault's `current` / `account` / `left`); not enumerable, so
     // errors still compare and log as before.
     if (body && typeof body === 'object') Object.defineProperty(this, 'body', { value: body, enumerable: false });
@@ -61,13 +71,40 @@ function toMessengerError(err) {
     const code = data && typeof data === 'object' && typeof data.code === 'string' ? data.code
       : (data && typeof data === 'object' && typeof data.error === 'string' && /^[a-z_]{2,40}$/.test(data.error) ? data.error : `http_${res.status}`);
     const message = data && typeof data === 'object' && typeof data.error === 'string' ? data.error : `HTTP ${res.status}`;
-    return new MessengerError(message, { status: res.status, code, body: data && typeof data === 'object' ? data : null });
+    const retryAfter = res.status === 423 || res.status === 429 || res.status === 503 ? scan.retryAfterOf(res.headers && res.headers['retry-after']) : null;
+    return new MessengerError(message, { status: res.status, code, body: data && typeof data === 'object' ? data : null, retryAfter });
   }
   const c = err && err.code;
   if (c === 'ECONNABORTED' || c === 'ETIMEDOUT' || (err && /timeout/i.test(String(err.message)))) {
     return new MessengerError('timeout', { code: 'timeout' });
   }
   return new MessengerError((err && err.message) || 'network error', { code: 'network' });
+}
+
+/**
+ * A refusal of a streamed download (`responseType: 'stream'`) carries its JSON body as a stream: read it (≤ 16 KiB,
+ * ≤ 3 s) into a Buffer first, so toMessengerError sees the code (423 quarantined, scan_pending, …).
+ */
+async function bufferErrorBody(err) {
+  const res = err && err.response;
+  const d = res && res.data;
+  if (!d || typeof d.on !== 'function' || typeof d.read !== 'function') return err;
+  const chunks = [];
+  let size = 0;
+  await new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { try { d.destroy(); } catch { /* ignore */ } done(); }, 3000);
+    d.on('data', (c) => {
+      size += c.length;
+      if (size > 16384) { try { d.destroy(); } catch { /* ignore */ } done(); return; }
+      chunks.push(Buffer.from(c));
+    });
+    d.on('end', done);
+    d.on('error', done);
+    d.on('close', done);
+  });
+  res.data = Buffer.concat(chunks);
+  return err;
 }
 
 class MessengerApi {
@@ -79,6 +116,13 @@ class MessengerApi {
   constructor({ apiClient, log } = {}) {
     this.apiClient = apiClient;
     this.log = log || { info() {}, warn() {}, debug() {}, error() {} };
+    // Messenger 1.14: this app shows chats over a bridge — set by the service once the server names the feature
+    // (`linked_services` / `bridge_chats`). Without the mark such a chat does not exist for a client (404).
+    this.bridged = false;
+    // Messenger 1.20: … and knows channels (`bridge_channels`): they leave GET conversations for GET channels
+    this.channels = false;
+    // Messenger 1.21: … and knows persons (`chat_people`): one entry per human over several ways
+    this.persons = false;
   }
 
   _client() {
@@ -93,10 +137,10 @@ class MessengerApi {
     return a.serverUrl && a.apiKey ? `${String(a.serverUrl).replace(/\/+$/, '')}\n${a.apiKey}` : '';
   }
 
-  async _call(method, path, { body, params, timeout = JSON_TIMEOUT_MS } = {}) {
+  async _call(method, path, { body, params, timeout = JSON_TIMEOUT_MS, headers = null } = {}) {
     const client = this._client();
     try {
-      const res = await client.request({ method, url: path, data: body, params, timeout });
+      const res = await client.request({ method, url: path, data: body, params, timeout, ...(headers ? { headers } : {}) });
       const data = res.data;
       if (data && typeof data === 'object' && data.ok === false) {
         throw new MessengerError(typeof data.error === 'string' ? data.error : 'refused', { status: res.status, code: data.code || 'failed', body: data });
@@ -109,6 +153,10 @@ class MessengerApi {
 
   /** Plugin route below …/gatecontrol-messenger/api/. */
   api(method, path, opts) {
+    if (this.bridged && BRIDGED_ROUTE_RE.test(path)) {
+      const o = opts || {};
+      return this._call(method, API_BASE + path, { ...o, params: { ...(o.params || {}), bridged: 1, ...(this.channels ? { channels: 1 } : {}), ...(this.persons ? { people: 1 } : {}) } });
+    }
     return this._call(method, API_BASE + path, opts);
   }
 
@@ -149,6 +197,12 @@ class MessengerApi {
     return this.api('GET', 'conversations', { params: since ? { since } : undefined });
   }
 
+  /** Messenger 1.20: the page „Kanäle“ → { channels: [conversation], removed, unread, serverTime } (only with ?channels=1). */
+  async channelList({ since } = {}) {
+    if (!this.bridged || !this.channels) throw new MessengerError('not supported', { code: 'unsupported' });
+    return this.api('GET', 'channels', { params: since ? { since } : undefined });
+  }
+
   async createConversation(body) { return this.api('POST', 'conversations', { body }); }
 
   async conversation(id) { return this.api('GET', `conversations/${this._id(id)}`); }
@@ -171,6 +225,69 @@ class MessengerApi {
   }
 
   async send(id, body) { return this.api('POST', `conversations/${this._id(id)}/messages`, { body }); }
+
+  // ── Messenger 1.21: persons (only with ?people=1) ──
+
+  _needPersons() {
+    if (!this.bridged || !this.persons) throw new MessengerError('not supported', { code: 'unsupported' });
+  }
+
+  /** GET persons/:id → { conversation (the list entry), person } */
+  async person(id) { this._needPersons(); return this.api('GET', `persons/${this._id(id)}`); }
+
+  /**
+   * GET persons/:id/messages { limit, before | after | around | changedSince, way } → { messages (by time), hasMore,
+   * [hasMoreBefore, hasMoreAfter], ways: [{ conversationId, way, lastReadId, readUpTo, deliveredUpTo }], serverTime }
+   */
+  async personMessages(id, { limit, before, after, changedSince, around, way } = {}) {
+    this._needPersons();
+    const params = {};
+    if (Number.isSafeInteger(limit) && limit > 0) params.limit = Math.min(100, limit);
+    if (posInt(before)) params.before = posInt(before);
+    else if (posInt(after)) params.after = posInt(after);
+    else if (posInt(around)) params.around = posInt(around);
+    else if (typeof changedSince === 'string' && changedSince) params.changedSince = changedSince;
+    if (typeof way === 'string' && /^[a-z]{2,20}$/.test(way)) params.way = way;
+    return this.api('GET', `persons/${this._id(id)}/messages`, { params });
+  }
+
+  /** POST persons/:id/messages — the server picks the way → { message, duplicate, way, conversationId } */
+  async personSend(id, body) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/messages`, { body }); }
+
+  /** POST persons/:id/read { upTo? } → { unread, ways: [{ conversationId, way, lastReadId, unread }] } */
+  async personRead(id, upTo = null) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/read`, { body: posInt(upTo) ? { upTo: posInt(upTo) } : {} }); }
+
+  async personSearch(id, q, way = null) {
+    this._needPersons();
+    return this.api('GET', `persons/${this._id(id)}/search`, { params: { q, ...(typeof way === 'string' && /^[a-z]{2,20}$/.test(way) ? { way } : {}) } });
+  }
+
+  /** PATCH persons/:id { name?, notify?, mutedUntil? } → { conversation, person } */
+  async patchPerson(id, body) { this._needPersons(); return this.api('PATCH', `persons/${this._id(id)}`, { body }); }
+
+  /** Messenger 1.27: PUT persons/:id { replyPref } („Nachrichten senden über“: auto | gatecontrol | network) → { conversation, person } */
+  async setReplyPref(id, replyPref) { this._needPersons(); return this.api('PUT', `persons/${this._id(id)}`, { body: { replyPref } }); }
+
+  async archivePerson(id, archived) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/archive`, { body: { archived: archived === true } }); }
+
+  /** POST persons { conversationIds, userId?, name? } → { conversation, person } */
+  async mergePersons(body) { this._needPersons(); return this.api('POST', 'persons', { body }); }
+
+  /** DELETE persons/:id/ways/:conversationId („Trennen“) — without a way: every way → { person | null, conversations } */
+  async splitPerson(id, conversationId = null) {
+    this._needPersons();
+    return this.api('DELETE', conversationId ? `persons/${this._id(id)}/ways/${this._id(conversationId)}` : `persons/${this._id(id)}`);
+  }
+
+  async personSuggestions() { this._needPersons(); return this.api('GET', 'persons/suggestions'); }
+
+  async answerSuggestion(id, action) {
+    this._needPersons();
+    if (typeof id !== 'string' || !/^\d{1,15}-\d{1,15}$/.test(id)) throw new MessengerError('invalid id', { code: 'invalid' });
+    return this.api('POST', `persons/suggestions/${id}`, { body: { action } });
+  }
+
+  async personCandidates(conversationId) { this._needPersons(); return this.api('GET', 'persons/candidates', { params: { conversationId: this._id(conversationId) } }); }
 
   async edit(messageId, text) { return this.api('PATCH', `messages/${this._id(messageId)}`, { body: { text } }); }
 
@@ -217,6 +334,11 @@ class MessengerApi {
 
   async storyReact(id, emoji) { return this.api('POST', `status/stories/${this._id(id)}/react`, { body: { emoji } }); }
 
+  // Messenger 1.25: a contact's WhatsApp status — watched; an answer or a reaction as a message into the WhatsApp chat
+  async bridgedStorySeen(id) { return this.api('POST', `status/bridged/${this._id(id)}/seen`, { body: {} }); }
+
+  async bridgedStoryReply(id, body) { return this.api('POST', `status/bridged/${this._id(id)}/reply`, { body }); }
+
   // ── Messenger 1.4.0: blocks, archive, pins, lists, export, reminders, suggest ──
 
   async blocks() { return this.api('GET', 'blocks'); }
@@ -255,6 +377,8 @@ class MessengerApi {
   async toCalendar(messageId, body) { return this.api('POST', `messages/${this._id(messageId)}/to-calendar`, { body }); }
 
   async familiePlaces() { return this.api('GET', 'familie/places'); }
+  /** Messenger 1.28 (`profilePlaces`): the place choice — profile places and Familie's places with `ref`. */
+  async places() { return this.api('GET', 'places'); }
 
   /**
    * Messenger 1.10: the file of a message into the person's Drive
@@ -309,8 +433,94 @@ class MessengerApi {
   async postPath(path, body = {}) {
     const p = String(path || '').replace(/^\/+/, '');
     if (!isApiPath(p)) throw new MessengerError('invalid path', { code: 'invalid' });
-    return this.api('POST', p, { body: body && typeof body === 'object' ? body : {} });
+    const b = body && typeof body === 'object' ? body : {};
+    // Messenger 1.20: a button of a bridged push (`bridged: true`) says that this app knows channels as well
+    // Messenger 1.21: … and persons
+    return this.api('POST', p, { body: b.bridged === true && (this.channels || this.persons) ? { ...b, ...(this.channels ? { channels: true } : {}), ...(this.persons ? { people: true } : {}) } : b });
   }
+
+  // ── Messenger 1.13 / 1.14: linked services and chats over a bridge ──
+
+  /** The own links to other messengers → { bridges: { available, location, networks } }. */
+  async bridges() { return this.api('GET', 'bridges'); }
+
+  /** The notes before the first link were read → { consent }. */
+  async bridgeConsent(network) { return this.api('POST', `bridges/${this._net(network)}/consent`, { body: { accept: true } }); }
+
+  /** Start linking with a pairing code ('phone') or a QR code ('qr') → { login: { processId, step } }. */
+  async bridgeLogin(network, flow) {
+    if (!BRIDGE_FLOWS.includes(flow)) throw new MessengerError('invalid flow', { code: 'invalid' });
+    return this.api('POST', `bridges/${this._net(network)}/login`, { body: { flow }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /**
+   * The next step of a login: with `input` ({ <fieldId>: value }) it sends what the person typed, without it the
+   * server waits for the phone → { login: { processId, step } | { processId, waiting: true } }.
+   */
+  async bridgeStep(network, processId, stepId, input = null) {
+    const path = `bridges/${this._net(network)}/login/${this._bid(processId)}/${this._bid(stepId)}`;
+    return this.api('POST', path, { body: input ? { input } : {}, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Drop a login that was not finished. */
+  async bridgeCancel(network, processId) { return this.api('DELETE', `bridges/${this._net(network)}/login/${this._bid(processId)}`); }
+
+  /** Unlink the own account. */
+  async bridgeUnlink(network, loginId) { return this.api('DELETE', `bridges/${this._net(network)}/logins/${this._bid(loginId)}`); }
+
+  /**
+   * Messenger 1.15: is this number at the service, under which name → { found, name, … }. The number goes in the
+   * body only (never into the path or a log); the bridge asks the service, so the call may take up to 15 s.
+   */
+  async bridgeResolve(network, number) {
+    return this.api('POST', `bridges/${this._net(network)}/resolve`, { body: { number }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Messenger 1.15: the direct chat with this number, made or found → { conversation, created }. */
+  async bridgeChat(network, number) {
+    return this.api('POST', `bridges/${this._net(network)}/chats`, { body: { number }, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Messenger 1.17: what of the older messages comes over at a new link (0, 30 or -1 = everything) → { history }. */
+  async bridgeHistory(days) { return this.api('PUT', 'bridges/history', { body: { days } }); }
+
+  /**
+   * Messenger 1.21 (GateControl with gc.bridges version 9): PUT bridges/recognition { allowed } → { recognition }.
+   * Messenger 1.23: one consent per service — `network` other than whatsapp goes in the body → { recognition, recognitions }.
+   */
+  async bridgeRecognition(allowed, network = 'whatsapp') {
+    const net = this._net(network);
+    return this.api('PUT', 'bridges/recognition', { body: { allowed: allowed === true, ...(net !== 'whatsapp' ? { network: net } : {}) } });
+  }
+
+  /** Messenger 1.23: the linking step of a service with the QR code only on a second screen → { handoff }. */
+  async bridgeHandoff(network, target) { return this.api('POST', `bridges/${this._net(network)}/handoff`, { body: { target } }); }
+
+  /** Messenger 1.23: the second screen is not needed any more → { handoff: null }. */
+  async bridgeHandoffEnd(network) { return this.api('DELETE', `bridges/${this._net(network)}/handoff`); }
+
+  /** Messenger 1.17: fetch a file of the older history now (placeholder state on_request) → { message }. */
+  async fetchFile(messageId) { return this.api('POST', `messages/${this._id(messageId)}/fetch`, { body: {} }); }
+
+  /**
+   * Messenger 1.18: the people for „Neuer Chat“ — GateControl, the WhatsApp contacts (sealed `ref`, no number) and the
+   * address book of Mail → see utils normalizeNewChatContacts. `q` (≤ 100 characters) goes as a query parameter.
+   */
+  async newChatContacts(network, q) {
+    const params = { network: this._net(network), ...(q ? { q } : {}) };
+    return this.api('GET', 'contacts/new-chat', { params, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /**
+   * Messenger 1.18: the direct chat with a contact of contacts/new-chat → { conversation, created }: { ref } (a WhatsApp
+   * contact, nothing checked) or { contactId, phoneKind } (an address book number, checked at the service — up to 15 s).
+   */
+  async bridgeContactChat(network, body) {
+    return this.api('POST', `bridges/${this._net(network)}/chats`, { body, timeout: BRIDGE_WAIT_TIMEOUT_MS });
+  }
+
+  /** Messenger 1.14: an own message the bridge did not take, once more → { message }. */
+  async resend(messageId) { return this.api('POST', `messages/${this._id(messageId)}/resend`, { body: {}, timeout: BRIDGE_WAIT_TIMEOUT_MS }); }
 
   // ── Media ────────────────────────────────────────────────
 
@@ -389,9 +599,21 @@ class MessengerApi {
     if (!n) throw new MessengerError('invalid id', { code: 'invalid' });
     return n;
   }
+
+  _net(v) {
+    if (!isBridgeNet(v)) throw new MessengerError('invalid network', { code: 'invalid' });
+    return v;
+  }
+
+  /** A login / process / step id of the bridge as a path segment. */
+  _bid(v) {
+    if (!isBridgeId(v)) throw new MessengerError('invalid id', { code: 'invalid' });
+    return encodeURIComponent(v);
+  }
 }
 
 MessengerApi.MessengerError = MessengerError;
 MessengerApi.toMessengerError = toMessengerError;
+MessengerApi.bufferErrorBody = bufferErrorBody;
 
 module.exports = MessengerApi;

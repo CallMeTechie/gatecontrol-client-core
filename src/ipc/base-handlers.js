@@ -24,10 +24,20 @@ const { NOTIFICATION_WRITABLE_KEYS } = require('../utils/notify-schema');
 const { parseLogText, filterByPeriod } = require('../utils/log-parse');
 const { registerMessengerHandlers } = require('./messenger-handlers');
 const { registerSchoolHandlers } = require('./school-handlers');
+const { registerFamilieHandlers } = require('./familie-handlers');
+const { registerDnsProtectHandlers } = require('./dns-protect-handlers');
+const { registerQuickActionsHandlers } = require('./quick-actions-handlers');
+const { registerPrintHandlers } = require('./print-handlers');
+const { registerCameraHandlers } = require('./camera-handlers');
 const { registerGateDropHandlers } = require('./gatedrop-handlers');
 const { registerVaultHandlers } = require('./vault-handlers');
 const { registerDriveHandlers } = require('./drive-handlers');
+const { registerMediaHandlers } = require('./media-handlers');
+const { registerMailHandlers } = require('./mail-handlers');
+const { registerNotesHandlers } = require('./notes-handlers');
+const { registerPlacesHandlers } = require('./places-handlers');
 const MapService = require('../services/map-service');
+const { createUserFolders } = require('../utils/user-folders');
 
 // Server error codes of POST /api/v1/client/enroll → i18n keys
 const ENROLL_ERRORS = {
@@ -38,6 +48,15 @@ const ENROLL_ERRORS = {
   limit_reached: 'server.enrollLimit',
   fingerprint_required: 'server.enrollFingerprint',
 };
+
+/** "GateControl-Pro-Protokoll-2026-11-04-1137.log" (the app's name without spaces, the local time). */
+function logExportName(app, d) {
+  let n = 'GateControl';
+  try { n = (app && typeof app.getName === 'function' && app.getName()) || n; } catch { /* default */ }
+  const base = String(n).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'GateControl';
+  const p = (v) => String(v).padStart(2, '0');
+  return `${base}-${t('logs.saveName')}-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.log`;
+}
 
 function enrollErrorMessage(err) {
   const status = err && err.response && err.response.status;
@@ -99,6 +118,8 @@ const NOTIFY_EVENTS = {
   update: 'notify:update',
   status: 'notify:status',
   navigate: 'notify:navigate',
+  // Windows refused the toast: the app shows it itself
+  fallback: 'notify:fallback',
 };
 
 /**
@@ -155,7 +176,7 @@ const NOTIFY_EVENTS = {
  * @param {object} [ctx.notificationCenter] - NotificationCenter (opt-in).
  *   When given: registers notify:list, notify:read, notify:action,
  *   notify:prefs:get, notify:prefs:set, notify:test, notify:status,
- *   notify:dnd, notify:quiet, notify:quiet:open, notify:routes, notify:routes:set,
+ *   notify:dnd, notify:quiet, notify:quiet:open, notify:email, notify:email:set, notify:routes, notify:routes:set,
  *   notify:open; forwards its events to the main window as notify:new,
  *   notify:update, notify:status, notify:navigate; and resets it (cache,
  *   resume position, reconnect) after a successful server:setup.
@@ -165,11 +186,23 @@ const NOTIFY_EVENTS = {
  *   events to the main window and resets it after a successful server:setup.
  * @param {object} [ctx.chatNotifier] - ChatNotifier; its 'navigate' (toast
  *   click) reaches the renderer as chat:navigate
- * @param {object} [ctx.maps] - MapService for chat:map:* (default: one with
+ * @param {object} [ctx.maps] - MapService for chat:map:* and drive:map:tile (default: one with
  *   the app's name and version as User-Agent, OpenStreetMap / Nominatim)
  * @param {object} [ctx.school] - SchoolService (opt-in, "Schule"): registers
  *   the school:* channels (ipc/school-handlers.js), forwards its events to the
  *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.familie] - FamilieService (opt-in, "Familie"): registers
+ *   the familie:* channels (ipc/familie-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.print] - PrintService (opt-in, "Drucken"): registers
+ *   the print:* channels (ipc/print-handlers.js), forwards its events to the
+ *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.dnsProtect] - DnsProtectService (opt-in, "DNS-Schutz"): registers
+ *   the dnsprotect:* channels (ipc/dns-protect-handlers.js), forwards its event to the
+ *   main window and resets it after a successful server:setup.
+ * @param {object} [ctx.cameras] - CamerasService (opt-in, "Kameras im Heimnetz" of Tür & Kamera):
+ *   registers the cameras:* channels (ipc/camera-handlers.js), forwards its events to
+ *   the main window and resets it after a successful server:setup.
  * @param {object} [ctx.gatedrop] - GateDropService (opt-in, "GateDrop"): registers
  *   the gatedrop:* channels (ipc/gatedrop-handlers.js), forwards its events to
  *   the main window and resets it after a successful server:setup.
@@ -181,8 +214,31 @@ const NOTIFY_EVENTS = {
  *   main window and resets it after a successful server:setup.
  * @param {object} [ctx.driveSync] - DriveSync (opt-in with ctx.drive, "Ordner sichern"):
  *   registers drive:sync:*, forwards its events, resets it after server:setup.
+ * @param {object} [ctx.driveStream] - DriveStreamService (opt-in with ctx.drive, Drive 1.21's viewer):
+ *   drive:stream / drive:stream:end; its addresses go after server:setup.
+ * @param {object} [ctx.mail] - MailService (opt-in, "Mail"): registers the
+ *   mail:* channels (ipc/mail-handlers.js), forwards its events to the
+ *   main window and resets it (and its offline cache) after a successful server:setup.
+ * @param {object} [ctx.notes] - NotesService (opt-in, "Notizen & Aufgaben"): registers the
+ *   notes:* channels (ipc/notes-handlers.js), forwards its events to the main window
+ *   and resets it (its Tresor keys, the export picked) after a successful server:setup.
+ * @param {object} [ctx.quickActions] - QuickActionsService (opt-in, the plugins' quick actions):
+ *   registers the quickactions:* channels (ipc/quick-actions-handlers.js) and drops
+ *   the old server's actions after a successful server:setup.
+ * @param {object} [ctx.media] - MediaService (opt-in, "Medien" of Stufe 4: Jellyfin and NAS shares, the Pro client):
+ *   registers the media:* channels (ipc/media-handlers.js), forwards its events to the main window; after a
+ *   successful server:setup (another person may sign in) its sources and their access are forgotten.
+ * @param {object} [ctx.mediaCast] - MediaCastReceiver (with ctx.media): "Auf TV/PC abspielen", this PC as the
+ *   receiver — the media:cast:* channels and events (ipc/media-handlers.js).
+ * @param {object} [ctx.places] - PlacesService (opt-in, „Mein Profil › Meine Orte“, GateControl ≥ 1.299.0):
+ *   registers the places:* channels (ipc/places-handlers.js), forwards its events to the main window and resets it
+ *   after a successful server:setup. Without its own `maps` it gets the map service below (the address search of
+ *   this PC while the server's is off).
  * @param {object} [ctx.gatedropExplorer] - { get(), set(enabled) } of the
  *   "Senden an → GateDrop" shortcut (gatedrop:explorer)
+ * @param {object} [ctx.userFolders] - utils/user-folders createUserFolders() (tests);
+ *   default: one on app.getPath — the folders of the person signed in, also when
+ *   the app runs as another Windows user (logs:save, dialogs, system:run-as)
  * @returns {string[]} the channels registered via ipcMain.handle
  */
 function registerBaseHandlers(ipcMain, ctx) {
@@ -202,11 +258,23 @@ function registerBaseHandlers(ipcMain, ctx) {
   const notificationCenter = ctx.notificationCenter || null;
   const messenger = ctx.messenger || null;
   const schoolSvc = ctx.school || null;
+  const familieSvc = ctx.familie || null;
+  const dnsProtectSvc = ctx.dnsProtect || null;
+  const printSvc = ctx.print || null;
+  const camerasSvc = ctx.cameras || null;
   const gatedropSvc = ctx.gatedrop || null;
   const vaultSvc = ctx.vault || null;
   const driveSvc = ctx.drive || null;
   const driveSync = (driveSvc && ctx.driveSync) || null;
+  // Drive 1.21: the viewer's gcdrive: addresses (DriveStreamService); without it drive:stream answers 'unsupported'
+  const driveStream = (driveSvc && ctx.driveStream) || null;
+  const mailSvc = ctx.mail || null;
+  const notesSvc = ctx.notes || null;
+  const placesSvc = ctx.places || null;
+  const quickActionsSvc = ctx.quickActions || null;
+  const mediaSvc = ctx.media || null;
   const policyGuards = clientPolicy ? createPolicyGuards({ clientPolicy, store, log }) : {};
+  const folders = ctx.userFolders || createUserFolders({ getPath: (k) => app.getPath(k), log });
 
   // Registers a core handler unless the client skips or overrides the channel.
   // Policy guards wrap whichever implementation is used.
@@ -221,6 +289,14 @@ function registerBaseHandlers(ipcMain, ctx) {
   // A new server / token: the old server's policy and push state must not
   // stick. Drop them and ask the new server (best-effort, the policy answer
   // arrives via onChange, push reconnects on its own).
+  // Before apiClient.configure() changes the server / token: what must still reach the server signed in now is kept
+  // (Medien: the plugin there deletes this PC in its Jellyfin servers once resetForNewServer() forgets Medien).
+  function beforeServerChange() {
+    if (mediaSvc && typeof mediaSvc.serverChanging === 'function') {
+      try { mediaSvc.serverChanging(); } catch (err) { log.warn(`Medien: server change not noted (${err.message})`); }
+    }
+  }
+
   function resetForNewServer() {
     if (clientPolicy) {
       clientPolicy.reset();
@@ -238,6 +314,22 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (schoolSvc) {
       Promise.resolve().then(() => schoolSvc.resetForNewServer()).catch((err) => log.warn(`Schule reset failed: ${err.message}`));
     }
+    // Familie: membership, role and answers belong to the old server.
+    if (familieSvc) {
+      Promise.resolve().then(() => familieSvc.resetForNewServer()).catch((err) => log.warn(`Familie reset failed: ${err.message}`));
+    }
+    // Drucken: availability, printers, jobs and picked files belong to the old server.
+    if (printSvc) {
+      Promise.resolve().then(() => printSvc.resetForNewServer()).catch((err) => log.warn(`Drucken reset failed: ${err.message}`));
+    }
+    // DNS-Schutz: whether there is one, and its state, belong to the old server.
+    if (dnsProtectSvc) {
+      Promise.resolve().then(() => dnsProtectSvc.resetForNewServer()).catch((err) => log.warn(`DNS-Schutz reset failed: ${err.message}`));
+    }
+    // Kameras: availability, the list and the clips belong to the old server.
+    if (camerasSvc) {
+      Promise.resolve().then(() => camerasSvc.resetForNewServer()).catch((err) => log.warn(`Kameras reset failed: ${err.message}`));
+    }
     // GateDrop: availability, targets and lists belong to the old server.
     if (gatedropSvc) {
       Promise.resolve().then(() => gatedropSvc.resetForNewServer()).catch((err) => log.warn(`GateDrop reset failed: ${err.message}`));
@@ -250,9 +342,31 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (driveSvc) {
       Promise.resolve().then(() => driveSvc.resetForNewServer()).catch((err) => log.warn(`Drive reset failed: ${err.message}`));
     }
+    // the viewer's addresses belong to the old server too
+    if (driveStream) driveStream.clear();
     // "Ordner sichern": the runs of the old server stop; its folders wait ("anderer Server").
     if (driveSync) {
       Promise.resolve().then(() => driveSync.resetForNewServer()).catch((err) => log.warn(`Drive sync reset failed: ${err.message}`));
+    }
+    // Mail: availability, accounts and the offline cache belong to the old server.
+    if (mailSvc) {
+      Promise.resolve().then(() => mailSvc.resetForNewServer()).catch((err) => log.warn(`Mail reset failed: ${err.message}`));
+    }
+    // Notizen & Aufgaben: availability, the Tresor keys and an export picked belong to the old server.
+    // Meine Orte: the places belong to the old server's profile.
+    if (placesSvc) {
+      Promise.resolve().then(() => placesSvc.resetForNewServer()).catch((err) => log.warn(`Meine Orte reset failed: ${err.message}`));
+    }
+    if (notesSvc) {
+      Promise.resolve().then(() => notesSvc.resetForNewServer()).catch((err) => log.warn(`Notizen reset failed: ${err.message}`));
+    }
+    // Schnellaktionen: the actions kept belong to the old server.
+    if (quickActionsSvc) {
+      try { quickActionsSvc.resetForNewServer(); } catch (err) { log.warn(`Quick actions reset failed: ${err.message}`); }
+    }
+    // Medien: the Jellyfin access and NAS passwords belong to the person signed in before.
+    if (mediaSvc) {
+      Promise.resolve().then(() => mediaSvc.forgetAll()).catch((err) => log.warn(`Medien reset failed: ${err.message}`));
     }
   }
 
@@ -349,6 +463,7 @@ function registerBaseHandlers(ipcMain, ctx) {
       return { success: false, error: enrollErrorMessage(err) };
     }
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', data.token);
     apiClient.configure(serverUrl, data.token);
@@ -390,6 +505,7 @@ function registerBaseHandlers(ipcMain, ctx) {
     if (typeof apiKey !== 'string' || !apiKey.trim()) return { success: false, error: t('server.urlAndKeyRequired') };
     apiKey = apiKey.trim();
 
+    beforeServerChange();
     store.set('server.url', serverUrl);
     store.set('server.apiKey', apiKey);
     apiClient.configure(serverUrl, apiKey);
@@ -505,7 +621,9 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Config Import ───────────────────────────────────────
   handle('config:import-file', async () => {
     const mainWindow = getMainWindow();
+    const start = folders.dialogPath('downloads');
     const result = await dialog.showOpenDialog(mainWindow, {
+      ...(start ? { defaultPath: start } : {}),
       title: t('dialog.importTitle'),
       filters: [
         { name: t('dialog.filterConfig'), extensions: ['conf'] },
@@ -681,6 +799,64 @@ function registerBaseHandlers(ipcMain, ctx) {
     }
   });
 
+  // "Export": the log (the older file electron-log keeps first, then the
+  // current one) into a file the person picks — by default in Downloads —
+  // and that file shown in the Explorer → { ok, path } | { ok: false,
+  // cancelled } | { ok: false, code }. Nothing is taken from the renderer.
+  handle('logs:save', async () => {
+    const fs = require('fs').promises;
+    const path = require('path');
+    let logPath;
+    try { logPath = log.transports.file.getFile().path; } catch { logPath = null; }
+    if (!logPath) return { ok: false, code: 'no_log' };
+    if (!dialog || typeof dialog.showSaveDialog !== 'function') return { ok: false, code: 'unsupported' };
+    // the Downloads of the person signed in (utils/user-folders.js), also when the app runs as another Windows user
+    let dir = null;
+    for (const k of ['downloads', 'documents', 'desktop']) {
+      try { dir = folders.userPath(k); } catch { dir = null; }
+      if (dir) break;
+    }
+    const name = logExportName(app, new Date());
+    const opts = {
+      title: t('logs.saveTitle'),
+      defaultPath: dir ? path.join(dir, name) : name,
+      filters: [{ name: t('logs.saveFilter'), extensions: ['log', 'txt'] }],
+    };
+    const win = getMainWindow && getMainWindow();
+    let res;
+    try {
+      res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    } catch (err) {
+      log.warn('logs:save dialog failed:', err && err.message);
+      return { ok: false, code: 'failed' };
+    }
+    if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    try {
+      const old = path.join(path.dirname(logPath), `${path.basename(logPath, path.extname(logPath))}.old${path.extname(logPath)}`);
+      const parts = [];
+      try { parts.push(await fs.readFile(old)); } catch { /* none yet */ }
+      parts.push(await fs.readFile(logPath));
+      await fs.writeFile(res.filePath, Buffer.concat(parts));
+    } catch (err) {
+      log.warn('logs:save failed:', err && (err.code || err.message));
+      return { ok: false, code: (err && err.code) || 'failed', path: res.filePath };
+    }
+    try { getShell().showItemInFolder(res.filePath); } catch (err) { log.debug(`logs:save reveal: ${err.message}`); }
+    return { ok: true, path: res.filePath };
+  });
+
+  // Who runs the app, who is signed in to Windows (utils/session-user.js):
+  // another Windows user (a UAC prompt answered with another account's
+  // password) has its own Downloads / %APPDATA% / %TEMP%; files still go to
+  // the folders of the person signed in (utils/user-folders.js) — the app says so.
+  // → { processUser, sessionUser, differs, profile, sessionProfile, downloads, downloadsSource, unreachable }
+  handle('system:run-as', () => {
+    try { return folders.info(); } catch (err) {
+      log.warn('system:run-as failed:', err && err.message);
+      return { processUser: null, sessionUser: null, differs: false, profile: null, sessionProfile: null, downloads: null, downloadsSource: 'app', unreachable: null };
+    }
+  });
+
   // Shows the log file in Explorer. Takes no path from the renderer, so it
   // cannot be used to reveal (or, via openExternal, open) arbitrary files.
   handle('logs:show', async () => {
@@ -698,16 +874,19 @@ function registerBaseHandlers(ipcMain, ctx) {
   // ── Benachrichtigungen (notification center, opt-in) ────
   if (notificationCenter) registerNotifyHandlers(handle, { notificationCenter, getMainWindow, log });
 
+  // OpenStreetMap tiles / addresses for the chats' maps and Drive's photo map (one service: one queue, one cache)
+  const maps = ctx.maps || (messenger || driveSvc || placesSvc ? new MapService({
+    log,
+    userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
+    getLang: () => getLocale(),
+  }) : null);
+
   // ── Chats (messenger, opt-in) ───────────────────────────
   if (messenger) {
     registerMessengerHandlers(handle, {
       messenger,
       chatNotifier: ctx.chatNotifier || null,
-      maps: ctx.maps || new MapService({
-        log,
-        userAgent: MapService.userAgentFor(app && typeof app.getName === 'function' ? app.getName() : null, app && typeof app.getVersion === 'function' ? app.getVersion() : null),
-        getLang: () => getLocale(),
-      }),
+      maps,
       getMainWindow,
       log,
       dialog,
@@ -715,22 +894,53 @@ function registerBaseHandlers(ipcMain, ctx) {
       getTempDir: () => {
         try { return require('path').join(app.getPath('temp'), 'gatecontrol-chat'); } catch { return require('path').join(require('os').tmpdir(), 'gatecontrol-chat'); }
       },
+      dialogPath: folders.dialogPath,
     });
   }
 
   // ── Schule (WebUntis timetable, opt-in) ────────────────
   if (schoolSvc) registerSchoolHandlers(handle, { school: schoolSvc, getMainWindow, log });
 
+  // ── Familie ("Internet zu Hause", opt-in) ──────────────
+  if (familieSvc) registerFamilieHandlers(handle, { familie: familieSvc, getMainWindow, log });
+
+  // ── Drucken (plugin gatecontrol-print, opt-in) ─────────
+  if (printSvc) registerPrintHandlers(handle, { print: printSvc, getMainWindow, log });
+
+  // ── DNS-Schutz (plugin behind permissions.vpnDns, opt-in) ──
+  if (dnsProtectSvc) registerDnsProtectHandlers(handle, { dnsProtect: dnsProtectSvc, getMainWindow, log });
+
+  // ── Schnellaktionen (the plugins' quick actions, opt-in) ──
+  if (quickActionsSvc) registerQuickActionsHandlers(handle, { quickActions: quickActionsSvc, log });
+
+  // ── Kameras im Heimnetz (plugin gatecontrol-door, opt-in) ──
+  if (camerasSvc) registerCameraHandlers(handle, { cameras: camerasSvc, getMainWindow, log, dialog, dialogPath: folders.dialogPath });
+
   // ── GateDrop (plugin gatecontrol-gatedrop, opt-in) ──────
   if (gatedropSvc) {
-    registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null });
+    registerGateDropHandlers(handle, { gatedrop: gatedropSvc, getMainWindow, log, dialog, explorer: ctx.gatedropExplorer || null, dialogPath: folders.dialogPath });
   }
 
   // ── Vault (plugin gatecontrol-vault, opt-in) ────────────
   if (vaultSvc) registerVaultHandlers(handle, { vault: vaultSvc, getMainWindow, log });
 
   // ── Drive (plugin gatecontrol-drive, opt-in) ────────────
-  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, getMainWindow, log });
+  if (driveSvc) registerDriveHandlers(handle, { drive: driveSvc, sync: driveSync, maps, stream: driveStream, getMainWindow, log });
+
+  // ── Medien (Jellyfin and NAS shares, Stufe 4e, opt-in) ───
+  if (mediaSvc) registerMediaHandlers(handle, { media: mediaSvc, cast: ctx.mediaCast || null, getMainWindow, log });
+
+  // ── Mail (plugin gatecontrol-mail, opt-in) ──────────────
+  if (mailSvc) registerMailHandlers(handle, { mail: mailSvc, getMainWindow, log });
+
+  // ── Notizen & Aufgaben (plugin gatecontrol-notizen, opt-in) ──
+  if (notesSvc) registerNotesHandlers(handle, { notes: notesSvc, getMainWindow, log });
+
+  // ── Meine Orte (profile of GateControl ≥ 1.299.0, opt-in) ──
+  if (placesSvc) {
+    if (!placesSvc.maps && maps) placesSvc.maps = maps;
+    registerPlacesHandlers(handle, { places: placesSvc, maps, getMainWindow, log });
+  }
 
   // ── Support bundle ("Support-Paket senden") ─────────────
   // Confirmation dialog → redacted bundle → upload (src/support/).
@@ -762,6 +972,9 @@ function registerBaseHandlers(ipcMain, ctx) {
  *   notify:dnd         ({ minutes } | { until } | null = off | undefined = query) → { ok, active, until }
  *   notify:quiet       ({ refresh? }) → { ok, known, quiet: { from, to, tz, criticalBypass } | null, source, at }
  *   notify:quiet:open  () → boolean (portal tab "Meine Benachrichtigungen", auto-login)
+ *   notify:email       ({ refresh? }) → { ok, known, topics: [{ id, label, enabled }], to, ready }
+ *                      („Auch per E-Mail“ of plugin topics, per person; known false before GateControl 1.225.0)
+ *   notify:email:set   ({ id, enabled }) → { ok, ...state } | { ok: false, error, ...state }
  *   notify:routes      () → { ok, routes: { sink, canFamily, groups } } | { ok: false, error }
  *                      (where each kind of notification appears, core 1.191; 'unsupported' = older server)
  *   notify:routes:set  ({ topic, dest: 'inbox'|'own'|'family' }) → { ok, routes, chat } | { ok: false, error }
@@ -801,6 +1014,15 @@ function registerNotifyHandlers(handle, { notificationCenter: nc, getMainWindow,
   handle('notify:quiet', async (_, opts) => {
     if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshQuiet();
     return { ok: true, ...nc.quietState() };
+  });
+  handle('notify:email', async (_, opts) => {
+    if (opts && typeof opts === 'object' && opts.refresh === true) return nc.refreshEmail();
+    return { ok: true, ...nc.emailState() };
+  });
+  handle('notify:email:set', (_, arg) => {
+    const a = arg && typeof arg === 'object' && !Array.isArray(arg) ? arg : {};
+    if (typeof a.id !== 'string' || a.id.length > 120 || typeof a.enabled !== 'boolean') return { ok: false, error: 'invalid', ...nc.emailState() };
+    return nc.setEmailTopic(a.id, a.enabled);
   });
   handle('notify:routes', () => nc.routes());
   handle('notify:routes:set', (_, arg) => {

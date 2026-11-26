@@ -80,7 +80,10 @@
     "loading": "Lade Logs...",
     "empty": "Keine Logs vorhanden",
     "export": "Export",
-    "filterAll": "Alle"
+    "filterAll": "Alle",
+    "saveTitle": "Protokoll exportieren",
+    "saveFilter": "Protokolldatei",
+    "saveName": "Protokoll"
   },
   "update": {
     "title": "Update",
@@ -504,7 +507,9 @@
       "expires": "Verschwindet {{time}}",
       "openVideo": "Video abspielen",
       "videoUnsupported": "Dieses Video kann hier nicht abgespielt werden. Speichere es oder öffne es mit einem anderen Programm.",
-      "unsupported": "Diese Nachricht braucht eine neuere App-Version"
+      "unsupported": "Diese Nachricht braucht eine neuere App-Version",
+      "openLink": "Link öffnen",
+      "placeMessage": "Ortsnachricht · {{name}}"
     },
     "loc": {
       "button": "Standort senden",
@@ -566,14 +571,20 @@
       "actionRun": "{{name}}: „{{label}}“ ausgeführt",
       "actionRunAs": "{{name}}: „{{label}}“ ausgeführt (freigegeben von {{as}})",
       "actionDenied": "{{name}} hat „{{label}}“ abgelehnt",
-      "unknown": "Hinweis"
+      "unknown": "Hinweis",
+      "disOnNet": "In {{network}} geändert: Nachrichten verschwinden nach {{time}}",
+      "disOffNet": "In {{network}} geändert: Nachrichten verschwinden nicht mehr"
     },
     "dis": {
       "off": "Aus",
       "86400": "1 Tag",
       "604800": "1 Woche",
       "2592000": "1 Monat",
-      "seconds": "{{n}} s"
+      "seconds": "{{n}} s",
+      "minutes": "{{n}} Min.",
+      "hours": "{{n}} Std.",
+      "days": "{{n}} Tage",
+      "weeks": "{{n}} Wochen"
     },
     "mute": {
       "off": "Alle",
@@ -694,7 +705,26 @@
       "no_approver": "Niemand in diesem Chat darf das freigeben.",
       "unavailable": "Das Familie-Plugin bietet das gerade nicht an.",
       "unsupported": "Das kann der Server noch nicht.",
-      "bad_response": "Unerwartete Antwort vom Server."
+      "bad_response": "Unerwartete Antwort vom Server.",
+      "bridge_off": "Die Brücken sind auf diesem Server ausgeschaltet.",
+      "bridge_unreachable": "Die Brücke antwortet gerade nicht.",
+      "bridge_unsupported": "Diesen Anmeldeschritt kann GateControl nicht anzeigen. Bitte den anderen Weg wählen (Code oder QR-Code).",
+      "bridge_failed": "Die Brücke hat das abgelehnt. Bitte noch einmal von vorn beginnen.",
+      "bridge_locked": "Für dein Konto ist dieser Dienst gesperrt, bis deine Eltern ihn freischalten.",
+      "consent_required": "Bitte zuerst die Hinweise lesen und bestätigen.",
+      "bridge_text_only": "In einem Chat über einen anderen Messenger geht im Moment nur Text – Bilder, Dateien, Sprachnachrichten und GateControl-Extras noch nicht.",
+      "bridge_unlinked": "Dein Konto bei diesem Dienst ist nicht mehr verknüpft. Der Verlauf bleibt; zum Senden bitte unter „Verknüpfte Dienste“ neu verknüpfen.",
+      "phone_invalid": "Bitte die Nummer mit Ländervorwahl eingeben, zum Beispiel +49 1512 0000000.",
+      "bridge_media_type": "Der Dienst nimmt dieses Format nicht an.",
+      "invalid_number": "Das ist keine gültige Telefonnummer.",
+      "child_new_chat_off": "Neue Chats per Nummer haben deine Eltern für dich nicht freigegeben.",
+      "contact_expired": "Die Kontaktliste ist abgelaufen. Sie wird neu geladen.",
+      "mail_missing": "Das Adressbuch aus Mail ist gerade nicht erreichbar.",
+      "bridge_read_only": "Hier kannst du nicht schreiben: In Kanälen schreibt nur der Kanal, in manchen Gruppen nur die Admins.",
+      "reactions_off": "Reagieren geht in Kanälen nicht: WhatsApp hat eine Reaktion abgelehnt.",
+      "cannot_merge": "Diese Chats lassen sich nicht zusammenführen: nur Chats mit einer Person, nie Gruppen oder Kanäle, und höchstens ein GateControl-Konto.",
+      "bad_request": "Diesen Weg hat die Person nicht.",
+      "way_unavailable": "Über diesen Weg geht gerade nichts raus. Wähle einen anderen."
     },
     "enterHintCtrl": "Strg+Enter sendet · Enter neue Zeile",
     "filter": {
@@ -791,7 +821,8 @@
       "event": "Ereignis",
       "home": "Aus deinem Zuhause",
       "noActions": "Keine Haus-Aktionen ausgewählt.",
-      "manage": "Haus-Aktionen verwalten"
+      "manage": "Haus-Aktionen verwalten",
+      "gcNote": "Mit Logo: geht über GateControl, auch wenn dein Text gerade über {{network}} geht."
     },
     "poll": {
       "head": "Abstimmung",
@@ -999,7 +1030,9 @@
       "myStoriesTitle": "Meine Storys",
       "storiesOne": "1 Story aktiv",
       "storiesN": "{{n}} Storys aktiv",
-      "open": "Ansehen"
+      "open": "Ansehen",
+      "bridgedVia": "über {{network}}",
+      "bridgedUnknown": "{{network}}-Kontakt"
     },
     "story": {
       "title": "Status",
@@ -1040,7 +1073,14 @@
       "hours": "{{n}} Std.",
       "hintTime": "Dein Status verschwindet nach {{time}}. Antworten kommen als Chat-Nachricht zu dir.",
       "sharing": "Wird geteilt …",
-      "failed": "Nicht geteilt: {{error}}"
+      "failed": "Nicht geteilt: {{error}}",
+      "bridgedAgo": "über {{network}} · {{age}}",
+      "bridgedUnsupported": "Dieser Status lässt sich hier nicht zeigen. Öffne ihn in {{network}}.",
+      "bridgedReplyPh": "Antwort über {{network}}",
+      "bridgedReplyHint": "Geht als Nachricht in euren {{network}}-Chat, auch eine Reaktion",
+      "bridgedNoChat": "Kein {{network}}-Chat mit dieser Person gefunden. Antworten geht gerade nur in {{network}}.",
+      "bridgedReacted": "Reaktion {{emoji}} als Nachricht über {{network}} gesendet",
+      "bridgedReplied": "Antwort über {{network}} gesendet"
     },
     "set": {
       "title": "Chat-Einstellungen",
@@ -1133,11 +1173,431 @@
       "noActions": "Für dich gibt es keine Haus-Aktionen.",
       "needsConfirm": "mit Bestätigung",
       "routes": "Wo Mitteilungen erscheinen",
-      "routesSub": "GateControl, Familien-Chat oder eigener Chat"
+      "routesSub": "GateControl, Familien-Chat oder eigener Chat",
+      "linked": "Verknüpfte Dienste",
+      "linkedSub": "Mit Kontakten in anderen Messengern schreiben",
+      "statusSec": "Status",
+      "bridgedSeen": "WhatsApp mitteilen, wenn ich einen Status ansehe",
+      "bridgedSeenHint": "Wenn an, erscheinst du beim Kontakt in WhatsApp unter „Gesehen von“. Wenn aus, wird der Status nur hier als gesehen markiert (grauer Ring).",
+      "bridgedSeenNeeds": "Funktioniert nur, wenn „{{receipts}}“ eingeschaltet ist.",
+      "statusDigestHintBridged": "Nur GateControl-Personen. WhatsApp-Status lösen keine Mitteilung aus."
     },
     "notice": {
       "tag": "Mitteilungen",
       "infoSub": "Mitteilungen von {{source}} – nur für dich"
+    },
+    "br": {
+      "title": "Verknüpfte Dienste",
+      "lead": "Schreibe aus GateControl mit Kontakten in anderen Diensten. Deine Konten dort bleiben bestehen.",
+      "none_offered": "Auf diesem Server ist gerade kein Dienst zum Verknüpfen eingeschaltet.",
+      "link": "Verknüpfen",
+      "unlink": "Trennen",
+      "forget": "Eintrag entfernen",
+      "unlink_confirm": "{{name}} wirklich trennen? Die Brücke meldet sich bei {{name}} ab; dein Konto dort bleibt, wie es ist.",
+      "unlinked": "{{name}} getrennt",
+      "linked": "{{name}} ist verknüpft",
+      "sub_none": "Noch nicht verknüpft",
+      "sub_linked": "Verknüpft",
+      "sub_linked_since": "Verknüpft seit {{date}}",
+      "sub_logged_out": "Abgemeldet.",
+      "sub_logged_out_at": "Abgemeldet am {{date}}.",
+      "sub_logged_out_whatsapp": "WhatsApp hat die Verknüpfung beendet – zum Beispiel, weil das Handy länger als 14 Tage nicht online war oder das Gerät in WhatsApp entfernt wurde.",
+      "sub_error": "Die Verknüpfung meldet einen Fehler. Trenne sie und verknüpfe neu, wenn das so bleibt.",
+      "sub_locked": "Für dein Konto gesperrt, bis deine Eltern den Dienst freischalten.",
+      "sub_starting": "Die Brücke wird gerade gestartet – das kann einige Minuten dauern.",
+      "sub_unreachable": "Die Brücke antwortet gerade nicht. Bitte später noch einmal versuchen.",
+      "pill_linked": "Verknüpft",
+      "pill_logged_out": "Abgemeldet",
+      "pill_error": "Fehler",
+      "pill_locked": "Gesperrt",
+      "pill_outdated": "Veraltet",
+      "pill_ok": "In Ordnung",
+      "pill_starting": "Startet",
+      "pill_unreachable": "Nicht erreichbar",
+      "relink": "Neu verknüpfen",
+      "relink_hint": "Ein neuer Code genügt. Nachrichten aus der Zwischenzeit kann der Dienst beim Verknüpfen nachliefern, garantiert ist das nicht.",
+      "relink_btn": "{{name}} neu verknüpfen",
+      "runs_on": "Läuft auf",
+      "runs_on_server": "Server",
+      "runs_on_gateway": "Gateway",
+      "runs_current": "Brücken aktuell",
+      "runs_outdated": "Brücke veraltet",
+      "outdated_banner": "Brücke veraltet. Die Brücke für {{name}} ist älter als vorgesehen. Empfang und Senden können ausfallen, bis sie aktualisiert ist.",
+      "outdated_hint": "Das Aktualisieren macht dein Administrator – du musst nichts neu verknüpfen.",
+      "foot_unlink": "Trennen kannst du hier oder direkt in der App des Dienstes unter „Verknüpfte Geräte“.",
+      "foot_preview": "Chats mit Kontakten des Dienstes erscheinen in deiner Chatliste, sobald dort eine neue Nachricht eintrifft – älterer Verlauf wird nicht geladen. Im Moment gehen Texte mit Antworten und Reaktionen; Bilder und Dateien folgen.",
+      "notes_title": "Bevor du {{name}} verknüpfst",
+      "note_whatsapp_unofficial": "Die Brücke ist kein offizielles Programm von WhatsApp. Die Nutzungsbedingungen erlauben den Zugriff nur mit den eigenen Programmen des Dienstes.",
+      "note_whatsapp_ban": "WhatsApp kann Konten sperren. Bei normalem Gebrauch ist das laut den Entwicklern der Brücke selten – auszuschließen ist es nicht.",
+      "note_whatsapp_phone": "Dein Handy muss mindestens alle 14 Tage online sein, sonst meldet WhatsApp die Brücke ab.",
+      "note_whatsapp_e2e": "Die Ende-zu-Ende-Verschlüsselung von WhatsApp endet an der Brücke auf deinem GateControl-Server. Wer dort Root-Zugriff hat, kann technisch mitlesen; die Oberfläche lässt es niemanden.",
+      "notes_confirm": "Ich habe das gelesen und verknüpfe mein eigenes Konto auf eigene Verantwortung.",
+      "notes_free": "Ein Hinweis, kein Verbot – du entscheidest.",
+      "next": "Weiter",
+      "link_title": "{{name}} verknüpfen",
+      "flow_phone": "Mit Code",
+      "flow_qr": "QR-Code",
+      "phone_label": "Deine Nummer bei {{name}}",
+      "phone_placeholder": "+49 1512 0000000",
+      "phone_hint": "Mit Ländervorwahl, zum Beispiel +49 für Deutschland. Die Nummer geht an die Brücke und wird im Messenger nicht gespeichert.",
+      "phone_invalid": "Bitte die Nummer mit Ländervorwahl eingeben, zum Beispiel +49 1512 0000000.",
+      "phone_refused": "Mit dieser Nummer hat es nicht geklappt. Bitte prüfe sie und versuche es noch einmal.",
+      "get_code": "Code anfordern",
+      "code_lead": "Gib diesen Code in {{name}} ein:",
+      "code_label": "Code:",
+      "code_step1_whatsapp": "WhatsApp öffnen › Einstellungen › Verknüpfte Geräte",
+      "code_step2_whatsapp": "„Gerät hinzufügen“ › „Stattdessen mit Telefonnummer verknüpfen“",
+      "code_step3": "Code eingeben",
+      "code_note": "Der Code gilt nur kurz und wird nirgends gespeichert.",
+      "qr_lead_whatsapp": "Scanne diesen Code mit WhatsApp auf deinem Handy:",
+      "qr_alt": "QR-Code zum Verknüpfen",
+      "qr_step1_whatsapp": "WhatsApp öffnen › Einstellungen › Verknüpfte Geräte",
+      "qr_step2_whatsapp": "„Gerät hinzufügen“ und den Code scannen",
+      "waiting": "Warte auf die Bestätigung am Handy …",
+      "err_expired": "Der Code ist abgelaufen, bevor er bestätigt wurde.",
+      "new_code": "Neuen Code anfordern",
+      "new_qr": "Neuen QR-Code anzeigen",
+      "net_whatsapp": "WhatsApp",
+      "mark_whatsapp": "WA",
+      "flows": "Weg zum Verknüpfen",
+      "copy_code": "Code kopieren",
+      "code_copied": "Code kopiert",
+      "load_failed": "Die verknüpften Dienste ließen sich nicht laden.",
+      "back": "Zurück zur Übersicht",
+      "err_no_answer": "Keine Antwort vom Server. Bitte einen neuen Code anfordern.",
+      "hist_title": "Älteren Verlauf laden",
+      "hist_sub": "Nur beim Verknüpfen · {{choice}}",
+      "hist_off": "Aus",
+      "hist_days": "Letzte {{n}} Tage",
+      "hist_all": "Alles",
+      "hist_admin_off": "Auf diesem Server abgeschaltet",
+      "hist_pending": "{{n}} kommen heute Nacht",
+      "hist_saved": "Gespeichert – gilt beim nächsten Verknüpfen",
+      "phone_offline": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – nach etwa 14 Tagen ohne Handy trennt {{name}} die Verknüpfung.",
+      "phone_offline_now": "Handy seit {{days}} Tagen nicht gesehen. Öffne {{name}} auf deinem Handy – {{name}} kann die Verknüpfung jederzeit trennen.",
+      "foot_preview_hist": "Chats mit Kontakten des Dienstes erscheinen in deiner Chatliste, sobald dort eine neue Nachricht eintrifft; älteren Verlauf (oben gewählt) übernimmt GateControl nachts. Texte, Antworten, Reaktionen, Bilder, Videos, Sprachnachrichten und Dateien gehen in beide Richtungen.",
+      "note_signal_unofficial": "Inoffiziell. GateControl meldet sich bei Signal als verknüpftes Gerät, wie Signal Desktop. Signal bietet dafür keinen offiziellen Weg.",
+      "note_signal_phone": "Dein Handy bleibt das Hauptgerät. Ohne Signal auf dem Handy geht es nicht. Höchstens fünf Geräte sind möglich.",
+      "note_signal_e2e": "Lesbar auf deinem Server. Bis zum Server ist alles verschlüsselt. Danach liegen deine Signal-Nachrichten in GateControl, wie die anderen Chats.",
+      "note_signal_safety": "Sicherheitsnummern prüfst du nur in der Signal-App. GateControl merkt nicht, wenn sich eine ändert.",
+      "qr_lead_signal": "Mit dem Handy scannen:",
+      "qr_step1_signal": "Signal auf dem Handy öffnen",
+      "qr_step2_signal": "Einstellungen → Verknüpfte Geräte",
+      "qr_step3_signal": "Gerät hinzufügen, dann diesen Code scannen",
+      "qr_renews_signal": "Er erneuert sich von selbst.",
+      "sub_logged_out_signal": "Signal hat die Verknüpfung beendet – zum Beispiel, weil das Gerät in Signal unter „Verknüpfte Geräte“ entfernt wurde.",
+      "linked_signal": "Signal ist verknüpft. Neue Chats erscheinen mit ihrer ersten Nachricht.",
+      "hist_line": "Verlauf: {{n}} Tage",
+      "hist_line_pending": "Verlauf: {{n}} Tage, wird nachts geladen",
+      "hist_once": "{{name}}: nur beim Verknüpfen, höchstens {{n}} Tage. Wer später umstellt, bekommt bei {{name}} nichts mehr.",
+      "phone_history": "{{name}} fragt jetzt auf deinem Handy, ob es den Nachrichtenverlauf überträgt.",
+      "phone_history_chosen": "Du hast „Die letzten {{n}} Tage“ gewählt",
+      "phone_history_take": "Wählst du auf dem Handy „Übertragen“, übernimmt GateControl davon die letzten {{n}} Tage, nachts und in Häppchen. Später geht das bei {{name}} nicht mehr.",
+      "net_signal": "Signal",
+      "mark_signal": "SG",
+      "net_telegram": "Telegram",
+      "mark_telegram": "TG",
+      "note_telegram_unofficial": "Inoffiziell. GateControl meldet sich als eigenes Gerät „GateControl“ bei Telegram an. Telegram sperrt selten Konten, die das tun.",
+      "note_telegram_e2e": "Lesbar auf deinem Server. Geheime Chats bleiben auf deinem Handy und kommen nicht an.",
+      "flow_qr_telegram": "Mit QR-Code",
+      "flow_phone_telegram": "Mit Telefonnummer",
+      "link_sub_telegram": "QR-Code oder Telefonnummer",
+      "qr_lead_telegram": "Am PC am schnellsten mit QR-Code:",
+      "qr_step1_telegram": "Telegram auf dem Handy öffnen",
+      "qr_step2_telegram": "Einstellungen → Geräte",
+      "qr_step3_telegram": "Desktop-Gerät verbinden, Code scannen",
+      "qr_renews_telegram": "Er läuft nach kurzer Zeit ab und erneuert sich.",
+      "phone_label_telegram": "Telefonnummer",
+      "phone_hint_telegram": "Mit Ländervorwahl. Wird nicht gespeichert, geht nur an Telegram.",
+      "code_label_telegram": "Code",
+      "code_hint_telegram": "Der Code steht in deiner Telegram-App, nicht in einer SMS.",
+      "code_warn_telegram": "Gib den Code nur hier ein, weil du die Verknüpfung gerade selbst gestartet hast. Wer dich danach fragt, will dein Konto.",
+      "code_wrong": "Der Code stimmt nicht.",
+      "pw_label_telegram": "Telegram-Passwort (zweistufige Bestätigung)",
+      "pw_hint_telegram": "Geht einmal an Telegram, wird nicht gespeichert.",
+      "pw_wrong": "Das Passwort stimmt nicht. Vergessen? Zurücksetzen geht nur in der Telegram-App.",
+      "pw_send": "Anmelden",
+      "next_step": "Weiter",
+      "other_number": "Andere Nummer",
+      "sub_noapp": "Noch nicht eingerichtet (Admin).",
+      "pill_noapp": "Nicht eingerichtet",
+      "linked_telegram": "Telegram ist verknüpft.",
+      "sub_logged_out_telegram": "Telegram hat die Verknüpfung beendet – zum Beispiel, weil die Sitzung in Telegram unter „Geräte“ beendet wurde."
+    },
+    "bc": {
+      "via": "über {{network}}",
+      "unknown_contact": "Unbekannter Kontakt",
+      "placeholder": "Nachricht über {{network}}",
+      "strip": "Dieser Chat läuft über {{network}} – nicht nur über deinen Server.",
+      "more": "Mehr",
+      "first_title": "Chat über {{network}}",
+      "first_lead": "Dein Gegenüber schreibt mit der gewohnten App und sieht dich wie immer. Die Nachrichten laufen über die Brücke neben deinem GateControl-Server:",
+      "first_1": "{{network}} verschlüsselt bis zur Brücke; dort endet die Ende-zu-Ende-Verschlüsselung. Auf dem Server liegen die Nachrichten danach verschlüsselt gespeichert.",
+      "first_2": "Im Moment geht Text – mit Antworten, Reaktionen, Bearbeiten und Löschen. Bilder, Dateien und Sprachnachrichten folgen; bis dahin steht im Chat, dass etwas kam.",
+      "first_3": "Anrufe, Status und GateControl-Extras (Abstimmungen, Termine, Haus-Aktionen, Karten, Standort) gibt es in einem Chat über {{network}} nicht.",
+      "first_ok": "Verstanden",
+      "state_unreachable": "Die Brücke zu {{network}} ist gerade nicht erreichbar. Der Verlauf bleibt lesbar; senden geht wieder, sobald sie läuft. Neue Nachrichten kommen dann nach.",
+      "state_logged_out": "{{network}} hat die Brücke abgemeldet. Der Verlauf bleibt, senden geht erst wieder nach dem Verknüpfen. Seitdem können Nachrichten fehlen.",
+      "state_unlinked": "Dein Konto bei {{network}} ist nicht verknüpft. Der Verlauf bleibt; neue Nachrichten kommen hier nicht mehr an.",
+      "state_off": "Die Brücke zu {{network}} ist auf diesem Server ausgeschaltet. Der Verlauf bleibt lesbar.",
+      "closed": "Du bist bei {{network}} nicht mehr in diesem Chat. Der Verlauf bleibt lesbar.",
+      "cannot_send": "Senden über {{network}} geht gerade nicht – der Verlauf bleibt lesbar.",
+      "ph": {
+        "image": "Bild",
+        "video": "Video",
+        "audio": "Audio",
+        "voice": "Sprachnachricht",
+        "file": "Datei",
+        "sticker": "Sticker",
+        "location": "Standort",
+        "unsupported": "Nachricht dieser Art wird hier noch nicht angezeigt – in {{network}} ansehen.",
+        "view_once": "Einmal-Ansicht. Öffne sie in {{network}}."
+      },
+      "ph_later": "folgt; in {{network}} ansehen",
+      "failed": "Nicht gesendet.",
+      "resend": "Erneut senden",
+      "reason": {
+        "bridge_error": "Die Brücke hat die Nachricht nicht angenommen.",
+        "unreachable": "Die Brücke antwortet nicht.",
+        "not_running": "Die Brücke läuft gerade nicht.",
+        "timeout": "Die Brücke hat nicht rechtzeitig geantwortet.",
+        "network_error": "Der Dienst war nicht erreichbar.",
+        "no_permission": "Der Dienst erlaubt das in diesem Chat nicht.",
+        "too_old": "Die Nachricht war zu lange unterwegs.",
+        "unsupported": "Der Dienst kennt diese Art Nachricht nicht.",
+        "not_handled": "Die Brücke konnte die Nachricht nicht weitergeben.",
+        "bridge_unavailable": "Die Brücke ist gerade nicht mit dem Dienst verbunden.",
+        "chat_closed": "Du bist in diesem Chat nicht mehr dabei."
+      },
+      "info_note": "Dieser Chat läuft über {{network}}. Die Ende-zu-Ende-Verschlüsselung des Dienstes endet an der Brücke neben deinem GateControl-Server; dort gespeichert sind die Nachrichten verschlüsselt, und niemand außer dir sieht diesen Chat in GateControl.",
+      "info_not": "Was hier nicht geht: Bilder, Dateien und Sprachnachrichten (folgen), Anrufe, Status, selbstlöschende Nachrichten und GateControl-Extras wie Abstimmungen, Termine, Haus-Aktionen und Karten.",
+      "state_locked": "Dieser Dienst ist für dein Konto gesperrt, bis deine Eltern ihn freischalten. Der Verlauf bleibt lesbar.",
+      "relink": "Neu verknüpfen",
+      "filter_gc": "Nur GateControl",
+      "resending": "Wird erneut gesendet …",
+      "notice": "Hinweis von {{network}}",
+      "info_kind_direct": "Kontakt bei {{network}}",
+      "info_kind_group": "Gruppe bei {{network}}",
+      "ph_loading": "wird geladen …",
+      "ph_fail": {
+        "too_large": "zu groß, öffne es in {{network}}",
+        "type": "diese Art nimmt GateControl nicht an – in {{network}} ansehen",
+        "infected": "gesperrt – Schadsoftware gefunden",
+        "quota": "kein Platz mehr auf deinem Server – in {{network}} ansehen",
+        "gone": "bei {{network}} nicht mehr abrufbar – in {{network}} ansehen",
+        "unavailable": "die Brücke war zu lange nicht erreichbar – in {{network}} ansehen",
+        "other": "konnte nicht geladen werden – in {{network}} ansehen"
+      },
+      "first_2_media": "Text, Bilder, Videos, Sprachnachrichten und Dateien gehen in beide Richtungen – mit Antworten, Reaktionen, Bearbeiten und Löschen.",
+      "info_not_media": "Was hier nicht geht: Anrufe, Status, selbstlöschende Nachrichten und GateControl-Extras wie Abstimmungen, Termine, Haus-Aktionen, Karten und Standort.",
+      "media_type": {
+        "image": "{{network}} nimmt Bilder nur als JPEG, PNG oder WebP an.",
+        "video": "{{network}} nimmt Videos nur als MP4 an.",
+        "voice": "{{network}} nimmt diese Sprachaufnahme nicht an.",
+        "file": "{{network}} nimmt diese Datei nicht an."
+      },
+      "scan_wait": "Wird auf Viren geprüft – wird gleich gesendet …",
+      "ph_on_request": "älterer Verlauf",
+      "ph_fetch": "Laden",
+      "fetch_invalid": "Diese Datei lässt sich nicht mehr anfordern.",
+      "ph_retry": "Erneut versuchen",
+      "signal_safety": "Sicherheitsnummern prüfst du in der Signal-App. Die Brücke nimmt neue Schlüssel von selbst an.",
+      "timer": "Nachrichten verschwinden nach {{time}}. Ändern geht nur in {{network}}.",
+      "bot": "Bot",
+      "members": "{{n}} Mitglieder"
+    },
+    "nc": {
+      "row": "{{network}}-Chat mit Nummer",
+      "row_sub": "Nummer eingeben und prüfen",
+      "title": "Neuer {{network}}-Chat",
+      "sub": "per Telefonnummer",
+      "label": "Telefonnummer",
+      "cc": "Ländervorwahl",
+      "placeholder": "151 23456789",
+      "hint": "Mit oder ohne 0 am Anfang, Leerzeichen sind egal. Andere Länder: Vorwahl wählen oder Nummer mit + einfügen.",
+      "as": "Wird geprüft als {{number}}",
+      "invalid": "Das ist keine vollständige Nummer – es fehlen noch Ziffern.",
+      "invalid_mobile_de": "Das ist keine vollständige Nummer – für ein deutsches Handy fehlen noch Ziffern.",
+      "invalid_chars": "Eine Telefonnummer hat nur Ziffern, Leerzeichen und vorne ein +.",
+      "check": "Prüfen",
+      "checking": "Wird geprüft …",
+      "asking": "{{network}} wird gefragt …",
+      "asking_text": "Dauert meist nur ein, zwei Sekunden.",
+      "found": "Hat {{network}}",
+      "exists": "Ihr habt schon einen Chat",
+      "start": "Chat starten",
+      "starting": "Wird gestartet …",
+      "open": "Chat öffnen",
+      "other": "Andere Nummer",
+      "none_title": "Kein {{network}} unter dieser Nummer",
+      "none_text": "{{number}} ist bei {{network}} nicht registriert. Prüf die Ziffern oder frag nach der Nummer, die bei {{network}} hinterlegt ist.",
+      "rate_title": "Zu viele Prüfungen",
+      "rate_text": "Du hast in der letzten Stunde {{n}} Nummern geprüft. Damit {{network}} dein Konto nicht sperrt, geht die nächste Prüfung ab {{time}}.",
+      "rate_text_short": "Du hast in letzter Zeit zu viele Nummern geprüft. Damit {{network}} dein Konto nicht sperrt, geht die nächste Prüfung ab {{time}}.",
+      "unreach_title": "Brücke nicht erreichbar",
+      "unreach_text": "Der {{network}}-Dienst neben deinem Server antwortet gerade nicht. Deine Eingabe bleibt stehen.",
+      "retry": "Erneut versuchen",
+      "loggedout_title": "{{network}} ist abgemeldet",
+      "loggedout_text": "{{network}} hat die Verknüpfung beendet, zum Beispiel weil das Gerät am Handy unter „Verknüpfte Geräte“ entfernt wurde. Verknüpfe neu, dann kannst du wieder Chats starten.",
+      "relink": "Neu verknüpfen",
+      "unlinked_title": "{{network}} ist nicht verknüpft",
+      "unlinked_text": "Verknüpfe dein Konto unter „Verknüpfte Dienste“, dann kannst du Chats per Nummer starten.",
+      "link": "Verknüpfen",
+      "locked_title": "Von deinen Eltern gesperrt",
+      "locked_text": "{{network}} ist für dein Konto gerade gesperrt. Neue Chats gehen erst wieder, wenn deine Eltern es freigeben.",
+      "off_title": "Brücke ausgeschaltet",
+      "off_text": "Die Brücke zu {{network}} ist auf diesem Server gerade ausgeschaltet.",
+      "close": "Schließen",
+      "failed": "Das hat nicht geklappt – bitte noch einmal versuchen.",
+      "privacy": "Zum Prüfen geht die Nummer über deine Brücke an {{network}}. GateControl schreibt sie nicht ins Protokoll; gespeichert wird sie nur, wenn du den Chat startest.",
+      "first_line": "Neuer Chat über {{network}} mit {{number}}. {{name}} sieht deine Nachrichten in der gewohnten {{network}}-App.",
+      "first_line_contact": "Neuer Chat über {{network}} mit {{name}}. Die Nachrichten kommen in der gewohnten {{network}}-App an.",
+      "first_line_book": "Neuer Chat über {{network}} mit {{name}} ({{number}}, aus deinem Adressbuch). Die Nachrichten kommen in der gewohnten {{network}}-App an."
+    },
+    "ncc": {
+      "search": "Name oder Nummer suchen",
+      "sec_gc": "GateControl",
+      "sec_book": "Aus deinem Adressbuch",
+      "open": "Chat öffnen",
+      "wa_contact": "{{network}}-Kontakt",
+      "also_book": "auch in deinem Adressbuch",
+      "all_wa": "Alle {{n}} {{network}}-Kontakte",
+      "all_book": "Alle {{n}} mit Telefonnummer",
+      "numbers": "{{n}} Nummern",
+      "which": "Welche Nummer?",
+      "kind_mobile": "Mobil",
+      "kind_work": "Geschäftlich",
+      "kind_home": "Privat",
+      "kind_other": "Weitere",
+      "landline": "Festnetz",
+      "checking": "Prüft bei {{network}} …",
+      "not_on": "nicht bei {{network}}",
+      "none_text": "Unter {{number}} gibt es kein {{network}}. Hat {{name}} eine andere Nummer, gib sie unten ein.",
+      "from": "ab {{time}}",
+      "rate_text": "Du hast in der letzten Stunde {{n}} Nummern geprüft. {{network}}-Kontakte und bestehende Chats gehen weiter.",
+      "unreach": "Brücke nicht erreichbar. Versuch es gleich noch einmal.",
+      "wa_down_title": "{{network}}-Kontakte gerade nicht verfügbar",
+      "wa_down_text": "Die Brücke antwortet nicht. GateControl-Konten gehen weiter.",
+      "wa_out_title": "{{network}} ist abgemeldet",
+      "wa_out_text": "Verknüpfe neu, dann siehst du hier wieder deine {{network}}-Kontakte.",
+      "book_off_down": "Antippen geht wieder, sobald {{network}} erreichbar ist.",
+      "book_off_out": "Antippen geht wieder, sobald {{network}} neu verknüpft ist.",
+      "check_number": "{{number}} bei {{network}} prüfen",
+      "empty_title": "Niemand mit „{{q}}“ gefunden",
+      "empty_text": "Gesucht in GateControl, in deinen {{network}}-Kontakten und in deinem Adressbuch.",
+      "empty_text_gc": "Gesucht in den Konten auf deinem Server.",
+      "not_here": "Nicht dabei?",
+      "enter_number": "Nummer eingeben",
+      "privacy": "Deine {{network}}-Kontakte bleiben auf deinem Server. Eine Nummer aus deinem Adressbuch geht nur dann an {{network}}, wenn du den Kontakt antippst.",
+      "loading": "Kontakte werden geladen …",
+      "failed": "Die Kontakte konnten nicht geladen werden."
+    },
+    "ch": {
+      "entry": "Kanäle",
+      "title": "Kanäle",
+      "entryNew": "{{n}} neue Beiträge",
+      "entryOne": "1 neuer Beitrag",
+      "entryNone": "Keine neuen Beiträge",
+      "entryAria": "Kanäle, neue Beiträge",
+      "pageHint": "Benachrichtigungen sind für Kanäle aus. Die Glocke im Kanal schaltet sie ein.",
+      "emptyList": "Du folgst keinem Kanal. Kanäle abonnierst du in WhatsApp unter „Aktuelles“.",
+      "label": "Kanal",
+      "sub": "Kanal · {{network}}",
+      "bar": "Ein Kanal von {{network}}. Hier liest du nur mit, Beiträge schreibt der Kanal.",
+      "barMuted": "Benachrichtigungen sind für diesen Kanal aus.",
+      "turnOn": "Einschalten",
+      "readonly": "Nur lesen. In Kanälen schreibt nur der Kanal.",
+      "empty": "Noch keine Beiträge. Neue Beiträge erscheinen hier, sobald der Kanal etwas veröffentlicht.",
+      "picLoading": "Bild wird geladen …",
+      "down": "{{network}} ist gerade nicht erreichbar. Neue Beiträge kommen an, sobald die Brücke wieder läuft.",
+      "bellOn": "Benachrichtigungen für diesen Kanal einschalten",
+      "bellOff": "Benachrichtigungen für diesen Kanal ausschalten",
+      "info": "Kanal über {{network}} · nur lesen",
+      "reactions": "Reaktionen anderer zeigt {{network}} nur in der {{network}}-App. Hier siehst du deine eigene.",
+      "reactionsOff": "Reagieren geht in Kanälen nicht: {{network}} hat eine Reaktion abgelehnt.",
+      "filter": "Dienst"
+    },
+    "grp": {
+      "adminsOnly": "Nur Admins schreiben in dieser Gruppe."
+    },
+    "person": {
+      "cardSub": "Zu einem Chat zusammenführen?",
+      "cardOpen": "Ansehen",
+      "cardAria": "Vorschlag: zu einer Person zusammenführen",
+      "mergeTitle": "Zu einer Person zusammenführen?",
+      "mergeText": "Beide Chats erscheinen dann als ein Chat mit gemeinsamem Verlauf. Das siehst nur du.",
+      "wayChat": "{{network}}-Chat",
+      "mergeName": "Name in deiner Liste",
+      "merge": "Zusammenführen",
+      "later": "Nicht jetzt",
+      "never": "Nicht mehr vorschlagen",
+      "merged": "Zu einer Person zusammengeführt.",
+      "src": "Nachrichten aus",
+      "srcAll": "Alle",
+      "placeholder": "Nachricht über {{way}}",
+      "via": "über {{network}}",
+      "onlyYou": "Nur für dich zusammengeführt – {{name}} sieht davon nichts.",
+      "waysTitle": "Wege von {{name}}",
+      "wayAccount": "Konto {{name}}",
+      "wayAs": "als „{{name}}“",
+      "split": "Trennen",
+      "splitQ": "Den {{network}}-Chat wieder getrennt zeigen? Es geht keine Nachricht verloren.",
+      "splitNote": "Trennen zeigt einen Weg wieder als eigenen Chat. Es geht keine Nachricht verloren.",
+      "splitDone": "Wieder getrennt. Es ging keine Nachricht verloren.",
+      "addWay": "Mit Person zusammenführen …",
+      "pickTitle": "Mit Person zusammenführen",
+      "pickAccounts": "GateControl-Konten",
+      "pickChats": "Andere Chats",
+      "pickHint": "Wähle ein GateControl-Konto oder einen anderen Chat mit derselben Person. Zusammengeführt wird nur, was du wählst – nie nach Namen geraten.",
+      "pickNone": "Kein passender Chat.",
+      "pickSearch": "Suchen",
+      "pickLoading": "Wird geladen …",
+      "push": "{{name}} · über {{way}}",
+      "recTitle": "Dürfen andere auf diesem Server dich an deinem WhatsApp erkennen?",
+      "recText": "Hat jemand auf diesem Server dich bei WhatsApp als Kontakt, schlägt GateControl ihr oder ihm vor, euren WhatsApp-Chat mit deinem Konto zusammenzuführen. Deine Nummer sieht dabei niemand.",
+      "recNote": "Du kannst das jederzeit in „Mein Profil“ unter „Erkennung“ ändern.",
+      "recNo": "Nein",
+      "recYes": "Ja, erkennen lassen",
+      "recSavedYes": "Andere auf diesem Server können dich jetzt an deinem WhatsApp erkennen.",
+      "recSavedNo": "Niemand erkennt dich an deinem WhatsApp.",
+      "recTitle_signal": "Dürfen andere auf diesem Server dich an deinem Signal erkennen?",
+      "recText_signal": "Hat jemand hier dich bei Signal, schlägt GateControl vor, euren Signal-Chat mit deinem Konto zusammenzuführen. Deine Nummer sieht dabei niemand.",
+      "recSavedYes_signal": "Andere auf diesem Server können dich jetzt an deinem Signal erkennen.",
+      "recSavedNo_signal": "Niemand erkennt dich an deinem Signal.",
+      "recTitle_telegram": "Dürfen andere auf diesem Server dich an deinem Telegram erkennen?",
+      "recText_telegram": "Hat jemand hier dich bei Telegram, schlägt GateControl vor, euren Telegram-Chat mit deinem Konto zusammenzuführen. Deine Nummer und dein Benutzername bleiben verborgen.",
+      "recSavedYes_telegram": "Andere auf diesem Server können dich jetzt an deinem Telegram erkennen.",
+      "recSavedNo_telegram": "Niemand erkennt dich an deinem Telegram.",
+      "replyTitle": "Nachrichten senden über",
+      "replyAuto": "Automatisch",
+      "replyAutoSub": "Weg der letzten Nachricht von {{name}} · gerade {{way}}",
+      "replyAutoSubPlain": "Weg der letzten Nachricht von {{name}}",
+      "replyAlways": "Immer {{way}}",
+      "replyGcSub": "Bleibt auf deinem Server, alle Funktionen",
+      "replyNetSub": "Ist {{network}} nicht verbunden, geht es über GateControl",
+      "replyNote": "Antwortest du auf eine Nachricht, geht die Antwort weiter über deren Weg.",
+      "replyFallback": "{{network}} nicht verbunden – die Nachricht geht über GateControl.",
+      "viaGc": "Geht über GateControl",
+      "onceTitle": "Nur diese Nachricht über",
+      "onceButton": "Weg für die nächste Nachricht: {{way}} – ändern",
+      "oncePlaceholder": "Nur diese Nachricht über {{way}}",
+      "onceGcSub": "alle Funktionen",
+      "onceLastSub": "Weg der letzten Nachricht",
+      "onceStdSub": "dein Standard",
+      "onceChange": "Standard für {{name}} ändern …"
+    },
+    "profile": {
+      "title": "Mein Profil",
+      "open": "Mein Profil öffnen",
+      "hint": "Name, Bild, Telefonnummern und mehr pflegst du im Portal.",
+      "picture": "Bild: {{level}}",
+      "opensPortal": "öffnet das Portal",
+      "level": {
+        "all": "Alle",
+        "contacts": "Kontakte",
+        "family": "Familie",
+        "self": "Nur ich"
+      }
     }
   },
   "school": {
@@ -1227,6 +1687,716 @@
       "failed": "Das hat nicht geklappt ({{code}})."
     }
   },
+  "familie": {
+    "title": "Familie",
+    "tabs": "Bereich wählen",
+    "refresh": "Aktualisieren",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "cancel": "Abbrechen",
+    "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
+    "and": "und",
+    "quoted": "„{{text}}“",
+    "inboxOpen": "In „Internet zu Hause“ öffnen",
+    "tab": {
+      "internet": "Internet zu Hause",
+      "rules": "Regeln",
+      "presence": "Meine Anwesenheit"
+    },
+    "when": {
+      "tomorrow": "morgen {{time}}",
+      "yesterday": "gestern {{time}}",
+      "day": "{{day}}, {{time}}"
+    },
+    "dur": {
+      "min": "{{n}} Min.",
+      "h": "{{n}} Std.",
+      "hm": "{{h}} Std. {{m}} Min."
+    },
+    "btn": {
+      "pause": "Pausieren",
+      "extend": "Heute länger",
+      "resume": "Fortsetzen",
+      "add30": "+30 Min.",
+      "extend30": "+30 Min.",
+      "endExtra": "Extra-Zeit beenden",
+      "reload": "Aktualisieren"
+    },
+    "internet": {
+      "chip": {
+        "on": "Internet an",
+        "paused": "pausiert bis {{time}}",
+        "extended": "heute länger bis {{time}}",
+        "blocked": "Sperrzeit bis {{time}}",
+        "blockedNow": "Sperrzeit",
+        "unfiltered": "nicht gefiltert",
+        "error": "nicht lesbar"
+      },
+      "presence": {
+        "homeWifi": "zu Hause · WLAN",
+        "homeApp": "zu Hause · App",
+        "home": "zu Hause",
+        "away": "unterwegs"
+      },
+      "devices": {
+        "one": "1 Gerät",
+        "other": "{{count}} Geräte"
+      },
+      "block": {
+        "all": "Internet aus"
+      },
+      "cat": {
+        "social": "Soziale Netzwerke",
+        "games": "Spiele",
+        "video": "Videos"
+      },
+      "sub": {
+        "next": "Nächste Sperrzeit ab {{time}}: {{what}}",
+        "active": "Sperrzeit läuft: {{what}}",
+        "noSchedule": "Keine Sperrzeiten",
+        "suspended": "Sperrzeit ab {{time}} ausgesetzt",
+        "suspendedAll": "Sperrzeiten ausgesetzt",
+        "error": "Zustand gerade nicht lesbar.",
+        "noDevices": "Keine Geräte im Heimnetz zugeordnet. Ein Admin ordnet sie im Netzwerk-Wächter zu. Pausieren hätte keine Wirkung.",
+        "noFilter": "Kein Gateway mit DNS-Filter kennt die Geräte von {{name}}. Pausieren hätte keine Wirkung."
+      },
+      "pausedOn": {
+        "one": "Internet auf 1 Gerät aus. GateControl und erlaubte Seiten gehen weiter.",
+        "other": "Internet auf {{count}} Geräten aus. GateControl und erlaubte Seiten gehen weiter.",
+        "none": "Internet aus. GateControl und erlaubte Seiten gehen weiter."
+      },
+      "by": "Von {{name}} um {{time}}.",
+      "byName": "Von {{name}}.",
+      "extBy": "von {{name}} um {{time}}",
+      "byRule": "Pausiert von der Regel",
+      "byRuleUnnamed": "Pausiert von einer Regel ohne Namen",
+      "extRule": "Verlängert von der Regel",
+      "extRuleUnnamed": "Verlängert von einer Regel ohne Namen",
+      "openRule": "Regel öffnen",
+      "awayPause": "Die Pause wirkt, sobald {{name}} zu Hause ist.",
+      "awayExtra": "Die Extra-Zeit wirkt, sobald {{name}} zu Hause ist.",
+      "foot": {
+        "parent": "Gilt im WLAN zu Hause. Unterwegs im Mobilfunk gilt es nicht. Die Sperrzeiten legt der Admin im DNS-Filter des Gateways fest.",
+        "child": "Nur zur Ansicht. Pausen und Extra-Zeit legen deine Eltern fest."
+      },
+      "none": {
+        "title": "Auf diesem Server gibt es kein „Internet zu Hause“.",
+        "hint": "Dafür braucht es ein Gateway mit DNS-Filter im Heimnetz. Ein Admin richtet es in GateControl ein.",
+        "old": "Dafür braucht es eine neuere Version des Familie-Plugins auf dem Server."
+      },
+      "empty": {
+        "title": "Keine Kinder",
+        "parent": "In eurer Familie gibt es keine minderjährigen Kinder.",
+        "child": "Für dich gibt es hier nichts zu sehen."
+      }
+    },
+    "dialog": {
+      "told": "{{name}} bekommt eine Mitteilung in GateControl."
+    },
+    "pause": {
+      "title": "Pause für {{name}}",
+      "howLong": "Wie lange",
+      "until": "bis Uhrzeit",
+      "untilLabel": "Pause bis",
+      "untilToday": "Heute bis {{time}} Uhr. Ist die Uhrzeit schon vorbei, gilt sie für morgen.",
+      "untilTomorrow": "Die Uhrzeit ist heute schon vorbei: Pause bis morgen {{time}} Uhr.",
+      "untilMissing": "Bitte eine Uhrzeit wählen.",
+      "durHint": "Pause bis {{time}} Uhr."
+    },
+    "extend": {
+      "title": "Heute länger für {{name}}",
+      "howLong": "Wie viel länger",
+      "from": "Zählt ab",
+      "fromSchedule": "Beginn der Sperrzeit ({{time}})",
+      "fromNow": "jetzt",
+      "hintSchedule": "Die Sperrzeit beginnt heute erst um {{time}}.",
+      "hintNow": "Die Sperrzeiten sind bis {{time}} ausgesetzt.",
+      "submit": "Erlauben"
+    },
+    "toast": {
+      "paused": "Internet von {{name}} pausiert bis {{time}}",
+      "resumed": "Internet von {{name}} läuft wieder",
+      "extended": "{{name}} darf heute länger: bis {{time}}",
+      "extraEnded": "Extra-Zeit von {{name}} beendet"
+    },
+    "rules": {
+      "untitled": "Regel ohne Namen",
+      "someone": "jemand",
+      "unavailable": "Aktion nicht verfügbar",
+      "active": "Regel „{{title}}“ aktiv",
+      "edit": "Bearbeiten",
+      "editNamed": "„{{title}}“ bearbeiten: Aktion „Internet zu Hause“",
+      "saved": "Regel gespeichert",
+      "on": "Regel eingeschaltet",
+      "off": "Regel ausgeschaltet",
+      "foot": "Hier schaltest du Regeln ein und aus und bearbeitest die Aktion „Internet zu Hause“. Neue Regeln, Auslöser und andere Aktionen bearbeitest du im Portal oder in der Android-App.",
+      "empty": {
+        "title": "Noch keine Regeln",
+        "hint": "Regeln legst du im Portal oder in der Android-App an. Hier schaltest du sie ein und aus und bearbeitest die Aktion „Internet zu Hause“."
+      },
+      "editOff": {
+        "readonly": "Diese Regel kannst du nicht bearbeiten.",
+        "parents_only": "Die Aktion „Internet zu Hause“ können nur Eltern bearbeiten.",
+        "unavailable": "Die Aktion „Internet zu Hause“ gibt es auf diesem Server nicht.",
+        "full": "Diese Regel hat schon 10 Aktionen."
+      },
+      "problem": {
+        "not_found": "{{name}} ist kein minderjähriges Kind der Familie mehr",
+        "not_allowed": "Internet von {{name}}: Der Besitzer der Regel ist kein Elternteil mehr",
+        "unavailable": "Internet von {{name}}: Auf diesem Server gibt es kein „Internet zu Hause“"
+      },
+      "trig": {
+        "daily": "Täglich um {{time}}",
+        "days": "{{days}} um {{time}}",
+        "all_away": "Wenn alle weg sind",
+        "first_home": "Wenn die erste Person heimkommt",
+        "child_home_alone": "Wenn ein Kind allein heimkommt",
+        "person_home": "Wenn {{name}} heimkommt",
+        "person_away": "Wenn {{name}} weggeht",
+        "place_enter": "Wenn {{name}} bei {{place}} ankommt",
+        "place_exit": "Wenn {{name}} {{place}} verlässt",
+        "school": "Wenn sich bei {{name}} der Stundenplan ändert",
+        "schoolAny": "Wenn sich ein Stundenplan ändert",
+        "other": "Anderer Auslöser"
+      },
+      "act": {
+        "pauseFor": "Internet von {{name}} pausieren ({{dur}})",
+        "pauseUntil": "Internet von {{name}} pausieren (bis {{time}})",
+        "pause": "Internet von {{name}} pausieren",
+        "resume": "Internet von {{name}} fortsetzen",
+        "notifyTo": "Mitteilung an {{names}}",
+        "notifyParents": "Mitteilung an die Eltern",
+        "notifyAll": "Mitteilung an alle",
+        "notify": "Mitteilung",
+        "chatFamily": "Nachricht im Familienchat",
+        "chatTo": "Chat-Nachricht an {{names}}",
+        "chat": "Chat-Nachricht",
+        "quick": "Gerät schalten",
+        "quickVerb": "{{title}}: {{verb}}",
+        "other": "weitere Aktion"
+      },
+      "dialog": {
+        "title": "Aktion: Internet zu Hause",
+        "which": "Aktion",
+        "new": "Neue Aktion",
+        "who": "Für wen",
+        "what": "Was",
+        "howLong": "Wie lange",
+        "untilLabel": "Pausieren bis",
+        "untilHint": "Bis zur nächsten solchen Uhrzeit, in der Zeitzone der Familie.",
+        "onBehalf": "Die Regel pausiert im Namen von {{name}}.",
+        "onBehalfResume": "Die Regel setzt im Namen von {{name}} fort.",
+        "save": "Speichern",
+        "remove": "Aktion entfernen",
+        "onlyAction": "Die einzige Aktion einer Regel lässt sich nicht entfernen.",
+        "full": "Eine Regel hat höchstens 10 Aktionen.",
+        "gone": "{{name}} (nicht verfügbar)",
+        "op": {
+          "pause": "Pausieren",
+          "resume": "Fortsetzen"
+        }
+      }
+    },
+    "presence": {
+      "now": "Gerade",
+      "share": {
+        "title": "Anwesenheit teilen",
+        "hint": "Die Android-App meldet eurem Server „zu Hause“ oder „unterwegs“."
+      },
+      "wifi": {
+        "title": "WLAN-Erkennung verwenden",
+        "hint": "Das Gateway meldet „zu Hause“, sobald eines deiner Geräte im Heim-WLAN ist.",
+        "off": "Ohne WLAN-Erkennung zählt nur, was die App meldet."
+      },
+      "state": {
+        "homeSince": "zu Hause seit {{time}}",
+        "home": "zu Hause",
+        "awaySince": "unterwegs seit {{time}}",
+        "away": "unterwegs",
+        "unknown": "noch nichts gemeldet",
+        "not_shared": "wird nicht geteilt"
+      },
+      "source": {
+        "wifi": "Quelle: WLAN",
+        "app": "Quelle: App"
+      },
+      "devices": {
+        "title": "Meine Geräte im Heim-WLAN",
+        "empty": "Dir sind noch keine Geräte zugeordnet.",
+        "unnamed": "Gerät",
+        "lastSeen": "zuletzt gesehen {{time}}",
+        "never": "noch nicht gesehen",
+        "counts": "zählt",
+        "countsNot": "zählt nicht",
+        "foot": "Die Geräte ordnet ein Admin im Netzwerk-Wächter zu. Diese Einstellung gilt nur für dich."
+      }
+    },
+    "off": {
+      "title": "In Familie ausgeschaltet",
+      "hint": "Diese Funktion ist in den Einstellungen des Familie-Plugins nicht eingeschaltet."
+    },
+    "unavailable": {
+      "title": "Familie ist nicht verfügbar",
+      "hint": "Der Server bietet das Familie-Plugin für dieses Gerät gerade nicht an, oder du bist kein Mitglied einer Familie."
+    },
+    "err": {
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "forbidden": "Das ist für dieses Gerät nicht erlaubt.",
+      "invalid": "Die Angabe ist ungültig. Bitte prüfen und noch einmal versuchen.",
+      "parents_only": "Das können nur Eltern.",
+      "not_found": "Das gibt es nicht mehr. Bitte aktualisieren.",
+      "unavailable": "Auf diesem Server gibt es kein „Internet zu Hause“.",
+      "not_person": "GateControl erkennt für dieses Gerät keine angemeldete Person.",
+      "module_off": "Diese Funktion ist in Familie ausgeschaltet.",
+      "not_member": "Du bist kein Mitglied einer Familie.",
+      "not_configured": "Die App ist noch nicht mit einem Server verbunden.",
+      "auth": "Die Anmeldung am Server ist abgelaufen.",
+      "too_many": "Es gibt schon zu viele davon.",
+      "state_required": "Eine andere Aktion dieser Regel ist unvollständig. Bitte im Portal prüfen.",
+      "server": "Der Server meldet einen Fehler. Bitte später noch einmal versuchen.",
+      "failed": "Das hat nicht geklappt ({{code}})."
+    }
+  },
+  "dnsProtect": {
+    "title": "DNS-Schutz",
+    "retry": "Erneut versuchen",
+    "stale": "Der DNS-Schutz ist gerade nicht erreichbar – du siehst den zuletzt geladenen Stand.",
+    "unreachable": "Der DNS-Schutz ist gerade nicht erreichbar.",
+    "disconnected": "VPN nicht verbunden: Gefiltert wird auf diesem Gerät nur, solange es verbunden ist.",
+    "forever": "Bis ich wieder einschalte",
+    "resume": "Wieder einschalten",
+    "extend": "+30 Min.",
+    "remaining": "Restzeit {{time}}",
+    "chip": {
+      "active": "aktiv",
+      "paused": "unterbrochen",
+      "fallback": "ungefiltert",
+      "unfiltered": "nicht gefiltert",
+      "starting": "startet",
+      "error": "nicht erreichbar"
+    },
+    "sub": {
+      "active": "Werbung und Schadseiten werden gesperrt",
+      "pausedUntil": "Unterbrochen bis {{time}} Uhr · schaltet sich von selbst ein",
+      "pausedOpenMe": "Unterbrochen, bis du wieder einschaltest",
+      "pausedOpenBy": "Unterbrochen, bis {{name}} wieder einschaltet",
+      "pausedOpen": "Unterbrochen, bis jemand wieder einschaltet",
+      "fallbackSince": "Ausgefallen seit {{time}} Uhr",
+      "fallback": "Ausgefallen",
+      "starting": "Der Schutz startet gerade.",
+      "ownDns": "Dieses Gerät nutzt einen eigenen DNS-Server ({{dns}}) und wird nicht gefiltert.",
+      "ownDnsPlain": "Dieses Gerät nutzt einen eigenen DNS-Server und wird nicht gefiltert.",
+      "excluded": "Dieses Gerät ist vom Schutz ausgenommen.",
+      "disabled": "Dieses Gerät ist auf dem Server deaktiviert und wird nicht gefiltert.",
+      "noDevice": "Du hast kein VPN-Gerät, für das der Schutz gilt.",
+      "unfiltered": "Dieses Gerät wird nicht gefiltert."
+    },
+    "kv": {
+      "queries": "Anfragen heute",
+      "blocked": "Gesperrt",
+      "percent": "Anteil"
+    },
+    "profile": {
+      "home": "Profil „{{name}}“ · gilt zu Hause und unterwegs"
+    },
+    "scope": {
+      "person": "Zahlen aller deiner Geräte",
+      "server": "Zahlen aller Geräte des Servers"
+    },
+    "pauseFor": {
+      "device": "Unterbrechen für dieses Gerät:",
+      "devices": "Unterbrechen für deine Geräte:"
+    },
+    "dur": {
+      "5": "5 Min.",
+      "30": "30 Min.",
+      "60": "1 Std.",
+      "240": "4 Std."
+    },
+    "hint": {
+      "endsSelf": "Endet von selbst.",
+      "foreverOff": "Endet von selbst. „Bis ich wieder einschalte“ hat dein Admin nicht freigegeben.",
+      "notOffered": "Diese Dauer hat dein Admin nicht freigegeben."
+    },
+    "note": {
+      "byMe": "Unterbrochen von dir um {{time}} für {{duration}}.",
+      "byMeOpen": "Unterbrochen von dir um {{time}}.",
+      "byOther": "Unterbrochen von {{name}} um {{time}} für {{duration}}.",
+      "byOtherOpen": "Unterbrochen von {{name}} um {{time}}.",
+      "plain": "Unterbrochen um {{time}} für {{duration}}.",
+      "plainOpen": "Unterbrochen um {{time}}.",
+      "device": "Solange wird auf diesem Gerät nichts gesperrt.",
+      "devices": "Solange wird auf deinen Geräten nichts gesperrt.",
+      "all": "Ein Admin hat den Schutz für alle Geräte unterbrochen. Nur ein Admin schaltet ihn wieder ein."
+    },
+    "duration": {
+      "minute": "1 Minute",
+      "minutes": "{{n}} Minuten",
+      "hour": "1 Stunde",
+      "hours": "{{n}} Stunden",
+      "hm": "{{h}} Std. {{m}} Min."
+    },
+    "banner": {
+      "fallbackTitle": "Der Filter auf dem Server antwortet nicht.",
+      "fallbackText": "Dein Internet läuft weiter, aber ohne Schutz. Dein Admin wurde benachrichtigt. Der Schutz schaltet sich von selbst wieder ein.",
+      "notAllowedTitle": "Unterbrechen nicht erlaubt.",
+      "profile": "Für dein Profil hat der Admin das Unterbrechen gesperrt. Geht eine Seite nicht, die du brauchst, frag deine Eltern oder den Admin.",
+      "admins_only": "Unterbrechen dürfen hier nur Admins.",
+      "internetTitle": "Internet pausiert bis {{time}} Uhr",
+      "internetText": "Dein Internet ist pausiert (Familie). Das gilt auch unterwegs über das VPN: Es gehen nur ausdrücklich erlaubte Seiten. Den Schutz zu unterbrechen ändert daran nichts.",
+      "internet_paused": "Das Internet ist pausiert (Familie). Den Schutz zu unterbrechen ändert daran nichts."
+    },
+    "top": {
+      "title": "Top gesperrte Domains",
+      "empty": "Heute wurde noch nichts gesperrt."
+    },
+    "done": {
+      "paused": "DNS-Schutz unterbrochen.",
+      "extended": "Unterbrechung um 30 Minuten verlängert.",
+      "resumed": "DNS-Schutz wieder eingeschaltet.",
+      "notPaused": "Der Schutz war schon wieder eingeschaltet."
+    },
+    "error": {
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "unavailable": "Der Filter-Dienst antwortet gerade nicht. Versuch es später noch einmal.",
+      "rate_limited": "Zu viele Anfragen. Versuch es gleich noch einmal.",
+      "failed": "Das hat nicht geklappt."
+    },
+    "tray": {
+      "active": "DNS-Schutz: aktiv",
+      "pausedUntil": "DNS-Schutz: unterbrochen bis {{time}}",
+      "paused": "DNS-Schutz: unterbrochen",
+      "fallback": "DNS-Schutz: ausgefallen (ungefiltert)",
+      "unfiltered": "DNS-Schutz: dieses Gerät wird nicht gefiltert",
+      "pause": "DNS-Schutz unterbrechen",
+      "resume": "DNS-Schutz wieder einschalten",
+      "minutes": {
+        "5": "5 Minuten",
+        "30": "30 Minuten",
+        "60": "1 Stunde",
+        "240": "4 Stunden"
+      },
+      "internetPaused": "Internet pausiert bis {{time}} (Familie)"
+    },
+    "toast": {
+      "outageTitle": "DNS-Schutz: Filter ausgefallen",
+      "outageBody": "Dein Internet läuft weiter, aber ungefiltert. Der Schutz schaltet sich von selbst wieder ein.",
+      "failed": "DNS-Schutz: {{error}}"
+    }
+  },
+  "print": {
+    "title": "Drucken",
+    "sub": "Drucker zu Hause – auch unterwegs und mit VPN",
+    "pick": "Datei drucken …",
+    "refresh": "Aktualisieren",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "cancel": "Abbrechen",
+    "inboxOpen": "In „Drucken“ öffnen",
+    "navCount": {
+      "one": "1 offener Auftrag",
+      "other": "{{count}} offene Aufträge"
+    },
+    "drop": {
+      "title": "Datei hierher ziehen",
+      "active": "Zum Drucken hier ablegen",
+      "types": "PDF, Bilder, Text und Office-Dateien bis 50 MB.",
+      "left": "Heute noch {{left}} von {{total}} Seiten.",
+      "waits": "Der Auftrag wartet, bis der Drucker an ist.",
+      "nav": "Zum Drucken ablegen"
+    },
+    "printers": {
+      "title": "Drucker"
+    },
+    "printer": {
+      "ready": "bereit",
+      "off": "aus",
+      "busy": "beschäftigt",
+      "stopped": "angehalten",
+      "cert": "wartet auf Admin",
+      "color": "Farbe",
+      "bw": "schwarz-weiß",
+      "duplex": "beidseitig",
+      "note": {
+        "off": "druckt, sobald er an ist",
+        "busy": "druckt gerade",
+        "stopped": "angehalten – am Drucker nachsehen",
+        "cert": "wartet auf einen Admin (Zertifikat geändert)"
+      }
+    },
+    "banner": {
+      "allOff": {
+        "title": "Kein Drucker ist gerade an.",
+        "text": "Du kannst trotzdem drucken: Der Auftrag wartet bis zu 24 Stunden und druckt, sobald der Drucker an ist."
+      },
+      "cert": "Das Zertifikat des Druckers hat sich geändert. Ein Admin muss es bestätigen, vorher nimmt der Drucker keine Aufträge an.",
+      "offline": {
+        "title": "Keine Verbindung zu GateControl.",
+        "text": "Die Liste zeigt den Stand von {{time}}. Neue Aufträge gehen erst wieder mit Verbindung.",
+        "noCopy": "Neue Aufträge gehen erst wieder mit Verbindung."
+      }
+    },
+    "empty": {
+      "noPrinter": {
+        "title": "Noch kein Drucker gefunden",
+        "text": "Du darfst drucken, aber es ist noch kein Drucker gefunden. Drucker findet ein Gateway im Heimnetz, bei dem „Drucken & Scannen“ eingeschaltet ist.",
+        "foot": "Für Admins: Gateways › dein Gateway › Funktionen › „Geräte im Heimnetz“."
+      },
+      "unavailable": {
+        "title": "Drucken ist hier nicht verfügbar",
+        "text": "Das Plugin „Drucken & Scannen“ ist auf deinem GateControl-Server nicht installiert, nicht lizenziert oder nicht für die Apps freigegeben. Frag deinen Admin."
+      },
+      "noRight": {
+        "title": "Du darfst nicht drucken",
+        "text": "Ein Admin hat das Drucken für dein Konto ausgeschaltet. Frag deinen Admin."
+      },
+      "error": {
+        "title": "Drucken konnte nicht geladen werden"
+      }
+    },
+    "jobs": {
+      "title": "Aufträge",
+      "open": {
+        "one": "1 offen",
+        "other": "{{count}} offen"
+      },
+      "none": "keine offenen",
+      "updated": "aktualisiert {{time}}",
+      "empty": "Noch keine Aufträge. Was du druckst, steht hier mit seinem Zustand.",
+      "foot": {
+        "one": "Die Liste zeigt deinen letzten Auftrag.",
+        "other": "Die Liste zeigt deine letzten {{count}} Aufträge."
+      },
+      "footPortal": "Ältere stehen im Portal unter „Drucken & Scannen“.",
+      "portal": "Im Portal öffnen",
+      "stale": "Stand von {{time}}. Der Auftrag läuft am Server weiter, auch wenn dieser PC aus ist.",
+      "cancel": "Abbrechen",
+      "cancelOf": "„{{name}}“ abbrechen",
+      "again": "Erneut drucken",
+      "againOf": "„{{name}}“ erneut drucken",
+      "remove": "Entfernen",
+      "removeOf": "„{{name}}“ aus der Liste entfernen",
+      "canceled": "Auftrag abgebrochen.",
+      "cancelLate": "Der Auftrag lässt sich nicht mehr abbrechen – er ist schon beim Drucker.",
+      "sent": {
+        "one": "Auftrag angelegt.",
+        "other": "{{count}} Aufträge angelegt."
+      }
+    },
+    "steps": {
+      "gc": "GateControl",
+      "gateway": "Gateway",
+      "printer": "Drucker",
+      "done": "Gedruckt",
+      "label": "Station {{n}} von 4: {{name}}"
+    },
+    "state": {
+      "queuedLocal": "Wartet auf den Auftrag davor",
+      "loading": "Wird aus dem Drive geladen …",
+      "uploading": "Geht an GateControl … {{percent}} %",
+      "creating": "Auftrag wird angelegt …",
+      "notSent": "Nicht gesendet",
+      "queued": "Unterwegs nach Hause",
+      "sending": "Geht an den Drucker",
+      "converting": "Wird für den Drucker umgewandelt",
+      "convertingOffice": "Wird in ein PDF umgewandelt",
+      "printing": "Wird gedruckt",
+      "stopped": "Angehalten",
+      "waiting": "Wartet",
+      "done": "Gedruckt",
+      "doneUnconfirmed": "Beim Drucker angekommen",
+      "failed": "Fehlgeschlagen",
+      "expired": "Verfallen",
+      "canceled": "Abgebrochen"
+    },
+    "stop": {
+      "paper": "Papier fehlt – bitte nachlegen.",
+      "jam": "Papierstau am Drucker.",
+      "open": "Eine Klappe des Druckers ist offen.",
+      "ink": "Tinte oder Toner ist leer.",
+      "tray": "Das Papierfach fehlt.",
+      "full": "Das Ausgabefach ist voll.",
+      "held": "Wartet am Drucker (z. B. auf eine PIN).",
+      "stopped": "Der Drucker hat angehalten.",
+      "resume": "Der Drucker macht danach von selbst weiter."
+    },
+    "wait": {
+      "off": "Wartet, bis der Drucker an ist",
+      "busy": "Wartet – der Drucker ist beschäftigt",
+      "notAccepting": "Wartet – der Drucker nimmt gerade nichts an",
+      "cert": "Wartet – ein Admin muss das Zertifikat des Druckers bestätigen",
+      "office": "Wartet, bis der Office-Dienst des Gateways läuft",
+      "until": "{{reason}} – noch bis {{when}}.",
+      "plain": "{{reason}} (bis zu 24 Stunden)."
+    },
+    "done": {
+      "unconfirmed": "Der Drucker hat das Ende nicht bestätigt."
+    },
+    "fail": {
+      "format": "Der Drucker kann dieses Format nicht.",
+      "convert": "Die PDF-Datei ließ sich für den Drucker nicht umwandeln (beschädigt oder mit Kennwort geschützt).",
+      "convertLarge": "Umgewandelt für den Drucker zu groß – bitte in Teilen drucken.",
+      "office": "Die Office-Datei ließ sich nicht in ein PDF umwandeln (beschädigt oder mit Kennwort geschützt?).",
+      "officeTimeout": "Das Umwandeln der Office-Datei hat zu lange gedauert.",
+      "rejected": "Der Drucker hat den Auftrag abgelehnt.",
+      "atPrinter": "Am Drucker abgebrochen.",
+      "expired": "Nicht innerhalb von 24 Stunden gedruckt.",
+      "device": "Dieses Gerät druckt nicht.",
+      "failed": "Drucken fehlgeschlagen."
+    },
+    "err": {
+      "network": "Keine Verbindung zu GateControl.",
+      "timeout": "Der Server antwortet nicht.",
+      "not_configured": "GateControl ist auf diesem PC noch nicht eingerichtet.",
+      "too_large": "Die Datei ist zu groß (höchstens 50 MB).",
+      "format": "Diese Datei lässt sich nicht drucken: Es gehen PDF-Dateien, Bilder, Text und Office-Dateien.",
+      "damaged": "Die Datei ist beschädigt und lässt sich nicht drucken.",
+      "printer_format": "Dieser Drucker nimmt keine PDF-Dateien, und das Gateway kann sie für ihn nicht umwandeln.",
+      "gateway_update": "Das Gateway ist zu alt, um PDF-Dateien für diesen Drucker umzuwandeln. Ein Admin aktualisiert es unter Gateways.",
+      "convert_off": "Das Umwandeln von PDF-Dateien ist für diesen Drucker am Gateway ausgeschaltet.",
+      "office_off": "Office-Dateien sind für diesen Drucker nicht eingeschaltet. Als PDF gespeichert lässt sich die Datei sofort drucken.",
+      "office_missing": "Der Office-Dienst des Gateways läuft noch nicht. Später noch einmal versuchen.",
+      "quota": "Auf dem Server ist kein Platz mehr für Druckaufträge.",
+      "infected": "Der Virenscan hat diese Datei gesperrt.",
+      "scan": "Der Virenscan prüft diese Datei noch oder ist gerade nicht erreichbar – später noch einmal versuchen.",
+      "limit": "Das wären {{pages}} Seiten – heute gehen noch {{left}}.",
+      "limitPlain": "Die Seitengrenze für heute ist erreicht.",
+      "no_right": "Du darfst nicht drucken – frag deinen Admin.",
+      "read": "Die Datei konnte nicht gelesen werden.",
+      "empty": "Die Datei ist leer.",
+      "folder": "Ordner lassen sich nicht drucken.",
+      "too_many": "Höchstens 20 Dateien auf einmal.",
+      "unavailable": "„Drucken & Scannen“ ist auf deinem GateControl-Server für die App nicht verfügbar.",
+      "offline": "Kein Gateway zu Hause ist gerade erreichbar.",
+      "cert_changed": "Das Zertifikat des Druckers hat sich geändert. Ein Admin muss es bestätigen.",
+      "not_found": "Diesen Drucker gibt es nicht mehr. Bitte aktualisieren.",
+      "busy": "Es sind zu viele Aufträge offen. Warte, bis einer fertig ist.",
+      "vault_locked": "Der Tresor ist gesperrt. Öffne ihn zuerst im Drive.",
+      "source_gone": "Die Datei liegt nicht mehr dort, wo sie war. Wähle sie neu aus.",
+      "invalid": "Die Angabe ist ungültig. Bitte prüfen und noch einmal versuchen.",
+      "failed": "Drucken hat nicht geklappt."
+    },
+    "rejected": {
+      "one": "„{{name}}“: {{reason}}",
+      "more": {
+        "one": "1 weitere Datei lässt sich nicht drucken.",
+        "other": "{{count}} weitere Dateien lassen sich nicht drucken."
+      }
+    },
+    "meta": {
+      "pages": {
+        "one": "1 Seite",
+        "other": "{{count}} Seiten"
+      },
+      "copies": {
+        "one": "1 Kopie",
+        "other": "{{count}} Kopien"
+      },
+      "times": "{{pages}} × {{copies}}",
+      "color": "Farbe",
+      "bw": "schwarz-weiß",
+      "duplex": "beidseitig",
+      "justNow": "gerade eben",
+      "yesterday": "gestern, {{time}}",
+      "tomorrow": "morgen, {{time}} Uhr",
+      "today": "heute, {{time}} Uhr",
+      "at": "{{day}}, {{time}} Uhr"
+    },
+    "paper": {
+      "a4": "A4",
+      "a5": "A5",
+      "a6": "A6",
+      "a3": "A3",
+      "letter": "Letter",
+      "legal": "Legal",
+      "photo10x15": "Foto 10 × 15 cm",
+      "photo13x18": "Foto 13 × 18 cm",
+      "photo9x13": "Foto 9 × 13 cm",
+      "default": "{{name}} (Standard des Druckers)",
+      "size": "{{w}} × {{h}} {{unit}}"
+    },
+    "tray": {
+      "auto": "Automatisch",
+      "main": "Hauptfach",
+      "manual": "Manuelle Zufuhr",
+      "photo": "Fotofach",
+      "bypass": "Mehrzweckfach",
+      "envelope": "Umschlagfach",
+      "top": "Oberes Fach",
+      "middle": "Mittleres Fach",
+      "bottom": "Unteres Fach",
+      "rear": "Hinteres Fach",
+      "side": "Seitliches Fach",
+      "number": "Fach {{n}}",
+      "default": "{{name}} (Standard des Druckers)"
+    },
+    "kind": {
+      "pdf": "PDF",
+      "image": "Bild",
+      "text": "Text",
+      "docx": "Word-Datei",
+      "xlsx": "Excel-Datei",
+      "pptx": "PowerPoint-Datei",
+      "odt": "OpenDocument-Text",
+      "ods": "OpenDocument-Tabelle",
+      "odp": "OpenDocument-Präsentation",
+      "rtf": "RTF-Datei",
+      "office": "Office-Datei"
+    },
+    "from": {
+      "pc": "vom PC",
+      "drive": "aus Drive",
+      "vault": "aus einem Tresor im Drive"
+    },
+    "dialog": {
+      "title": "Zu Hause drucken",
+      "files": {
+        "one": "1 Datei",
+        "other": "{{count}} Dateien"
+      },
+      "each": "Jede Datei wird ein eigener Auftrag mit denselben Optionen.",
+      "printer": "Drucker",
+      "copies": "Kopien",
+      "copiesMax": "höchstens {{max}}",
+      "less": "Eine Kopie weniger",
+      "more": "Eine Kopie mehr",
+      "color": "Farbe",
+      "colorOn": "Farbe",
+      "colorOff": "Schwarz-weiß",
+      "bwPrinter": "Dieser Drucker druckt schwarz-weiß",
+      "bwOnly": "Dein Konto druckt nur schwarz-weiß",
+      "duplex": "Beidseitig",
+      "duplexOn": "2 Seiten auf 1 Blatt Papier",
+      "duplexOff": "aus",
+      "paper": "Papier",
+      "tray": "Fach",
+      "info": "Der Auftrag läuft über GateControl zum Gateway zu Hause. Ist der Drucker aus, wartet er bis zu 24 Stunden.",
+      "left": "Heute noch {{left}} von {{total}} Seiten",
+      "go": "Zu Hause drucken",
+      "sending": "Wird gesendet …",
+      "office": {
+        "title": "Office-Dateien sind für diesen Drucker nicht eingeschaltet.",
+        "text": "Ein Admin schaltet „Office-Dateien drucken“ am Gateway ein. Als PDF gespeichert lässt sich die Datei sofort drucken."
+      },
+      "limit": "Das wären {{pages}} Seiten – heute gehen noch {{left}}.",
+      "limitAtLeast": "Das wären mindestens {{pages}} Seiten – heute gehen noch {{left}}.",
+      "cert": "Dieser Drucker nimmt gerade keine Aufträge an: Ein Admin muss sein geändertes Zertifikat bestätigen.",
+      "noPrinter": "Es ist kein Drucker da."
+    },
+    "menu": {
+      "one": "Drucken …",
+      "many": "{{count}} Dateien drucken …",
+      "viewer": "Drucken",
+      "none": "Hier ist nichts zum Drucken dabei – es gehen PDF-Dateien, Bilder, Text und Office-Dateien."
+    },
+    "vault": {
+      "title": "Aus dem Tresor drucken?",
+      "text": "Zum Drucken verlässt die Datei den Tresor: Die App entschlüsselt sie und gibt sie an deinen GateControl-Server und den Drucker. Auf diesem Weg ist sie nicht mehr Ende-zu-Ende verschlüsselt.",
+      "go": "Trotzdem drucken"
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Dateien, Text und Links an deine Geräte, Personen, das NAS oder per Link teilen",
@@ -1235,9 +2405,22 @@
     "refresh": "Aktualisieren",
     "someone": "Jemand",
     "retention": "Empfangenes bleibt 7 Tage auf dem Server.",
+    "retentionDays": "Empfangenes bleibt {{days}} auf dem Server.",
+    "retentionSplit": "Empfangenes bleibt nach der Abholung {{after}}, sonst {{unpicked}} auf dem Server.",
+    "retentionNow": "Empfangenes wird nach der Abholung vom Server gelöscht, nicht Abgeholtes bleibt {{unpicked}}.",
+    "days": {
+      "one": "1 Tag",
+      "other": "{{n}} Tage"
+    },
     "folder": "Gespeichert in {{folder}}",
     "folderLabel": "Empfangene Dateien",
     "openFolder": "Ordner öffnen",
+    "folderPick": "Speicherort für empfangene Dateien",
+    "folderChange": "Ändern …",
+    "folderChangeTitle": "Speicherort für empfangene Dateien ändern",
+    "folderReset": "Zurücksetzen",
+    "folderResetTitle": "Wieder im Standardordner speichern: {{folder}}",
+    "folderCustom": "Selbst gewählt",
     "explorer": "Im Explorer unter „Senden an“ anzeigen",
     "explorerHint": "Rechtsklick auf Dateien › Senden an › GateDrop",
     "access": {
@@ -1380,7 +2563,8 @@
       "linkOnce": "einmal herunterladen",
       "copyLink": "Link kopieren",
       "today": "heute {{time}}",
-      "yesterday": "gestern {{time}}"
+      "yesterday": "gestern {{time}}",
+      "removed": "Vom Admin entfernt"
     },
     "status": {
       "pending": "wartet",
@@ -1389,7 +2573,12 @@
       "delivered": "zugestellt",
       "opened": "geöffnet",
       "failed": "fehlgeschlagen",
-      "expired": "abgelaufen"
+      "expired": "abgelaufen",
+      "provided": "bereitgestellt",
+      "received": "empfangen",
+      "picked": "abgeholt",
+      "removed": "vom Admin entfernt",
+      "incomplete": "nicht alle Dateien angekommen"
     },
     "via": {
       "direct": "direkt im WLAN",
@@ -1428,7 +2617,23 @@
       "changed": "Eine Datei wurde inzwischen geändert – bitte neu auswählen.",
       "forbidden": "Das darfst du nicht.",
       "invalid": "Die Anfrage war ungültig.",
-      "failed": "Das hat nicht geklappt ({{code}})."
+      "folder_missing": "Diesen Ordner gibt es nicht (mehr).",
+      "folder_readonly": "In diesen Ordner darf GateControl nicht schreiben – bitte einen anderen wählen.",
+      "failed": "Das hat nicht geklappt ({{code}}).",
+      "gone": "Der Versand ist abgelaufen oder wurde vom Admin entfernt."
+    },
+    "runAs": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Empfangene Dateien speichert GateControl trotzdem im Ordner von „{{session}}“: {{path}}. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
+    "runAsUnknown": "GateControl läuft als Windows-Benutzer „{{user}}“, angemeldet ist „{{session}}“. Die Ordner von „{{session}}“ ließen sich nicht ermitteln: Empfangenes landet in den Downloads von „{{user}}“ (Pfad oben) – oder mit „Ändern …“ einen Ordner wählen. Windows-Benachrichtigungen gehen so nicht – GateControl zeigt sie selbst an.",
+    "runAsUnreachable": "Der umgeleitete Download-Ordner „{{folder}}“ ist für „{{user}}“ nicht erreichbar, daher der Ordner im Benutzerprofil.",
+    "receiveError": {
+      "text": "Nicht auf diesem PC gespeichert: {{why}} „Speichern“ lädt es erneut.",
+      "checking": "Wird noch auf Viren geprüft – wird automatisch geladen, sobald die Prüfung fertig ist.",
+      "download_failed": "Das Herunterladen ist fehlgeschlagen.",
+      "timeout": "Der Server hat nicht rechtzeitig geantwortet.",
+      "network": "Der Server war nicht erreichbar.",
+      "not_found": "Der Versand ist auf dem Server nicht mehr da.",
+      "gone": "Der Versand ist abgelaufen oder wurde vom Admin entfernt.",
+      "other": "Fehler ({{code}})."
     }
   },
   "vault": {
@@ -1436,5 +2641,158 @@
     "conflictSuffix": "(Konflikt)",
     "qrFileTitle": "QR-Code mit 2FA-Schlüssel wählen",
     "qrFileFilter": "Bilder"
+  },
+  "scan": {
+    "checking": "Wird auf Viren geprüft …",
+    "checkingShort": "Wird geprüft …",
+    "checkingOpen": "Wird auf Viren geprüft … – die Datei öffnet sich nach der Prüfung.",
+    "malware": "Gesperrt – Schadsoftware",
+    "malwareOf": "Gesperrt – Schadsoftware ({{finding}})",
+    "unscannable": "Gesperrt – konnte nicht geprüft werden",
+    "unscannableShort": "Gesperrt – nicht prüfbar",
+    "blocked": "Gesperrt",
+    "warning": "Warnung – Schadsoftware",
+    "warningOf": "Schadsoftware gefunden ({{finding}}) – nur öffnen, wenn du vertraust",
+    "warningAsk": "Der Virenscan hat in „{{name}}“ Schadsoftware gefunden. Nur öffnen, wenn du der Datei vertraust.",
+    "openAnyway": "Trotzdem öffnen",
+    "notCheckable": "Nicht prüfbar",
+    "removed": "Anhang entfernt (Schadsoftware)",
+    "blockedHint": "Gesperrte Dateien lassen sich nicht öffnen, herunterladen, ansehen oder teilen.",
+    "fileBlocked": "Datei gesperrt",
+    "quarantined": "Datei gesperrt – Schadsoftware gefunden",
+    "quarantinedOf": "Datei gesperrt – Schadsoftware gefunden ({{finding}})",
+    "scanBlocked": "Datei gesperrt – konnte nicht auf Viren geprüft werden",
+    "scanBlockedOf": "{{name}} konnte nicht auf Viren geprüft werden",
+    "rejected": "Datei abgelehnt – Schadsoftware gefunden.",
+    "rejectedOf": "{{name}} abgelehnt – Schadsoftware gefunden.",
+    "unavailable": "Virenscan gerade nicht erreichbar – bitte später erneut versuchen.",
+    "attachmentRemoved": "Der Anhang wurde entfernt (Schadsoftware) und lässt sich nicht mehr laden.",
+    "attachmentBlocked": "Ein Anhang ist gesperrt (Schadsoftware) – entfernen?",
+    "attachmentBlockedOf": "Der Anhang {{name}} ist gesperrt (Schadsoftware) – entfernen?",
+    "remove": "Entfernen",
+    "notSent": "Nicht gesendet – Schadsoftware gefunden",
+    "notSentOf": "Nicht gesendet – Schadsoftware gefunden ({{finding}})",
+    "notSentUnscannable": "Nicht gesendet – Datei konnte nicht geprüft werden",
+    "sendWaiting": "Wird auf Viren geprüft … – wird danach gesendet.",
+    "skippedOne": "1 gesperrte Datei fehlt.",
+    "skippedMany": "{{count}} gesperrte Dateien fehlen.",
+    "syncBlockedOne": "1 Datei wegen des Virenscans nicht geladen",
+    "syncBlockedMany": "{{count}} Dateien wegen des Virenscans nicht geladen"
+  },
+  "cameras": {
+    "title": "Kameras",
+    "sub": "Tür & Kamera · Kameras im Heimnetz, ohne Hersteller-Cloud",
+    "online": "{{count}} online",
+    "refresh": "Aktualisieren",
+    "portal": "Schlösser und Ring im Portal",
+    "portalOff": "Das Portal ist gerade nicht erreichbar (VPN verbunden?).",
+    "chooser": "Kamera wählen",
+    "player": "Live-Bild {{name}}",
+    "live": "LIVE",
+    "hd": "HD",
+    "sd": "SD",
+    "viaVpn": "über VPN",
+    "viaLan": "im Heimnetz",
+    "stillEvery": "Standbild · alle {{s}} s",
+    "stamp": "{{name}} · {{time}}",
+    "connecting": "Live-Bild wird geladen …",
+    "reconnect": "Live-Bild neu laden",
+    "offline": "Kamera offline",
+    "hint": "Unterwegs ohne VPN zeigt die App alle {{s}} Sekunden ein neues Standbild; das Live-Video gibt es mit eingeschaltetem VPN.",
+    "hintLive": "Live-Video über den Tunnel – ohne Hersteller-Cloud, ein paar Sekunden verzögert.",
+    "codec": "Dieses Video lässt sich hier nicht abspielen ({{codec}}). In der Kamera den Unterstrom (H.264) wählen.",
+    "saveStill": "Standbild speichern",
+    "saved": "Standbild gespeichert",
+    "saveFailed": "Das Standbild konnte nicht gespeichert werden.",
+    "fullscreen": "Vollbild",
+    "fullscreenExit": "Vollbild beenden",
+    "sound": "Ton",
+    "soundOn": "Ton einschalten",
+    "soundOff": "Ton ausschalten",
+    "noSound": "Diese Kamera sendet keinen Ton.",
+    "soundLive": "Ton gibt es nur im Live-Video.",
+    "all": "Alle Kameras",
+    "allSub": "Nur die Kameras, die du sehen darfst.",
+    "inboxOpen": "Kamera ansehen",
+    "stale": "Keine Verbindung – du siehst den zuletzt geladenen Stand.",
+    "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
+    "empty": "Du siehst noch keine Kamera.",
+    "emptySub": "Welche Kameras du siehst, legt der Administrator unter Tür & Kamera › Berechtigungen fest.",
+    "ago": {
+      "now": "gerade eben",
+      "s": "vor {{n}} s",
+      "min": "vor {{n}} min",
+      "h": "vor {{n}} h"
+    },
+    "card": {
+      "home": "Heimnetz",
+      "live": "live",
+      "offline": "offline",
+      "motion": "Bewegung: {{kinds}}",
+      "away": "Bewegung: nur wenn niemand zu Hause",
+      "never": "keine Clips, nur Live-Bild",
+      "retention": "Clips {{days}} Tage",
+      "noPicture": "Noch kein Bild",
+      "res": "{{w}}×{{h}}",
+      "withSound": "mit Ton"
+    },
+    "state": {
+      "unreachable": "nicht erreichbar",
+      "auth_failed": "Anmeldung abgelehnt",
+      "not_allowed": "Adresse nicht erlaubt",
+      "no_stream": "kein Videostrom",
+      "error": "gestört",
+      "tls_untrusted": "Zertifikat nicht vertrauenswürdig"
+    },
+    "kind": {
+      "person": "Person",
+      "vehicle": "Auto",
+      "animal": "Tier",
+      "motion": "Bewegung"
+    },
+    "kinds": {
+      "person": "Personen",
+      "vehicle": "Autos",
+      "animal": "Tiere",
+      "motion": "jede Bewegung"
+    },
+    "clips": {
+      "title": "Clips heute",
+      "empty": "Heute noch keine Clips.",
+      "row": "{{kind}} · {{duration}}",
+      "noClip": "nur Vorschaubild",
+      "nobodyHome": "Niemand zu Hause",
+      "play": "Clip von {{time}} abspielen",
+      "playing": "Clip · {{kind}} · {{time}}",
+      "back": "Zurück zum Live-Bild",
+      "gone": "Dieser Clip ist nicht mehr da."
+    },
+    "error": {
+      "not_found": "Diese Kamera siehst du nicht (mehr).",
+      "cam_offline": "Das Gateway ist gerade nicht erreichbar.",
+      "cam_unreachable": "Die Kamera antwortet nicht.",
+      "cam_not_ready": "Das Live-Bild startet noch – gleich noch einmal.",
+      "cam_needs_gc": "Dafür braucht der Server eine neuere GateControl-Version.",
+      "cam_auth": "Die Kamera lehnt die Anmeldung ab.",
+      "cam_unsupported": "Das Gateway kann das noch nicht (Gateway 1.28.0 oder neuer).",
+      "cam_service": "Auf dem Gateway fehlt der Dienst „kameras“.",
+      "cam_not_allowed": "Die Adresse der Kamera ist nicht erlaubt.",
+      "no_image": "Gerade gibt es kein Standbild.",
+      "rate_limited": "Zu viele Abrufe – bitte kurz warten.",
+      "too_soon": "Zu viele Abrufe – bitte kurz warten.",
+      "network": "Keine Verbindung zum Server.",
+      "timeout": "Der Server antwortet nicht.",
+      "failed": "Das hat nicht geklappt.",
+      "cam_tls": "Das Zertifikat der Kamera ist nicht vertrauenswürdig. Ein Administrator kann im Plugin „Zertifikat nicht prüfen“ setzen."
+    },
+    "unavailable": {
+      "needs_gatecontrol": "Kameras im Heimnetz brauchen GateControl {{version}} oder neuer.",
+      "unsupported": "Kameras im Heimnetz brauchen Tür & Kamera 1.6.0 oder neuer."
+    },
+    "myPush": "Push bei Personen",
+    "myPushHint": "Mitteilung mit Standbild, wenn diese Kamera eine Person sieht – nur für dich",
+    "myPushOn": "Push für diese Kamera an",
+    "myPushOff": "Push für diese Kamera aus"
   }
 }

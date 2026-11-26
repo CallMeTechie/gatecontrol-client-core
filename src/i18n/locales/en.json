@@ -80,7 +80,10 @@
     "loading": "Loading logs...",
     "empty": "No logs available",
     "export": "Export",
-    "filterAll": "All"
+    "filterAll": "All",
+    "saveTitle": "Export log",
+    "saveFilter": "Log file",
+    "saveName": "Log"
   },
   "update": {
     "title": "Update",
@@ -504,7 +507,9 @@
       "expires": "Disappears {{time}}",
       "openVideo": "Play video",
       "videoUnsupported": "This video cannot be played here. Save it or open it with another program.",
-      "unsupported": "This message needs a newer app version"
+      "unsupported": "This message needs a newer app version",
+      "openLink": "Open link",
+      "placeMessage": "Place message · {{name}}"
     },
     "loc": {
       "button": "Send location",
@@ -566,14 +571,20 @@
       "actionRun": "{{name}}: “{{label}}” done",
       "actionRunAs": "{{name}}: “{{label}}” done (shared by {{as}})",
       "actionDenied": "{{name}} declined “{{label}}”",
-      "unknown": "Notice"
+      "unknown": "Notice",
+      "disOnNet": "Changed in {{network}}: messages disappear after {{time}}",
+      "disOffNet": "Changed in {{network}}: messages no longer disappear"
     },
     "dis": {
       "off": "Off",
       "86400": "1 day",
       "604800": "1 week",
       "2592000": "1 month",
-      "seconds": "{{n}} s"
+      "seconds": "{{n}} s",
+      "minutes": "{{n}} min",
+      "hours": "{{n}} h",
+      "days": "{{n}} days",
+      "weeks": "{{n}} weeks"
     },
     "mute": {
       "off": "All",
@@ -694,7 +705,26 @@
       "no_approver": "Nobody in this chat may approve this.",
       "unavailable": "The Familie plugin does not offer this right now.",
       "unsupported": "The server cannot do this yet.",
-      "bad_response": "Unexpected answer from the server."
+      "bad_response": "Unexpected answer from the server.",
+      "bridge_off": "The bridges are switched off on this server.",
+      "bridge_unreachable": "The bridge does not answer right now.",
+      "bridge_unsupported": "GateControl cannot show this sign-in step. Please choose the other way (code or QR code).",
+      "bridge_failed": "The bridge refused. Please start again from the beginning.",
+      "bridge_locked": "This service is locked for your account until your parents allow it.",
+      "consent_required": "Please read and confirm the notes first.",
+      "bridge_text_only": "A chat over another messenger takes text only for now – no pictures, files, voice messages or GateControl extras yet.",
+      "bridge_unlinked": "Your account at this service is no longer linked. The history stays; to send, link it again under “Linked services”.",
+      "phone_invalid": "Please enter the number with its country code, for example +49 1512 0000000.",
+      "bridge_media_type": "The service does not take this format.",
+      "invalid_number": "That is not a valid phone number.",
+      "child_new_chat_off": "Your parents have not allowed new chats by number for you.",
+      "contact_expired": "The contact list has expired. It is loaded again.",
+      "mail_missing": "The address book from Mail is not reachable right now.",
+      "bridge_read_only": "You can't write here: in channels only the channel posts, in some groups only the admins.",
+      "reactions_off": "Reactions don't work in channels: WhatsApp refused one.",
+      "cannot_merge": "These chats can't be merged: only chats with one person, never groups or channels, and at most one GateControl account.",
+      "bad_request": "This person has no such way.",
+      "way_unavailable": "Nothing can be sent this way right now. Choose another one."
     },
     "enterHintCtrl": "Ctrl+Enter sends · Enter new line",
     "filter": {
@@ -791,7 +821,8 @@
       "event": "Event",
       "home": "From your home",
       "noActions": "No home actions selected.",
-      "manage": "Manage home actions"
+      "manage": "Manage home actions",
+      "gcNote": "With the logo: goes via GateControl, even while your text goes via {{network}}."
     },
     "poll": {
       "head": "Poll",
@@ -999,7 +1030,9 @@
       "myStoriesTitle": "My stories",
       "storiesOne": "1 story active",
       "storiesN": "{{n}} stories active",
-      "open": "View"
+      "open": "View",
+      "bridgedVia": "via {{network}}",
+      "bridgedUnknown": "{{network}} contact"
     },
     "story": {
       "title": "Status",
@@ -1040,7 +1073,14 @@
       "hours": "{{n}} h",
       "hintTime": "Your status disappears after {{time}}. Replies come to you as chat messages.",
       "sharing": "Sharing …",
-      "failed": "Not shared: {{error}}"
+      "failed": "Not shared: {{error}}",
+      "bridgedAgo": "via {{network}} · {{age}}",
+      "bridgedUnsupported": "This status cannot be shown here. Open it in {{network}}.",
+      "bridgedReplyPh": "Reply via {{network}}",
+      "bridgedReplyHint": "Goes as a message to your {{network}} chat, a reaction too",
+      "bridgedNoChat": "No {{network}} chat with this person found. For now you can only reply in {{network}}.",
+      "bridgedReacted": "Reaction {{emoji}} sent as a message via {{network}}",
+      "bridgedReplied": "Reply sent via {{network}}"
     },
     "set": {
       "title": "Chat settings",
@@ -1133,11 +1173,431 @@
       "noActions": "There are no home actions for you.",
       "needsConfirm": "with confirmation",
       "routes": "Where notifications appear",
-      "routesSub": "GateControl, family chat or a chat of their own"
+      "routesSub": "GateControl, family chat or a chat of their own",
+      "linked": "Linked services",
+      "linkedSub": "Write to contacts in other messengers",
+      "statusSec": "Status",
+      "bridgedSeen": "Tell WhatsApp when I view a status",
+      "bridgedSeenHint": "When on, the contact sees you under “Viewed by” in WhatsApp. When off, the status is only marked as seen here (grey ring).",
+      "bridgedSeenNeeds": "Works only while “{{receipts}}” is on.",
+      "statusDigestHintBridged": "GateControl people only. WhatsApp status updates cause no notification."
     },
     "notice": {
       "tag": "Notifications",
       "infoSub": "Notifications from {{source}} – only for you"
+    },
+    "br": {
+      "title": "Linked services",
+      "lead": "Write from GateControl to contacts in other services. Your accounts there stay as they are.",
+      "none_offered": "No service is switched on for linking on this server right now.",
+      "link": "Link",
+      "unlink": "Unlink",
+      "forget": "Remove entry",
+      "unlink_confirm": "Really unlink {{name}}? The bridge signs out of {{name}}; your account there stays as it is.",
+      "unlinked": "{{name}} unlinked",
+      "linked": "{{name}} is linked",
+      "sub_none": "Not linked yet",
+      "sub_linked": "Linked",
+      "sub_linked_since": "Linked since {{date}}",
+      "sub_logged_out": "Signed out.",
+      "sub_logged_out_at": "Signed out on {{date}}.",
+      "sub_logged_out_whatsapp": "WhatsApp ended the link – for example because the phone was offline for more than 14 days or the device was removed in WhatsApp.",
+      "sub_error": "The link reports an error. Unlink it and link again if this does not go away.",
+      "sub_locked": "Locked for your account until your parents allow this service.",
+      "sub_starting": "The bridge is being started – this can take a few minutes.",
+      "sub_unreachable": "The bridge does not answer right now. Please try again later.",
+      "pill_linked": "Linked",
+      "pill_logged_out": "Signed out",
+      "pill_error": "Error",
+      "pill_locked": "Locked",
+      "pill_outdated": "Outdated",
+      "pill_ok": "All good",
+      "pill_starting": "Starting",
+      "pill_unreachable": "Not reachable",
+      "relink": "Link again",
+      "relink_hint": "A new code is enough. The service may deliver messages from the time in between when linking; this is not guaranteed.",
+      "relink_btn": "Link {{name}} again",
+      "runs_on": "Runs on",
+      "runs_on_server": "Server",
+      "runs_on_gateway": "Gateway",
+      "runs_current": "bridges up to date",
+      "runs_outdated": "bridge outdated",
+      "outdated_banner": "Bridge outdated. The bridge for {{name}} is older than intended. Receiving and sending may fail until it is updated.",
+      "outdated_hint": "Your administrator does the update – you do not have to link anything again.",
+      "foot_unlink": "You can unlink here or right in the service’s app under “Linked devices”.",
+      "foot_preview": "Chats with the service’s contacts appear in your chat list as soon as a new message arrives there – older history is not loaded. For now texts with replies and reactions work; pictures and files follow.",
+      "notes_title": "Before you link {{name}}",
+      "note_whatsapp_unofficial": "The bridge is not an official program of WhatsApp. The terms of use allow access with the service’s own programs only.",
+      "note_whatsapp_ban": "WhatsApp can ban accounts. With normal use this is rare according to the bridge’s developers – it cannot be ruled out.",
+      "note_whatsapp_phone": "Your phone has to be online at least every 14 days, otherwise WhatsApp signs the bridge out.",
+      "note_whatsapp_e2e": "WhatsApp’s end-to-end encryption ends at the bridge on your GateControl server. Whoever has root access there can technically read along; the interface lets nobody.",
+      "notes_confirm": "I have read this and link my own account at my own risk.",
+      "notes_free": "A note, not a ban – you decide.",
+      "next": "Continue",
+      "link_title": "Link {{name}}",
+      "flow_phone": "With a code",
+      "flow_qr": "QR code",
+      "phone_label": "Your number at {{name}}",
+      "phone_placeholder": "+49 1512 0000000",
+      "phone_hint": "With the country code, for example +49 for Germany. The number goes to the bridge and is not stored in the messenger.",
+      "phone_invalid": "Please enter the number with its country code, for example +49 1512 0000000.",
+      "phone_refused": "That did not work with this number. Please check it and try again.",
+      "get_code": "Get a code",
+      "code_lead": "Enter this code in {{name}}:",
+      "code_label": "Code:",
+      "code_step1_whatsapp": "Open WhatsApp › Settings › Linked devices",
+      "code_step2_whatsapp": "“Link a device” › “Link with phone number instead”",
+      "code_step3": "Enter the code",
+      "code_note": "The code is valid only briefly and is stored nowhere.",
+      "qr_lead_whatsapp": "Scan this code with WhatsApp on your phone:",
+      "qr_alt": "QR code for linking",
+      "qr_step1_whatsapp": "Open WhatsApp › Settings › Linked devices",
+      "qr_step2_whatsapp": "“Link a device” and scan the code",
+      "waiting": "Waiting for the confirmation on the phone …",
+      "err_expired": "The code ran out before it was confirmed.",
+      "new_code": "Get a new code",
+      "new_qr": "Show a new QR code",
+      "net_whatsapp": "WhatsApp",
+      "mark_whatsapp": "WA",
+      "flows": "Way to link",
+      "copy_code": "Copy code",
+      "code_copied": "Code copied",
+      "load_failed": "The linked services could not be loaded.",
+      "back": "Back to the overview",
+      "err_no_answer": "No answer from the server. Please get a new code.",
+      "hist_title": "Load older history",
+      "hist_sub": "Only when linking · {{choice}}",
+      "hist_off": "Off",
+      "hist_days": "Last {{n}} days",
+      "hist_all": "Everything",
+      "hist_admin_off": "Switched off on this server",
+      "hist_pending": "{{n}} arrive tonight",
+      "hist_saved": "Saved – applies the next time you link",
+      "phone_offline": "Phone not seen for {{days}} days. Open {{name}} on your phone – after about 14 days without the phone {{name}} ends the link.",
+      "phone_offline_now": "Phone not seen for {{days}} days. Open {{name}} on your phone – {{name}} may end the link at any time.",
+      "foot_preview_hist": "Chats with contacts of the service appear in your chat list as soon as a new message arrives there; GateControl takes older history (chosen above) over at night. Texts, replies, reactions, pictures, videos, voice messages and files go both ways.",
+      "note_signal_unofficial": "Unofficial. GateControl signs in to Signal as a linked device, like Signal Desktop. Signal offers no official way for this.",
+      "note_signal_phone": "Your phone stays the main device. It does not work without Signal on your phone. At most five devices are possible.",
+      "note_signal_e2e": "Readable on your server. Everything is encrypted up to the server. After that your Signal messages are in GateControl, like the other chats.",
+      "note_signal_safety": "Safety numbers are checked in the Signal app only. GateControl does not notice when one changes.",
+      "qr_lead_signal": "Scan with your phone:",
+      "qr_step1_signal": "Open Signal on your phone",
+      "qr_step2_signal": "Settings → Linked devices",
+      "qr_step3_signal": "Link new device, then scan this code",
+      "qr_renews_signal": "It renews itself.",
+      "sub_logged_out_signal": "Signal ended the link – for example because the device was removed in Signal under “Linked devices”.",
+      "linked_signal": "Signal is linked. New chats appear with their first message.",
+      "hist_line": "History: {{n}} days",
+      "hist_line_pending": "History: {{n}} days, loaded at night",
+      "hist_once": "{{name}}: only when linking, at most {{n}} days. Changing it later brings nothing from {{name}}.",
+      "phone_history": "{{name}} now asks on your phone whether to transfer your message history.",
+      "phone_history_chosen": "You chose “The last {{n}} days”",
+      "phone_history_take": "If you choose “Transfer” on your phone, GateControl takes the last {{n}} days of it, at night and in small portions. {{name}} does not allow this later.",
+      "net_signal": "Signal",
+      "mark_signal": "SG",
+      "net_telegram": "Telegram",
+      "mark_telegram": "TG",
+      "note_telegram_unofficial": "Unofficial. GateControl signs in to Telegram as a device of its own, “GateControl”. Telegram rarely blocks accounts that do this.",
+      "note_telegram_e2e": "Readable on your server. Secret chats stay on your phone and do not arrive.",
+      "flow_qr_telegram": "With QR code",
+      "flow_phone_telegram": "With phone number",
+      "link_sub_telegram": "QR code or phone number",
+      "qr_lead_telegram": "On a computer, the QR code is quickest:",
+      "qr_step1_telegram": "Open Telegram on your phone",
+      "qr_step2_telegram": "Settings → Devices",
+      "qr_step3_telegram": "Link Desktop Device, scan the code",
+      "qr_renews_telegram": "It runs out after a short time and renews itself.",
+      "phone_label_telegram": "Phone number",
+      "phone_hint_telegram": "With the country code. Not stored, it only goes to Telegram.",
+      "code_label_telegram": "Code",
+      "code_hint_telegram": "The code is in your Telegram app, not in a text message.",
+      "code_warn_telegram": "Only enter the code here, because you started the link yourself just now. Anyone who asks you for it wants your account.",
+      "code_wrong": "The code is not right.",
+      "pw_label_telegram": "Telegram password (two-step verification)",
+      "pw_hint_telegram": "Goes to Telegram once, is not stored.",
+      "pw_wrong": "The password is not right. Forgotten it? Only the Telegram app can reset it.",
+      "pw_send": "Sign in",
+      "next_step": "Continue",
+      "other_number": "Another number",
+      "sub_noapp": "Not set up yet (admin).",
+      "pill_noapp": "Not set up",
+      "linked_telegram": "Telegram is linked.",
+      "sub_logged_out_telegram": "Telegram ended the link – for example because the session was ended in Telegram under “Devices”."
+    },
+    "bc": {
+      "via": "over {{network}}",
+      "unknown_contact": "Unknown contact",
+      "placeholder": "Message over {{network}}",
+      "strip": "This chat runs over {{network}} – not only over your server.",
+      "more": "More",
+      "first_title": "Chat over {{network}}",
+      "first_lead": "The other person writes with their usual app and sees you as always. The messages run over the bridge next to your GateControl server:",
+      "first_1": "{{network}} encrypts up to the bridge; its end-to-end encryption ends there. On the server the messages are then stored encrypted.",
+      "first_2": "For now text works – with replies, reactions, editing and deleting. Pictures, files and voice messages follow; until then the chat says that something arrived.",
+      "first_3": "Calls, status and GateControl extras (polls, events, home actions, cards, location) do not exist in a chat over {{network}}.",
+      "first_ok": "Got it",
+      "state_unreachable": "The bridge to {{network}} cannot be reached right now. The history stays readable; sending works again once it runs. New messages arrive then.",
+      "state_logged_out": "{{network}} has signed the bridge out. The history stays, sending works again only after linking. Messages since then may be missing.",
+      "state_unlinked": "Your account at {{network}} is not linked. The history stays; new messages no longer arrive here.",
+      "state_off": "The bridge to {{network}} is switched off on this server. The history stays readable.",
+      "closed": "You are no longer in this chat at {{network}}. The history stays readable.",
+      "cannot_send": "Sending over {{network}} does not work right now – the history stays readable.",
+      "ph": {
+        "image": "Picture",
+        "video": "Video",
+        "audio": "Audio",
+        "voice": "Voice message",
+        "file": "File",
+        "sticker": "Sticker",
+        "location": "Location",
+        "unsupported": "This kind of message is not shown here yet – see it in {{network}}.",
+        "view_once": "View once. Open it in {{network}}."
+      },
+      "ph_later": "follows; see it in {{network}}",
+      "failed": "Not sent.",
+      "resend": "Send again",
+      "reason": {
+        "bridge_error": "The bridge did not take the message.",
+        "unreachable": "The bridge does not answer.",
+        "not_running": "The bridge is not running right now.",
+        "timeout": "The bridge did not answer in time.",
+        "network_error": "The service could not be reached.",
+        "no_permission": "The service does not allow that in this chat.",
+        "too_old": "The message was on its way for too long.",
+        "unsupported": "The service does not know this kind of message.",
+        "not_handled": "The bridge could not pass the message on.",
+        "bridge_unavailable": "The bridge is not connected to the service right now.",
+        "chat_closed": "You are no longer part of this chat."
+      },
+      "info_note": "This chat runs over {{network}}. The service’s end-to-end encryption ends at the bridge next to your GateControl server; stored there the messages are encrypted, and nobody but you sees this chat in GateControl.",
+      "info_not": "What does not work here: pictures, files and voice messages (to follow), calls, status, disappearing messages and GateControl extras such as polls, events, home actions and cards.",
+      "state_locked": "This service is locked for your account until your parents allow it. The history stays readable.",
+      "relink": "Link again",
+      "filter_gc": "GateControl only",
+      "resending": "Sending again …",
+      "notice": "Notice from {{network}}",
+      "info_kind_direct": "Contact at {{network}}",
+      "info_kind_group": "Group at {{network}}",
+      "ph_loading": "loading …",
+      "ph_fail": {
+        "too_large": "too large, open it in {{network}}",
+        "type": "GateControl does not take this kind – see it in {{network}}",
+        "infected": "blocked – malware found",
+        "quota": "no space left on your server – see it in {{network}}",
+        "gone": "no longer available at {{network}} – see it in {{network}}",
+        "unavailable": "the bridge could not be reached for too long – see it in {{network}}",
+        "other": "could not be loaded – see it in {{network}}"
+      },
+      "first_2_media": "Text, pictures, videos, voice messages and files go both ways – with replies, reactions, editing and deleting.",
+      "info_not_media": "What does not work here: calls, status, disappearing messages and GateControl extras such as polls, events, home actions, cards and location.",
+      "media_type": {
+        "image": "{{network}} takes pictures only as JPEG, PNG or WebP.",
+        "video": "{{network}} takes videos only as MP4.",
+        "voice": "{{network}} does not take this voice recording.",
+        "file": "{{network}} does not take this file."
+      },
+      "scan_wait": "Being checked for viruses – will be sent in a moment …",
+      "ph_on_request": "older history",
+      "ph_fetch": "Load",
+      "fetch_invalid": "This file can no longer be requested.",
+      "ph_retry": "Try again",
+      "signal_safety": "Check safety numbers in the Signal app. The bridge accepts new keys on its own.",
+      "timer": "Messages disappear after {{time}}. Only {{network}} can change it.",
+      "bot": "Bot",
+      "members": "{{n}} members"
+    },
+    "nc": {
+      "row": "{{network}} chat by number",
+      "row_sub": "Enter a number and check it",
+      "title": "New {{network}} chat",
+      "sub": "by phone number",
+      "label": "Phone number",
+      "cc": "Country code",
+      "placeholder": "151 23456789",
+      "hint": "With or without a leading 0, spaces do not matter. Other countries: pick the code or paste the number with +.",
+      "as": "Will be checked as {{number}}",
+      "invalid": "That is not a complete number – some digits are missing.",
+      "invalid_mobile_de": "That is not a complete number – a German mobile number needs more digits.",
+      "invalid_chars": "A phone number has only digits, spaces and a + in front.",
+      "check": "Check",
+      "checking": "Checking …",
+      "asking": "Asking {{network}} …",
+      "asking_text": "Usually takes only a second or two.",
+      "found": "Has {{network}}",
+      "exists": "You already have a chat",
+      "start": "Start chat",
+      "starting": "Starting …",
+      "open": "Open chat",
+      "other": "Other number",
+      "none_title": "No {{network}} under this number",
+      "none_text": "{{number}} is not registered at {{network}}. Check the digits or ask for the number that is set up at {{network}}.",
+      "rate_title": "Too many checks",
+      "rate_text": "You checked {{n}} numbers in the last hour. So that {{network}} does not block your account, the next check works from {{time}}.",
+      "rate_text_short": "You checked too many numbers recently. So that {{network}} does not block your account, the next check works from {{time}}.",
+      "unreach_title": "Bridge not reachable",
+      "unreach_text": "The {{network}} service next to your server does not answer right now. What you typed stays.",
+      "retry": "Try again",
+      "loggedout_title": "{{network}} is signed out",
+      "loggedout_text": "{{network}} ended the link, for example because the device was removed on the phone under “Linked devices”. Link again, then you can start chats again.",
+      "relink": "Link again",
+      "unlinked_title": "{{network}} is not linked",
+      "unlinked_text": "Link your account under “Linked services”, then you can start chats by number.",
+      "link": "Link",
+      "locked_title": "Locked by your parents",
+      "locked_text": "{{network}} is locked for your account right now. New chats work again once your parents allow it.",
+      "off_title": "Bridge switched off",
+      "off_text": "The bridge to {{network}} is switched off on this server right now.",
+      "close": "Close",
+      "failed": "That did not work – please try again.",
+      "privacy": "To check it, the number goes over your bridge to {{network}}. GateControl does not write it to the log; it is stored only when you start the chat.",
+      "first_line": "New chat over {{network}} with {{number}}. {{name}} sees your messages in their usual {{network}} app.",
+      "first_line_contact": "New chat over {{network}} with {{name}}. The messages arrive in the usual {{network}} app.",
+      "first_line_book": "New chat over {{network}} with {{name}} ({{number}}, from your address book). The messages arrive in the usual {{network}} app."
+    },
+    "ncc": {
+      "search": "Search name or number",
+      "sec_gc": "GateControl",
+      "sec_book": "From your address book",
+      "open": "Open chat",
+      "wa_contact": "{{network}} contact",
+      "also_book": "also in your address book",
+      "all_wa": "All {{n}} {{network}} contacts",
+      "all_book": "All {{n}} with a phone number",
+      "numbers": "{{n}} numbers",
+      "which": "Which number?",
+      "kind_mobile": "Mobile",
+      "kind_work": "Work",
+      "kind_home": "Home",
+      "kind_other": "Other",
+      "landline": "Landline",
+      "checking": "Checking with {{network}} …",
+      "not_on": "not on {{network}}",
+      "none_text": "There is no {{network}} at {{number}}. If {{name}} has another number, enter it below.",
+      "from": "from {{time}}",
+      "rate_text": "You checked {{n}} numbers in the last hour. {{network}} contacts and existing chats still work.",
+      "unreach": "Bridge not reachable. Try again in a moment.",
+      "wa_down_title": "{{network}} contacts not available right now",
+      "wa_down_text": "The bridge does not answer. GateControl accounts still work.",
+      "wa_out_title": "{{network}} is signed out",
+      "wa_out_text": "Link again to see your {{network}} contacts here.",
+      "book_off_down": "Tapping works again as soon as {{network}} is reachable.",
+      "book_off_out": "Tapping works again as soon as {{network}} is linked again.",
+      "check_number": "Check {{number}} on {{network}}",
+      "empty_title": "Nobody found for “{{q}}”",
+      "empty_text": "Searched in GateControl, your {{network}} contacts and your address book.",
+      "empty_text_gc": "Searched in the accounts on your server.",
+      "not_here": "Not listed?",
+      "enter_number": "Enter a number",
+      "privacy": "Your {{network}} contacts stay on your server. A number from your address book only goes to {{network}} when you tap the contact.",
+      "loading": "Loading contacts …",
+      "failed": "The contacts could not be loaded."
+    },
+    "ch": {
+      "entry": "Channels",
+      "title": "Channels",
+      "entryNew": "{{n}} new posts",
+      "entryOne": "1 new post",
+      "entryNone": "No new posts",
+      "entryAria": "Channels, new posts",
+      "pageHint": "Notifications are off for channels. The bell in a channel turns them on.",
+      "emptyList": "You don't follow any channels. Follow channels in WhatsApp under \"Updates\".",
+      "label": "Channel",
+      "sub": "Channel · {{network}}",
+      "bar": "A {{network}} channel. You can only read here; the channel writes the posts.",
+      "barMuted": "Notifications are off for this channel.",
+      "turnOn": "Turn on",
+      "readonly": "Read only. Only the channel posts here.",
+      "empty": "No posts yet. New posts show up here as soon as the channel publishes something.",
+      "picLoading": "Loading picture…",
+      "down": "{{network}} can't be reached right now. New posts arrive once the bridge is running again.",
+      "bellOn": "Turn on notifications for this channel",
+      "bellOff": "Turn off notifications for this channel",
+      "info": "Channel via {{network}} · read only",
+      "reactions": "{{network}} shows other people's reactions only in the {{network}} app. Here you see your own.",
+      "reactionsOff": "Reactions don't work in channels: {{network}} refused one.",
+      "filter": "Service"
+    },
+    "grp": {
+      "adminsOnly": "Only admins can post in this group."
+    },
+    "person": {
+      "cardSub": "Merge into one chat?",
+      "cardOpen": "View",
+      "cardAria": "Suggestion: merge into one person",
+      "mergeTitle": "Merge into one person?",
+      "mergeText": "Both chats then show as one chat with a shared history. Only you see this.",
+      "wayChat": "{{network}} chat",
+      "mergeName": "Name in your list",
+      "merge": "Merge",
+      "later": "Not now",
+      "never": "Don't suggest again",
+      "merged": "Merged into one person.",
+      "src": "Messages from",
+      "srcAll": "All",
+      "placeholder": "Message via {{way}}",
+      "via": "via {{network}}",
+      "onlyYou": "Merged for you only – {{name}} sees nothing of it.",
+      "waysTitle": "Ways to reach {{name}}",
+      "wayAccount": "Account {{name}}",
+      "wayAs": "as \"{{name}}\"",
+      "split": "Separate",
+      "splitQ": "Show the {{network}} chat separately again? No message is lost.",
+      "splitNote": "Separating shows a way as its own chat again. No message is lost.",
+      "splitDone": "Shown separately again. No message was lost.",
+      "addWay": "Merge with person …",
+      "pickTitle": "Merge with person",
+      "pickAccounts": "GateControl accounts",
+      "pickChats": "Other chats",
+      "pickHint": "Pick a GateControl account or another chat with the same person. Only what you pick is merged – never guessed by name.",
+      "pickNone": "No matching chat.",
+      "pickSearch": "Search",
+      "pickLoading": "Loading …",
+      "push": "{{name}} · via {{way}}",
+      "recTitle": "May others on this server recognise you by your WhatsApp?",
+      "recText": "If someone on this server has you as a WhatsApp contact, GateControl suggests merging your WhatsApp chat with your account. Nobody sees your number.",
+      "recNote": "You can change this any time in \"My profile\" under \"Recognition\".",
+      "recNo": "No",
+      "recYes": "Yes, allow",
+      "recSavedYes": "Others on this server can now recognise you by your WhatsApp.",
+      "recSavedNo": "Nobody recognises you by your WhatsApp.",
+      "recTitle_signal": "May others on this server recognise you by your Signal?",
+      "recText_signal": "If someone here has you on Signal, GateControl suggests merging your Signal chat with your account. Nobody sees your number.",
+      "recSavedYes_signal": "Others on this server can now recognise you by your Signal.",
+      "recSavedNo_signal": "Nobody recognises you by your Signal.",
+      "recTitle_telegram": "May others on this server recognise you by your Telegram?",
+      "recText_telegram": "If someone here has you on Telegram, GateControl suggests merging your Telegram chat with your account. Your number and your user name stay hidden.",
+      "recSavedYes_telegram": "Others on this server can now recognise you by your Telegram.",
+      "recSavedNo_telegram": "Nobody recognises you by your Telegram.",
+      "replyTitle": "Send messages via",
+      "replyAuto": "Automatic",
+      "replyAutoSub": "The way of the last message from {{name}} · now {{way}}",
+      "replyAutoSubPlain": "The way of the last message from {{name}}",
+      "replyAlways": "Always {{way}}",
+      "replyGcSub": "Stays on your server, every feature",
+      "replyNetSub": "If {{network}} is not connected, it goes via GateControl",
+      "replyNote": "If you reply to a message, the reply still goes the way of that message.",
+      "replyFallback": "{{network}} not connected – the message goes via GateControl.",
+      "viaGc": "Goes via GateControl",
+      "onceTitle": "Only this message via",
+      "onceButton": "Way for the next message: {{way}} – change",
+      "oncePlaceholder": "Only this message via {{way}}",
+      "onceGcSub": "every feature",
+      "onceLastSub": "the way of the last message",
+      "onceStdSub": "your default",
+      "onceChange": "Change the default for {{name}} …"
+    },
+    "profile": {
+      "title": "My profile",
+      "open": "Open my profile",
+      "hint": "Name, picture, phone numbers and more are kept in the portal.",
+      "picture": "Picture: {{level}}",
+      "opensPortal": "opens the portal",
+      "level": {
+        "all": "Everyone",
+        "contacts": "Contacts",
+        "family": "Family",
+        "self": "Only me"
+      }
     }
   },
   "school": {
@@ -1227,6 +1687,716 @@
       "failed": "That did not work ({{code}})."
     }
   },
+  "familie": {
+    "title": "Family",
+    "tabs": "Choose a section",
+    "refresh": "Refresh",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "cancel": "Cancel",
+    "stale": "No connection – you are seeing the last loaded state.",
+    "and": "and",
+    "quoted": "“{{text}}”",
+    "inboxOpen": "Open in “Internet at home”",
+    "tab": {
+      "internet": "Internet at home",
+      "rules": "Rules",
+      "presence": "My presence"
+    },
+    "when": {
+      "tomorrow": "tomorrow {{time}}",
+      "yesterday": "yesterday {{time}}",
+      "day": "{{day}}, {{time}}"
+    },
+    "dur": {
+      "min": "{{n}} min",
+      "h": "{{n}} h",
+      "hm": "{{h}} h {{m}} min"
+    },
+    "btn": {
+      "pause": "Pause",
+      "extend": "Longer today",
+      "resume": "Resume",
+      "add30": "+30 min",
+      "extend30": "+30 min",
+      "endExtra": "End extra time",
+      "reload": "Refresh"
+    },
+    "internet": {
+      "chip": {
+        "on": "Internet on",
+        "paused": "paused until {{time}}",
+        "extended": "longer today until {{time}}",
+        "blocked": "blocked time until {{time}}",
+        "blockedNow": "blocked time",
+        "unfiltered": "not filtered",
+        "error": "not readable"
+      },
+      "presence": {
+        "homeWifi": "at home · Wi-Fi",
+        "homeApp": "at home · app",
+        "home": "at home",
+        "away": "away"
+      },
+      "devices": {
+        "one": "1 device",
+        "other": "{{count}} devices"
+      },
+      "block": {
+        "all": "internet off"
+      },
+      "cat": {
+        "social": "Social networks",
+        "games": "Games",
+        "video": "Videos"
+      },
+      "sub": {
+        "next": "Next blocked time from {{time}}: {{what}}",
+        "active": "Blocked time is running: {{what}}",
+        "noSchedule": "No blocked times",
+        "suspended": "Blocked time from {{time}} suspended",
+        "suspendedAll": "Blocked times suspended",
+        "error": "The state cannot be read right now.",
+        "noDevices": "No devices assigned in the home network. An admin assigns them in the network watch. Pausing would have no effect.",
+        "noFilter": "No gateway with a DNS filter knows the devices of {{name}}. Pausing would have no effect."
+      },
+      "pausedOn": {
+        "one": "Internet off on 1 device. GateControl and allowed sites keep working.",
+        "other": "Internet off on {{count}} devices. GateControl and allowed sites keep working.",
+        "none": "Internet off. GateControl and allowed sites keep working."
+      },
+      "by": "By {{name}} at {{time}}.",
+      "byName": "By {{name}}.",
+      "extBy": "by {{name}} at {{time}}",
+      "byRule": "Paused by the rule",
+      "byRuleUnnamed": "Paused by a rule without a name",
+      "extRule": "Extended by the rule",
+      "extRuleUnnamed": "Extended by a rule without a name",
+      "openRule": "Open rule",
+      "awayPause": "The pause takes effect as soon as {{name}} is at home.",
+      "awayExtra": "The extra time takes effect as soon as {{name}} is at home.",
+      "foot": {
+        "parent": "Applies on the Wi-Fi at home. It does not apply on mobile data. The blocked times are set by the admin in the DNS filter of the gateway.",
+        "child": "View only. Your parents decide on pauses and extra time."
+      },
+      "none": {
+        "title": "This server has no “Internet at home”.",
+        "hint": "It needs a gateway with a DNS filter in the home network. An admin sets it up in GateControl.",
+        "old": "It needs a newer version of the Familie plugin on the server."
+      },
+      "empty": {
+        "title": "No children",
+        "parent": "There are no minor children in your family.",
+        "child": "There is nothing to see here for you."
+      }
+    },
+    "dialog": {
+      "told": "{{name}} gets a notification in GateControl."
+    },
+    "pause": {
+      "title": "Pause for {{name}}",
+      "howLong": "How long",
+      "until": "until a time",
+      "untilLabel": "Pause until",
+      "untilToday": "Today until {{time}}. If the time has already passed, it means tomorrow.",
+      "untilTomorrow": "That time has already passed today: pause until tomorrow {{time}}.",
+      "untilMissing": "Please choose a time.",
+      "durHint": "Pause until {{time}}."
+    },
+    "extend": {
+      "title": "Longer today for {{name}}",
+      "howLong": "How much longer",
+      "from": "Counts from",
+      "fromSchedule": "start of the blocked time ({{time}})",
+      "fromNow": "now",
+      "hintSchedule": "The blocked time only starts at {{time}} today.",
+      "hintNow": "The blocked times are suspended until {{time}}.",
+      "submit": "Allow"
+    },
+    "toast": {
+      "paused": "Internet of {{name}} paused until {{time}}",
+      "resumed": "Internet of {{name}} is back on",
+      "extended": "{{name}} may stay online longer today: until {{time}}",
+      "extraEnded": "Extra time of {{name}} ended"
+    },
+    "rules": {
+      "untitled": "Rule without a name",
+      "someone": "someone",
+      "unavailable": "Action not available",
+      "active": "Rule “{{title}}” active",
+      "edit": "Edit",
+      "editNamed": "Edit “{{title}}”: action “Internet at home”",
+      "saved": "Rule saved",
+      "on": "Rule switched on",
+      "off": "Rule switched off",
+      "foot": "Here you switch rules on and off and edit the action “Internet at home”. New rules, triggers and other actions are edited in the portal or in the Android app.",
+      "empty": {
+        "title": "No rules yet",
+        "hint": "You create rules in the portal or in the Android app. Here you switch them on and off and edit the action “Internet at home”."
+      },
+      "editOff": {
+        "readonly": "You cannot edit this rule.",
+        "parents_only": "Only parents can edit the action “Internet at home”.",
+        "unavailable": "This server does not offer the action “Internet at home”.",
+        "full": "This rule already has 10 actions."
+      },
+      "problem": {
+        "not_found": "{{name}} is no longer a minor child of the family",
+        "not_allowed": "Internet of {{name}}: the owner of the rule is no longer a parent",
+        "unavailable": "Internet of {{name}}: this server has no “Internet at home”"
+      },
+      "trig": {
+        "daily": "Daily at {{time}}",
+        "days": "{{days}} at {{time}}",
+        "all_away": "When everyone is away",
+        "first_home": "When the first person comes home",
+        "child_home_alone": "When a child comes home alone",
+        "person_home": "When {{name}} comes home",
+        "person_away": "When {{name}} leaves",
+        "place_enter": "When {{name}} arrives at {{place}}",
+        "place_exit": "When {{name}} leaves {{place}}",
+        "school": "When the timetable of {{name}} changes",
+        "schoolAny": "When a timetable changes",
+        "other": "Another trigger"
+      },
+      "act": {
+        "pauseFor": "pause the internet of {{name}} ({{dur}})",
+        "pauseUntil": "pause the internet of {{name}} (until {{time}})",
+        "pause": "pause the internet of {{name}}",
+        "resume": "resume the internet of {{name}}",
+        "notifyTo": "notification to {{names}}",
+        "notifyParents": "notification to the parents",
+        "notifyAll": "notification to everyone",
+        "notify": "notification",
+        "chatFamily": "message in the family chat",
+        "chatTo": "chat message to {{names}}",
+        "chat": "chat message",
+        "quick": "switch a device",
+        "quickVerb": "{{title}}: {{verb}}",
+        "other": "another action"
+      },
+      "dialog": {
+        "title": "Action: Internet at home",
+        "which": "Action",
+        "new": "New action",
+        "who": "For whom",
+        "what": "What",
+        "howLong": "How long",
+        "untilLabel": "Pause until",
+        "untilHint": "Until the next such time, in the time zone of the family.",
+        "onBehalf": "The rule pauses on behalf of {{name}}.",
+        "onBehalfResume": "The rule resumes on behalf of {{name}}.",
+        "save": "Save",
+        "remove": "Remove action",
+        "onlyAction": "The only action of a rule cannot be removed.",
+        "full": "A rule has at most 10 actions.",
+        "gone": "{{name}} (not available)",
+        "op": {
+          "pause": "Pause",
+          "resume": "Resume"
+        }
+      }
+    },
+    "presence": {
+      "now": "Right now",
+      "share": {
+        "title": "Share presence",
+        "hint": "The Android app tells your server “at home” or “away”."
+      },
+      "wifi": {
+        "title": "Use Wi-Fi detection",
+        "hint": "The gateway reports “at home” as soon as one of your devices is on the home Wi-Fi.",
+        "off": "Without Wi-Fi detection only what the app reports counts."
+      },
+      "state": {
+        "homeSince": "at home since {{time}}",
+        "home": "at home",
+        "awaySince": "away since {{time}}",
+        "away": "away",
+        "unknown": "nothing reported yet",
+        "not_shared": "not shared"
+      },
+      "source": {
+        "wifi": "Source: Wi-Fi",
+        "app": "Source: app"
+      },
+      "devices": {
+        "title": "My devices on the home Wi-Fi",
+        "empty": "No devices are assigned to you yet.",
+        "unnamed": "Device",
+        "lastSeen": "last seen {{time}}",
+        "never": "not seen yet",
+        "counts": "counts",
+        "countsNot": "does not count",
+        "foot": "An admin assigns the devices in the network watch. This setting applies only to you."
+      }
+    },
+    "off": {
+      "title": "Switched off in Familie",
+      "hint": "This function is not switched on in the settings of the Familie plugin."
+    },
+    "unavailable": {
+      "title": "Family is not available",
+      "hint": "The server does not offer the Familie plugin for this device right now, or you are not a member of a family."
+    },
+    "err": {
+      "network": "No connection to the server.",
+      "timeout": "The server does not answer.",
+      "forbidden": "This is not allowed for this device.",
+      "invalid": "The entry is not valid. Please check it and try again.",
+      "parents_only": "Only parents can do that.",
+      "not_found": "This no longer exists. Please refresh.",
+      "unavailable": "This server has no “Internet at home”.",
+      "not_person": "GateControl sees no signed-in person for this device.",
+      "module_off": "This function is switched off in Familie.",
+      "not_member": "You are not a member of a family.",
+      "not_configured": "The app is not connected to a server yet.",
+      "auth": "The sign-in to the server has expired.",
+      "too_many": "There are already too many of them.",
+      "state_required": "Another action of this rule is incomplete. Please check it in the portal.",
+      "server": "The server reports an error. Please try again later.",
+      "failed": "That did not work ({{code}})."
+    }
+  },
+  "dnsProtect": {
+    "title": "DNS protection",
+    "retry": "Try again",
+    "stale": "DNS protection cannot be reached right now – you are seeing the last loaded state.",
+    "unreachable": "DNS protection cannot be reached right now.",
+    "disconnected": "VPN not connected: this device is only filtered while it is connected.",
+    "forever": "Until I switch it back on",
+    "resume": "Switch back on",
+    "extend": "+30 min",
+    "remaining": "{{time}} left",
+    "chip": {
+      "active": "active",
+      "paused": "paused",
+      "fallback": "unfiltered",
+      "unfiltered": "not filtered",
+      "starting": "starting",
+      "error": "not reachable"
+    },
+    "sub": {
+      "active": "Ads and malicious sites are blocked",
+      "pausedUntil": "Paused until {{time}} · switches itself back on",
+      "pausedOpenMe": "Paused until you switch it back on",
+      "pausedOpenBy": "Paused until {{name}} switches it back on",
+      "pausedOpen": "Paused until someone switches it back on",
+      "fallbackSince": "Down since {{time}}",
+      "fallback": "Down",
+      "starting": "Protection is starting.",
+      "ownDns": "This device uses its own DNS server ({{dns}}) and is not filtered.",
+      "ownDnsPlain": "This device uses its own DNS server and is not filtered.",
+      "excluded": "This device is exempt from protection.",
+      "disabled": "This device is disabled on the server and is not filtered.",
+      "noDevice": "You have no VPN device the protection applies to.",
+      "unfiltered": "This device is not filtered."
+    },
+    "kv": {
+      "queries": "Queries today",
+      "blocked": "Blocked",
+      "percent": "Share"
+    },
+    "profile": {
+      "home": "Profile “{{name}}” · holds at home and on the road"
+    },
+    "scope": {
+      "person": "Figures of all your devices",
+      "server": "Figures of all devices of the server"
+    },
+    "pauseFor": {
+      "device": "Pause for this device:",
+      "devices": "Pause for your devices:"
+    },
+    "dur": {
+      "5": "5 min",
+      "30": "30 min",
+      "60": "1 h",
+      "240": "4 h"
+    },
+    "hint": {
+      "endsSelf": "Ends by itself.",
+      "foreverOff": "Ends by itself. Your admin has not enabled “Until I switch it back on”.",
+      "notOffered": "Your admin has not enabled this duration."
+    },
+    "note": {
+      "byMe": "Paused by you at {{time}} for {{duration}}.",
+      "byMeOpen": "Paused by you at {{time}}.",
+      "byOther": "Paused by {{name}} at {{time}} for {{duration}}.",
+      "byOtherOpen": "Paused by {{name}} at {{time}}.",
+      "plain": "Paused at {{time}} for {{duration}}.",
+      "plainOpen": "Paused at {{time}}.",
+      "device": "Nothing is blocked on this device meanwhile.",
+      "devices": "Nothing is blocked on your devices meanwhile.",
+      "all": "An admin has paused protection for all devices. Only an admin can switch it back on."
+    },
+    "duration": {
+      "minute": "1 minute",
+      "minutes": "{{n}} minutes",
+      "hour": "1 hour",
+      "hours": "{{n}} hours",
+      "hm": "{{h}} h {{m}} min"
+    },
+    "banner": {
+      "fallbackTitle": "The filter on the server is not answering.",
+      "fallbackText": "Your internet keeps working, but without protection. Your admin has been notified. Protection switches itself back on.",
+      "notAllowedTitle": "Pausing is not allowed.",
+      "profile": "The admin has locked pausing for your profile. If a site you need does not work, ask your parents or the admin.",
+      "admins_only": "Only admins may pause here.",
+      "internetTitle": "Internet paused until {{time}}",
+      "internetText": "Your internet is paused (Family). This also holds on the road through the VPN: only expressly allowed sites work. Pausing the protection does not change that.",
+      "internet_paused": "The internet is paused (Family). Pausing the protection does not change that."
+    },
+    "top": {
+      "title": "Top blocked domains",
+      "empty": "Nothing has been blocked today yet."
+    },
+    "done": {
+      "paused": "DNS protection paused.",
+      "extended": "Pause extended by 30 minutes.",
+      "resumed": "DNS protection switched back on.",
+      "notPaused": "Protection was already back on."
+    },
+    "error": {
+      "network": "No connection to the server.",
+      "timeout": "The server is not answering.",
+      "unavailable": "The filter service is not answering right now. Try again later.",
+      "rate_limited": "Too many requests. Try again in a moment.",
+      "failed": "That did not work."
+    },
+    "tray": {
+      "active": "DNS protection: active",
+      "pausedUntil": "DNS protection: paused until {{time}}",
+      "paused": "DNS protection: paused",
+      "fallback": "DNS protection: down (unfiltered)",
+      "unfiltered": "DNS protection: this device is not filtered",
+      "pause": "Pause DNS protection",
+      "resume": "Switch DNS protection back on",
+      "minutes": {
+        "5": "5 minutes",
+        "30": "30 minutes",
+        "60": "1 hour",
+        "240": "4 hours"
+      },
+      "internetPaused": "Internet paused until {{time}} (Family)"
+    },
+    "toast": {
+      "outageTitle": "DNS protection: filter down",
+      "outageBody": "Your internet keeps working, but unfiltered. Protection switches itself back on.",
+      "failed": "DNS protection: {{error}}"
+    }
+  },
+  "print": {
+    "title": "Print",
+    "sub": "Printers at home – also on the go and with the VPN",
+    "pick": "Print a file …",
+    "refresh": "Refresh",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "cancel": "Cancel",
+    "inboxOpen": "Open in “Print”",
+    "navCount": {
+      "one": "1 open job",
+      "other": "{{count}} open jobs"
+    },
+    "drop": {
+      "title": "Drag a file here",
+      "active": "Drop here to print",
+      "types": "PDF files, pictures, text and office files up to 50 MB.",
+      "left": "{{left}} of {{total}} pages left today.",
+      "waits": "The job waits until the printer is on.",
+      "nav": "Drop to print"
+    },
+    "printers": {
+      "title": "Printers"
+    },
+    "printer": {
+      "ready": "ready",
+      "off": "off",
+      "busy": "busy",
+      "stopped": "stopped",
+      "cert": "waiting for an admin",
+      "color": "colour",
+      "bw": "black and white",
+      "duplex": "double-sided",
+      "note": {
+        "off": "prints as soon as it is on",
+        "busy": "printing right now",
+        "stopped": "stopped – have a look at the printer",
+        "cert": "waiting for an admin (certificate changed)"
+      }
+    },
+    "banner": {
+      "allOff": {
+        "title": "No printer is on right now.",
+        "text": "You can print anyway: the job waits up to 24 hours and prints as soon as the printer is on."
+      },
+      "cert": "The printer's certificate has changed. An admin has to confirm it; until then the printer takes no jobs.",
+      "offline": {
+        "title": "No connection to GateControl.",
+        "text": "The list shows the state of {{time}}. New jobs go out once the connection is back.",
+        "noCopy": "New jobs go out once the connection is back."
+      }
+    },
+    "empty": {
+      "noPrinter": {
+        "title": "No printer found yet",
+        "text": "You may print, but no printer has been found yet. Printers are found by a gateway in the home network with “Print & scan” switched on.",
+        "foot": "For admins: Gateways › your gateway › Functions › “Devices at home”."
+      },
+      "unavailable": {
+        "title": "Printing is not available here",
+        "text": "The plugin “Print & Scan” is not installed on your GateControl server, not licensed or not released for the apps. Ask your admin."
+      },
+      "noRight": {
+        "title": "You may not print",
+        "text": "An admin has switched printing off for your account. Ask your admin."
+      },
+      "error": {
+        "title": "Printing could not be loaded"
+      }
+    },
+    "jobs": {
+      "title": "Jobs",
+      "open": {
+        "one": "1 open",
+        "other": "{{count}} open"
+      },
+      "none": "none open",
+      "updated": "updated {{time}}",
+      "empty": "No jobs yet. What you print shows here with its state.",
+      "foot": {
+        "one": "The list shows your last job.",
+        "other": "The list shows your last {{count}} jobs."
+      },
+      "footPortal": "Older ones are in the portal under “Print & Scan”.",
+      "portal": "Open in the portal",
+      "stale": "State of {{time}}. The job goes on at the server, even when this PC is off.",
+      "cancel": "Cancel",
+      "cancelOf": "Cancel “{{name}}”",
+      "again": "Print again",
+      "againOf": "Print “{{name}}” again",
+      "remove": "Remove",
+      "removeOf": "Remove “{{name}}” from the list",
+      "canceled": "Job canceled.",
+      "cancelLate": "The job cannot be canceled any more – it is at the printer already.",
+      "sent": {
+        "one": "Job created.",
+        "other": "{{count}} jobs created."
+      }
+    },
+    "steps": {
+      "gc": "GateControl",
+      "gateway": "Gateway",
+      "printer": "Printer",
+      "done": "Printed",
+      "label": "Step {{n}} of 4: {{name}}"
+    },
+    "state": {
+      "queuedLocal": "Waiting for the job before it",
+      "loading": "Loading from Drive …",
+      "uploading": "Going to GateControl … {{percent}} %",
+      "creating": "Creating the job …",
+      "notSent": "Not sent",
+      "queued": "On its way home",
+      "sending": "Going to the printer",
+      "converting": "Being converted for the printer",
+      "convertingOffice": "Being turned into a PDF",
+      "printing": "Printing",
+      "stopped": "Stopped",
+      "waiting": "Waiting",
+      "done": "Printed",
+      "doneUnconfirmed": "At the printer",
+      "failed": "Failed",
+      "expired": "Expired",
+      "canceled": "Canceled"
+    },
+    "stop": {
+      "paper": "Out of paper – please add some.",
+      "jam": "Paper jam at the printer.",
+      "open": "A cover of the printer is open.",
+      "ink": "Ink or toner is empty.",
+      "tray": "The paper tray is missing.",
+      "full": "The output tray is full.",
+      "held": "Held at the printer (e.g. for a PIN).",
+      "stopped": "The printer stopped.",
+      "resume": "The printer goes on by itself afterwards."
+    },
+    "wait": {
+      "off": "Waiting until the printer is on",
+      "busy": "Waiting – the printer is busy",
+      "notAccepting": "Waiting – the printer takes no jobs right now",
+      "cert": "Waiting – an admin has to confirm the printer's certificate",
+      "office": "Waiting until the gateway's office service runs",
+      "until": "{{reason}} – until {{when}}.",
+      "plain": "{{reason}} (up to 24 hours)."
+    },
+    "done": {
+      "unconfirmed": "The printer did not confirm the end."
+    },
+    "fail": {
+      "format": "The printer cannot print this format.",
+      "convert": "The PDF file could not be converted for the printer (damaged or password-protected).",
+      "convertLarge": "Too large once converted for the printer – please print it in parts.",
+      "office": "The office file could not be turned into a PDF (damaged or password-protected?).",
+      "officeTimeout": "Turning the office file into a PDF took too long.",
+      "rejected": "The printer refused the job.",
+      "atPrinter": "Canceled at the printer.",
+      "expired": "Not printed within 24 hours.",
+      "device": "This device does not print.",
+      "failed": "Printing failed."
+    },
+    "err": {
+      "network": "No connection to GateControl.",
+      "timeout": "The server does not answer.",
+      "not_configured": "GateControl is not set up on this PC yet.",
+      "too_large": "The file is too large (at most 50 MB).",
+      "format": "This file cannot be printed: PDF files, pictures, text and office files work.",
+      "damaged": "The file is damaged and cannot be printed.",
+      "printer_format": "This printer takes no PDF files, and the gateway cannot convert them for it.",
+      "gateway_update": "The gateway is too old to convert PDF files for this printer. An admin updates it under Gateways.",
+      "convert_off": "Converting PDF files is switched off for this printer at the gateway.",
+      "office_off": "Office files are not switched on for this printer. Saved as a PDF the file prints right away.",
+      "office_missing": "The gateway's office service does not run yet. Try again later.",
+      "quota": "There is no room for print jobs on the server any more.",
+      "infected": "The virus scan blocked this file.",
+      "scan": "The virus scan is still checking this file or cannot be reached right now – try again later.",
+      "limit": "That would be {{pages}} pages – {{left}} left today.",
+      "limitPlain": "Today's page limit is reached.",
+      "no_right": "You may not print – ask your admin.",
+      "read": "The file could not be read.",
+      "empty": "The file is empty.",
+      "folder": "Folders cannot be printed.",
+      "too_many": "At most 20 files at once.",
+      "unavailable": "“Print & Scan” is not available for the app on your GateControl server.",
+      "offline": "No gateway at home can be reached right now.",
+      "cert_changed": "The printer's certificate has changed. An admin has to confirm it.",
+      "not_found": "This printer is gone. Please refresh.",
+      "busy": "Too many jobs are open. Wait until one is done.",
+      "vault_locked": "The vault is locked. Open it in Drive first.",
+      "source_gone": "The file is not where it was any more. Pick it again.",
+      "invalid": "The input is not valid. Please check and try again.",
+      "failed": "Printing did not work."
+    },
+    "rejected": {
+      "one": "“{{name}}”: {{reason}}",
+      "more": {
+        "one": "1 more file cannot be printed.",
+        "other": "{{count}} more files cannot be printed."
+      }
+    },
+    "meta": {
+      "pages": {
+        "one": "1 page",
+        "other": "{{count}} pages"
+      },
+      "copies": {
+        "one": "1 copy",
+        "other": "{{count}} copies"
+      },
+      "times": "{{pages}} × {{copies}}",
+      "color": "colour",
+      "bw": "black and white",
+      "duplex": "double-sided",
+      "justNow": "just now",
+      "yesterday": "yesterday, {{time}}",
+      "tomorrow": "tomorrow, {{time}}",
+      "today": "today, {{time}}",
+      "at": "{{day}}, {{time}}"
+    },
+    "paper": {
+      "a4": "A4",
+      "a5": "A5",
+      "a6": "A6",
+      "a3": "A3",
+      "letter": "Letter",
+      "legal": "Legal",
+      "photo10x15": "Photo 4 × 6 in",
+      "photo13x18": "Photo 5 × 7 in",
+      "photo9x13": "Photo 3.5 × 5 in",
+      "default": "{{name}} (the printer's default)",
+      "size": "{{w}} × {{h}} {{unit}}"
+    },
+    "tray": {
+      "auto": "Automatic",
+      "main": "Main tray",
+      "manual": "Manual feed",
+      "photo": "Photo tray",
+      "bypass": "Multi-purpose tray",
+      "envelope": "Envelope tray",
+      "top": "Top tray",
+      "middle": "Middle tray",
+      "bottom": "Bottom tray",
+      "rear": "Rear tray",
+      "side": "Side tray",
+      "number": "Tray {{n}}",
+      "default": "{{name}} (the printer's default)"
+    },
+    "kind": {
+      "pdf": "PDF",
+      "image": "Picture",
+      "text": "Text",
+      "docx": "Word file",
+      "xlsx": "Excel file",
+      "pptx": "PowerPoint file",
+      "odt": "OpenDocument text",
+      "ods": "OpenDocument spreadsheet",
+      "odp": "OpenDocument presentation",
+      "rtf": "RTF file",
+      "office": "Office file"
+    },
+    "from": {
+      "pc": "from this PC",
+      "drive": "from Drive",
+      "vault": "from a vault in Drive"
+    },
+    "dialog": {
+      "title": "Print at home",
+      "files": {
+        "one": "1 file",
+        "other": "{{count}} files"
+      },
+      "each": "Each file becomes a job of its own with the same options.",
+      "printer": "Printer",
+      "copies": "Copies",
+      "copiesMax": "at most {{max}}",
+      "less": "One copy less",
+      "more": "One copy more",
+      "color": "Colour",
+      "colorOn": "Colour",
+      "colorOff": "Black and white",
+      "bwPrinter": "This printer prints black and white",
+      "bwOnly": "Your account prints black and white only",
+      "duplex": "Double-sided",
+      "duplexOn": "2 pages on 1 sheet of paper",
+      "duplexOff": "off",
+      "paper": "Paper",
+      "tray": "Tray",
+      "info": "The job goes through GateControl to the gateway at home. When the printer is off it waits up to 24 hours.",
+      "left": "{{left}} of {{total}} pages left today",
+      "go": "Print at home",
+      "sending": "Sending …",
+      "office": {
+        "title": "Office files are not switched on for this printer.",
+        "text": "An admin switches “Print office files” on at the gateway. Saved as a PDF the file prints right away."
+      },
+      "limit": "That would be {{pages}} pages – {{left}} left today.",
+      "limitAtLeast": "That would be at least {{pages}} pages – {{left}} left today.",
+      "cert": "This printer takes no jobs right now: an admin has to confirm its changed certificate.",
+      "noPrinter": "There is no printer."
+    },
+    "menu": {
+      "one": "Print …",
+      "many": "Print {{count}} files …",
+      "viewer": "Print",
+      "none": "Nothing here can be printed – PDF files, pictures, text and office files work."
+    },
+    "vault": {
+      "title": "Print from the vault?",
+      "text": "To print it the file leaves the vault: the app decrypts it and hands it to your GateControl server and the printer. On that way it is not end-to-end encrypted any more.",
+      "go": "Print anyway"
+    }
+  },
   "gatedrop": {
     "title": "GateDrop",
     "sub": "Share files, text and links with your devices, people, the NAS or by link",
@@ -1235,9 +2405,22 @@
     "refresh": "Refresh",
     "someone": "Someone",
     "retention": "Received items stay on the server for 7 days.",
+    "retentionDays": "Received items stay on the server for {{days}}.",
+    "retentionSplit": "Received items stay on the server for {{after}} after they are picked up, otherwise for {{unpicked}}.",
+    "retentionNow": "Received items are deleted from the server once picked up; items not picked up stay for {{unpicked}}.",
+    "days": {
+      "one": "1 day",
+      "other": "{{n}} days"
+    },
     "folder": "Saved in {{folder}}",
     "folderLabel": "Received files",
     "openFolder": "Open folder",
+    "folderPick": "Location for received files",
+    "folderChange": "Change …",
+    "folderChangeTitle": "Change the location for received files",
+    "folderReset": "Reset",
+    "folderResetTitle": "Save to the default folder again: {{folder}}",
+    "folderCustom": "Chosen by you",
     "explorer": "Show under “Send to” in the Explorer",
     "explorerHint": "Right-click files › Send to › GateDrop",
     "access": {
@@ -1380,7 +2563,8 @@
       "linkOnce": "download once",
       "copyLink": "Copy link",
       "today": "today {{time}}",
-      "yesterday": "yesterday {{time}}"
+      "yesterday": "yesterday {{time}}",
+      "removed": "Removed by the admin"
     },
     "status": {
       "pending": "waiting",
@@ -1389,7 +2573,12 @@
       "delivered": "delivered",
       "opened": "opened",
       "failed": "failed",
-      "expired": "expired"
+      "expired": "expired",
+      "provided": "provided",
+      "received": "received",
+      "picked": "picked up",
+      "removed": "removed by the admin",
+      "incomplete": "not all files arrived"
     },
     "via": {
       "direct": "directly over Wi-Fi",
@@ -1428,7 +2617,23 @@
       "changed": "A file was changed meanwhile – please choose it again.",
       "forbidden": "You are not allowed to do that.",
       "invalid": "The request was invalid.",
-      "failed": "That did not work ({{code}})."
+      "folder_missing": "This folder does not exist (any more).",
+      "folder_readonly": "GateControl may not write to this folder – please choose another one.",
+      "failed": "That did not work ({{code}}).",
+      "gone": "The send has expired or was removed by the admin."
+    },
+    "runAs": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. Received files still go to the folder of “{{session}}”: {{path}}. Windows notifications do not work this way – GateControl shows them itself.",
+    "runAsUnknown": "GateControl runs as the Windows user “{{user}}”, signed in is “{{session}}”. The folders of “{{session}}” could not be found: received files go to the Downloads of “{{user}}” (path above) – or choose a folder with “Change …”. Windows notifications do not work this way – GateControl shows them itself.",
+    "runAsUnreachable": "The redirected Downloads folder “{{folder}}” cannot be reached by “{{user}}”, so the folder in the user profile is used.",
+    "receiveError": {
+      "text": "Not saved on this PC: {{why}} “Save” loads it again.",
+      "checking": "Still being checked for viruses – loads on its own once the check is done.",
+      "download_failed": "The download failed.",
+      "timeout": "The server did not answer in time.",
+      "network": "The server could not be reached.",
+      "not_found": "The send is no longer on the server.",
+      "gone": "The send has expired or was removed by the admin.",
+      "other": "Error ({{code}})."
     }
   },
   "vault": {
@@ -1436,5 +2641,158 @@
     "conflictSuffix": "(conflict)",
     "qrFileTitle": "Choose a QR code with a 2FA key",
     "qrFileFilter": "Images"
+  },
+  "scan": {
+    "checking": "Being checked for viruses …",
+    "checkingShort": "Being checked …",
+    "checkingOpen": "Being checked for viruses … – the file opens once the check is done.",
+    "malware": "Blocked – malware",
+    "malwareOf": "Blocked – malware ({{finding}})",
+    "unscannable": "Blocked – could not be checked",
+    "unscannableShort": "Blocked – not checkable",
+    "blocked": "Blocked",
+    "warning": "Warning – malware",
+    "warningOf": "Malware found ({{finding}}) – only open it if you trust it",
+    "warningAsk": "The virus scan found malware in “{{name}}”. Only open it if you trust the file.",
+    "openAnyway": "Open anyway",
+    "notCheckable": "Not checkable",
+    "removed": "Attachment removed (malware)",
+    "blockedHint": "Blocked files cannot be opened, downloaded, previewed or shared.",
+    "fileBlocked": "File blocked",
+    "quarantined": "File blocked – malware found",
+    "quarantinedOf": "File blocked – malware found ({{finding}})",
+    "scanBlocked": "File blocked – could not be checked for viruses",
+    "scanBlockedOf": "{{name}} could not be checked for viruses",
+    "rejected": "File rejected – malware found.",
+    "rejectedOf": "{{name}} rejected – malware found.",
+    "unavailable": "Virus scan not reachable right now – please try again later.",
+    "attachmentRemoved": "The attachment was removed (malware) and can no longer be loaded.",
+    "attachmentBlocked": "An attachment is blocked (malware) – remove it?",
+    "attachmentBlockedOf": "The attachment {{name}} is blocked (malware) – remove it?",
+    "remove": "Remove",
+    "notSent": "Not sent – malware found",
+    "notSentOf": "Not sent – malware found ({{finding}})",
+    "notSentUnscannable": "Not sent – the file could not be checked",
+    "sendWaiting": "Being checked for viruses … – sent right after.",
+    "skippedOne": "1 blocked file is missing.",
+    "skippedMany": "{{count}} blocked files are missing.",
+    "syncBlockedOne": "1 file not loaded because of the virus scan",
+    "syncBlockedMany": "{{count}} files not loaded because of the virus scan"
+  },
+  "cameras": {
+    "title": "Cameras",
+    "sub": "Door & Camera · home cameras, no vendor cloud",
+    "online": "{{count}} online",
+    "refresh": "Refresh",
+    "portal": "Locks and Ring in the portal",
+    "portalOff": "The portal cannot be reached right now (VPN connected?).",
+    "chooser": "Choose a camera",
+    "player": "Live view {{name}}",
+    "live": "LIVE",
+    "hd": "HD",
+    "sd": "SD",
+    "viaVpn": "via VPN",
+    "viaLan": "in the home network",
+    "stillEvery": "Still · every {{s}} s",
+    "stamp": "{{name}} · {{time}}",
+    "connecting": "Loading the live view …",
+    "reconnect": "Reload the live view",
+    "offline": "Camera offline",
+    "hint": "Away without VPN the app shows a new still every {{s}} seconds; live video needs the VPN switched on.",
+    "hintLive": "Live video through the tunnel – no vendor cloud, a few seconds behind.",
+    "codec": "This video cannot be played here ({{codec}}). Choose the sub stream (H.264) of the camera.",
+    "saveStill": "Save still",
+    "saved": "Still saved",
+    "saveFailed": "The still could not be saved.",
+    "fullscreen": "Full screen",
+    "fullscreenExit": "Exit full screen",
+    "sound": "Sound",
+    "soundOn": "Turn sound on",
+    "soundOff": "Turn sound off",
+    "noSound": "This camera sends no sound.",
+    "soundLive": "Sound comes with the live video only.",
+    "all": "All cameras",
+    "allSub": "Only the cameras you may see.",
+    "inboxOpen": "View camera",
+    "stale": "No connection – you are seeing the last loaded state.",
+    "loading": "Loading …",
+    "retry": "Try again",
+    "empty": "You do not see any camera yet.",
+    "emptySub": "Which cameras you see is set by the administrator under Door & Camera › Permissions.",
+    "ago": {
+      "now": "just now",
+      "s": "{{n}} s ago",
+      "min": "{{n}} min ago",
+      "h": "{{n}} h ago"
+    },
+    "card": {
+      "home": "Home network",
+      "live": "live",
+      "offline": "offline",
+      "motion": "Motion: {{kinds}}",
+      "away": "Motion: only when nobody is at home",
+      "never": "no clips, live view only",
+      "retention": "Clips {{days}} days",
+      "noPicture": "No picture yet",
+      "res": "{{w}}×{{h}}",
+      "withSound": "with sound"
+    },
+    "state": {
+      "unreachable": "unreachable",
+      "auth_failed": "sign-in refused",
+      "not_allowed": "address not allowed",
+      "no_stream": "no video stream",
+      "error": "faulty",
+      "tls_untrusted": "certificate not trusted"
+    },
+    "kind": {
+      "person": "Person",
+      "vehicle": "Car",
+      "animal": "Animal",
+      "motion": "Motion"
+    },
+    "kinds": {
+      "person": "people",
+      "vehicle": "cars",
+      "animal": "animals",
+      "motion": "any motion"
+    },
+    "clips": {
+      "title": "Clips today",
+      "empty": "No clips today yet.",
+      "row": "{{kind}} · {{duration}}",
+      "noClip": "preview only",
+      "nobodyHome": "Nobody at home",
+      "play": "Play the clip of {{time}}",
+      "playing": "Clip · {{kind}} · {{time}}",
+      "back": "Back to the live view",
+      "gone": "This clip is gone."
+    },
+    "error": {
+      "not_found": "You do not (or no longer) see this camera.",
+      "cam_offline": "The gateway cannot be reached right now.",
+      "cam_unreachable": "The camera does not answer.",
+      "cam_not_ready": "The live view is still starting – try again in a moment.",
+      "cam_needs_gc": "This needs a newer GateControl version on the server.",
+      "cam_auth": "The camera refuses the sign-in.",
+      "cam_unsupported": "The gateway cannot do this yet (gateway 1.28.0 or newer).",
+      "cam_service": "The service “kameras” is missing on the gateway.",
+      "cam_not_allowed": "The camera's address is not allowed.",
+      "no_image": "There is no still right now.",
+      "rate_limited": "Too many requests – please wait a moment.",
+      "too_soon": "Too many requests – please wait a moment.",
+      "network": "No connection to the server.",
+      "timeout": "The server does not answer.",
+      "failed": "That did not work.",
+      "cam_tls": "The camera's certificate is not trusted. An administrator can tick “Do not check the certificate” in the plugin."
+    },
+    "unavailable": {
+      "needs_gatecontrol": "Home cameras need GateControl {{version}} or newer.",
+      "unsupported": "Home cameras need Door & Camera 1.6.0 or newer."
+    },
+    "myPush": "Push for people",
+    "myPushHint": "Message with a still when this camera sees a person – only for you",
+    "myPushOn": "Push on for this camera",
+    "myPushOff": "Push off for this camera"
   }
 }
