@@ -254,6 +254,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // Messenger 1.10: the file of a message into Drive (folderId: a folder picked, else Meine Dateien › Messenger)
       toDrive:       (id, folderId) => ipcRenderer.invoke('chat:to-drive', { id, folderId: folderId || null }),
       places:        () => ipcRenderer.invoke('chat:places'),
+      // „Meine Orte“ (Messenger 1.28 `profilePlaces`): the source of the place choice — the person's own places of the
+      // profile and Familie's places, each with `ref`, in the Messenger's order (most used here first). Without the
+      // feature: Familie's places as before (source 'familie')
+      pickPlaces:    () => ipcRenderer.invoke('chat:places', { all: true }),
       poll:          (id, op, args) => ipcRenderer.invoke('chat:poll', { ...(args || {}), id, op }),
       event:         (id, op, args) => ipcRenderer.invoke('chat:event', { ...(args || {}), id, op }),
       stopArrival:   (id) => ipcRenderer.invoke('chat:arrival:stop', { id }),
@@ -291,6 +295,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       splitPerson:    (id, conversationId) => ipcRenderer.invoke('chat:person:split', { id, conversationId: conversationId == null ? null : conversationId }),
       renamePerson:   (id, name) => ipcRenderer.invoke('chat:person:name', { id, name }),
       personCandidates: (id) => ipcRenderer.invoke('chat:person:candidates', { id }),
+      // Messenger 1.27 (status().me.features.placeMessages): „Nachrichten senden über“ — 'auto' | 'gatecontrol' | network
+      setReplyPref:   (id, pref) => ipcRenderer.invoke('chat:person:reply-pref', { id, pref: pref || 'auto' }),
       // Messenger 1.23: per service (network: 'signal'; missing → WhatsApp); „Im Portal / Windows-Client fortsetzen“
       // of a service with the QR code only, and the event when another device sends that step here
       bridgeRecognition: (allowed, network) => ipcRenderer.invoke('chat:bridge:recognition', { allowed: allowed === true, ...(typeof network === 'string' ? { network } : {}) }),
@@ -411,6 +417,18 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // the card is on screen: the status is asked more often
       watch:     (on) => ipcRenderer.invoke('dnsprotect:watch', { on: on === true }),
       onChange:  (cb) => subscribe('dnsprotect:change', cb),
+    },
+
+    // ── Schnellaktionen (the plugins' quick actions: light, shutters, heating, chains …) ─
+    // Served when the app passes a QuickActionsService to registerBaseHandlers
+    // (ipc/quick-actions-handlers.js lists arguments and answers).
+    quickActions: {
+      list:      () => ipcRenderer.invoke('quickactions:list'),
+      // how: {} (a button), { state: 'on'|'off' } (a toggle) or { control, value } (a control of its widget)
+      run:       (plugin, id, how) => {
+        const h = how && typeof how === 'object' ? how : {};
+        return ipcRenderer.invoke('quickactions:run', { plugin, id, control: h.control, value: h.value, state: h.state });
+      },
     },
 
     // ── Kameras im Heimnetz (plugin gatecontrol-door 1.6) ─
@@ -640,6 +658,10 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       deleteAlbum:  (id) => ipcRenderer.invoke('drive:album:delete', { id }),
       addToAlbum:   (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids }),
       removeFromAlbum: (id, ids) => ipcRenderer.invoke('drive:album:items', { id, ids, remove: true }),
+      // Drive 1.31 'framePhotos': photos for the photo frame (framePhotos(ids): only those of `ids` in it)
+      framePhotos:  (ids) => ipcRenderer.invoke('drive:frame:photos', { ids: ids || null }),
+      addToFrame:   (ids) => ipcRenderer.invoke('drive:frame:set', { ids }),
+      removeFromFrame: (ids) => ipcRenderer.invoke('drive:frame:set', { ids, remove: true }),
       // Drive 1.16 'photoPlaces' / 'photoPeople': photos(opts) also takes place, bbox, person, districts, withPeople;
       // filter: { area?, q?, person? }
       photoMonthsBy: (area, filter) => ipcRenderer.invoke('drive:photos:months', { ...(filter || {}), area: area || null }),
@@ -984,7 +1006,9 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       places:        () => ipcRenderer.invoke('notes:places'),
       createPlace:   (place) => ipcRenderer.invoke('notes:place:create', { place: { ...(place || {}) } }),
       updatePlace:   (id, patch) => ipcRenderer.invoke('notes:place:update', { id, patch: { ...(patch || {}) } }),
-      deletePlace:   (id) => ipcRenderer.invoke('notes:place:delete', { id }),
+      // plugin 1.8.0 (`profilePlaces`): a place another plugin still uses answers code 'in_use' with `usedBy`;
+      // { force: true } deletes it all the same
+      deletePlace:   (id, opts) => ipcRenderer.invoke('notes:place:delete', { id, force: !!(opts && opts.force === true) }),
       setPlaceFav:   (key, placeId) => ipcRenderer.invoke('notes:place:fav', { key, placeId: placeId || null }),
       searchPlaces:  (input) => ipcRenderer.invoke('notes:place:search', { ...(input || {}) }),
       placeConsent:  (id, accept) => ipcRenderer.invoke('notes:task:place:consent', { id, accept: accept === true }),
@@ -1041,6 +1065,27 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       onVault:       (cb) => subscribe('notes:vault', cb),
       onVaultLock:   (cb) => subscribe('notes:vault-lock', cb),
       onImport:      (cb) => subscribe('notes:import', cb),
+    },
+
+    // ── Meine Orte (Mein Profil › Meine Orte, GateControl 1.299.0) ──
+    // The person's own places of the profile; the forms of Chats and Notizen choose from them. Windows watches no
+    // places (the phone does). A search only on „Suchen“ / Enter, from 3 characters; `near` ({ lat, lon }) is rounded
+    // to ~1 km before it leaves the PC. While the server's address search is off, this PC's map service answers
+    // (`via: 'device'`).
+    places: {
+      status:        () => ipcRenderer.invoke('places:status'),
+      list:          (opts) => ipcRenderer.invoke('places:list', { refresh: !!(opts && opts.refresh), shared: !!(opts && opts.shared) }),
+      get:           (id) => ipcRenderer.invoke('places:get', { id }),
+      create:        (place) => ipcRenderer.invoke('places:create', { place: { ...(place || {}) } }),
+      update:        (id, patch) => ipcRenderer.invoke('places:update', { id, patch: { ...(patch || {}) } }),
+      remove:        (id, opts) => ipcRenderer.invoke('places:delete', { id, force: !!(opts && opts.force === true) }),
+      markUsed:      (id) => ipcRenderer.invoke('places:used', { id }),
+      search:        (q, near, lang) => ipcRenderer.invoke('places:search', { q, near: near && typeof near === 'object' ? { lat: near.lat, lon: near.lon } : undefined, lang }),
+      mapTile:       (z, x, y) => ipcRenderer.invoke('places:map:tile', { z, x, y }),
+      mapReverse:    (lat, lon, lang) => ipcRenderer.invoke('places:map:reverse', { lat, lon, lang }),
+      // { ids, deleted, origin: 'local' | 'push' | 'reconnect' | 'reset' } — load the lists again
+      onChanged:     (cb) => subscribe('places:changed', cb),
+      onState:       (cb) => subscribe('places:state', cb),
     },
 
     // ── Shell ────────────────────────────────────────────
@@ -1107,4 +1152,62 @@ function createSubscriber(ipcRenderer) {
   };
 }
 
-module.exports = { createBridgeApi, createSubscriber };
+/**
+ * "Medien" (Stufe 4e, Pro only — decision 26 a): the app preload adds it as `api.media = createMediaBridge(ipcRenderer)`
+ * when the app passes a MediaService to registerBaseHandlers (ipc/media-handlers.js lists arguments and answers).
+ * Pictures and video are gcmedia:// addresses of the answers (no IPC, no access in the page).
+ */
+function createMediaBridge(ipcRenderer) {
+  const subscribe = createSubscriber(ipcRenderer);
+  const inv = (ch, arg) => ipcRenderer.invoke(ch, arg);
+  return {
+    status:        () => inv('media:status'),
+    setCaps:       (caps) => inv('media:caps:set', caps && typeof caps === 'object' ? caps : {}),
+    setQuality:    (quality) => inv('media:quality:set', { quality }),
+    check:         (id, opts) => inv('media:check', { id, force: !!(opts && opts.force) }),
+    networkChanged: () => inv('media:network'),
+    // Medien-Plugin (W1): the sources come from the server — read only
+    sources: {
+      status:  () => inv('media:sources:status'),
+      refresh: () => inv('media:sources:refresh'),
+      onState: (cb) => subscribe('media:sources:state', cb),
+    },
+    setAlwaysOriginal: (id, on) => inv('media:source:original', { id, on: on === true }),
+    resume:        (id, limit) => inv('media:resume', { id, limit }),
+    latest:        (id, limit) => inv('media:latest', { id, limit }),
+    movies:        (id, opts) => inv('media:movies', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    series:        (id, opts) => inv('media:series', { ...(opts && typeof opts === 'object' ? opts : {}), id }),
+    seasons:       (id, seriesId) => inv('media:seasons', { id, seriesId }),
+    episodes:      (id, seriesId, seasonId) => inv('media:episodes', { id, seriesId, seasonId: seasonId || null }),
+    search:        (id, q) => inv('media:search', { id, q }),
+    detail:        (id, itemId) => inv('media:detail', { id, itemId }),
+    play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
+    report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),
+    setPlayed:     (id, itemId, played) => inv('media:played', { id, itemId, played: played === true }),
+    endStream:     (urlOrPlayId) => inv('media:stream:end', String(urlOrPlayId || '').startsWith('gcmedia:') ? { url: urlOrPlayId } : { playId: urlOrPlayId }),
+    shareList:     (id, dir) => inv('media:share:list', { id, dir: dir || '' }),
+    shareOpen:     (id, path) => inv('media:share:open', { id, path }),
+    // 4h: the format check before the start, "In VLC öffnen" / "In anderer App öffnen" (app 'vlc' | 'default')
+    shareCheck:    (id, itemId) => inv('media:share:check', { id, itemId }),
+    shareExternal: (id, itemId, app, title) => inv('media:share:external', { id, itemId, app, title: title || null }),
+    externalInfo:  () => inv('media:external:info'),
+    tracks:        (seriesId) => inv('media:tracks', { seriesId }),
+    setTracks:     (seriesId, choice) => inv('media:tracks:set', { seriesId, choice }),
+    onState:       (cb) => subscribe('media:state', cb),
+    onLink:        (cb) => subscribe('media:link', cb),
+    // the tunnel started for Medien: { state: 'connecting' | 'up' | 'failed' }
+    onVpn:         (cb) => subscribe('media:vpn', cb),
+    // "Auf TV/PC abspielen": this PC as the receiver of the phone (services/media-cast.js)
+    cast: {
+      status:    () => inv('media:cast:status'),
+      opened:    (session) => inv('media:cast:opened', { session }),
+      state:     (session, st) => inv('media:cast:state', { ...(st && typeof st === 'object' ? st : {}), session }),
+      closed:    (session, o) => inv('media:cast:closed', { ...(o && typeof o === 'object' ? o : {}), session }),
+      onPlay:    (cb) => subscribe('media:cast:play', cb),
+      onCommand: (cb) => subscribe('media:cast:command', cb),
+      onSession: (cb) => subscribe('media:cast:session', cb),
+    },
+  };
+}
+
+module.exports = { createBridgeApi, createSubscriber, createMediaBridge };

@@ -1530,6 +1530,29 @@ class DriveService extends EventEmitter {
     });
   }
 
+  /**
+   * Drive 1.31 'framePhotos': GET frame/photos → { ok, album, ids, count }; with `ids` only those of them in the photo frame
+   * (for the menu: „Für Fotorahmen freigeben“ or „Aus Fotorahmen entfernen“).
+   */
+  async framePhotos(ids = null) {
+    return this._run(async () => {
+      await this._feature('framePhotos');
+      return { ok: true, ...(await this.api.framePhotos(ids)) };
+    });
+  }
+
+  /**
+   * Photos into the photo frame (remove: out of it; the photos stay) → { ok, album, added, removed, skipped, ids, count }.
+   * skipped[].reason: not_found | not_image | vault | blocked | child. A child or no write right in „Meine Dateien“:
+   * 403 { code: 'forbidden', field: 'frame' }.
+   */
+  async setFramePhotos(ids, { remove = false } = {}) {
+    return this._run(async () => {
+      await this._feature('framePhotos');
+      return { ok: true, ...(await this.api.setFramePhotos(ids, { remove })) };
+    });
+  }
+
   /** The storage overview → { ok, total, limit, areas, people, largest, duplicates } (`all`: administrators) */
   async storage({ all = false } = {}) {
     return this._run(async () => {

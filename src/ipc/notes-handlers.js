@@ -16,7 +16,8 @@
  *   notes:shopping ({ full? }) · notes:shopping:ops ({ ops }) · notes:shopping:family ({ id, on })
  *   notes:shopping:going ({ id }) · notes:shopping:assign ({ id, userId, dueAt?, notify? })
  *   notes:shopping:restore ({ listId })  (plugin 1.4.0)
- *   notes:places · notes:place:create ({ place }) · notes:place:update ({ id, patch }) · notes:place:delete ({ id })
+ *   notes:places · notes:place:create ({ place }) · notes:place:update ({ id, patch }) · notes:place:delete ({ id, force? })
+ *   (plugin 1.8.0 `profilePlaces`: the places are the profile's; in_use with usedBy, force deletes it all the same)
  *   notes:place:fav ({ key, placeId | null }) · notes:place:search ({ key | q, address?, nearPlaceId | nearFamilyId })
  *   notes:task:place:consent ({ id, accept })  (plugin 1.5.0)
  *   notes:task:complete ({ id, done, userId? }) · notes:family:seen · notes:parse ({ text, area, listId? })
@@ -59,6 +60,9 @@ function fail(err) {
     if (typeof b.reason === 'string') out.reason = b.reason.slice(0, 60);
     // 429 busy of the place search: try again after so many seconds
     if (Number.isSafeInteger(b.retryAfter) && b.retryAfter > 0) out.retryAfter = Math.min(b.retryAfter, 3600);
+    // plugin 1.8.0: 409 in_use of DELETE places/<id> — who still uses the place (force deletes it all the same)
+    if (Array.isArray(b.usedBy)) out.usedBy = N.usedByOf(b.usedBy);
+    if (typeof b.ref === 'string' && /^profile:[1-9]\d{0,15}$/.test(b.ref)) out.ref = b.ref;
   }
   return out;
 }
@@ -199,7 +203,7 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
     const b = N.placePatch(a.patch);
     return id(a.id) && b && Object.keys(b).length ? s.updatePlace(a.id, b) : invalid('patch');
   });
-  on('notes:place:delete', async (a) => (id(a.id) ? s.deletePlace(a.id) : invalid('id')));
+  on('notes:place:delete', async (a) => (id(a.id) ? s.deletePlace(a.id, { force: a.force === true }) : invalid('id')));
   on('notes:place:fav', async (a) => { const b = N.favArg({ key: a.key, placeId: a.placeId === undefined ? null : a.placeId }); return b ? s.setPlaceFav(b) : invalid('key'); });
   on('notes:place:search', async (a) => { const b = N.placeSearchArg(a); return b ? s.searchPlaces(b) : invalid('near'); });
   on('notes:task:place:consent', async (a) => (id(a.id) && typeof a.accept === 'boolean' ? s.placeConsent(a.id, a.accept) : invalid('accept')));

@@ -519,7 +519,9 @@ class NotesService extends EventEmitter {
 
   async updatePlace(id, body) { return this._run(async () => { this._feature('places'); return { ok: true, place: await this.api.updatePlace(id, body) }; }); }
 
-  async deletePlace(id) { return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.deletePlace(id)) }; }); }
+  async deletePlace(id, { force = false } = {}) {
+    return this._run(async () => { this._feature('places'); return { ok: true, ...(await this.api.deletePlace(id, { force: force === true })) }; });
+  }
 
   /** The remembered place for a kind or a name ({ key, placeId | null }) → { ok, favs } */
   async setPlaceFav(body) { return this._run(async () => { this._feature('places'); return { ok: true, favs: await this.api.setPlaceFav(body) }; }); }

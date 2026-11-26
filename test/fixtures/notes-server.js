@@ -34,7 +34,10 @@
 // With the 1.7.0 word (STAGE5: driveDeadlines — not in the default either): a task's `deadline` (srv.addDeadline():
 // the task the hub made for a reminder of one of Drive's deadlines), `me.driveDeadlines`, and srv.reminderPush(taskId):
 // the push of that task's reminder as the plugin sends it („Frist in 3 Tagen: …“, four buttons, the fourth a link to
-// the file in the portal). A list's own role is 'owner' | 'write' | 'read' with `canEdit` as the plugin says them;
+// the file in the portal). With the 1.8.0 word (STAGE6: profilePlaces — not in the default either): the named places
+// are the profile's (`ref` profile:<id>, `icon`, `visibility`, `usedBy` from state.placeUses), GET places `profile` and
+// `notMoved` (state.notMoved), POST / PATCH places take `icon` / `visibility`, DELETE places/<id> answers 409 in_use
+// { usedBy, ref } while another plugin uses the place (state.placeUses) unless ?force=1, `me.places.profile`. A list's own role is 'owner' | 'write' | 'read' with `canEdit` as the plugin says them;
 // `readers` of a list (user ids) only read: their tasks are `canEdit: false`, writing answers 403 read_only.
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
@@ -72,6 +75,7 @@ const STAGE2 = ['shoppingLists', 'taskList', 'familyShopping'];
 const STAGE3 = ['places', 'placeSearch'];
 const STAGE4 = ['taskTurns', 'taskStars', 'familyTasks', 'doneFeedback', 'placeMine'];
 const STAGE5 = ['driveDeadlines'];
+const STAGE6 = ['profilePlaces'];
 const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
@@ -143,6 +147,9 @@ async function notesServer({
     picks: new Map(),         // `${key}|${placeId}` → { key, placeId, uses, fav }
     taskPlace: new Map(),     // task id → { placeId, key, label, any, trigger, by, who, consent }
     familyPlaces: [{ id: 'home', name: 'Zuhause', lat: 52.5203, lon: 13.4051, radius: 150 }, { id: 'place:3', name: 'Schule', lat: 52.5301, lon: 13.4101, radius: 300 }],
+    // 1.8.0 (profilePlaces): „Genutzt von“ of another plugin per place id, what the move could not take
+    placeUses: new Map(),
+    notMoved: [],
     placeCfg: { mode: 'osm', down: false },   // the administrator's choice (off | osm | own); down: the map service does not answer
     placeSearches: [],        // the bodies of POST places/search
     // plugin 1.6.0
@@ -429,7 +436,11 @@ async function notesServer({
   const famPlaces = () => (has('places') ? state.familyPlaces : []);
   const myPlaces = () => [...state.places.values()].filter((r) => r.userId === me() && !r.deleted);
   const favsOf = () => [...state.picks.values()].filter((k) => k.fav && myPlaces().some((r) => r.id === k.placeId));
-  const placeView = (r, extra = {}) => ({ id: r.id, name: r.name, address: r.address || '', lat: r.lat, lon: r.lon, radius: r.radius, named: !!r.named, ref: r.ref || null, family: !!(r.ref && r.ref.startsWith('familie:')),
+  // 1.8.0 (profilePlaces): a named place is one of the profile — its ref, symbol, who sees it and „Genutzt von“
+  const profiled = (r) => has('profilePlaces') && r.named && !(r.ref && r.ref.startsWith('familie:'));
+  const placeView = (r, extra = {}) => ({ id: r.id, name: r.name, address: r.address || '', lat: r.lat, lon: r.lon, radius: r.radius, named: !!r.named,
+    ref: profiled(r) ? `profile:${r.id}` : (r.ref || null), family: !!(r.ref && r.ref.startsWith('familie:')),
+    ...(profiled(r) ? { icon: r.icon || 'pin', visibility: r.visibility || 'self', usedBy: state.placeUses.get(r.id) || [] } : {}),
     ...(extra.favFor ? { favFor: extra.favFor } : {}), ...(extra.uses != null ? { uses: extra.uses } : {}), updatedAt: r.updatedAt });
   const minePlace = (pid) => { const r = state.places.get(posInt(pid)); if (!r || r.deleted || r.userId !== me()) throw fail(404, 'not_found', { field: 'place' }); return r; };
   const clampRadius = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(50, Math.min(2000, n)) : 150; };
@@ -442,6 +453,7 @@ async function notesServer({
       places: myPlaces().filter((r) => r.named || favFor(r.id).length).sort((x, y) => (y.named - x.named) || x.name.localeCompare(y.name)).map((r) => placeView(r, { favFor: favFor(r.id) })),
       family: famPlaces().map((f) => ({ familyId: f.id, name: f.name, lat: f.lat, lon: f.lon, radius: f.radius })),
       favs: favs.map((k) => ({ key: k.key, label: labelOf(k.key), placeId: k.placeId, uses: k.uses })),
+      ...(has('profilePlaces') ? { profile: true, notMoved: state.notMoved } : {}),
     };
   };
   /** The person's row for a place taken once (a search hit, a point, a place of the family) — found again by its ref. */
@@ -869,6 +881,7 @@ async function notesServer({
         ...(has('places') ? { places: {
           search: { state: searchState(), enabled: state.placeCfg.mode !== 'off', mine: state.prefs.places.search !== false, service: state.placeCfg.mode, radiusKm: 15, decimals: 2, attribution: ATTRIBUTION },
           nearby: state.prefs.places.nearby !== false, quiet: state.prefs.places.quiet || null, perTask: 5, radius: { min: 50, max: 2000, default: 150 }, family: state.familyPlaces.length > 0,
+          ...(has('profilePlaces') ? { profile: { places: true, edit: 'plugin' } } : {}),
         } } : {}),
         ...(has('familyTasks') ? { familyTasks: familyTasksView() } : {}),
         ...(has('driveDeadlines') ? { driveDeadlines: { available: true, active: [...state.tasks.values()].some((r) => r.deadline && !r.deleted) } } : {}),
@@ -913,6 +926,7 @@ async function notesServer({
         const f = { name: b.name.trim().slice(0, 80), address: b.address || '', lat: coord(b.lat, 90, 'lat'), lon: coord(b.lon, 180, 'lon'), radius: b.radius === undefined ? 150 : clampRadius(b.radius), ref: b.ref || null, named: true };
         const r = state.places.get(upsertPlace(f));
         Object.assign(r, { name: f.name, named: true, updatedAt: state.now });
+        if (has('profilePlaces')) Object.assign(r, { icon: b.icon || 'pin', visibility: b.visibility || 'self' });
         return { place: placeView(r, { favFor: [] }) };
       }
       if (method === 'PUT' && n === 2 && a === 'places' && x === 'favs') {
@@ -931,13 +945,18 @@ async function notesServer({
         if (b.lon !== undefined) r.lon = coord(b.lon, 180, 'lon');
         if (b.radius !== undefined) r.radius = clampRadius(b.radius);
         if (b.named !== undefined) r.named = !!b.named;
+        if (has('profilePlaces') && b.icon !== undefined) r.icon = b.icon;
+        if (has('profilePlaces') && b.visibility !== undefined) r.visibility = b.visibility;
         r.updatedAt = state.now;
         return { place: placeView(r, { favFor: placesAll().favs.filter((k) => k.placeId === r.id).map((k) => ({ key: k.key, label: k.label })) }) };
       }
       if (method === 'DELETE' && n === 2 && a === 'places') {
         const r = state.places.get(posInt(x));
         if (r && r.userId === me() && r.deleted) return { gone: true };
-        minePlace(x).deleted = true;
+        const mine = minePlace(x);
+        // 1.8.0: another plugin still uses the place of the profile → 409 in_use, ?force=1 deletes it all the same
+        if (has('profilePlaces') && (state.placeUses.get(mine.id) || []).length && q.force !== '1') throw fail(409, 'in_use', { usedBy: state.placeUses.get(mine.id), ref: `profile:${mine.id}` });
+        mine.deleted = true;
         return {};
       }
       if (method === 'POST' && n === 4 && a === 'tasks' && y === 'place' && z === 'consent') {
@@ -1544,4 +1563,4 @@ async function notesServer({
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, STAGE5, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, STAGE5, STAGE6, noteMeta };

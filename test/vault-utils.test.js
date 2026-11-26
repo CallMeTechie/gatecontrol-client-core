@@ -148,6 +148,61 @@ describe('utils/vault: matching', () => {
     assert.deepEqual(v.matchEntries(list, { app: 'Stadtwerke.EXE' }).map((e) => e.data.title), ['Stadtwerke']);
     assert.deepEqual(v.matchEntries(list, {}), []);
   });
+
+  it('„Passt zu“: match is kept only as "exact", other values unchanged, "domain" left out', () => {
+    const base = { type: 'login', title: 'NAS', urls: ['https://nas.example.test'] };
+    assert.equal(v.normalizeEntry({ ...base, match: 'exact' }).match, 'exact');
+    assert.equal(v.entryMatch(v.normalizeEntry({ ...base, match: 'exact' })), 'exact');
+    assert.equal('match' in v.normalizeEntry({ ...base, match: 'domain' }), false);
+    assert.equal('match' in v.normalizeEntry(base), false);
+    assert.equal(v.entryMatch(v.normalizeEntry(base)), 'domain');
+    const later = v.normalizeEntry({ ...base, match: { mode: 'path', path: '/x' } });
+    assert.deepEqual(later.match, { mode: 'path', path: '/x' }, 'a value of a later version is kept unchanged');
+    assert.equal(v.entryMatch(later), 'domain');
+    assert.equal(v.normalizeEntry({ ...base, match: 'prefix' }).match, 'prefix');
+    const again = v.normalizeEntry(JSON.parse(JSON.stringify(v.normalizeEntry({ ...base, match: 'exact', later: 1 }))));
+    assert.equal(again.match, 'exact');
+    assert.equal(again.later, 1);
+  });
+
+  it('exact host: without case, port and trailing dot, "www." is another host', () => {
+    assert.equal(v.exactHost('https://WWW.Nas.Example.test.:5001/x?y#z'), 'www.nas.example.test');
+    assert.equal(v.exactHost('user:pw@nas.example.test:8443'), 'nas.example.test');
+    assert.equal(v.exactHost('not a host!'), null);
+    assert.equal(v.urlHost('https://WWW.Nas.Example.test.:5001/x'), 'nas.example.test');
+    const d = (urls, match) => v.normalizeEntry({ type: 'login', title: 'x', urls, match });
+    assert.equal(v.hostFit(d(['https://NAS.example.test:5001/']), 'nas.example.test.'), 'host');
+    assert.equal(v.hostFit(d(['https://cloud.example.test']), 'nas.example.test'), 'domain');
+    assert.equal(v.hostFit(d(['https://www.nas.example.test']), 'nas.example.test'), 'domain');
+    assert.equal(v.hostFit(d(['https://other.test']), 'nas.example.test'), null);
+    assert.equal(v.hostFit(d(['https://cloud.example.test', 'nas.example.test']), 'https://nas.example.test/login'), 'host');
+    assert.equal(v.fitsDomain(d(['https://nas.example.test'], 'exact'), 'https://nas.example.test:5001/login'), true);
+    assert.equal(v.fitsDomain(d(['https://nas.example.test'], 'exact'), 'cloud.example.test'), false);
+    assert.equal(v.fitsDomain(d(['https://nas.example.test'], 'exact'), 'www.nas.example.test'), false, '"www." is not the same host');
+    assert.equal(v.fitsDomain(d(['https://nas.example.test']), 'cloud.example.test'), true);
+    assert.equal(v.fitsDomain(d(['https://nas.example.test'], 'prefix'), 'cloud.example.test'), true, 'an unknown value is "domain"');
+  });
+
+  it('suggestions: exact host before domain only, the previous order within each group', () => {
+    const list = [
+      login('A Cloud', { urls: ['https://cloud.example.test'] }),
+      login('B NAS', { urls: ['https://nas.example.test:5001'] }),
+      login('C Fav Cloud', { urls: ['https://cloud.example.test'], fav: true }),
+      login('D NAS', { urls: ['nas.example.test'] }),
+      login('E Fav NAS', { urls: ['https://NAS.example.test/'], fav: true }),
+      { trashed: false, data: v.normalizeEntry({ type: 'login', title: 'F Only NAS', urls: ['https://nas.example.test'], match: 'exact', fields: { username: 'u' } }) },
+      { trashed: false, data: v.normalizeEntry({ type: 'login', title: 'G Only Mail', urls: ['https://mail.example.test'], match: 'exact', fields: { username: 'u' } }) },
+      login('H Other', { urls: ['https://other.test'] }),
+    ];
+    assert.deepEqual(v.matchEntries(list, { domain: 'https://nas.example.test/login' }).map((e) => e.data.title),
+      ['E Fav NAS', 'B NAS', 'D NAS', 'F Only NAS', 'C Fav Cloud', 'A Cloud']);
+    assert.deepEqual(v.matchEntries(list, { domain: 'cloud.example.test' }).map((e) => e.data.title),
+      ['C Fav Cloud', 'A Cloud', 'E Fav NAS', 'B NAS', 'D NAS']);
+    // the comparator on its own: any list, any previous order
+    const titles = ['x', 'y', 'z'].map((t, i) => ({ t, data: { urls: [['other.test', 'cloud.example.test', 'nas.example.test'][i]] } }));
+    assert.deepEqual(titles.slice().sort(v.byHostFit('nas.example.test', (a, b) => a.t.localeCompare(b.t))).map((x) => x.t), ['z', 'y', 'x']);
+    assert.deepEqual(['b', 'a'].sort(v.byHostFit('nas.example.test', (a, b) => a.localeCompare(b), () => ({ urls: [] }))), ['a', 'b']);
+  });
 });
 
 describe('utils/vault: import', () => {

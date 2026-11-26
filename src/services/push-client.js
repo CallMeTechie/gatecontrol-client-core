@@ -35,6 +35,8 @@
  *                                     { type: 'support_bundle_requested', requestedAt }
  *                                     { type: 'peer_state', enabled }
  *                                     { type: 'config_changed' }
+ *                                     { type: 'places', ids, deleted }   „Meine Orte“ of the person changed on
+ *                                       another device (GateControl ≥ 1.299.0; services/places.js loads again)
  *   'event'        ({ event, data })  other stream events
  *   'reset'        ()                 server/token changed: lastSeq cleared, drop caches
  *
@@ -91,7 +93,9 @@ function parseJson(text) {
 const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const TZ_RE = /^[A-Za-z0-9_+\-/]{1,64}$/;
 const POLICY_VERSION_RE = /^[0-9a-f]{1,64}$/i;
-const CONTROL_TYPES = new Set(['policy_changed', 'support_bundle_requested', 'peer_state', 'config_changed']);
+const CONTROL_TYPES = new Set(['policy_changed', 'support_bundle_requested', 'peer_state', 'config_changed', 'places']);
+// `places`: at most this many ids (never a name or a point)
+const PLACES_IDS_MAX = 100;
 
 // Server timestamps of support-bundle requests: the SQLite format
 // 'YYYY-MM-DD HH:MM:SS' (UTC), the same value as supportBundleRequestedAt in
@@ -173,6 +177,12 @@ function normalizeControl(c) {
     case 'support_bundle_requested': return { type: c.type, requestedAt: requestedAtOf(c.requested_at) };
     case 'peer_state':
       return typeof c.enabled === 'boolean' ? { type: c.type, enabled: c.enabled } : null;
+    case 'places':
+      return {
+        type: c.type,
+        ids: Array.isArray(c.ids) ? [...new Set(c.ids.filter((n) => Number.isSafeInteger(n) && n > 0))].slice(0, PLACES_IDS_MAX) : [],
+        deleted: c.deleted === true,
+      };
     default: return { type: c.type };
   }
 }

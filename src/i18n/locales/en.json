@@ -508,7 +508,8 @@
       "openVideo": "Play video",
       "videoUnsupported": "This video cannot be played here. Save it or open it with another program.",
       "unsupported": "This message needs a newer app version",
-      "openLink": "Open link"
+      "openLink": "Open link",
+      "placeMessage": "Place message · {{name}}"
     },
     "loc": {
       "button": "Send location",
@@ -721,7 +722,9 @@
       "mail_missing": "The address book from Mail is not reachable right now.",
       "bridge_read_only": "You can't write here: in channels only the channel posts, in some groups only the admins.",
       "reactions_off": "Reactions don't work in channels: WhatsApp refused one.",
-      "cannot_merge": "These chats can't be merged: only chats with one person, never groups or channels, and at most one GateControl account."
+      "cannot_merge": "These chats can't be merged: only chats with one person, never groups or channels, and at most one GateControl account.",
+      "bad_request": "This person has no such way.",
+      "way_unavailable": "Nothing can be sent this way right now. Choose another one."
     },
     "enterHintCtrl": "Ctrl+Enter sends · Enter new line",
     "filter": {
@@ -818,7 +821,8 @@
       "event": "Event",
       "home": "From your home",
       "noActions": "No home actions selected.",
-      "manage": "Manage home actions"
+      "manage": "Manage home actions",
+      "gcNote": "With the logo: goes via GateControl, even while your text goes via {{network}}."
     },
     "poll": {
       "head": "Poll",
@@ -1531,7 +1535,6 @@
       "src": "Messages from",
       "srcAll": "All",
       "placeholder": "Message via {{way}}",
-      "waHint": "Sent via {{network}}. {{network}}'s encryption ends at the bridge next to your server.",
       "via": "via {{network}}",
       "onlyYou": "Merged for you only – {{name}} sees nothing of it.",
       "waysTitle": "Ways to reach {{name}}",
@@ -1564,7 +1567,24 @@
       "recTitle_telegram": "May others on this server recognise you by your Telegram?",
       "recText_telegram": "If someone here has you on Telegram, GateControl suggests merging your Telegram chat with your account. Your number and your user name stay hidden.",
       "recSavedYes_telegram": "Others on this server can now recognise you by your Telegram.",
-      "recSavedNo_telegram": "Nobody recognises you by your Telegram."
+      "recSavedNo_telegram": "Nobody recognises you by your Telegram.",
+      "replyTitle": "Send messages via",
+      "replyAuto": "Automatic",
+      "replyAutoSub": "The way of the last message from {{name}} · now {{way}}",
+      "replyAutoSubPlain": "The way of the last message from {{name}}",
+      "replyAlways": "Always {{way}}",
+      "replyGcSub": "Stays on your server, every feature",
+      "replyNetSub": "If {{network}} is not connected, it goes via GateControl",
+      "replyNote": "If you reply to a message, the reply still goes the way of that message.",
+      "replyFallback": "{{network}} not connected – the message goes via GateControl.",
+      "viaGc": "Goes via GateControl",
+      "onceTitle": "Only this message via",
+      "onceButton": "Way for the next message: {{way}} – change",
+      "oncePlaceholder": "Only this message via {{way}}",
+      "onceGcSub": "every feature",
+      "onceLastSub": "the way of the last message",
+      "onceStdSub": "your default",
+      "onceChange": "Change the default for {{name}} …"
     },
     "profile": {
       "title": "My profile",
@@ -1977,6 +1997,9 @@
       "blocked": "Blocked",
       "percent": "Share"
     },
+    "profile": {
+      "home": "Profile “{{name}}” · holds at home and on the road"
+    },
     "scope": {
       "person": "Figures of all your devices",
       "server": "Figures of all devices of the server"
@@ -2019,7 +2042,10 @@
       "fallbackText": "Your internet keeps working, but without protection. Your admin has been notified. Protection switches itself back on.",
       "notAllowedTitle": "Pausing is not allowed.",
       "profile": "The admin has locked pausing for your profile. If a site you need does not work, ask your parents or the admin.",
-      "admins_only": "Only admins may pause here."
+      "admins_only": "Only admins may pause here.",
+      "internetTitle": "Internet paused until {{time}}",
+      "internetText": "Your internet is paused (Family). This also holds on the road through the VPN: only expressly allowed sites work. Pausing the protection does not change that.",
+      "internet_paused": "The internet is paused (Family). Pausing the protection does not change that."
     },
     "top": {
       "title": "Top blocked domains",
@@ -2051,7 +2077,8 @@
         "30": "30 minutes",
         "60": "1 hour",
         "240": "4 hours"
-      }
+      },
+      "internetPaused": "Internet paused until {{time}} (Family)"
     },
     "toast": {
       "outageTitle": "DNS protection: filter down",

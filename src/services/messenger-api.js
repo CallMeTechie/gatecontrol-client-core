@@ -265,6 +265,9 @@ class MessengerApi {
   /** PATCH persons/:id { name?, notify?, mutedUntil? } → { conversation, person } */
   async patchPerson(id, body) { this._needPersons(); return this.api('PATCH', `persons/${this._id(id)}`, { body }); }
 
+  /** Messenger 1.27: PUT persons/:id { replyPref } („Nachrichten senden über“: auto | gatecontrol | network) → { conversation, person } */
+  async setReplyPref(id, replyPref) { this._needPersons(); return this.api('PUT', `persons/${this._id(id)}`, { body: { replyPref } }); }
+
   async archivePerson(id, archived) { this._needPersons(); return this.api('POST', `persons/${this._id(id)}/archive`, { body: { archived: archived === true } }); }
 
   /** POST persons { conversationIds, userId?, name? } → { conversation, person } */
@@ -374,6 +377,8 @@ class MessengerApi {
   async toCalendar(messageId, body) { return this.api('POST', `messages/${this._id(messageId)}/to-calendar`, { body }); }
 
   async familiePlaces() { return this.api('GET', 'familie/places'); }
+  /** Messenger 1.28 (`profilePlaces`): the place choice — profile places and Familie's places with `ref`. */
+  async places() { return this.api('GET', 'places'); }
 
   /**
    * Messenger 1.10: the file of a message into the person's Drive

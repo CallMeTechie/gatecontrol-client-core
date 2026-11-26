@@ -775,6 +775,48 @@ function normalizeAlbumPage(raw) {
   return { album, items: photoList(r.items, 500), next: cursorOf(r.next) };
 }
 
+// ── Drive 1.31 'framePhotos': photos of the person for the photo frame (GateControl TV) ──
+
+/** Why POST frame/photos left out a photo. */
+const FRAME_SKIP_REASONS = ['not_found', 'not_image', 'vault', 'blocked', 'child'];
+
+/** The album „Fotorahmen“ of an answer: an album (normalizeAlbum), else its bare id → { id }, else null. */
+function frameAlbumOf(v) {
+  if (obj(v)) {
+    const a = normalizeAlbum(v);
+    if (a) return a;
+    const id = albumIdOf(v.id);
+    return id ? { id } : null;
+  }
+  const id = albumIdOf(v);
+  return id ? { id } : null;
+}
+
+/**
+ * GET / POST / DELETE frame/photos → { album, ids, count, added, removed, skipped: [{ id, reason }] }.
+ * ids: the photos in the frame (newest first; with `?ids=` only those of them asked for). A reason this app does not know
+ * stays as it came (lower case, ≤ 40) so the page can still say "übersprungen".
+ */
+function normalizeFramePhotos(raw) {
+  const r = obj(raw) || {};
+  const ids = [...new Set(arr(r.ids).map(posId).filter(Boolean))].slice(0, 100000);
+  const skipped = arr(r.skipped).map((x) => {
+    const o = obj(x);
+    const id = o && posId(o.id);
+    if (!id) return null;
+    const reason = typeof o.reason === 'string' && /^[a-z_]{1,40}$/.test(o.reason) ? o.reason : 'unknown';
+    return { id, reason };
+  }).filter(Boolean).slice(0, 500);
+  return {
+    album: frameAlbumOf(r.album),
+    ids,
+    count: count(r.count) ?? ids.length,
+    added: count(r.added) || 0,
+    removed: count(r.removed) || 0,
+    skipped,
+  };
+}
+
 function storageNode(v) {
   const o = obj(v);
   const id = o && posId(o.id);
@@ -1776,6 +1818,8 @@ module.exports = {
   normalizeAlbum,
   normalizeAlbums,
   normalizeAlbumPage,
+  normalizeFramePhotos,
+  FRAME_SKIP_REASONS,
   normalizeStorage,
   normalizeLinks16,
   nodeLink,

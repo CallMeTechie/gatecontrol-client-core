@@ -69,6 +69,8 @@
  *   chat:to-drive        ({ id, folderId? }) → { ok, saved: { nodeId, name, where } } (Messenger 1.10, Drive)
  *   chat:to-calendar     ({ id, title, startsAt, endsAt?, allDay?, place? }) → { ok, eventId }
  *   chat:places          () → { ok, places }                                     Familie places
+ *                        ({ all: true }) → { ok, places, sources, profile }      the place choice: Messenger 1.28
+ *                        (`profilePlaces`) GET places — own profile places + Familie's, with `ref`; older: Familie's
  *   chat:poll            ({ id, op: 'vote'|'option'|'close'|'nudge', optionIds?, text? }) → { ok, message, nudged? }
  *   chat:event           ({ id, op: 'rsvp'|'check'|'edit', answer?, guests?, itemId?, done?, patch? }) → { ok, message }
  *   chat:arrival:stop    ({ id }) → { ok, message }
@@ -271,6 +273,8 @@ function registerMessengerHandlers(handle, {
       event: a.event && typeof a.event === 'object' ? a.event : undefined,
       action: a.action && typeof a.action === 'object' ? a.action : undefined,
       replyStory: a.replyStory && typeof a.replyStory === 'object' ? a.replyStory : undefined,
+      // Messenger 1.27: „Nur diese Nachricht über …“ — 'gatecontrol' or a network (checked again in the core)
+      way: typeof a.way === 'string' && /^[a-z]{2,20}$/.test(a.way) ? a.way : undefined,
     };
     if (a.file && !req.file) return { ok: false, code: 'invalid', error: 'invalid file' };
     return { ok: true, message: await m.send(req) };
@@ -317,6 +321,13 @@ function registerMessengerHandlers(handle, {
     const name = a.name === 'account' ? 'account' : posInt(a.name);
     if (!id || !name) return invalid();
     return { ok: true, conversation: await m.renamePerson(id, name) };
+  }));
+  // Messenger 1.27: „Nachrichten senden über“ — 'auto' (null), 'gatecontrol' or a network of the person (checked in the core)
+  handle('chat:person:reply-pref', wrap(async (a) => {
+    const id = posInt(a.id);
+    const pref = a.pref == null ? 'auto' : text(a.pref, 20);
+    if (!id || !/^[a-z]{2,20}$/.test(pref)) return invalid();
+    return { ok: true, conversation: await m.setReplyPref(id, pref) };
   }));
   handle('chat:person:candidates', wrap(async (a) => (posInt(a.id) ? { ok: true, ...(await m.personCandidates(posInt(a.id))) } : invalid())));
   handle('chat:bridge:recognition', wrap(async (a) => {
@@ -520,7 +531,7 @@ function registerMessengerHandlers(handle, {
     if (!posInt(a.id) || !(a.folderId === undefined || a.folderId === null || posInt(a.folderId))) return invalid();
     return { ok: true, saved: await m.toDrive(posInt(a.id), posInt(a.folderId) || null) };
   }));
-  handle('chat:places', wrap(async () => ({ ok: true, places: await m.places() })));
+  handle('chat:places', wrap(async (a) => (a.all === true ? { ok: true, ...(await m.pickPlaces()) } : { ok: true, places: await m.places() })));
   handle('chat:poll', wrap(async (a) => {
     const id = posInt(a.id);
     if (!id) return invalid();

@@ -82,7 +82,8 @@ const {
   FEATURE_BRIDGE_NEW_CHAT, bridgeNumber, normalizeResolve, bridgeMediaRefusal, FEATURE_BRIDGE_HISTORY, HISTORY_DAYS, normalizeBridgeHistory,
   FEATURE_BRIDGE_CONTACTS, CONTACTS_QUERY_MAX, normalizeNewChatContacts, contactChatBody,
   FEATURE_BRIDGE_CHANNELS, isChannel, normalizeChannelSummary, bridgedFeedOf, newClientId,
-  FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
+  FEATURE_CHAT_PEOPLE, GC_WAY, byTimeOrder, isPerson, personWayIds, personReplyWay, personGcWay, personSendWay, personReplyPref, replyPrefBody,
+  bridgeTakesLocation, needsGcWay, FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlaces, wayOf, mergeBody, isSuggestionId, normalizeRecognition,
   normalizeHandoff, HANDOFF_TARGETS, BRIDGE_SECRET_MAX,
 } = require('../utils/messenger');
 const { savedOf: driveSavedOf } = require('../utils/drive');
@@ -1145,13 +1146,43 @@ class MessengerService extends EventEmitter {
     // Messenger 1.21: a person — the server picks the way (an answer goes back its message's way); what the composer
     // may send is that way's (its bridge, its can)
     const pid = this._pidOf(cid);
-    const c = pid ? this._sendWayOf(entry, body.replyTo) : entry;
+    let c = pid ? this._sendWayOf(entry, body.replyTo) : entry;
+    let wayId = null;
+    // Messenger 1.27, „Nur diese Nachricht über …“: a way of the person chosen in the composer for this one message —
+    // straight to that chat when it is not the way the server picks anyway. An answer still goes its message's way.
+    if (req.way != null) {
+      if (!pid) throw new MessengerError('no person', { code: 'invalid' });
+      if (!body.replyTo) {
+        const w = personSendWay(entry, req.way);
+        if (!w) throw new MessengerError('way cannot send', { code: 'way_unavailable' });
+        const rw = personReplyWay(entry);
+        if (!rw || posInt(rw.conversationId) !== posInt(w.conversationId)) {
+          wayId = posInt(w.conversationId);
+          c = { bridge: w.bridge || null, can: w.can || { send: true }, readonly: false };
+        }
+      }
+    }
+    // Messenger 1.27: what only GateControl carries (poll, event, home action, a location the text's bridge cannot send)
+    // goes to the person's GateControl way while the text goes over a bridge — straight to that chat, as the portal does
+    if (pid && c && needsGcWay(body, c.bridge)) {
+      const gc = personGcWay(entry);
+      if (gc) {
+        wayId = posInt(gc.conversationId);
+        c = { bridge: null, can: gc.can || { send: true }, readonly: false };
+        // an answer to a message of another way cannot be quoted in the GateControl chat
+        if (body.replyTo && !this._inConversation(cid, body.replyTo, wayId)) delete body.replyTo;
+      }
+    }
     if (c && c.can && c.can.send === false) throw new MessengerError('readonly', { code: c.readonly ? 'readonly' : 'forbidden' });
     // Messenger 1.14: only a text (maybe as an answer) crosses a bridge — refused here like the server would (409);
-    // 1.15: and a picture, voice message or file of a kind and type the chat names (`bridge.supports`, `mediaTypes`)
+    // 1.15: and a picture, voice message or file of a kind and type the chat names (`bridge.supports`, `mediaTypes`);
+    // 1.27: and a location where the bridge sends one (`bridge.supports` names `location`: WhatsApp, Telegram)
     if (c && c.bridge) {
       const media = ['image', 'voice', 'file'].includes(body.kind) && req.file;
-      if (body.replyStory || body.location || (!media && (body.kind !== 'text' || req.file || body.meta))) throw new MessengerError('text only', { code: 'bridge_text_only' });
+      const loc = body.kind === 'location' && !req.file && !body.meta && bridgeTakesLocation(c.bridge);
+      if (body.replyStory || (body.location && !loc) || (!media && !loc && (body.kind !== 'text' || req.file || body.meta))) throw new MessengerError('text only', { code: 'bridge_text_only' });
+      // the bridge takes lat, lon and a label only
+      if (loc) delete body.location.accuracy;
       if (media) {
         const no = bridgeMediaRefusal(c.bridge, body.kind, req.file && req.file.mime);
         if (no === 'text_only') throw new MessengerError('text only', { code: 'bridge_text_only' });
@@ -1181,8 +1212,15 @@ class MessengerService extends EventEmitter {
       throw new MessengerError('file not allowed', { code: 'invalid' });
     }
     this._typingSent.delete(cid);
-    const queued = await this.outbox.add({ conversationId: cid, clientId: req.clientId, body, files, ...(pid ? { personId: pid } : {}) });
+    const queued = await this.outbox.add({ conversationId: cid, clientId: req.clientId, body, files, ...(pid ? { personId: pid } : {}), ...(wayId ? { wayId } : {}) });
     return this._pendingView(queued);
+  }
+
+  /** Is message `messageId` (cached in the entry `cid`) one of conversation `convId`? */
+  _inConversation(cid, messageId, convId) {
+    const st = this._msgs.get(cid);
+    const q = st && this._lists(st).flat().find((m) => m && m.id === posInt(messageId));
+    return !!q && posInt(q.conversationId) === convId;
   }
 
   /**
@@ -1208,7 +1246,28 @@ class MessengerService extends EventEmitter {
     const c = this._convs.get(posInt(id));
     if (!this._peopleOn() || !isPerson(c)) return null;
     const w = personReplyWay(c);
-    return w ? { way: w.way, label: w.label, conversationId: w.conversationId, bridge: w.bridge || null, can: w.can || null } : null;
+    // Messenger 1.27: `pref` („Nachrichten senden über“) and `fallback` — „Immer <Netz>“ cannot send, GateControl took over
+    return w ? {
+      way: w.way, label: w.label, conversationId: w.conversationId, bridge: w.bridge || null, can: w.can || null,
+      pref: personReplyPref(c), fallback: c.person.reply.fallback === true,
+    } : null;
+  }
+
+  /**
+   * Messenger 1.27: „Nachrichten senden über“ of a person — 'auto' (null as well), 'gatecontrol' or a network the person
+   * has → PUT persons/:id { replyPref }; the entry (its `person.reply` follows the choice).
+   */
+  async setReplyPref(id, pref) {
+    this._needPeople();
+    this._need(FEATURE_PLACE_MESSAGES);
+    const cid = posInt(id);
+    const pid = cid ? this._pidOf(cid) : null;
+    const c = pid ? this._convs.get(cid) : null;
+    const body = c ? replyPrefBody(c, pref) : null;
+    if (!body) throw new MessengerError('invalid', { code: 'invalid' });
+    const r = await this.api.setReplyPref(pid, body.replyPref);
+    if (r.conversation) this._putPerson(r.conversation);
+    return r.conversation ? this.getCachedConversation(r.conversation.id) : this.getCachedConversation(cid);
   }
 
   _checkFile(f, limits) {
@@ -2351,6 +2410,23 @@ class MessengerService extends EventEmitter {
   async places() {
     const r = await this.api.familiePlaces();
     return Array.isArray(r.places) ? r.places : [];
+  }
+
+  /**
+   * The source of the place choice (utils/messenger.js normalizePickPlace): Messenger 1.28 (`profilePlaces`) → GET
+   * places — the person's own places of the profile and Familie's places, most used here first — with `sources`;
+   * an older Messenger → Familie's places as before (source 'familie', `profile: false`). Without Familie: [].
+   */
+  async pickPlaces() {
+    if (this.supports(FEATURE_PROFILE_PLACES)) {
+      const r = await this.api.places();
+      const src = r && r.sources && typeof r.sources === 'object' ? r.sources : {};
+      return { places: normalizePickPlaces(r.places), sources: { profile: src.profile === true, familie: src.familie === true }, profile: true };
+    }
+    const fam = this._me && this._me.integrations && this._me.integrations.familie;
+    if (!(fam && fam.places === true)) return { places: [], sources: { profile: false, familie: false }, profile: false };
+    const r = await this.api.familiePlaces();
+    return { places: normalizePickPlaces(r.places), sources: { profile: false, familie: true }, profile: false };
   }
 
   // ── Messenger 1.4.0: polls, events, arrival ──────────────

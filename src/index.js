@@ -37,6 +37,7 @@ const MapService = require('./services/map-service');
 const SchoolService = require('./services/school');
 const FamilieService = require('./services/familie');
 const DnsProtectService = require('./services/dns-protect');
+const QuickActionsService = require('./services/quick-actions');
 const PrintService = require('./services/print');
 const CamerasService = require('./services/cameras');
 const GateDropService = require('./services/gatedrop');
@@ -48,10 +49,21 @@ const DriveVaultViews = require('./services/drive-vault-view');
 const DriveApi = require('./services/drive-api');
 const DriveStreamService = require('./services/drive-stream');
 const DriveSync = require('./services/drive-sync');
+// Medien (Stufe 4e): Jellyfin and the NAS shares (SMB through Windows, WebDAV), the gcmedia: stream
+const MediaService = require('./services/media');
+const MediaStore = require('./services/media-store');
+const MediaStreamService = require('./services/media-stream');
+const MediaLanRoute = require('./services/media-lan-route');
+// Medien-Plugin (W1): the sources from the server (plugin gatecontrol-medien, app API v1), the network rule
+const MediaServerSources = require('./services/media-server-sources');
+const MediaCastReceiver = require('./services/media-cast');
+const mediaCastUtil = require('./utils/media-cast');
+const mediaServerUtil = require('./utils/media-server');
 const MailService = require('./services/mail');
 const MailApi = require('./services/mail-api');
 const NotesService = require('./services/notes');
 const NotesApi = require('./services/notes-api');
+const { PlacesService } = require('./services/places');
 const { AppSignin, SigninError } = require('./services/app-signin');
 const { startLoopbackListener } = require('./services/signin-loopback');
 
@@ -84,6 +96,7 @@ const messengerUtil = require('./utils/messenger');
 const schoolUtil = require('./utils/school');
 const familieUtil = require('./utils/familie');
 const dnsProtectUtil = require('./utils/dns-protect');
+const quickActionsUtil = require('./utils/quick-actions');
 const printUtil = require('./utils/print');
 const camerasUtil = require('./utils/cameras');
 const notifyRoutes = require('./utils/notify-routes');
@@ -94,6 +107,7 @@ const driveUtil = require('./utils/drive');
 const driveSyncUtil = require('./utils/drive-sync');
 const mailUtil = require('./utils/mail');
 const notesUtil = require('./utils/notes');
+const placesUtil = require('./utils/places');
 const scanUtil = require('./utils/scan');
 
 // ── Shared validators ───────────────────────────────────────
@@ -115,7 +129,7 @@ const { setupAppLifecycle } = require('./lifecycle/app-events');
 const { recoverKillSwitch } = require('./lifecycle/killswitch-startup');
 
 // ── Preload ─────────────────────────────────────────────────
-const { createBridgeApi, createSubscriber } = require('./preload/bridge');
+const { createBridgeApi, createSubscriber, createMediaBridge } = require('./preload/bridge');
 
 module.exports = {
   // Services
@@ -147,6 +161,7 @@ module.exports = {
   SchoolService,
   FamilieService,
   DnsProtectService,
+  QuickActionsService,
   PrintService,
   CamerasService,
   GateDropService,
@@ -159,11 +174,23 @@ module.exports = {
   DriveVaultViews,
   DriveApi,
   DriveSync,
+  // Medien (Stufe 4e): MediaService (its .stream is the gcmedia: handler: SCHEME, SCHEME_PRIVILEGES), MediaStore
+  MediaService,
+  MediaStore,
+  MediaStreamService,
+  MediaLanRoute,
+  MediaServerSources,
+  mediaServerUtil,
+  // "Auf TV/PC abspielen": this PC as the receiver of a cast from the phone (plugin Medien, cast contract v1)
+  MediaCastReceiver,
+  mediaCastUtil,
   MailService,
   MailApi,
   // Notizen & Aufgaben (plugin gatecontrol-notizen 1.0.0)
   NotesService,
   NotesApi,
+  // „Mein Profil › Meine Orte“ (GateControl 1.299.0)
+  PlacesService,
   AppSignin,
   SigninError,
   startLoopbackListener,
@@ -219,6 +246,7 @@ module.exports = {
   schoolUtil,
   familieUtil,
   dnsProtectUtil,
+  quickActionsUtil,
   printUtil,
   camerasUtil,
   notifyRoutes,
@@ -229,6 +257,7 @@ module.exports = {
   driveSyncUtil,
   mailUtil,
   notesUtil,
+  placesUtil,
   scanUtil,
 
   // Support bundle
@@ -247,6 +276,7 @@ module.exports = {
   // Preload
   createBridgeApi,
   createSubscriber,
+  createMediaBridge,
 
   // i18n
   i18n,

@@ -41,6 +41,9 @@ const KNOWN_FEATURES = Object.freeze([
   'video_meta', 'file_thumbs',
   // Messenger 1.4.0 (only true keys are present)
   'status', 'stories', 'polls', 'events', 'arrival', 'actions', 'msg_tools', 'privacy2',
+  // Messenger 1.5.0: requesting home actions (approvers) and „Am Ende ausschalten“ — parts of `actions`, which this
+  // client only shows as messages; no newer Windows version offers them, so they must not raise the update hint
+  'action_requests', 'grant_off',
   // Messenger 1.4.1
   'story_duration',
   // Messenger 1.6: GateControl's notifications in chats (notice channels and
@@ -70,6 +73,13 @@ const KNOWN_FEATURES = Object.freeze([
   // Messenger 1.25: the contacts' WhatsApp status updates in the status row (GET status/feed → `bridged`,
   // POST status/bridged/:id/seen | reply, prefs.privacy.bridgedStatusSeen) — for people who linked WhatsApp
   'bridge_status',
+  // Messenger 1.27: „Nachrichten senden über“ per person (person.replyPref, PUT persons/:id { replyPref }), the plus menu
+  // with everything the person can get, place messages (GET place-messages …; run on the phone only — this client
+  // shows the line „Ortsnachricht · <Ort>“ at an own message, nothing else)
+  'placeMessages',
+  // Messenger 1.28: „Meine Orte“ of GateControl's profile next to Familie's places (GET places, `ref` profile:<id> |
+  // home | place:<id>) — the source of the place choice on this PC
+  'profilePlaces',
 ]);
 // Messenger 1.13 / 1.14 `GET me` features (present only when true).
 const FEATURE_LINKED = 'linked_services';
@@ -86,6 +96,15 @@ const FEATURE_CHAT_PEOPLE = 'chat_people';
 // The way of a message / a conversation of a person: GateControl or the network of a bridge.
 const GC_WAY = 'gatecontrol';
 const WAY_RE = /^[a-z]{2,20}$/;
+// Messenger 1.27 `GET me` feature: the choice of the way per person (replyPref), place messages.
+const FEATURE_PLACE_MESSAGES = 'placeMessages';
+// Messenger 1.28 `GET me` feature: GET places (the person's own profile places + Familie's, with `ref`).
+const FEATURE_PROFILE_PLACES = 'profilePlaces';
+const PLACE_REF_RE = /^(?:profile:[1-9][0-9]{0,15}|home|place:[1-9][0-9]{0,15})$/;
+const PLACE_ICONS = Object.freeze(['home', 'work', 'school', 'gym', 'shop', 'family', 'pin']);
+const REPLY_AUTO = 'auto';
+// Kinds only GateControl carries: to a person whose text goes over a bridge they go to its GateControl way.
+const GC_ONLY_KINDS = Object.freeze(['poll', 'event', 'action']);
 // GET contacts/new-chat: the search (q) the server takes, the sealed reference of a WhatsApp contact, the key of an
 // address book number (POST …/chats { phoneKind }) and the order of the kinds in „Welche Nummer?“.
 const CONTACTS_QUERY_MAX = 100;
@@ -449,6 +468,55 @@ function normalizePoll(p) {
     if (!isIso(p.closesAt)) throw invalidErr('poll closesAt');
     out.closesAt = new Date(p.closesAt).toISOString();
   }
+  return out;
+}
+
+/**
+ * One entry of the place choice → { ref, source: 'profile' | 'familie', id, name, icon, lat, lon, radiusM, address,
+ * visibility, lastUsedAt, usageCount, rank } or null. Messenger 1.28 `GET places` gives `ref`; an older Messenger's
+ * `GET familie/places` entry ({ id, name, lat, lon, radiusM }) becomes a Familie place (`home` / `place:<id>`).
+ */
+function normalizePickPlace(v, rank = 0) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  let ref = typeof v.ref === 'string' && PLACE_REF_RE.test(v.ref) ? v.ref : null;
+  if (!ref && v.ref === undefined) {
+    if (v.id === 'home') ref = 'home';
+    else if (typeof v.id === 'string' && /^place:[1-9][0-9]{0,15}$/.test(v.id)) ref = v.id;
+    else if (Number.isSafeInteger(v.id) && v.id > 0) ref = `place:${v.id}`;
+  }
+  if (!ref) return null;
+  const name = cleanLine(v.name, 80);
+  if (!name) return null;
+  const lat = typeof v.lat === 'number' ? v.lat : Number(v.lat);
+  const lon = typeof v.lon === 'number' ? v.lon : Number(v.lon);
+  const point = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+  const profile = ref.startsWith('profile:');
+  const r = Number(v.radiusM);
+  const at = typeof v.lastUsedAt === 'string' && Number.isFinite(Date.parse(v.lastUsedAt)) ? new Date(Date.parse(v.lastUsedAt)).toISOString() : null;
+  const n = Number(v.usageCount);
+  return {
+    ref, source: profile && v.source !== 'familie' ? 'profile' : 'familie',
+    // what an event's place keeps for a Familie place (familiePlaceId) — the plugin's own id
+    id: profile ? Number(ref.slice(8)) : (typeof v.id === 'string' || Number.isSafeInteger(v.id) ? v.id : ref),
+    name, icon: PLACE_ICONS.includes(v.icon) ? v.icon : (ref === 'home' ? 'home' : 'pin'),
+    lat: point ? lat : null, lon: point ? lon : null,
+    radiusM: Number.isFinite(r) && r > 0 ? Math.min(100000, Math.max(10, Math.round(r))) : null,
+    address: profile ? cleanLine(v.address, 200) || null : null,
+    visibility: profile && ['self', 'family', 'all'].includes(v.visibility) ? v.visibility : null,
+    lastUsedAt: at, usageCount: Number.isSafeInteger(n) && n > 0 ? n : 0, rank,
+  };
+}
+
+/** A list of the place choice → the entries (each `ref` once, at most 200), in the order given. */
+function normalizePickPlaces(list) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(list) ? list : []).forEach((v, i) => {
+    const p = normalizePickPlace(v, i);
+    if (!p || seen.has(p.ref) || out.length >= 200) return;
+    seen.add(p.ref);
+    out.push(p);
+  });
   return out;
 }
 
@@ -946,6 +1014,54 @@ function personReplyWay(c) {
   return c.person.ways.find((w) => w && posInt(w.conversationId) === id) || null;
 }
 
+/** Messenger 1.27: the person's GateControl way (one that can send), or null. */
+function personGcWay(c) {
+  if (!isPerson(c)) return null;
+  return c.person.ways.find((w) => w && w.way === GC_WAY && !w.bridge && !(w.can && w.can.send === false)) || null;
+}
+
+/**
+ * Messenger 1.27, „Nur diese Nachricht über …“ (Schnellwechsel im Schreibfeld): the person's way of kind `way`
+ * ('gatecontrol' or a network) that can send right now, or null.
+ */
+function personSendWay(c, way) {
+  if (!isPerson(c) || typeof way !== 'string' || !WAY_RE.test(way)) return null;
+  return c.person.ways.find((w) => w && w.way === way && !(w.way === GC_WAY && w.bridge) && !(w.can && w.can.send === false)) || null;
+}
+
+/** Messenger 1.27: „Nachrichten senden über“ of a person → 'auto' | 'gatecontrol' | a network ('auto' when unknown). */
+function personReplyPref(c) {
+  const v = isPerson(c) ? c.person.replyPref : null;
+  return typeof v === 'string' && (v === REPLY_AUTO || WAY_RE.test(v)) ? v : REPLY_AUTO;
+}
+
+/**
+ * Messenger 1.27: the body of PUT persons/:id { replyPref } — 'auto' (also null), or a way the person has → { replyPref },
+ * else null (the server would answer bad_request / invalid).
+ */
+function replyPrefBody(c, pref) {
+  const v = pref == null ? REPLY_AUTO : pref;
+  if (typeof v !== 'string' || !isPerson(c)) return null;
+  if (v === REPLY_AUTO) return { replyPref: REPLY_AUTO };
+  if (!WAY_RE.test(v) || !c.person.ways.some((w) => w && w.way === v)) return null;
+  return { replyPref: v };
+}
+
+/** Messenger 1.27 (gc.bridges version 14): does the bridge of a chat send a location (`bridge.supports` names it)? */
+function bridgeTakesLocation(bridge) {
+  return !!(bridge && typeof bridge === 'object' && Array.isArray(bridge.supports) && bridge.supports.includes('location'));
+}
+
+/**
+ * Messenger 1.27: a message only GateControl carries — a poll, an event, a home action, a reply to a story, a location
+ * when the bridge sends none — must leave a person over its GateControl way while the text goes over `bridge`.
+ */
+function needsGcWay(body, bridge) {
+  if (!bridge || !body) return false;
+  if (GC_ONLY_KINDS.includes(body.kind) || body.replyStory) return true;
+  return body.kind === 'location' && !bridgeTakesLocation(bridge);
+}
+
 /** The way of a message (`way`, sent with ?people=1) — 'gatecontrol' or a bridge's network, else null. */
 function wayOf(m) {
   return m && typeof m.way === 'string' && WAY_RE.test(m.way) ? m.way : null;
@@ -1229,6 +1345,15 @@ module.exports = {
   isPerson,
   personWayIds,
   personReplyWay,
+  personGcWay,
+  personSendWay,
+  personReplyPref,
+  replyPrefBody,
+  bridgeTakesLocation,
+  needsGcWay,
+  FEATURE_PLACE_MESSAGES, FEATURE_PROFILE_PLACES, normalizePickPlace, normalizePickPlaces,
+  REPLY_AUTO,
+  GC_ONLY_KINDS,
   wayOf,
   mergeBody,
   isSuggestionId,

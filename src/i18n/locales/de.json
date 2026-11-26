@@ -508,7 +508,8 @@
       "openVideo": "Video abspielen",
       "videoUnsupported": "Dieses Video kann hier nicht abgespielt werden. Speichere es oder öffne es mit einem anderen Programm.",
       "unsupported": "Diese Nachricht braucht eine neuere App-Version",
-      "openLink": "Link öffnen"
+      "openLink": "Link öffnen",
+      "placeMessage": "Ortsnachricht · {{name}}"
     },
     "loc": {
       "button": "Standort senden",
@@ -721,7 +722,9 @@
       "mail_missing": "Das Adressbuch aus Mail ist gerade nicht erreichbar.",
       "bridge_read_only": "Hier kannst du nicht schreiben: In Kanälen schreibt nur der Kanal, in manchen Gruppen nur die Admins.",
       "reactions_off": "Reagieren geht in Kanälen nicht: WhatsApp hat eine Reaktion abgelehnt.",
-      "cannot_merge": "Diese Chats lassen sich nicht zusammenführen: nur Chats mit einer Person, nie Gruppen oder Kanäle, und höchstens ein GateControl-Konto."
+      "cannot_merge": "Diese Chats lassen sich nicht zusammenführen: nur Chats mit einer Person, nie Gruppen oder Kanäle, und höchstens ein GateControl-Konto.",
+      "bad_request": "Diesen Weg hat die Person nicht.",
+      "way_unavailable": "Über diesen Weg geht gerade nichts raus. Wähle einen anderen."
     },
     "enterHintCtrl": "Strg+Enter sendet · Enter neue Zeile",
     "filter": {
@@ -818,7 +821,8 @@
       "event": "Ereignis",
       "home": "Aus deinem Zuhause",
       "noActions": "Keine Haus-Aktionen ausgewählt.",
-      "manage": "Haus-Aktionen verwalten"
+      "manage": "Haus-Aktionen verwalten",
+      "gcNote": "Mit Logo: geht über GateControl, auch wenn dein Text gerade über {{network}} geht."
     },
     "poll": {
       "head": "Abstimmung",
@@ -1531,7 +1535,6 @@
       "src": "Nachrichten aus",
       "srcAll": "Alle",
       "placeholder": "Nachricht über {{way}}",
-      "waHint": "Geht über {{network}}. Die Verschlüsselung von {{network}} endet an der Brücke neben deinem Server.",
       "via": "über {{network}}",
       "onlyYou": "Nur für dich zusammengeführt – {{name}} sieht davon nichts.",
       "waysTitle": "Wege von {{name}}",
@@ -1564,7 +1567,24 @@
       "recTitle_telegram": "Dürfen andere auf diesem Server dich an deinem Telegram erkennen?",
       "recText_telegram": "Hat jemand hier dich bei Telegram, schlägt GateControl vor, euren Telegram-Chat mit deinem Konto zusammenzuführen. Deine Nummer und dein Benutzername bleiben verborgen.",
       "recSavedYes_telegram": "Andere auf diesem Server können dich jetzt an deinem Telegram erkennen.",
-      "recSavedNo_telegram": "Niemand erkennt dich an deinem Telegram."
+      "recSavedNo_telegram": "Niemand erkennt dich an deinem Telegram.",
+      "replyTitle": "Nachrichten senden über",
+      "replyAuto": "Automatisch",
+      "replyAutoSub": "Weg der letzten Nachricht von {{name}} · gerade {{way}}",
+      "replyAutoSubPlain": "Weg der letzten Nachricht von {{name}}",
+      "replyAlways": "Immer {{way}}",
+      "replyGcSub": "Bleibt auf deinem Server, alle Funktionen",
+      "replyNetSub": "Ist {{network}} nicht verbunden, geht es über GateControl",
+      "replyNote": "Antwortest du auf eine Nachricht, geht die Antwort weiter über deren Weg.",
+      "replyFallback": "{{network}} nicht verbunden – die Nachricht geht über GateControl.",
+      "viaGc": "Geht über GateControl",
+      "onceTitle": "Nur diese Nachricht über",
+      "onceButton": "Weg für die nächste Nachricht: {{way}} – ändern",
+      "oncePlaceholder": "Nur diese Nachricht über {{way}}",
+      "onceGcSub": "alle Funktionen",
+      "onceLastSub": "Weg der letzten Nachricht",
+      "onceStdSub": "dein Standard",
+      "onceChange": "Standard für {{name}} ändern …"
     },
     "profile": {
       "title": "Mein Profil",
@@ -1977,6 +1997,9 @@
       "blocked": "Gesperrt",
       "percent": "Anteil"
     },
+    "profile": {
+      "home": "Profil „{{name}}“ · gilt zu Hause und unterwegs"
+    },
     "scope": {
       "person": "Zahlen aller deiner Geräte",
       "server": "Zahlen aller Geräte des Servers"
@@ -2019,7 +2042,10 @@
       "fallbackText": "Dein Internet läuft weiter, aber ohne Schutz. Dein Admin wurde benachrichtigt. Der Schutz schaltet sich von selbst wieder ein.",
       "notAllowedTitle": "Unterbrechen nicht erlaubt.",
       "profile": "Für dein Profil hat der Admin das Unterbrechen gesperrt. Geht eine Seite nicht, die du brauchst, frag deine Eltern oder den Admin.",
-      "admins_only": "Unterbrechen dürfen hier nur Admins."
+      "admins_only": "Unterbrechen dürfen hier nur Admins.",
+      "internetTitle": "Internet pausiert bis {{time}} Uhr",
+      "internetText": "Dein Internet ist pausiert (Familie). Das gilt auch unterwegs über das VPN: Es gehen nur ausdrücklich erlaubte Seiten. Den Schutz zu unterbrechen ändert daran nichts.",
+      "internet_paused": "Das Internet ist pausiert (Familie). Den Schutz zu unterbrechen ändert daran nichts."
     },
     "top": {
       "title": "Top gesperrte Domains",
@@ -2051,7 +2077,8 @@
         "30": "30 Minuten",
         "60": "1 Stunde",
         "240": "4 Stunden"
-      }
+      },
+      "internetPaused": "Internet pausiert bis {{time}} (Familie)"
     },
     "toast": {
       "outageTitle": "DNS-Schutz: Filter ausgefallen",
