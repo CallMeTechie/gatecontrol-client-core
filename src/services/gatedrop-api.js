@@ -229,17 +229,21 @@ class GateDropApi {
    * and a broken part continues where the server stands (GET media/uploads/<id>
    * → { offset, total, mime }); up to 5 failures in a row.
    * @param {{ path: string, size: number, mime: string }} file
-   * @param {{ onProgress?: (sent: number, total: number) => void, throttle?: () => import('stream').Transform }} [opts]
+   * @param {{ onProgress?: (sent: number, total: number) => void, throttle?: () => import('stream').Transform, signal?: AbortSignal }} [opts]
    *   throttle: a pass-through stream per request that keeps a bandwidth limit (utils/throttle.js)
+   *   signal: stops the upload (the request in flight, no further part, no retry) → GateDropError code 'cancelled'
    */
-  async upload(file, { onProgress, throttle = null } = {}) {
+  async upload(file, { onProgress, throttle = null, signal = null } = {}) {
     const size = file && file.size;
     if (!file || typeof file.path !== 'string' || !Number.isSafeInteger(size) || size <= 0) throw new GateDropError('empty file', { code: 'length_required' });
     if (size > this.maxFileBytes) throw new GateDropError('file too large', { code: 'too_large' });
     const mime = typeof file.mime === 'string' && file.mime ? file.mime : 'application/octet-stream';
     const progress = typeof onProgress === 'function' ? onProgress : () => {};
+    const stopped = () => !!(signal && signal.aborted);
+    const stop = () => { if (stopped()) throw new GateDropError('upload cancelled', { code: 'cancelled' }); };
+    stop();
     if (size <= this.resumableFrom || this.resumable === false) {
-      const r = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle });
+      const r = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle, signal }).catch((err) => { stop(); throw err; });
       return this._media(r, mime, size);
     }
 
@@ -247,11 +251,13 @@ class GateDropApi {
     let offset = 0;
     let failures = 0;
     while (offset < size) {
+      stop();
       const end = Math.min(size, offset + this.partSize);
       let r;
       try {
-        r = await this._put(file.path, { mime, size, start: offset, end, progress, uploadId, throttle });
+        r = await this._put(file.path, { mime, size, start: offset, end, progress, uploadId, throttle, signal });
       } catch (err) {
+        stop();
         if (!err.transient || ++failures >= RESUME_ATTEMPTS) throw err;
         await this.sleep(Math.min(30000, 1000 * 2 ** (failures - 1)));
         const at = await this.uploadOffset(uploadId).catch(() => null);
@@ -277,7 +283,7 @@ class GateDropApi {
         if (offset === 0 && end < size && d.complete !== true) {
           // A server without resumable uploads took the first part as a file: whole file in one.
           this.resumable = false;
-          const whole = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle });
+          const whole = await this._put(file.path, { mime, size, start: 0, end: size, progress, throttle, signal });
           return this._media(whole, mime, size);
         }
         return this._media(r, mime, size);
@@ -298,7 +304,7 @@ class GateDropApi {
   }
 
   /** One PUT of bytes [start, end) → axios response (200, or 409 for resumable parts). */
-  async _put(filePath, { mime, size, start, end, progress, uploadId = null, throttle = null }) {
+  async _put(filePath, { mime, size, start, end, progress, uploadId = null, throttle = null, signal = null }) {
     const client = this._client();
     const params = {};
     const headers = { 'Content-Type': mime, 'Content-Length': String(end - start) };
@@ -326,6 +332,7 @@ class GateDropApi {
         maxRedirects: 0, // no redirect buffering of a 2 GB body
         transformRequest: [(d) => d],
         validateStatus: (st) => (st >= 200 && st < 300) || (!!uploadId && st === 409),
+        ...(signal ? { signal } : {}),
       });
       return res;
     } catch (err) {
