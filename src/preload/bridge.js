@@ -1187,6 +1187,9 @@ function createMediaBridge(ipcRenderer) {
     seasons:       (id, seriesId) => inv('media:seasons', { id, seriesId }),
     episodes:      (id, seriesId, seasonId) => inv('media:episodes', { id, seriesId, seasonId: seasonId || null }),
     search:        (id, q) => inv('media:search', { id, q }),
+    // "Ordner": the Jellyfin libraries and what a library or folder holds
+    libraries:     (id) => inv('media:libraries', { id }),
+    libraryItems:  (id, parentId) => inv('media:library:items', { id, parentId }),
     detail:        (id, itemId) => inv('media:detail', { id, itemId }),
     play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
     report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),

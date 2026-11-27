@@ -244,6 +244,53 @@ function total(e) {
   return isObj(e) ? int(e, 'TotalRecordCount') : null;
 }
 
+// ── "Ordner": the person's libraries and what they hold (as Android's JellyfinJson.views / folderPage) ──
+
+/** Libraries without video (music, books, photos, live TV): not on the page "Ordner". */
+const NO_VIDEO_COLLECTIONS = Object.freeze(['music', 'books', 'photos', 'livetv', 'audiobooks', 'playlists']);
+/** Folders without video (an album, a photo album, a book). */
+const NO_VIDEO_FOLDERS = Object.freeze(['MusicAlbum', 'MusicArtist', 'PhotoAlbum', 'AudioBook', 'Book', 'Photo', 'Audio', 'Playlist']);
+
+function collectionOf(o) {
+  const c = str(o, 'CollectionType');
+  return c ? c.toLowerCase() : null;
+}
+
+/** A library or a folder in it: { id, name }; null without an id of Jellyfin or a name. */
+function folder(o) {
+  const id = str(o, 'Id');
+  const name = str(o, 'Name');
+  if (!id || !ID_RE.test(id) || !name) return null;
+  return { id, name: name.slice(0, 200) };
+}
+
+/** `GET /UserViews`: the person's libraries with video, in the server's order. */
+function views(e) {
+  const list = Array.isArray(e) ? e.filter(isObj) : isObj(e) ? objects(e, 'Items') : [];
+  return list.filter((o) => !NO_VIDEO_COLLECTIONS.includes(collectionOf(o))).map(folder).filter(Boolean);
+}
+
+/**
+ * `GET /Items?parentId=…`: a library's or folder's content → { folders, items, total }. Films, series, seasons,
+ * episodes and videos are titles (a series opens its page); other folders (a box set, a plain folder) are folders;
+ * music, books and photos are left out.
+ */
+function folderPage(e, sourceId) {
+  const list = Array.isArray(e) ? e.filter(isObj) : isObj(e) ? objects(e, 'Items') : [];
+  const folders = [];
+  const out = [];
+  for (const o of list) {
+    const t = title(o, sourceId);
+    if (t) { out.push(t); continue; }
+    const type = str(o, 'Type');
+    if ((bool(o, 'IsFolder') === true || type === 'BoxSet') && !NO_VIDEO_FOLDERS.includes(type) && !NO_VIDEO_COLLECTIONS.includes(collectionOf(o))) {
+      const f = folder(o);
+      if (f) folders.push(f);
+    }
+  }
+  return { folders, items: out, total: total(e) };
+}
+
 /** Started and not finished: "Weiter ab …". */
 function resumable(t) { return !!t && t.positionMs > 0 && !t.played; }
 
@@ -610,6 +657,8 @@ module.exports = {
   title,
   items,
   total,
+  views,
+  folderPage,
   resumable,
   leftMs,
   progressOf,

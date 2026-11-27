@@ -10,7 +10,8 @@
  * 'unauthorized' (401/403: sign in again), 'not_found', 'failed' (status), 'cert_untrusted' / 'cert_changed'.
  *
  *   JellyfinClient({ base, info, token?, net, way? })   way(): { localAddress, pin } of the connection now
- *   JellyfinLibrary({ source, client, caps? })          resume, latest, movies, series, seasons, episodes, search,
+ *   JellyfinLibrary({ source, client, caps? })          resume, latest, movies, series, seasons, episodes, views,
+ *                                                       children ("Ordner"), search,
  *                                                       detail, play, started/progress/stopped, setPlayed, measure,
  *                                                       authorize (Quick Connect code of another device)
  *   JellyfinSignIn({ client })                          server, quickConnectEnabled, quickConnect, confirmed,
@@ -188,6 +189,20 @@ class JellyfinLibrary {
   async episodes(seriesId, seasonId = null) {
     if (!idOk(seriesId) || (seasonId !== null && !idOk(seasonId))) return no('not_found');
     return this._items(await this.client.get(`Shows/${seriesId}/Episodes`, { userId: this.user, seasonId, fields: `${J.FIELDS},Overview`, enableUserData: true }));
+  }
+
+  /** "Ordner": the person's libraries (`/UserViews`), those with video → { folders, items: [] }. */
+  async views() {
+    return map(await this.client.get('UserViews', { userId: this.user }), (e) => ({ folders: J.views(e), items: [] }));
+  }
+
+  /** "Ordner": what a library or folder holds, A–Z (at most `limit`) → { folders, items, total }. */
+  async children(parentId, limit = 500) {
+    if (!idOk(parentId)) return no('not_found');
+    return map(await this.client.get('Items', {
+      userId: this.user, parentId, sortBy: 'SortName', sortOrder: 'Ascending', limit,
+      fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableTotalRecordCount: true, enableImageTypes: J.IMAGES,
+    }), (e) => J.folderPage(e, this.source.id));
   }
 
   /** "In allen Quellen suchen": films, series and episodes whose name has `q`. */

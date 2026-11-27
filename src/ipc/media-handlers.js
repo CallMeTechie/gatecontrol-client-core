@@ -27,6 +27,8 @@
  *   media:seasons         ({ id, seriesId }) → { ok, items }
  *   media:episodes        ({ id, seriesId, seasonId? }) → { ok, items }
  *   media:search          ({ id, q }) → { ok, items }
+ *   media:libraries       ({ id }) → { ok, folders: [{ id, name }], items: [] }   "Ordner": the Jellyfin libraries
+ *   media:library:items   ({ id, parentId }) → { ok, folders: [{ id, name }], items, total }   a library's or folder's content
  *   media:detail          ({ id, itemId }) → { ok, title, versions: [{ …, videoLabel, hdr, audio: [{ …, label, fate:
  *                         'decoded' | 'converted' }], subtitles: [{ …, burnIn }], pick: { audioIndex, subtitleIndex },
  *                         quality: { originalBps, originalFits, adaptedBps, suggestAdapted } }], link }
@@ -125,6 +127,8 @@ function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, l
     return m.episodes(a.id, a.seriesId, a.seasonId || null);
   }));
   handle('media:search', wrap(async (a) => (isId(a.id) && isStr(a.q, 200) ? m.search(a.id, a.q) : invalid())));
+  handle('media:libraries', wrap(async (a) => (isId(a.id) ? m.libraries(a.id) : invalid())));
+  handle('media:library:items', wrap(async (a) => (isId(a.id) && typeof a.parentId === 'string' && J.ID_RE.test(a.parentId) ? m.libraryItems(a.id, a.parentId) : invalid())));
   handle('media:detail', wrap(async (a) => (isId(a.id) && isItem(a.itemId) ? m.detail(a.id, a.itemId) : invalid())));
   handle('media:play', wrap(async (a) => {
     if (!isId(a.id) || !isItem(a.itemId) || (a.versionId != null && !isItem(a.versionId)) || (a.seriesId != null && !isItem(a.seriesId))) return invalid();

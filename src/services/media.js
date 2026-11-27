@@ -862,6 +862,14 @@ class MediaService extends EventEmitter {
 
   search(id, q) { return this._rows(id, (l) => l.search(q), (l) => l.search(q)); }
 
+  /** "Ordner": the libraries of a Jellyfin source (a share has none: its folders are shareList) → { ok, folders, items: [] }. */
+  libraries(id) { return this._isShare(id) ? Promise.resolve(no('not_found')) : this._rows(id, (l) => l.views()); }
+
+  /** "Ordner": a Jellyfin library's or folder's folders and titles → { ok, folders, items, total }. */
+  libraryItems(id, parentId) {
+    return this._isShare(id) ? Promise.resolve(no('not_found')) : this._rows(id, (l) => l.children(parentId, 500));
+  }
+
   /** A share's title: its one version (the file as it is) and, when read before, what Chromium does with it. */
   async _shareDetail(id, itemId) {
     const lib = this._shareLib(id);

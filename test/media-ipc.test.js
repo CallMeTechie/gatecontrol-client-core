@@ -26,7 +26,7 @@ function fakeMedia() {
   for (const n of ['status', 'setCaps', 'setQuality', 'check', 'networkChanged', 'discover', 'server', 'trust', 'quickConnectStart', 'quickConnectPoll',
     'quickConnectCancel', 'signIn', 'authorizeDevice', 'addShare', 'removeSource', 'setAlwaysOriginal', 'resume', 'latest', 'movies', 'series', 'seasons',
     'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll',
-    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest']) m[n] = rec(n);
+    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest', 'libraries', 'libraryItems']) m[n] = rec(n);
   m.stream = { revoke: rec('revoke') };
   m.boom = () => { throw Object.assign(new Error('bad'), { code: 'offline' }); };
   return m;
@@ -78,6 +78,15 @@ describe('media-handlers', () => {
     assert.deepEqual(m.calls[0][1], { sourceId: 's1', itemId: 'm1', versionId: null, startMs: undefined, audioIndex: 2, subtitleIndex: -1, quality: '8', originalBps: undefined, seriesId: 's9' });
     assert.equal((await call('media:sources:refresh')).name, 'serverRefresh');
     assert.equal((await call('media:sources:status')).name, 'serverStatus');
+    // "Ordner": the Jellyfin libraries and a library's content, the id of a folder never a path
+    m.calls.length = 0;
+    assert.equal((await call('media:libraries', { id: '../x' })).code, 'invalid');
+    assert.equal((await call('media:library:items', { id: 's1', parentId: '../Users' })).code, 'invalid');
+    assert.equal((await call('media:library:items', { id: 's1' })).code, 'invalid');
+    assert.equal(m.calls.length, 0);
+    assert.equal((await call('media:libraries', { id: 's1' })).name, 'libraries');
+    assert.equal((await call('media:library:items', { id: 's1', parentId: 'v1' })).name, 'libraryItems');
+    assert.deepEqual(m.calls.map((c) => c.slice(1)), [['s1'], ['s1', 'v1']]);
   });
 
   it('read only: no channel sets a source up, signs in, removes one or confirms a code', () => {
