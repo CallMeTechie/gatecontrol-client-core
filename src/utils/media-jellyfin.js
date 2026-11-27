@@ -180,14 +180,17 @@ function quickConnectCode(input) {
   return /^\d{6}$/.test(s) ? s : null;
 }
 
-const KINDS = { Movie: 'movie', Series: 'series', Season: 'season', Episode: 'episode', Video: 'video', MusicVideo: 'video' };
+const KINDS = { Movie: 'movie', Series: 'series', Season: 'season', Episode: 'episode', Video: 'video', MusicVideo: 'video', BoxSet: 'collection' };
 
 function kind(type) {
   return Object.prototype.hasOwnProperty.call(KINDS, type) ? KINDS[type] : null;
 }
 
-/** One item → a title; null for kinds Medien does not show (music, books, folders). */
-function title(o, sourceId) {
+/**
+ * One item → a title; null for kinds Medien does not show (music, books, folders). `seriesPoster`: an episode shows its
+ * series' poster even when it has a picture of its own (a still, 16:9, in a row of posters — "Neue Folgen", Favoriten).
+ */
+function title(o, sourceId, { seriesPoster = false } = {}) {
   const id = str(o, 'Id');
   const k = kind(str(o, 'Type'));
   const name = str(o, 'Name');
@@ -198,7 +201,7 @@ function title(o, sourceId) {
   // an episode without its own picture shows its series' poster
   let posterId = null;
   let posterTag = null;
-  if (ownPrimary) { posterId = id; posterTag = ownPrimary; } else if (str(o, 'SeriesPrimaryImageTag')) { posterId = str(o, 'SeriesId'); posterTag = str(o, 'SeriesPrimaryImageTag'); }
+  if (seriesPoster && k === 'episode' && str(o, 'SeriesId') && str(o, 'SeriesPrimaryImageTag')) { posterId = str(o, 'SeriesId'); posterTag = str(o, 'SeriesPrimaryImageTag'); } else if (ownPrimary) { posterId = id; posterTag = ownPrimary; } else if (str(o, 'SeriesPrimaryImageTag')) { posterId = str(o, 'SeriesId'); posterTag = str(o, 'SeriesPrimaryImageTag'); }
   const backdrops = strings(o, 'BackdropImageTags');
   const parentBackdrops = strings(o, 'ParentBackdropImageTags');
   let backdropId = null;
@@ -230,14 +233,40 @@ function title(o, sourceId) {
     backdropTag,
     addedAt: dateMs(str(o, 'DateCreated')),
     playedAt: dateMs(str(user, 'LastPlayedDate')),
+    favorite: bool(user, 'IsFavorite') === true,
     fromShare: false,
   };
 }
 
-/** The items of `{ "Items": [ … ] }` or of a bare array (`/Items/Latest`). */
-function items(e, sourceId) {
+/** The items of `{ "Items": [ … ] }` or of a bare array (`/Items/Latest`); `opts` as title(). */
+function items(e, sourceId, opts) {
   const list = Array.isArray(e) ? e.filter(isObj) : isObj(e) ? objects(e, 'Items') : [];
-  return list.map((o) => title(o, sourceId)).filter(Boolean);
+  return list.map((o) => title(o, sourceId, opts)).filter(Boolean);
+}
+
+/**
+ * `GET /Items/Latest?includeItemTypes=Episode&groupItems=true` ("Neue Folgen"): several new episodes of one series
+ * come as that series with their number in ChildCount ("3 neu" → newCount), a single one as the episode (with its
+ * series' poster). As Android's JellyfinJson.latestEpisodes.
+ */
+function latestEpisodes(e, sourceId) {
+  return items(e, sourceId, { seriesPoster: true }).map((t) => {
+    if (t.kind === 'series') return { ...t, newCount: t.childCount > 0 ? t.childCount : null, childCount: null };
+    return t.kind === 'season' || t.kind === 'episode' ? t : null;
+  }).filter(Boolean);
+}
+
+/** `GET /Genres`: the names, A–Z as the server sends them, each once (case does not count). */
+function genreNames(e) {
+  const seen = new Set();
+  const out = [];
+  for (const o of isObj(e) ? objects(e, 'Items') : Array.isArray(e) ? e.filter(isObj) : []) {
+    const n = str(o, 'Name');
+    if (!n || seen.has(n.toLowerCase())) continue;
+    seen.add(n.toLowerCase());
+    out.push(n.slice(0, 64));
+  }
+  return out;
 }
 
 function total(e) {
@@ -281,7 +310,8 @@ function folderPage(e, sourceId) {
   const out = [];
   for (const o of list) {
     const t = title(o, sourceId);
-    if (t) { out.push(t); continue; }
+    // a collection (box set) is looked into like a folder
+    if (t && t.kind !== 'collection') { out.push(t); continue; }
     const type = str(o, 'Type');
     if ((bool(o, 'IsFolder') === true || type === 'BoxSet') && !NO_VIDEO_FOLDERS.includes(type) && !NO_VIDEO_COLLECTIONS.includes(collectionOf(o))) {
       const f = folder(o);
@@ -656,6 +686,8 @@ module.exports = {
   kind,
   title,
   items,
+  latestEpisodes,
+  genreNames,
   total,
   views,
   folderPage,

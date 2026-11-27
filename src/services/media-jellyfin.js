@@ -11,7 +11,8 @@
  *
  *   JellyfinClient({ base, info, token?, net, way? })   way(): { localAddress, pin } of the connection now
  *   JellyfinLibrary({ source, client, caps? })          resume, latest, movies, series, seasons, episodes, views,
- *                                                       children ("Ordner"), search,
+ *                                                       children ("Ordner"), latestMovies, latestEpisodes, nextUp,
+ *                                                       favorites, collections, collection, genres, setFavorite, search,
  *                                                       detail, play, started/progress/stopped, setPlayed, measure,
  *                                                       authorize (Quick Connect code of another device)
  *   JellyfinSignIn({ client })                          server, quickConnectEnabled, quickConnect, confirmed,
@@ -162,17 +163,83 @@ class JellyfinLibrary {
     }));
   }
 
+  /** "Neue Filme": only films (before, films and series came mixed in one row). */
+  async latestMovies(limit = 16) {
+    return this._items(await this.client.get('Items/Latest', {
+      userId: this.user, limit, includeItemTypes: 'Movie', fields: J.FIELDS, enableUserData: true, enableImageTypes: J.IMAGES,
+    }));
+  }
+
+  /** "Neue Folgen": new episodes grouped per series (groupItems: "3 neu" on the series). */
+  async latestEpisodes(limit = 16) {
+    return map(await this.client.get('Items/Latest', {
+      userId: this.user, limit, includeItemTypes: 'Episode', groupItems: true, fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableImageTypes: J.IMAGES,
+    }), (e) => J.latestEpisodes(e, this.source.id));
+  }
+
+  /**
+   * "Als Nächstes" (Shows/NextUp): the next unseen episode of each series begun → { items, total }; half-watched ones
+   * stay in "Weiterschauen" (enableResumable=false), series seen through are not started again.
+   */
+  async nextUp(limit = 16) {
+    return map(await this.client.get('Shows/NextUp', {
+      userId: this.user, limit, fields: `${J.FIELDS},Overview`, enableUserData: true, enableImageTypes: J.IMAGES,
+      enableTotalRecordCount: true, enableResumable: false, enableRewatching: false,
+    }), (e) => { const list = J.items(e, this.source.id); return { items: list, total: J.total(e) ?? list.length }; });
+  }
+
+  /** The person's favourites (filters=IsFavorite): films, series and episodes, A–Z → { items, total }. */
+  async favorites(limit = 20) {
+    return map(await this.client.get('Items', {
+      userId: this.user, filters: 'IsFavorite', includeItemTypes: 'Movie,Series,Episode', recursive: true, sortBy: 'SortName', sortOrder: 'Ascending',
+      limit, fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableTotalRecordCount: true, enableImageTypes: J.IMAGES,
+    }), (e) => { const list = J.items(e, this.source.id, { seriesPoster: true }); return { items: list, total: J.total(e) ?? list.length }; });
+  }
+
+  /** "Sammlungen": the box sets (film series), A–Z, with how many titles each holds → { items, total }. */
+  async collections(limit = 20) {
+    return map(await this.client.get('Items', {
+      userId: this.user, includeItemTypes: 'BoxSet', recursive: true, sortBy: 'SortName', sortOrder: 'Ascending', limit,
+      fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableTotalRecordCount: true, enableImageTypes: J.IMAGES,
+    }), (e) => { const list = J.items(e, this.source.id).filter((t) => t.kind === 'collection'); return { items: list, total: J.total(e) ?? list.length }; });
+  }
+
+  /** A collection's titles, oldest first (a film series in its order). */
+  async collection(id) {
+    if (!idOk(id)) return no('not_found');
+    return map(await this.client.get('Items', {
+      userId: this.user, parentId: id, sortBy: 'ProductionYear,SortName', sortOrder: 'Ascending', limit: 500,
+      fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableImageTypes: J.IMAGES,
+    }), (e) => J.items(e, this.source.id).filter((t) => t.kind !== 'collection'));
+  }
+
+  /** The genres of the films (or series), A–Z: the tiles of "Genres". */
+  async genres(movies = true) {
+    return map(await this.client.get('Genres', { userId: this.user, includeItemTypes: movies ? 'Movie' : 'Series', recursive: true, sortBy: 'SortName' }), (e) => J.genreNames(e));
+  }
+
+  /** The heart: kept in Jellyfin for this person (the same on all devices). */
+  async setFavorite(itemId, favorite) {
+    if (!idOk(itemId)) return no('not_found');
+    const path = `UserFavoriteItems/${itemId}`;
+    const q = { userId: this.user };
+    return map(await (favorite ? this.client.post(path, q) : this.client.delete(path, q)), () => true);
+  }
+
   movies(start, limit, sort) { return this._page('Movie', start, limit, sort); }
 
   series(start, limit, sort) { return this._page('Series', start, limit, sort); }
 
   /** sort: 'name' (A–Z), 'added' (zuletzt hinzugefügt), 'year'; filter unplayed / genre as the chips of the page. */
-  async _page(type, start, limit, { sort = 'name', unplayed = false, genre = null } = {}) {
-    const by = sort === 'added' ? ['DateCreated,SortName', 'Descending'] : sort === 'year' ? ['ProductionYear,SortName', 'Descending'] : ['SortName', 'Ascending'];
+  async _page(type, start, limit, { sort = 'name', unplayed = false, genre = null, favorite = false } = {}) {
+    // a series counts as added when its last episode came ("Neue Folgen ›")
+    const added = type === 'Series' ? 'DateLastContentAdded,SortName' : 'DateCreated,SortName';
+    const by = sort === 'added' ? [added, 'Descending'] : sort === 'year' ? ['ProductionYear,SortName', 'Descending'] : ['SortName', 'Ascending'];
+    const filters = [unplayed ? 'IsUnplayed' : null, favorite ? 'IsFavorite' : null].filter(Boolean).join(',') || null;
     const r = await this.client.get('Items', {
       userId: this.user, includeItemTypes: type, recursive: true, sortBy: by[0], sortOrder: by[1], startIndex: start, limit,
       fields: `${J.FIELDS},ChildCount`, enableUserData: true, enableTotalRecordCount: true, enableImageTypes: J.IMAGES,
-      filters: unplayed ? 'IsUnplayed' : null, genres: typeof genre === 'string' && genre ? genre.slice(0, 64) : null,
+      filters, genres: typeof genre === 'string' && genre ? genre.slice(0, 64) : null,
     });
     return map(r, (e) => {
       const list = J.items(e, this.source.id);

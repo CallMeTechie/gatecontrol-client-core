@@ -26,7 +26,7 @@ function fakeMedia() {
   for (const n of ['status', 'setCaps', 'setQuality', 'check', 'networkChanged', 'discover', 'server', 'trust', 'quickConnectStart', 'quickConnectPoll',
     'quickConnectCancel', 'signIn', 'authorizeDevice', 'addShare', 'removeSource', 'setAlwaysOriginal', 'resume', 'latest', 'movies', 'series', 'seasons',
     'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll',
-    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest', 'libraries', 'libraryItems']) m[n] = rec(n);
+    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest', 'libraries', 'libraryItems', 'latestMovies', 'latestEpisodes', 'nextUp', 'favorites', 'collections', 'collection', 'genres', 'setFavorite']) m[n] = rec(n);
   m.stream = { revoke: rec('revoke') };
   m.boom = () => { throw Object.assign(new Error('bad'), { code: 'offline' }); };
   return m;
@@ -87,6 +87,25 @@ describe('media-handlers', () => {
     assert.equal((await call('media:libraries', { id: 's1' })).name, 'libraries');
     assert.equal((await call('media:library:items', { id: 's1', parentId: 'v1' })).name, 'libraryItems');
     assert.deepEqual(m.calls.map((c) => c.slice(1)), [['s1'], ['s1', 'v1']]);
+    // the overview "Ergänzt": ids checked, the heart only with a boolean
+    m.calls.length = 0;
+    assert.equal((await call('media:favorite', { id: 's1', itemId: 'm1', favorite: 'yes' })).code, 'invalid');
+    assert.equal((await call('media:favorite', { id: 's1', itemId: '../x', favorite: true })).code, 'invalid');
+    assert.equal((await call('media:collection', { id: 's1', itemId: 'Items/1' })).code, 'invalid');
+    assert.equal((await call('media:genres', { id: 's1', kind: 'music' })).code, 'invalid');
+    assert.equal((await call('media:nextup', { id: '../x' })).code, 'invalid');
+    assert.equal(m.calls.length, 0);
+    for (const [ch, name] of [['media:latest:movies', 'latestMovies'], ['media:latest:episodes', 'latestEpisodes'], ['media:nextup', 'nextUp'], ['media:favorites', 'favorites'], ['media:collections', 'collections']]) {
+      assert.equal((await call(ch, { id: 's1', limit: 8 })).name, name);
+    }
+    assert.equal((await call('media:collection', { id: 's1', itemId: 'b1' })).name, 'collection');
+    assert.equal((await call('media:genres', { id: 's1', kind: 'series' })).name, 'genres');
+    assert.equal((await call('media:favorite', { id: 's1', itemId: 'm1', favorite: true })).name, 'setFavorite');
+    assert.deepEqual(m.calls.slice(-3).map((c) => c.slice(1)), [['s1', 'b1'], ['s1', false], ['s1', 'm1', true]]);
+    m.calls.length = 0;
+    await call('media:movies', { id: 's1', favorite: true, unplayed: 'x' });
+    assert.equal(m.calls[0][2].favorite, true);
+    assert.equal(m.calls[0][2].unplayed, false);
   });
 
   it('read only: no channel sets a source up, signs in, removes one or confirms a code', () => {

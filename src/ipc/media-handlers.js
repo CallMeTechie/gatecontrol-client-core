@@ -22,7 +22,14 @@
  *   media:source:original ({ id, on }) → { ok }   "Immer Original"
  *   media:resume | media:latest ({ id, limit? }) → { ok, items }   titles with poster/backdrop gcmedia:// URLs,
  *                         resumable, leftMs, progress
- *   media:movies | media:series ({ id, start?, limit?, sort?: 'name' | 'added' | 'year', unplayed?, genre? })
+ *   media:latest:movies | media:latest:episodes ({ id, limit? }) → { ok, items }   "Neue Filme" / "Neue Folgen" (a series
+ *                         with newCount: "3 neu")
+ *   media:nextup | media:favorites | media:collections ({ id, limit? }) → { ok, items, total }   "Als Nächstes",
+ *                         Favoriten, Sammlungen (Jellyfin; a share answers none)
+ *   media:collection      ({ id, itemId }) → { ok, items }   a collection's films, oldest first
+ *   media:genres          ({ id, kind?: 'movies' | 'series' }) → { ok, genres: [name] }
+ *   media:favorite        ({ id, itemId, favorite }) → { ok, favorite }   the heart, kept in Jellyfin
+ *   media:movies | media:series ({ id, start?, limit?, sort?: 'name' | 'added' | 'year', unplayed?, genre?, favorite? })
  *                         → { ok, items, total, start, next }
  *   media:seasons         ({ id, seriesId }) → { ok, items }
  *   media:episodes        ({ id, seriesId, seasonId? }) → { ok, items }
@@ -118,7 +125,15 @@ function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, l
   handle('media:source:original', wrap(async (a) => (isId(a.id) && typeof a.on === 'boolean' ? m.setAlwaysOriginal(a.id, a.on) : invalid())));
   handle('media:resume', wrap(async (a) => (isId(a.id) ? m.resume(a.id, a.limit) : invalid())));
   handle('media:latest', wrap(async (a) => (isId(a.id) ? m.latest(a.id, a.limit) : invalid())));
-  const pageArgs = (a) => ({ start: a.start, limit: a.limit, sort: a.sort, unplayed: a.unplayed === true, genre: isStr(a.genre, 64) ? a.genre : null });
+  handle('media:latest:movies', wrap(async (a) => (isId(a.id) ? m.latestMovies(a.id, a.limit) : invalid())));
+  handle('media:latest:episodes', wrap(async (a) => (isId(a.id) ? m.latestEpisodes(a.id, a.limit) : invalid())));
+  handle('media:nextup', wrap(async (a) => (isId(a.id) ? m.nextUp(a.id, a.limit) : invalid())));
+  handle('media:favorites', wrap(async (a) => (isId(a.id) ? m.favorites(a.id, a.limit) : invalid())));
+  handle('media:collections', wrap(async (a) => (isId(a.id) ? m.collections(a.id, a.limit) : invalid())));
+  handle('media:collection', wrap(async (a) => (isId(a.id) && typeof a.itemId === 'string' && J.ID_RE.test(a.itemId) ? m.collection(a.id, a.itemId) : invalid())));
+  handle('media:genres', wrap(async (a) => (isId(a.id) && (a.kind == null || a.kind === 'movies' || a.kind === 'series') ? m.genres(a.id, a.kind !== 'series') : invalid())));
+  handle('media:favorite', wrap(async (a) => (isId(a.id) && typeof a.itemId === 'string' && J.ID_RE.test(a.itemId) && typeof a.favorite === 'boolean' ? m.setFavorite(a.id, a.itemId, a.favorite) : invalid())));
+  const pageArgs = (a) => ({ start: a.start, limit: a.limit, sort: a.sort, unplayed: a.unplayed === true, genre: isStr(a.genre, 64) ? a.genre : null, favorite: a.favorite === true });
   handle('media:movies', wrap(async (a) => (isId(a.id) ? m.movies(a.id, pageArgs(a)) : invalid())));
   handle('media:series', wrap(async (a) => (isId(a.id) ? m.series(a.id, pageArgs(a)) : invalid())));
   handle('media:seasons', wrap(async (a) => (isId(a.id) && isItem(a.seriesId) ? m.seasons(a.id, a.seriesId) : invalid())));
