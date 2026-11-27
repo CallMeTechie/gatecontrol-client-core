@@ -289,6 +289,17 @@ describe('MediaService: a share\'s films, series and folders', () => {
     assert.deepEqual((await media.search(smb.id, 'grau')).items.map((t) => t.kind), ['series']);
     assert.deepEqual((await media.resume(smb.id)).items, []);
     assert.equal((await media.latest(smb.id)).items.length, 4);
+    // the overview "Ergänzt": a share's newest films and series apart; no Als Nächstes, Favoriten, Sammlungen, Genres, heart
+    const lm = await media.latestMovies(smb.id);
+    assert.ok(lm.items.length > 0 && lm.items.every((t) => t.kind === 'movie'));
+    const le = await media.latestEpisodes(smb.id);
+    assert.deepEqual(le.items.map((t) => t.kind), ['series']);
+    assert.deepEqual(await media.nextUp(smb.id), { ok: true, items: [], total: 0 });
+    assert.deepEqual(await media.favorites(smb.id), { ok: true, items: [], total: 0 });
+    assert.deepEqual(await media.collections(smb.id), { ok: true, items: [], total: 0 });
+    assert.deepEqual(await media.genres(smb.id), { ok: true, genres: [] });
+    assert.equal((await media.setFavorite(smb.id, 'f:x.mkv', true)).code, 'unsupported');
+    assert.equal((await media.libraries(smb.id)).code, 'not_found');
   });
 
   it('detail and play of a file, the progress, "gesehen" of a series; a play given up keeps its place', async () => {

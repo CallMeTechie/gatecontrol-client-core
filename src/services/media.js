@@ -846,6 +846,55 @@ class MediaService extends EventEmitter {
 
   latest(id, limit = 16) { const n = clampInt(limit, 1, 50, 16); return this._rows(id, (l) => l.latest(n), (l) => l.latest(n)); }
 
+  /** "Neue Filme": Jellyfin's newest films; a share's newest films. */
+  latestMovies(id, limit = 16) {
+    const n = clampInt(limit, 1, 50, 16);
+    return this._rows(id, (l) => l.latestMovies(n), async (l) => mapOk(await l.latest(n * 2), (v) => v.filter((t) => t.kind === 'movie').slice(0, n)));
+  }
+
+  /** "Neue Folgen": Jellyfin's new episodes grouped per series ("3 neu"); a share's newest series. */
+  latestEpisodes(id, limit = 16) {
+    const n = clampInt(limit, 1, 50, 16);
+    return this._rows(id, (l) => l.latestEpisodes(n), async (l) => mapOk(await l.latest(n * 2), (v) => v.filter((t) => t.kind === 'series').slice(0, n)));
+  }
+
+  /** "Als Nächstes" (Jellyfin only; a share has none) → { ok, items, total }. */
+  nextUp(id, limit = 16) {
+    const n = clampInt(limit, 1, 50, 16);
+    return this._isShare(id) ? Promise.resolve({ ok: true, items: [], total: 0 }) : this._rows(id, (l) => l.nextUp(n));
+  }
+
+  /** The person's favourites in Jellyfin (a share has none) → { ok, items, total }. */
+  favorites(id, limit = 20) {
+    const n = clampInt(limit, 1, 100, 20);
+    return this._isShare(id) ? Promise.resolve({ ok: true, items: [], total: 0 }) : this._rows(id, (l) => l.favorites(n));
+  }
+
+  /** "Sammlungen": Jellyfin's box sets (a share has none) → { ok, items, total }. */
+  collections(id, limit = 20) {
+    const n = clampInt(limit, 1, 100, 20);
+    return this._isShare(id) ? Promise.resolve({ ok: true, items: [], total: 0 }) : this._rows(id, (l) => l.collections(n));
+  }
+
+  /** A collection's films, oldest first → { ok, items }. */
+  collection(id, itemId) { return this._isShare(id) ? Promise.resolve(no('not_found')) : this._rows(id, (l) => l.collection(itemId)); }
+
+  /** The genres of the films or series (Jellyfin) → { ok, genres }. */
+  async genres(id, movies = true) {
+    if (this._isShare(id)) return { ok: true, genres: [] };
+    const r = await this._rows(id, async (l) => mapOk(await l.genres(movies !== false), (g) => ({ genres: g, items: [] })));
+    return r.ok ? { ok: true, genres: r.genres } : r;
+  }
+
+  /** The heart (Jellyfin keeps it for the person); a share's title has none. */
+  async setFavorite(id, itemId, favorite) {
+    if (this._isShare(id)) return no('unsupported');
+    const lib = this._library(id);
+    if (!lib) return no('not_found');
+    const r = await lib.setFavorite(itemId, favorite === true);
+    return r.ok ? { ok: true, favorite: favorite === true } : this._fail(id, r);
+  }
+
   movies(id, o = {}) {
     const [start, limit] = [clampInt(o.start, 0, 1e6, 0), clampInt(o.limit, 1, 200, 60)];
     return this._rows(id, (l) => l.movies(start, limit, pageOpts(o)), (l) => l.movies(start, limit, pageOpts(o)));
@@ -1250,8 +1299,11 @@ function clampInt(v, min, max, def) {
 }
 
 function pageOpts(o) {
-  return { sort: ['name', 'added', 'year'].includes(o.sort) ? o.sort : 'name', unplayed: o.unplayed === true, genre: typeof o.genre === 'string' ? o.genre : null };
+  return { sort: ['name', 'added', 'year'].includes(o.sort) ? o.sort : 'name', unplayed: o.unplayed === true, genre: typeof o.genre === 'string' ? o.genre : null, favorite: o.favorite === true };
 }
+
+/** The value of an { ok, value } answer changed; a failure as it is. */
+function mapOk(r, f) { return r && r.ok ? { ok: true, value: f(r.value) } : r; }
 
 /** A stream for the page: without its delivery URL (it may carry the server's api_key). */
 function publicStream(s) {

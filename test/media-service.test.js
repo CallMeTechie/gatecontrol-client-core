@@ -178,6 +178,32 @@ describe('MediaService with a fake Jellyfin', () => {
     assert.equal((await media.libraries('nope')).code, 'not_found');
   });
 
+  it('the overview "Ergänzt": Als Nächstes, Neue Folgen, Genres, the heart over the service', async () => {
+    srv.json(serverAnswer).json(authAnswer);
+    const { source } = await media.signIn({ address: srv.homeBase, user: 'mila', password: 'x' });
+    srv.take(); srv.take();
+    srv.enqueue({ status: 200, body: Buffer.alloc(100000) });
+    srv.json({ Items: [{ Id: 'e5', Name: 'Folge 5', Type: 'Episode', SeriesId: 's9', SeriesName: 'Graufeld', ParentIndexNumber: 1, IndexNumber: 5 }], TotalRecordCount: 4 });
+    const next = await media.nextUp(source.id, 8);
+    assert.equal(next.ok, true);
+    assert.equal(next.total, 4);
+    assert.equal(next.items[0].seriesName, 'Graufeld');
+    srv.take();
+    assert.equal(srv.take().path, '/Shows/NextUp');
+    srv.json([{ Id: 's9', Name: 'Graufeld', Type: 'Series', ChildCount: 3, ImageTags: { Primary: 'p' } }]);
+    const eps = await media.latestEpisodes(source.id);
+    assert.equal(eps.items[0].newCount, 3);
+    assert.match(eps.items[0].poster, /^gcmedia:\/\/image\//);
+    srv.take();
+    srv.json({ Items: [{ Name: 'Drama' }, { Name: 'Krimi' }] });
+    assert.deepEqual(await media.genres(source.id, true), { ok: true, genres: ['Drama', 'Krimi'] });
+    srv.take();
+    srv.json({ IsFavorite: true });
+    assert.deepEqual(await media.setFavorite(source.id, 'm1', true), { ok: true, favorite: true });
+    assert.equal(srv.take().path, '/UserFavoriteItems/m1');
+    assert.equal((await media.setFavorite('nope', 'm1', true)).code, 'not_found');
+  });
+
   it('"Gerät anmelden" confirms the code of the TV; Abmelden signs this device out', async () => {
     srv.json(serverAnswer).json(authAnswer);
     const { source } = await media.signIn({ address: srv.homeBase, user: 'mila', password: 'x' });

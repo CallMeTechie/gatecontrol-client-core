@@ -82,8 +82,14 @@ describe('JellyfinLibrary against a fake server', () => {
     srv.json({ Items: [], TotalRecordCount: 0 });
     await library.series(0, 60, { sort: 'added', unplayed: true });
     const s = srv.take();
-    assert.equal(s.query.get('sortBy'), 'DateCreated,SortName');
+    // a series counts as added when its last episode came (as Android)
+    assert.equal(s.query.get('sortBy'), 'DateLastContentAdded,SortName');
     assert.equal(s.query.get('filters'), 'IsUnplayed');
+    srv.json({ Items: [], TotalRecordCount: 0 });
+    await library.movies(0, 60, { sort: 'added', unplayed: true, favorite: true });
+    const f = srv.take();
+    assert.equal(f.query.get('sortBy'), 'DateCreated,SortName');
+    assert.equal(f.query.get('filters'), 'IsUnplayed,IsFavorite');
   });
 
   it('seasons and episodes of a series, search; an id that is a path is refused', async () => {
@@ -142,6 +148,65 @@ describe('JellyfinLibrary against a fake server', () => {
     assert.equal(rc.query.get('recursive'), null, 'one level only');
     assert.deepEqual(await library.children('../Users'), { ok: false, code: 'not_found', status: null });
     assert.equal(srv.requests.length, 2);
+  });
+
+  it('the overview "Ergänzt" (as Android): Als Nächstes, Neue Filme, Neue Folgen grouped, Favoriten, Sammlungen, Genres, the heart', async () => {
+    const next = { ...episode, Id: 'e5', Name: 'Folge 5', IndexNumber: 5, UserData: { PlaybackPositionTicks: 0 } };
+    srv.json({ Items: [next], TotalRecordCount: 7 });
+    const n = await library.nextUp(16);
+    assert.deepEqual([n.value.items[0].id, n.value.total], ['e5', 7]);
+    let r = srv.take();
+    assert.equal(r.path, '/Shows/NextUp');
+    assert.equal(r.query.get('enableResumable'), 'false');
+    assert.equal(r.query.get('enableRewatching'), 'false');
+
+    srv.json([movie]);
+    assert.equal((await library.latestMovies(16)).value[0].id, 'm1');
+    r = srv.take();
+    assert.equal(r.path, '/Items/Latest');
+    assert.equal(r.query.get('includeItemTypes'), 'Movie');
+
+    const own = { ...episode, Id: 'e6', ImageTags: { Primary: 'still' } };
+    srv.json([{ Id: 's9', Name: 'Station Eisvogel', Type: 'Series', ChildCount: 3 }, own, { Id: 'x', Name: 'Song', Type: 'Audio' }]);
+    const eps = (await library.latestEpisodes(16)).value;
+    assert.deepEqual(eps.map((t) => [t.id, t.kind, t.newCount ?? null]), [['s9', 'series', 3], ['e6', 'episode', null]]);
+    assert.equal(eps[0].childCount, null);
+    assert.equal(eps[1].posterId, 's9', 'an episode in a row of posters: its series\' poster');
+    r = srv.take();
+    assert.equal(r.query.get('includeItemTypes'), 'Episode');
+    assert.equal(r.query.get('groupItems'), 'true');
+
+    srv.json({ Items: [{ ...movie, UserData: { IsFavorite: true } }], TotalRecordCount: 1 });
+    const fav = (await library.favorites(20)).value;
+    assert.equal(fav.items[0].favorite, true);
+    assert.equal(srv.take().query.get('filters'), 'IsFavorite');
+
+    srv.json({ Items: [{ Id: 'b1', Name: 'Kobalt-Reihe', Type: 'BoxSet', ChildCount: 3 }, movie], TotalRecordCount: 1 });
+    const sets = (await library.collections(20)).value;
+    assert.deepEqual(sets.items.map((t) => [t.id, t.kind, t.childCount]), [['b1', 'collection', 3]]);
+    assert.equal(srv.take().query.get('includeItemTypes'), 'BoxSet');
+    srv.json({ Items: [movie, { Id: 'b2', Name: 'Innen', Type: 'BoxSet' }] });
+    assert.deepEqual((await library.collection('b1')).value.map((t) => t.id), ['m1']);
+    r = srv.take();
+    assert.equal(r.query.get('parentId'), 'b1');
+    assert.equal(r.query.get('sortBy'), 'ProductionYear,SortName');
+
+    srv.json({ Items: [{ Name: 'Drama' }, { Name: 'Krimi' }, { Name: 'drama' }, { Name: '' }] });
+    assert.deepEqual((await library.genres(true)).value, ['Drama', 'Krimi']);
+    r = srv.take();
+    assert.equal(r.path, '/Genres');
+    assert.equal(r.query.get('includeItemTypes'), 'Movie');
+
+    srv.json({ IsFavorite: true });
+    assert.deepEqual(await library.setFavorite('m1', true), { ok: true, value: true });
+    r = srv.take();
+    assert.equal(r.method, 'POST');
+    assert.equal(r.path, '/UserFavoriteItems/m1');
+    srv.enqueue({ status: 204 });
+    await library.setFavorite('m1', false);
+    assert.equal(srv.take().method, 'DELETE');
+    assert.equal((await library.setFavorite('../x', true)).code, 'not_found');
+    assert.equal((await library.collection('../x')).code, 'not_found');
   });
 
   it("the detail page with the file's streams", async () => {
