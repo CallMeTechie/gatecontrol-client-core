@@ -104,7 +104,10 @@ describe('vendor/notizen: the plugin\'s quick entry and repeat rules (its frozen
       const p = Q.parse(c.input, qv.ctx);
       const got = { title: p.title, date: p.date, time: p.time, remind: p.remind, important: p.important, list: p.list, listName: p.listName, assignee: p.assignee, assigneeName: p.assigneeName, repeat: p.repeat };
       assert.deepEqual(got, c.expect, c.input);
+      if (c.marks) assert.deepEqual(p.marks, c.marks, `${c.input} (marks)`);
     }
+    // a weekday next to a calendar date belongs to it (plugin 1.8.1: the cases with their own marks)
+    assert.ok(qv.cases.filter((c) => c.marks).length >= 20);
     assert.deepEqual(Q.parse(qv.cases[0].input, qv.ctx).marks, qv.marksOfFirst);
   });
 
