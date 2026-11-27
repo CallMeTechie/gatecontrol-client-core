@@ -741,7 +741,7 @@ async function notesServer({
     m = /^source:(gatecontrol-[a-z]+)$/.exec(name);
     if (m && SOURCES.includes(m[1])) {
       const groups = new Map();
-      for (const x of items.filter((y) => y.source.plugin === m[1]).sort(byTime)) {
+      for (const x of items.filter((y) => y.source.plugin === m[1] && !y.event).sort(byTime)) {
         const k = x.group ? x.group.id : '';
         if (!groups.has(k)) groups.set(k, { id: k ? `g:${k}` : 'all', title: x.group ? x.group.label : t(`src.${m[1]}`), count: 0, items: [] });
         groups.get(k).items.push(x);
@@ -993,7 +993,8 @@ async function notesServer({
       const open = visibleItems(ar).filter((i) => !i.done);
       const by = {};
       for (const s of SOURCES) by[s] = 0;
-      for (const i of open) by[i.source.plugin]++;
+      // 1.9.0: events count in „Mein Tag“ / „Geplant“, not in the source Mail
+      for (const i of open) if (!i.event) by[i.source.plugin]++;
       const tasksOpen = openTasks(ar).filter((r) => !r.doneAt);
       return {
         area: ar,
@@ -1145,8 +1146,9 @@ async function notesServer({
     if (is('GET', 1, 'sources')) {
       return {
         sources: SOURCES.map((s) => ({
-          plugin: s, label: t(`src.${s}`), hint: t(`srch.${s}`), enabled: true, available: true, open: [...state.items.values()].filter((i) => i.plugin === s && !i.done).length,
-          lastSync: state.now - 3600000, error: null, groups: [...new Map([...state.items.values()].filter((i) => i.plugin === s && i.group).map((i) => [i.group.id, { id: i.group.id, label: i.group.label, count: 1 }])).values()],
+          plugin: s, label: t(`src.${s}`), hint: t(`srch.${s}`), enabled: true, available: true, open: [...state.items.values()].filter((i) => i.plugin === s && !i.done && !i.event).length,
+          // 1.9.0: the calendars are no groups of the source Mail (they have „Termine aus dem Kalender“)
+          lastSync: state.now - 3600000, error: null, groups: [...new Map([...state.items.values()].filter((i) => i.plugin === s && i.group && !i.event).map((i) => [i.group.id, { id: i.group.id, label: i.group.label, count: 1 }])).values()],
         })),
       };
     }

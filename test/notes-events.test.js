@@ -225,6 +225,11 @@ describe('NotesService: plugin 1.9.0 „Termin“', () => {
     let v = (await svc.view({ name: 'myday' })).view;
     assert.deepEqual(section(v, 'upcoming').items.filter((x) => x.event).map((x) => x.title), ['Outlet']);
     assert.ok(!section(v, 'overdue').items.some((x) => x.event));
+    // the source Mail: no calendars as groups, events not counted, not in its view
+    const mail = (await svc.sources()).sources.find((x) => x.plugin === 'gatecontrol-mail');
+    assert.ok(!mail.groups.some((g) => g.id.startsWith('cal:')));
+    assert.equal((await svc.nav({ area: 'private' })).nav.sources.find((x) => x.plugin === 'gatecontrol-mail').open, 1);
+    assert.ok(!(await svc.view({ name: 'source:gatecontrol-mail' })).view.sections.some((s) => s.items.some((x) => x.event)));
     const pl = (await svc.view({ name: 'planned' })).view;
     assert.deepEqual(section(pl, 'week').items.filter((x) => x.event).map((x) => x.title), ['Outlet']);
     // Feiertage on, Privat off — and back to the default
