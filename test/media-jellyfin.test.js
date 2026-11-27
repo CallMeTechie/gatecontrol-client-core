@@ -102,6 +102,48 @@ describe('JellyfinLibrary against a fake server', () => {
     assert.equal(srv.requests.length, 3);
   });
 
+  it('"Ordner": the libraries with video, a library\'s folders and titles; music, books and photos left out', async () => {
+    srv.json({ Items: [
+      { Id: 'v1', Name: 'Filme', Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true },
+      { Id: 'v2', Name: 'Musik', Type: 'CollectionFolder', CollectionType: 'music', IsFolder: true },
+      { Id: 'v3', Name: 'Heimvideos', Type: 'CollectionFolder', CollectionType: 'homevideos', IsFolder: true },
+      { Id: 'v4', Name: 'Fotos', Type: 'CollectionFolder', CollectionType: 'photos', IsFolder: true },
+      { Id: 'v5', Name: 'Live TV', Type: 'UserView', CollectionType: 'livetv', IsFolder: true },
+      { Id: 'v6', Name: 'Gemischt', Type: 'CollectionFolder', IsFolder: true },
+      { Id: '../x', Name: 'Pfad', Type: 'CollectionFolder', IsFolder: true },
+    ] });
+    const v = await library.views();
+    assert.ok(v.ok);
+    assert.deepEqual(v.value.folders, [{ id: 'v1', name: 'Filme' }, { id: 'v3', name: 'Heimvideos' }, { id: 'v6', name: 'Gemischt' }]);
+    assert.deepEqual(v.value.items, []);
+    const rv = srv.take();
+    assert.equal(rv.path, '/UserViews');
+    assert.equal(rv.query.get('userId'), 'u1');
+
+    srv.json({ Items: [
+      { Id: 'f1', Name: 'Sommer 2024', Type: 'Folder', IsFolder: true },
+      { Id: 'b1', Name: 'Kobalt-Reihe', Type: 'BoxSet', IsFolder: true },
+      { Id: 'a1', Name: 'Album', Type: 'MusicAlbum', IsFolder: true },
+      movie,
+      { Id: 's9', Name: 'Station Eisvogel', Type: 'Series', IsFolder: true, ProductionYear: 2024 },
+      { Id: 'h1', Name: 'Geburtstag', Type: 'Video', RunTimeTicks: 6000000000 },
+      { Id: 'p1', Name: 'Strand', Type: 'Photo' },
+      { Id: 'x1', Name: 'Hörbuch', Type: 'Audio' },
+    ], TotalRecordCount: 8 });
+    const c = await library.children('v1');
+    assert.ok(c.ok);
+    assert.deepEqual(c.value.folders, [{ id: 'f1', name: 'Sommer 2024' }, { id: 'b1', name: 'Kobalt-Reihe' }]);
+    assert.deepEqual(c.value.items.map((t) => [t.id, t.kind]), [['m1', 'movie'], ['s9', 'series'], ['h1', 'video']]);
+    assert.equal(c.value.total, 8);
+    const rc = srv.take();
+    assert.equal(rc.path, '/Items');
+    assert.equal(rc.query.get('parentId'), 'v1');
+    assert.equal(rc.query.get('sortBy'), 'SortName');
+    assert.equal(rc.query.get('recursive'), null, 'one level only');
+    assert.deepEqual(await library.children('../Users'), { ok: false, code: 'not_found', status: null });
+    assert.equal(srv.requests.length, 2);
+  });
+
   it("the detail page with the file's streams", async () => {
     srv.json({ ...movie, Overview: 'Eine Funkerin …', MediaSources: [version] });
     const d = (await library.detail('m1')).value;

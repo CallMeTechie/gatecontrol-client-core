@@ -155,6 +155,29 @@ describe('MediaService with a fake Jellyfin', () => {
     assert.equal(media.status().sources[0].signedIn, false, 'the access dropped, the source stays');
   });
 
+  it('"Ordner": the libraries of Jellyfin and what one holds, with gcmedia:// pictures', async () => {
+    srv.json(serverAnswer).json(authAnswer);
+    const { source } = await media.signIn({ address: srv.homeBase, user: 'mila', password: 'x' });
+    srv.take(); srv.take();
+    srv.enqueue({ status: 200, body: Buffer.alloc(100000) });
+    srv.json({ Items: [{ Id: 'v1', Name: 'Filme', Type: 'CollectionFolder', CollectionType: 'movies' }, { Id: 'v2', Name: 'Musik', CollectionType: 'music' }] });
+    const libs = await media.libraries(source.id);
+    assert.equal(libs.ok, true);
+    assert.deepEqual(libs.folders, [{ id: 'v1', name: 'Filme' }]);
+    assert.deepEqual(libs.items, []);
+    srv.take();
+    assert.equal(srv.take().path, '/UserViews');
+    srv.json({ Items: [{ Id: 'f1', Name: 'Klassiker', Type: 'Folder', IsFolder: true }, movie], TotalRecordCount: 2 });
+    const inside = await media.libraryItems(source.id, 'v1');
+    assert.equal(inside.ok, true);
+    assert.deepEqual(inside.folders, [{ id: 'f1', name: 'Klassiker' }]);
+    assert.equal(inside.items[0].id, 'm1');
+    assert.match(inside.items[0].poster, /^gcmedia:\/\/image\//);
+    assert.equal(inside.total, 2);
+    assert.equal(srv.take().query.get('parentId'), 'v1');
+    assert.equal((await media.libraries('nope')).code, 'not_found');
+  });
+
   it('"Gerät anmelden" confirms the code of the TV; Abmelden signs this device out', async () => {
     srv.json(serverAnswer).json(authAnswer);
     const { source } = await media.signIn({ address: srv.homeBase, user: 'mila', password: 'x' });
