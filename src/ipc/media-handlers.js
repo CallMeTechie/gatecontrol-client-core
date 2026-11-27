@@ -45,6 +45,12 @@
  *                         'no_vlc' | 'unsupported' (WebDAV has no path for Windows' app) | … }   "In VLC öffnen" /
  *                         "In anderer App öffnen" (4h)
  *   media:external:info   () → { ok, vlc, openPath }
+ *   media:convert:hint    ({ id, itemId, versionId? }) → { ok, hint: null | { kind: 'offer' | 'requested' | 'queued' |
+ *                         'running', position?, startsAt? (ms), percent?, problem: { code, codec } } }   „Videos umwandeln“
+ *                         (gatecontrol-medien 1.6.0): only when this PC does not show the picture itself (after media:detail)
+ *   media:convert:prefetch ({ id, itemIds: [≤ 100] }) → { ok }   a season's episodes asked ahead in one question
+ *   media:convert:request ({ id, itemId }) → { ok, hint } | { ok: false, code: 'rate_limited' | 'not_found' | … }
+ *                         „Für heute Nacht vormerken“: onto the plugin's list only (the admin queues it)
  *   media:tracks          ({ seriesId }) → { ok, choice }
  *   media:tracks:set      ({ seriesId, choice: { audioLanguage, subtitleLanguage, subtitlesOff } }) → { ok }
  *
@@ -150,6 +156,12 @@ function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, l
     return m.shareExternal({ sourceId: a.id, ...p, app: a.app, title: a.title || null });
   }));
   handle('media:external:info', wrap(async () => m.externalInfo()));
+  handle('media:convert:hint', wrap(async (a) => (isId(a.id) && isItem(a.itemId) && (a.versionId == null || isItem(a.versionId)) ? m.convertHint(a.id, a.itemId, a.versionId || null) : invalid())));
+  handle('media:convert:prefetch', wrap(async (a) => {
+    if (!isId(a.id) || !Array.isArray(a.itemIds) || a.itemIds.length > 100 || !a.itemIds.every(isItem)) return invalid();
+    return m.convertPrefetch(a.id, a.itemIds);
+  }));
+  handle('media:convert:request', wrap(async (a) => (isId(a.id) && isItem(a.itemId) ? m.convertRequest(a.id, a.itemId) : invalid())));
   handle('media:tracks', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.trackChoice(a.seriesId) : invalid())));
   handle('media:tracks:set', wrap(async (a) => (isStr(a.seriesId, 80) && a.seriesId ? m.setTrackChoice(a.seriesId, obj(a.choice)) : invalid())));
 

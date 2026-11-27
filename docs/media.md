@@ -152,6 +152,29 @@ const mediaSources = new MediaServerSources({ media, apiClient, pushClient, noti
 mediaSources.start();
 ```
 
+## „Videos umwandeln“: the hint before playing (gatecontrol-medien 1.6.0)
+
+The plugin converts overnight the files that do not play everywhere (contract „umwandeln-apps-vertrag“).
+`MediaConvert` (`src/services/media-convert.js`, `mediaSources.convert`; pure parts in `src/utils/media-convert.js`)
+asks `GET …/v1/convert/status?items=<id>,…` (up to 100 ids, what comes within 20 ms in one question, kept 3 min) and
+sends `POST …/v1/convert/request { itemId }` („Für heute Nacht vormerken“: only onto the list, the admin queues it).
+Only for Jellyfin sources of the server's list, only while the plugin is visible and at least 1.6.0. 404 (older plugin),
+403 `no_access` / `license_required`: no hint, not asked again for 30 min. A network error: no hint, asked next time.
+
+**The picture on this PC** (`videoProblem`, with the caps of the page): Chromium in the app plays H.264 in every form —
+High 10 (10 bit), 4:2:2 and 4:4:4 too (checked with the Electron of the Pro client: D3D11 takes 8-bit H.264, the rest
+falls back to Chromium's software decoder; 1080p50 in 10 bit runs smoothly). So the plugin's most common finding
+(`h264_10bit`) plays here directly: no hint. Converted on the NAS here are HEVC without the hardware decoder, AV1
+without a decoder, MPEG-2 / VC-1 / MPEG-4 ASP / WMV and other old codecs, Dolby Vision without a fallback and HDR on an
+SDR screen.
+
+**The hint** (`hintOf`): only when the picture is converted here and the plugin knows the file — `queued` (place, start),
+`running` (percent), `requested` („vorgemerkt“), the offer only for files the plugin rates `convert` (the NAS does not
+convert them smoothly while playing) with `available: true`; `done` and `hint` / `info` files nothing. Playing stays.
+
+IPC: `media:convert:hint ({ id, itemId, versionId? })` (after `media:detail`), `media:convert:prefetch ({ id, itemIds })`
+(a season's episodes in one question), `media:convert:request ({ id, itemId })`.
+
 ## "Auf TV/PC abspielen": this PC as the receiver
 
 The phone sends a title to "GateControl für Windows" as it does to GateControl TV: the same cast contract version 1

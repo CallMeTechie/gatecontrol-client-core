@@ -26,7 +26,7 @@ function fakeMedia() {
   for (const n of ['status', 'setCaps', 'setQuality', 'check', 'networkChanged', 'discover', 'server', 'trust', 'quickConnectStart', 'quickConnectPoll',
     'quickConnectCancel', 'signIn', 'authorizeDevice', 'addShare', 'removeSource', 'setAlwaysOriginal', 'resume', 'latest', 'movies', 'series', 'seasons',
     'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll',
-    'serverStatus', 'serverRefresh']) m[n] = rec(n);
+    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest']) m[n] = rec(n);
   m.stream = { revoke: rec('revoke') };
   m.boom = () => { throw Object.assign(new Error('bad'), { code: 'offline' }); };
   return m;
@@ -64,7 +64,16 @@ describe('media-handlers', () => {
     assert.equal((await call('media:source:original', { id: 's1', on: 'yes' })).code, 'invalid');
     assert.equal((await call('media:share:open', { id: 's1', path: '' })).code, 'invalid');
     assert.equal((await call('media:stream:end', {})).code, 'invalid');
+    assert.equal((await call('media:convert:hint', { id: 's1', itemId: '../Users' })).code, 'invalid');
+    assert.equal((await call('media:convert:prefetch', { id: 's1', itemIds: 'x' })).code, 'invalid');
+    assert.equal((await call('media:convert:prefetch', { id: 's1', itemIds: Array(101).fill('m1') })).code, 'invalid');
+    assert.equal((await call('media:convert:request', { id: '../x', itemId: 'm1' })).code, 'invalid');
     assert.equal(m.calls.length, 0);
+    assert.equal((await call('media:convert:hint', { id: 's1', itemId: 'm1' })).name, 'convertHint');
+    assert.deepEqual(m.calls[0].slice(1), ['s1', 'm1', null]);
+    assert.equal((await call('media:convert:prefetch', { id: 's1', itemIds: ['m1', 'm2'] })).name, 'convertPrefetch');
+    assert.equal((await call('media:convert:request', { id: 's1', itemId: 'm1' })).name, 'convertRequest');
+    m.calls.length = 0;
     assert.equal((await call('media:play', { id: 's1', itemId: 'm1', audioIndex: 2, subtitleIndex: -1, quality: '8', seriesId: 's9' })).name, 'play');
     assert.deepEqual(m.calls[0][1], { sourceId: 's1', itemId: 'm1', versionId: null, startMs: undefined, audioIndex: 2, subtitleIndex: -1, quality: '8', originalBps: undefined, seriesId: 's9' });
     assert.equal((await call('media:sources:refresh')).name, 'serverRefresh');

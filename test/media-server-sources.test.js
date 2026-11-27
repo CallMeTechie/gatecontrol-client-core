@@ -567,3 +567,70 @@ describe('MediaServerSources', () => {
     });
   });
 });
+
+describe('MediaServerSources: „Videos umwandeln“ (gatecontrol-medien 1.6.0)', () => {
+  let jf;
+  beforeEach(async () => { jf = await fakeJellyfin(); clock.t = Date.parse('2026-11-25T19:00:00Z'); });
+  afterEach(async () => { await jf.close(); });
+
+  const ITEM = '0123456789abcdef0123456789abcdef';
+  const H264 = 'aaaaaaaabbbbbbbbccccccccdddddddd';
+  const item = (id, video) => ({ Id: id, Name: 'Folge 3', Type: 'Episode', SeriesId: 's9', SeriesName: 'Kobaltnacht',
+    MediaSources: [{ Id: `v${id.slice(0, 8)}`, Container: 'mkv', MediaStreams: [{ Index: 0, Type: 'Video', ...video }, { Index: 1, Type: 'Audio', Codec: 'aac', Channels: 2 }] }] });
+  const plugins = (version) => ({ 'GET /api/v1/client/plugins': () => ({ ok: true, plugins: [{ id: MSV.PLUGIN_ID, version, tab: { label: 'Medien' } }] }) });
+
+  it('the hint only when this PC does not show the picture itself and the plugin knows the file; vormerken; prefetch', async () => {
+    const states = { [ITEM]: { level: 'convert', state: 'none', requested: false }, [H264]: { level: 'convert', state: 'none' } };
+    const { ss, media, api } = setup({ jf, tunnel: tunnelUp(), handlers: {
+      ...plugins('1.6.0'),
+      [`GET ${P('v1/convert/status')}`]: (o) => ({ ok: true, v: 1, available: true, items: String(o.params.items).split(',').filter((id) => states[id]).map((id) => ({ id, ...states[id] })) }),
+      [`POST ${P('v1/convert/request')}`]: (o) => ({ ok: true, v: 1, requested: true, state: 'none', itemId: o.body.itemId }),
+    } });
+    jf.routes[`GET /Items/${ITEM}`] = () => ({ body: item(ITEM, { Codec: 'hevc', VideoRangeType: 'DOVI', Width: 1920, Height: 1080 }) });
+    jf.routes[`GET /Items/${H264}`] = () => ({ body: item(H264, { Codec: 'h264', Profile: 'High 10', BitDepth: 10, VideoRangeType: 'SDR', Width: 1920, Height: 1080 }) });
+    await ss.refresh();
+    assert.deepEqual(await media.convertHint('jf-1', ITEM), { ok: true, hint: null }, 'before the detail: nothing known');
+    assert.equal((await media.detail('jf-1', ITEM)).ok, true);
+    assert.equal((await media.detail('jf-1', H264)).ok, true);
+    assert.deepEqual((await media.convertHint('jf-1', ITEM)).hint.problem, { code: 'hevc', codec: 'hevc' }, 'no HEVC decoder (the caps before the player)');
+    media.setCaps({ hevc: true, hdr: true });
+    const h = await media.convertHint('jf-1', ITEM);
+    assert.deepEqual(h, { ok: true, hint: { kind: 'offer', problem: { code: 'dovi', codec: 'hevc' } } }, 'Dolby Vision without a fallback: also with HEVC');
+    assert.deepEqual(await media.convertHint('jf-1', H264), { ok: true, hint: null }, 'H.264 10-bit plays here directly');
+    const asked = api.calls.filter((c) => c.path === P('v1/convert/status'));
+    assert.equal(asked.length, 1, 'the H.264 file was not even asked for');
+
+    const r = await media.convertRequest('jf-1', ITEM);
+    assert.deepEqual(r, { ok: true, hint: { kind: 'requested', problem: { code: 'dovi', codec: 'hevc' } } });
+    assert.deepEqual(api.calls.find((c) => c.path === P('v1/convert/request')).opts.body, { itemId: ITEM });
+    assert.equal((await media.convertHint('jf-1', ITEM)).hint.kind, 'requested');
+
+    // a season's episodes ahead: one question
+    api.calls.length = 0;
+    const eps = ['11111111111111111111111111111111', '22222222222222222222222222222222', 'm1'];
+    assert.deepEqual(await media.convertPrefetch('jf-1', eps), { ok: true });
+    const pre = api.calls.filter((c) => c.path === P('v1/convert/status'));
+    assert.equal(pre.length, 1);
+    assert.deepEqual(pre[0].opts.params.items.split(','), eps.slice(0, 2));
+
+    // a share is not Jellyfin: nothing
+    assert.deepEqual(await media.convertHint('sh-1', ITEM), { ok: true, hint: null });
+    assert.equal((await media.convertRequest('sh-1', ITEM)).code, 'unavailable');
+  });
+
+  it('plugin before 1.6.0: nothing asked, no hint; 1.6.0 without the route (404): no hint either', async () => {
+    const old = setup({ jf, tunnel: tunnelUp(), handlers: plugins('1.5.2') });
+    jf.routes[`GET /Items/${ITEM}`] = () => ({ body: item(ITEM, { Codec: 'mpeg2video', Width: 720, Height: 576 }) });
+    await old.ss.refresh();
+    await old.media.detail('jf-1', ITEM);
+    assert.deepEqual(await old.media.convertHint('jf-1', ITEM), { ok: true, hint: null });
+    assert.ok(!old.api.calls.some((c) => c.path.includes('/convert/')), 'not asked');
+
+    const missing = setup({ jf, tunnel: tunnelUp(), handlers: plugins('1.6.0') });
+    await missing.ss.refresh();
+    await missing.media.detail('jf-1', ITEM);
+    assert.deepEqual(await missing.media.convertHint('jf-1', ITEM), { ok: true, hint: null });
+    assert.deepEqual(await missing.media.convertHint('jf-1', ITEM), { ok: true, hint: null });
+    assert.equal(missing.api.calls.filter((c) => c.path.includes('/convert/')).length, 1, '404: asked once, then off');
+  });
+});
