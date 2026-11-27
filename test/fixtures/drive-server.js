@@ -9,6 +9,7 @@
 //   const srv = await driveServer({ plugin, seat, licence });
 //   srv.url, srv.state (requests, nodes, media, uploadCalls, links),
 //   srv.state.fail = { '<METHOD> <route>': { status, code } } — refuse a route,
+//   srv.holdMedia = <promise> — media uploads (PUT) wait for it,
 //   srv.state.log — the change log (GET changes?since=): every create / update / move / delete / restore / purge,
 //   srv.mutate.* — changes made "by another device" (create a file or folder, change, rename / move, delete),
 //   srv.close()
@@ -267,6 +268,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.opCalls = [];
   state.zips = [];
   srv.opAsync = false;
+  srv.holdMedia = null;
   srv.undoMs = 15 * 60 * 1000;
   srv.opsMax = 3;
   srv.opMaxIds = 10000;
@@ -533,6 +535,8 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return up ? json(res, 200, { offset: up.data.length, total: up.total, mime: up.mime }) : json(res, 404, { error: 'not_found' });
     }
     if (req.method === 'PUT' && p === MEDIA) {
+      // srv.holdMedia = a promise: every media upload waits for it (a file "on its way", e.g. for "Abbrechen")
+      if (srv.holdMedia) await srv.holdMedia;
       const uploadId = url.searchParams.get('uploadId');
       const offset = Number(url.searchParams.get('offset') || 0);
       const range = req.headers['content-range'] || null;
