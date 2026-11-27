@@ -22,6 +22,10 @@
  *   notes:task:place:consent ({ id, accept })  (plugin 1.5.0)
  *   notes:task:complete ({ id, done, userId? }) · notes:family:seen · notes:parse ({ text, area, listId? })
  *   notes:prefs:set ({ patch: { feedback } }) · turn / people / stars of notes:task:create and :update  (plugin 1.6.0)
+ *   notes:events:calendars · notes:event:create ({ event }) → { event, items, queued, clientId, pending? }
+ *   notes:event:update ({ id, patch }) · notes:event:delete ({ id }) · notes:event:unqueue ({ clientId }) · notes:events:pending
+ *   notes:parse ({ text, mode: 'event' }) · notes:prefs:set ({ patch: { groups: { 'gatecontrol-mail|cal:7': 'show' | null } } })
+ *   (plugin 1.9.0 „Termin“: the event goes into a calendar of Mail; without a connection it waits here with a clientId)
  *   notes:task:delete ({ id }) · notes:item ({ id }) · notes:item:complete ({ id, done }) · notes:item:carry ({ id })
  *   notes:notebooks ({ area }) · notes:notebook:create ({ name, area, color?, vault? }) → recoveryKey for a Tresor
  *   notes:notebook:update ({ id, patch }) · notes:notebook:delete ({ id }) · notes:notebook:members ({ id, members })
@@ -43,6 +47,7 @@
 
 const crypto = require('crypto');
 const N = require('../utils/notes');
+const Ev = require('../utils/notes-events');
 
 const NOTES_EVENTS = {
   state: 'notes:state',
@@ -98,7 +103,8 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
   on('notes:parse', async (a) => {
     if (typeof a.text !== 'string' || a.text.length > 1000) return invalid('text');
     if (a.listId != null && !id(a.listId)) return invalid('listId');
-    return s.parse({ text: a.text, area: area(a.area), listId: a.listId || null });
+    if (a.mode != null && a.mode !== 'event') return invalid('mode');
+    return s.parse({ text: a.text, area: area(a.area), listId: a.listId || null, mode: a.mode || null });
   });
   on('notes:people', async () => s.people());
   on('notes:search', async (a) => {
@@ -117,8 +123,9 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
       body.sources = clean;
     }
     if (p.groups !== undefined) {
-      const clean = N.normalizePrefs({ groups: p.groups }).groups;
-      if (!Object.keys(clean).length) return invalid('groups');
+      // plugin 1.9.0: 'show' (a calendar hidden by default) and null (back to the default) as well
+      const clean = N.groupsArg(p.groups);
+      if (!clean) return invalid('groups');
       body.groups = clean;
     }
     if (p.times !== undefined) body.times = N.normalizePrefs({ times: p.times }).times;
@@ -207,6 +214,16 @@ function registerNotesHandlers(handle, { notes: s, getMainWindow, log }) {
   on('notes:place:fav', async (a) => { const b = N.favArg({ key: a.key, placeId: a.placeId === undefined ? null : a.placeId }); return b ? s.setPlaceFav(b) : invalid('key'); });
   on('notes:place:search', async (a) => { const b = N.placeSearchArg(a); return b ? s.searchPlaces(b) : invalid('near'); });
   on('notes:task:place:consent', async (a) => (id(a.id) && typeof a.accept === 'boolean' ? s.placeConsent(a.id, a.accept) : invalid('accept')));
+  // „Termin“ (plugin 1.9.0): the body is checked here, the clientId is made by the service (never by the renderer)
+  on('notes:events:calendars', async () => s.eventCalendars());
+  on('notes:events:pending', async () => s.pendingEvents());
+  on('notes:event:create', async (a) => { const b = Ev.eventCreate(a.event); return b ? s.createEvent(b) : invalid('event'); });
+  on('notes:event:update', async (a) => {
+    const b = Ev.eventPatch(a.patch);
+    return id(a.id) && b && Object.keys(b).length ? s.updateEvent(a.id, b) : invalid('patch');
+  });
+  on('notes:event:delete', async (a) => (id(a.id) ? s.deleteEvent(a.id) : invalid('id')));
+  on('notes:event:unqueue', async (a) => (Ev.clientIdOf(a.clientId) ? s.unqueueEvent(a.clientId) : invalid('clientId')));
   on('notes:item', async (a) => (id(a.id) ? s.item(a.id) : invalid('id')));
   on('notes:item:complete', async (a) => (id(a.id) && typeof a.done === 'boolean' ? s.completeItem(a.id, a.done) : invalid('id')));
   on('notes:item:carry', async (a) => (id(a.id) ? s.carryItem(a.id) : invalid('id')));

@@ -82,6 +82,11 @@ const DEADLINE_DAYS_MAX = 90;
 // a member's role in a list or a notebook (plugin 1.2.0: 'read' only looks)
 const ROLES = Object.freeze(['owner', 'write', 'read']);
 
+// plugin 1.9.0 (`calendarEvents`): the kinds of a calendar in Mail, the choice per group of „Quellen“ ('show' is new)
+const CALENDAR_KINDS = Object.freeze(['own', 'shared', 'family', 'subscribed', 'tasks']);
+const GROUP_CHOICES = Object.freeze(['private', 'work', 'hide', 'show']);
+const COLOR_HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const PLUGIN_RE = /^gatecontrol-[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -486,6 +491,23 @@ function normalizeTask(v) {
   return t;
 }
 
+/**
+ * `event` of an item (plugin 1.9.0: an event of a calendar in Mail — events of Schule and Alltag have none) → { end,
+ * location, calendar: { key, name, color, kind } | null, eventId, recurring, writable } or null. `end`: { date, time }
+ * (all day: time null, only over several days) or null. `eventId`: Mail's number (null: the family's calendar).
+ */
+function eventOf(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const c = obj(o.calendar);
+  const key = c && typeof c.key === 'string' && GROUP_ID_RE.test(c.key) ? c.key : null;
+  return {
+    end: whenOf(o.end), location: line(o.location, 255),
+    calendar: key ? { key, name: line(c.name, NAME_MAX) || '', color: typeof c.color === 'string' && COLOR_HEX_RE.test(c.color) ? c.color : null, kind: CALENDAR_KINDS.includes(c.kind) ? c.kind : 'own' } : null,
+    eventId: posId(o.eventId), recurring: bool(o.recurring), writable: bool(o.writable),
+  };
+}
+
 /** Item (an item of another plugin) → cleaned, or null. */
 function normalizeItem(v) {
   const o = obj(v);
@@ -494,7 +516,7 @@ function normalizeItem(v) {
   const plugin = s && pluginOf(s.plugin);
   if (!id || !plugin) return null;
   const group = obj(o.group);
-  return {
+  const i = {
     uid: `s:${id}`, type: 'source', id, kind: ITEM_KINDS.includes(o.kind) ? o.kind : 'task', title: line(o.title, 200) || '',
     subtitle: line(o.subtitle, 200),
     source: { plugin, label: line(s.label, 60) || plugin.replace(/^gatecontrol-/, ''), open: openOf(s.open) || { plugin, route: '' } },
@@ -503,7 +525,11 @@ function normalizeItem(v) {
     doneAt: msOf(o.doneAt), canComplete: bool(o.canComplete), assignee: personOf(o.assignee), progress: progressOf(o.progress),
     group: group && typeof group.id === 'string' && GROUP_ID_RE.test(group.id) ? { id: group.id, label: line(group.label, 80) || group.id } : null,
     meta: metaOf(o.meta), updatedAt: msOf(o.updatedAt),
+    // plugin 1.9.0: an event of a calendar in Mail — no tick box, never overdue (null: every other item, an older plugin)
+    event: eventOf(o.event),
   };
+  if (i.event) { i.kind = 'event'; i.canComplete = false; i.overdue = false; }
+  return i;
 }
 
 /** A row of a view: a task or an item. */
@@ -774,7 +800,7 @@ function normalizePrefs(v) {
   }
   const groups = {};
   for (const [k, x] of Object.entries(obj(o.groups) || {}).slice(0, 500)) {
-    if (/^[a-z0-9-]{1,60}\|[A-Za-z0-9:._-]{1,80}$/.test(k) && ['private', 'work', 'hide'].includes(x)) groups[k] = x;
+    if (/^[a-z0-9-]{1,60}\|[A-Za-z0-9:._-]{1,80}$/.test(k) && GROUP_CHOICES.includes(x)) groups[k] = x;
   }
   const out = { area: areaOf(o.area) || 'private', evening: timeOf(o.evening) || '18:00', sources, groups, times: t };
   // plugin 1.5.0: the person's switches of places (an older plugin has none)
@@ -810,6 +836,7 @@ function normalizeMe(v) {
   const yd = obj(o.yesterday);
   const fam = obj(o.shopping) && obj(o.shopping.family);
   const dd = obj(o.driveDeadlines);
+  const ev = obj(o.events);
   return {
     user: { id: posId(u.id), name: line(u.name, 120) || '' }, lang: o.lang === 'en' ? 'en' : 'de', today: dateOf(o.today),
     time: timeOf(o.time), timezone: line(o.timezone, 60), features: arr(o.features).filter((f) => typeof f === 'string' && /^[A-Za-z]{1,30}$/.test(f)).slice(0, 50),
@@ -828,6 +855,8 @@ function normalizeMe(v) {
     familyTasks: familyTasksOf(o.familyTasks),
     // plugin 1.7.0: can Drive be asked, has Drive handed reminders of its deadlines over (the same for everybody)
     driveDeadlines: dd ? { available: bool(dd.available), active: bool(dd.active) } : null,
+    // plugin 1.9.0: can the person make an event now (`reason` when not: no_mail, mail_old, feature_off, …) — null: older
+    events: ev ? { available: bool(ev.available), reason: bool(ev.available) ? null : (typeof ev.reason === 'string' && CODE_RE.test(ev.reason) ? ev.reason : 'no_calendar') } : null,
   };
 }
 
@@ -887,6 +916,8 @@ function normalizeParsed(v) {
     assignee: as && posId(as.id) ? { id: as.id, name: line(as.name, 120) || '' } : null, assigneeName: line(o.assigneeName, 120),
     repeat: repeatOf(o.repeat),
     people: arr(o.people).slice(0, PEOPLE_MAX).map(memberOf).filter(Boolean), turn: turnOf(o.turn), stars: starsOf(o.stars) || null,
+    // plugin 1.9.0: what `mode: 'event'` reads (an older plugin: null / false / null / false)
+    endTime: timeOf(o.endTime), allDay: bool(o.allDay), location: line(o.location, 255), looksLikeEvent: bool(o.looksLikeEvent),
   };
 }
 
@@ -1366,6 +1397,20 @@ function pushFile(topic, data, actionId) {
   return dl && dl.open && dl.open.route ? dl.open : null;
 }
 
+/**
+ * `groups` of PUT prefs as the renderer may send them: '<plugin>|<group>' → 'private' | 'work' | 'hide' | 'show' (plugin
+ * 1.9.0: a calendar hidden by default shown) | null (back to the default) → the object, or null when nothing is right.
+ */
+function groupsArg(v) {
+  const o = obj(v);
+  if (!o) return null;
+  const out = {};
+  for (const [k, x] of Object.entries(o).slice(0, 500)) {
+    if (/^[a-z0-9-]{1,60}\|[A-Za-z0-9:._-]{1,80}$/.test(k) && (x === null || GROUP_CHOICES.includes(x))) out[k] = x;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** The live event `changed` { what } → the kinds that changed. */
 function changedOf(data) {
   const d = obj(data) || {};
@@ -1393,4 +1438,5 @@ module.exports = {
   normalizeParsed, normalizeJob, normalizeMsAccounts, normalizeMsPreview, normalizeConsent, normalizeMsLinks, normalizeVault,
   viewName, dueArg, remindArg, taskPatch, taskCreate, moveArg, yesterdayArg, nameArg, membersArg, notesQuery, notePatch, toggleCheck,
   pushTarget, pushFile, changedOf, errorCode,
+  CALENDAR_KINDS, GROUP_CHOICES, eventOf, groupsArg, whenOf,
 };

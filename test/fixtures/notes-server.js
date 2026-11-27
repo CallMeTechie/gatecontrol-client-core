@@ -39,6 +39,12 @@
 // `notMoved` (state.notMoved), POST / PATCH places take `icon` / `visibility`, DELETE places/<id> answers 409 in_use
 // { usedBy, ref } while another plugin uses the place (state.placeUses) unless ?force=1, `me.places.profile`. A list's own role is 'owner' | 'write' | 'read' with `canEdit` as the plugin says them;
 // `readers` of a list (user ids) only read: their tasks are `canEdit: false`, writing answers 403 read_only.
+// With the 1.9.0 word (STAGE7: calendarEvents — not in the default either): „Termin“ — the person's calendars in Mail
+// (state.calendars, state.eventReminders; GET events/calendars with `shown` from prefs.groups), POST events (state.eventsReason:
+// a reason makes it 503 unavailable; a calendarId that is not a target: 404 { field: 'calendarId' }; the same clientId
+// again: the same event, replayed), PATCH / DELETE events/<id> (only events made here), `me.events`, the events as items
+// of Mail with `event` (srv.addEvent(): today in „Termine heute“, the next 14 days in „Demnächst“, never overdue),
+// POST parse { mode: 'event' }, prefs groups 'show' / null.
 //   const srv = await notesServer({ plugin, allowed, features, today, time, vaults, imports });
 //   srv.url, srv.state (lists, tasks, items, notebooks, notes, attachments, media, vaults, devices, keys, ms, jobs,
 //   requests …), srv.addTask({ id, listId, title, due, … }), srv.addShopList({ id, name, icon?, area?, family?, role?,
@@ -76,6 +82,7 @@ const STAGE3 = ['places', 'placeSearch'];
 const STAGE4 = ['taskTurns', 'taskStars', 'familyTasks', 'doneFeedback', 'placeMine'];
 const STAGE5 = ['driveDeadlines'];
 const STAGE6 = ['profilePlaces'];
+const STAGE7 = ['calendarEvents'];
 const LIST_ICONS = ['list', 'cart', 'home', 'tool', 'gift', 'plane', 'heart', 'work'];
 const SHOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const SHOP_WORDS = ['einkaufen', 'einkauf', 'einkäufe', 'besorgen', 'besorgung', 'besorgungen', 'shopping', 'groceries', 'grocery'];
@@ -155,6 +162,17 @@ async function notesServer({
     // plugin 1.6.0
     family: { available: true, listId: null, parents: [], kids: [], stars: true, starsMax: 10, moved: null },   // srv.addFamily()
     feedback: [],             // what the parents were told: { taskId, userId, stars } (the push kind done_feedback)
+    // plugin 1.9.0
+    calendars: [
+      { id: 7, key: 'cal:7', name: 'Privat', color: '#4F8DF5', kind: 'own', writable: true, area: 'private' },
+      { id: 8, key: 'cal:8', name: 'Arbeit', color: '#22A06B', kind: 'own', writable: true, area: 'work' },
+      { id: 9, key: 'cal:9', name: 'Feiertage', color: '#999999', kind: 'subscribed', writable: false, area: 'private' },
+      { id: 10, key: 'cal:10', name: 'Aufgaben', color: '#8A8F98', kind: 'tasks', writable: true, area: 'private' },
+      { id: null, key: 'overlay:familie', name: 'Familie', color: '#F5B544', kind: 'family', writable: false, area: 'private' },
+    ],
+    defaultCalendarId: 7, eventReminders: { timed: 15, allDay: 360 }, eventsReason: null,
+    events: new Map(),        // event id → { id, calendarId, title, date, time, endTime, endDate, location, reminder, repeat, clientId, hub }
+    eventKeys: new Map(),     // clientId → event id
   };
   if (features.includes('doneFeedback')) state.prefs.feedback = 'all';
   if (features.includes('places')) state.prefs.places = { search: true, nearby: true, quiet: { from: '21:00', to: '07:00' } };
@@ -638,10 +656,14 @@ async function notesServer({
       source: { plugin: i.plugin, label: t(`src.${i.plugin}`), open: { plugin: i.plugin, route: i.route || '' } },
       due: i.due, show, allDay: i.allDay, lead: i.lead, overdue: i.kind !== 'event' && overdueOf(show, i.done), area: i.area, important: i.important,
       done: i.done, doneAt: i.doneAt, canComplete: i.canComplete, assignee: i.assignee, progress: i.progress, group: i.group, meta: i.meta, updatedAt: i.updatedAt,
+      ...(i.event && has('calendarEvents') ? { event: i.event, overdue: false, canComplete: false } : {}),
     };
   };
   const sourceOn = (p) => !(state.prefs.sources[p] && state.prefs.sources[p].on === false);
-  const visibleItems = (a) => [...state.items.values()].filter((i) => i.area === a && sourceOn(i.plugin)).map(itemView);
+  // 1.9.0: a calendar's events show while its group is shown (the person's choice, else own / shared / family on)
+  const calShown = (key, kind) => { const g = state.prefs.groups[`gatecontrol-mail|${key}`]; return g === 'hide' ? false : g ? true : !['subscribed', 'tasks'].includes(kind); };
+  const itemOn = (i) => !i.event || (has('calendarEvents') && calShown(i.event.calendar.key, i.event.calendar.kind));
+  const visibleItems = (a) => [...state.items.values()].filter((i) => i.area === a && sourceOn(i.plugin) && itemOn(i)).map(itemView);
   const openTasks = (a) => [...state.tasks.values()].filter((x) => !x.deleted && !x.parentId && myLists(a).some((l) => l.id === x.listId));
   const sortKey = (x) => { const d = x.show || x.due; return `${d ? `${d.date} ${d.time || '99:99'}` : '9999'} ${String(x.title).toLowerCase()}`; };
   const byTime = (a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0);
@@ -685,7 +707,7 @@ async function notesServer({
       if (x.kind === 'event' && x.show.date === state.today) out.events.push(x);
       else if (x.overdue) out.overdue.push(x);
       else if (x.show.date === state.today) out.today.push(x);
-      else if (x.show.date <= soon && x.kind !== 'event') out.upcoming.push(x);
+      else if (x.show.date <= soon && (x.kind !== 'event' || x.event)) out.upcoming.push(x);
     }
     for (const k of Object.keys(out)) out[k].sort(byTime);
     return { view: 'myday', title: t('v.myday'), date: state.today, ...(has('yesterdayOpen') ? { yesterday: yesterdayView(a) } : {}), sections: [section('events', out.events), section('overdue', out.overdue), section('today', out.today), section('upcoming', out.upcoming), section('done', out.done, { collapsed: true })] };
@@ -868,6 +890,70 @@ async function notesServer({
     return { task: taskView(x, true), ...(parsed ? { parsed } : {}), ...(attach ? { attach } : {}), ...(place ? { place } : {}) };
   }
 
+  // ── plugin 1.9.0: „Termin“ ──
+  const calTarget = (c) => c.writable && c.kind !== 'tasks' && !!c.id;
+  function eventCalendars() {
+    const r = state.eventsReason;
+    if (r) return { state: 'none', reason: r, calendars: [], defaultId: null, reminders: { timed: null, allDay: null }, timeZone: null };
+    const cals = state.calendars.map((c) => ({ ...c, target: calTarget(c), isDefault: c.id === state.defaultCalendarId, shown: calShown(c.key, c.kind) }));
+    return { state: cals.some((c) => c.target) ? 'ok' : 'none', reason: cals.some((c) => c.target) ? null : 'no_calendar', calendars: cals, defaultId: state.defaultCalendarId, reminders: state.eventReminders, timeZone: 'Europe/Berlin' };
+  }
+  const plus1h = (tm) => `${String((Number(tm.slice(0, 2)) + 1) % 24).padStart(2, '0')}:${tm.slice(3)}`;
+  function eventItem(ev) {
+    const c = state.calendars.find((x) => x.id === ev.calendarId);
+    const due = { date: ev.date, time: ev.time || null };
+    return {
+      id: ev.itemId, plugin: 'gatecontrol-mail', kind: 'event', title: ev.title, subtitle: ev.location || null, due, allDay: !ev.time, lead: null, area: c.area,
+      canComplete: false, route: `event/${ev.id}`, group: { id: c.key, label: c.name },
+      event: { end: ev.time ? { date: ev.date, time: ev.endTime || plus1h(ev.time) } : (ev.endDate ? { date: ev.endDate, time: null } : null), location: ev.location || null,
+        calendar: { key: c.key, name: c.name, color: c.color, kind: c.kind }, eventId: ev.id, recurring: !!ev.repeat, writable: true },
+    };
+  }
+  function putEvent(ev) {
+    if (!ev.itemId) ev.itemId = id();
+    const it = eventItem(ev);
+    state.items.set(it.id, { subtitle: null, important: false, done: false, doneAt: null, assignee: null, progress: null, meta: {}, updatedAt: state.now, ...it });
+    return itemView(state.items.get(it.id));
+  }
+  function eventFields(b, creating) {
+    const out = {};
+    if (creating || b.title !== undefined) { if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 255) throw fail(400, 'invalid', { field: 'title' }); out.title = b.title.trim(); }
+    if (creating || b.date !== undefined) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.date))) throw fail(400, 'invalid', { field: 'date' });
+      out.date = b.date; out.time = b.time || null; out.endTime = b.time ? b.endTime || null : null; out.endDate = b.endDate || null;
+      if (b.allDay === true && b.time) throw fail(400, 'invalid', { field: 'allDay' });
+    }
+    if (b.location !== undefined) out.location = b.location || null;
+    if (b.reminder !== undefined) out.reminder = b.reminder;
+    if (b.repeat !== undefined) { if (b.repeat && b.repeat.type === 'after') throw fail(400, 'invalid', { field: 'repeat' }); out.repeat = b.repeat; }
+    return out;
+  }
+  function createEvent(b) {
+    if (state.eventsReason) throw fail(503, 'unavailable', { reason: state.eventsReason });
+    const f = eventFields(b, true);
+    if (b.clientId !== undefined && !/^[A-Za-z0-9_-]{8,64}$/.test(String(b.clientId))) throw fail(400, 'invalid', { field: 'clientId' });
+    if (b.clientId && state.eventKeys.has(b.clientId)) {
+      const ev = state.events.get(state.eventKeys.get(b.clientId));
+      if (ev) return { event: { id: ev.id, calendarId: ev.calendarId }, items: [itemView(state.items.get(ev.itemId))], clientId: b.clientId, replayed: true };
+    }
+    let calendarId = state.defaultCalendarId;
+    if (b.calendarId != null) {
+      const c = state.calendars.find((x) => x.id === b.calendarId);
+      if (!c || !calTarget(c)) throw fail(404, 'not_found', { field: 'calendarId' });
+      calendarId = c.id;
+    }
+    const ev = { id: id(), calendarId, location: null, reminder: undefined, repeat: null, ...f, clientId: b.clientId || null, hub: true };
+    state.events.set(ev.id, ev);
+    if (b.clientId) state.eventKeys.set(b.clientId, ev.id);
+    return { event: { id: ev.id, calendarId }, items: [putEvent(ev)], ...(b.clientId ? { clientId: b.clientId } : {}) };
+  }
+  function updateEvent(eid, b) {
+    const ev = state.events.get(posInt(eid));
+    if (!ev || !ev.hub) throw fail(404, 'not_found');
+    Object.assign(ev, eventFields(b, false));
+    return { event: { id: ev.id, calendarId: ev.calendarId }, items: [putEvent(ev)] };
+  }
+
   function route(method, p, q, b) {
     const parts = p.split('/').map(decodeURIComponent);
     const [a, x, y, z, w] = parts;
@@ -885,7 +971,21 @@ async function notesServer({
         } } : {}),
         ...(has('familyTasks') ? { familyTasks: familyTasksView() } : {}),
         ...(has('driveDeadlines') ? { driveDeadlines: { available: true, active: [...state.tasks.values()].some((r) => r.deadline && !r.deleted) } } : {}),
+        ...(has('calendarEvents') ? { events: { available: !state.eventsReason || state.eventsReason === 'unreachable', reason: state.eventsReason && state.eventsReason !== 'unreachable' ? state.eventsReason : null } } : {}),
       };
+    }
+    // 1.9.0: „Termin“ (an older plugin has none of these routes)
+    if (has('calendarEvents')) {
+      if (method === 'GET' && n === 2 && a === 'events' && x === 'calendars') return eventCalendars();
+      if (is('POST', 1, 'events')) return createEvent(b);
+      if (method === 'PATCH' && n === 2 && a === 'events') return updateEvent(x, b);
+      if (method === 'DELETE' && n === 2 && a === 'events') {
+        const ev = state.events.get(posInt(x));
+        if (!ev || !ev.hub) return { removed: false };
+        state.events.delete(ev.id);
+        state.items.delete(ev.itemId);
+        return { removed: true };
+      }
     }
     if (is('GET', 1, 'nav')) {
       const ar = area(q.area);
@@ -910,6 +1010,9 @@ async function notesServer({
       };
     }
     if (method === 'GET' && n === 2 && a === 'views') return view(x, area(q.area));
+    if (is('POST', 1, 'parse') && b.mode === 'event' && has('calendarEvents')) {
+      return { parsed: Q.parse(String(b.text || ''), { today: state.today, now: state.time, mode: 'event' }), attach: null, place: null };
+    }
     if (is('POST', 1, 'parse')) {
       let parsed = Q.parse(String(b.text || ''), { today: state.today, now: state.time, lists: myLists(area(b.area)).map((l) => ({ id: l.id, name: l.name })), people: state.people });
       // 1.6.0: `listId` — the list the line is typed in (or the one it names with #): only there stars are read
@@ -1029,7 +1132,7 @@ async function notesServer({
       if (b.area) state.prefs.area = area(b.area);
       if (b.evening) state.prefs.evening = b.evening;
       if (b.sources) for (const [k, v] of Object.entries(b.sources)) state.prefs.sources[k] = { ...(state.prefs.sources[k] || {}), ...v };
-      if (b.groups) Object.assign(state.prefs.groups, b.groups);
+      if (b.groups) { Object.assign(state.prefs.groups, b.groups); for (const [k, v] of Object.entries(state.prefs.groups)) if (v === null) delete state.prefs.groups[k]; }
       if (b.times) Object.assign(state.prefs.times, b.times);
       if (b.places && has('places')) {
         const pl = state.prefs.places;
@@ -1557,10 +1660,17 @@ async function notesServer({
     setTaskPlace: (taskId, { placeId = null, any = false, key = null, label = null, trigger = 'enter', by = 1, who = 1, consent = null }) => {
       state.taskPlace.set(taskId, { placeId, key, label, any, trigger, by, who, consent: consent || (by === who ? 'accepted' : 'pending') });
     },
+    /** An event of a calendar in Mail as the hub shows it (plugin 1.9.0) — made in Mail, not through the hub. */
+    addEvent: ({ calendarId = 7, title, date, time = null, endTime = null, endDate = null, location = null, repeat = null }) => {
+      const ev = { id: id(), calendarId, title, date, time, endTime, endDate, location, repeat, hub: false };
+      state.events.set(ev.id, ev);
+      putEvent(ev);
+      return ev;
+    },
     get down() { return state.down; },
     set down(v) { state.down = !!v; },
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
   };
 }
 
-module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, STAGE5, STAGE6, noteMeta };
+module.exports = { notesServer, PLUGIN, FEATURES, STAGE1, STAGE2, STAGE3, STAGE4, STAGE5, STAGE6, STAGE7, noteMeta };

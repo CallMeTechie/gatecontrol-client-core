@@ -3,14 +3,15 @@
  * Deterministic, no AI, no clock of its own — the same in the server, the portal and (ported 1:1) the apps:
  * test/vectors/quickparse.json holds the cases every port must pass.
  *
- *   parse(text, ctx) → { title, date, time, remind, important, list, listName, assignee, assigneeName, repeat, marks }
+ *   parse(text, ctx) → { title, date, time, remind, important, list, listName, assignee, assigneeName, repeat, marks,
+ *                        endTime, allDay, location, looksLikeEvent }
  *     ctx: { today: 'YYYY-MM-DD' (the wall-clock date in the hub's time zone),
  *            lists?: [{ id, name }], people?: [{ id, name }],
  *            times?: { morning: '09:00', noon: '12:00', afternoon: '15:00', evening: '19:00', night: '21:00' } }
  *     date 'YYYY-MM-DD' | null, time 'HH:MM' | null, remind { date, time } | null (= date and time when a time is given),
  *     list { id, name } | null with listName the written name when no list matched (the client may offer to create
  *     it), assignee { id, name } | null with assigneeName likewise, repeat a rule of repeat.js | null,
- *     marks [{ start, end, kind: 'date'|'time'|'repeat'|'list'|'person'|'important' }] (offsets in `text`, sorted).
+ *     marks [{ start, end, kind: 'date'|'time'|'repeat'|'list'|'person'|'important'|'place' }] (offsets in `text`, sorted).
  *
  * German and English work in every language. What it understands (each word on its own, case does not matter):
  *   heute, morgen, übermorgen, today, tomorrow, (the) day after tomorrow
@@ -35,6 +36,21 @@
  *   @Name (a person: the first of ctx.people whose name or first name starts with it), #liste (a list: the same
  *     name without case, spaces and dashes, else the only one starting with it)
  *   wichtig, dringend, important, urgent, ! and !! on their own
+ *
+ * „Termin“ (1.9.0) — parse(text, { …, mode: 'event' }) reads the line as an event of a calendar. Everything above
+ * holds; in addition, and only in this mode:
+ *   a span of time: 14 bis 16 Uhr, 14–16 Uhr, 14-16h, von 9:30 bis 11 Uhr, 14:00-15:30, 2 to 4 o'clock → time and
+ *     endTime (the second number needs „Uhr“ / „h“ / „o'clock“ behind it, or both carry minutes with a colon)
+ *   the place: after „im“, „in“, „bei“ or „beim“ (and an article behind it: der, die, das, dem, den, the) the rest of
+ *     what is left is the place and leaves the title („Einkaufen im Fashion Outlet“ → title „Einkaufen“, location
+ *     „Fashion Outlet“; „Elternabend in der Schule“ → „Schule“); a line that is only a place
+ *     („beim Zahnarzt“) keeps it as its title too
+ *   „3 Tage nach Erledigung“ is no rule of an event: it stays text
+ * The result carries, in every mode: endTime 'HH:MM' | null (event mode: an hour after `time` when no end was written,
+ * past midnight it wraps — „23:30“ → „00:30“, the next day), allDay (event mode: no time), location (the place, else
+ * null) and looksLikeEvent — the line names a date AND a time (a client in task mode may ask „Als Termin anlegen?“; it
+ * never switches by itself). Marks of event mode: the span is one 'time' mark, the place a 'place' mark from its
+ * word to the end of the place. In task mode endTime and location are null, allDay is false and nothing else changes.
  * What it took is removed from the title (with „am“, „um“, „bis“, „on“, „at“, „by“ before it and commas around it).
  */
 (function (root, factory) {
@@ -239,6 +255,14 @@
       { kind: 'date', re: PRE + '(?:(?:nächsten|naechsten|nächster|kommenden|diesen|next|this)\\s+)?(' + WD_WORD + ')',
         take: function (m) { var wd = weekdayOf(m[1]); return wd ? { date: nextWeekday(today, wd) } : null; } },
       // ── a time ──
+      // (event mode only) a span: „14 bis 16 Uhr“, „14–16 Uhr“, „von 9:30 bis 11 Uhr“, „14:00-15:30“
+      { kind: 'time', event: true, re: '(?:von\\s+|from\\s+|um\\s+|at\\s+)?(\\d{1,2})(?:([:.])(\\d{2}))?(?:\\s*uhr)?\\s*(?:bis|to|-|–|—)\\s*(\\d{1,2})(?:([:.])(\\d{2}))?(?:\\s*(uhr|h|o\'clock))?',
+        take: function (m) {
+          var h1 = +m[1], m1 = m[3] ? +m[3] : 0, h2 = +m[4], m2 = m[6] ? +m[6] : 0;
+          if (!m[7] && !(m[2] === ':' && m[5] === ':')) return null;
+          if (h1 > 23 || h2 > 24 || m1 > 59 || m2 > 59 || (h2 === 24 && m2)) return null;
+          return { time: hhmm(h1, m1), endTime: hhmm(h2 % 24, m2) };
+        } },
       { kind: 'time', re: '(?:um\\s+|gegen\\s+|ab\\s+)?halb\\s+(\\d{1,2})(?:\\s*uhr)?',
         take: function (m) { var h = +m[1] - 1; return h >= 0 && h <= 23 ? { time: hhmm(h, 30) } : null; } },
       { kind: 'time', re: '(?:um\\s+|at\\s+|gegen\\s+|ab\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.)',
@@ -282,6 +306,16 @@
     return pre.length === 1 ? pre[0] : null;
   }
 
+  /** What is left of a line as a title (or a place): white space folded, stray commas and dashes at the ends gone. */
+  function tidy(s) {
+    return s.replace(/\s+/g, ' ')
+      .replace(/\s+([,;:.!?])/g, '$1')
+      .replace(/([,;:])(?=[,;:])/g, '')
+      .replace(/^[\s,;:\-–—]+|[\s,;:\-–—]+$/g, '')
+      .replace(/\s*,\s*,+/g, ',')
+      .trim();
+  }
+
   function parse(text, ctxIn) {
     var ctx = ctxIn || {};
     if (!R || R.toDays(ctx.today) == null) throw new Error('quickparse: ctx.today (YYYY-MM-DD) is required');
@@ -291,6 +325,8 @@
     var c = { today: ctx.today, times: times };
     var work = src;
     var out = { title: '', date: null, time: null, remind: null, important: false, list: null, listName: null, assignee: null, assigneeName: null, repeat: null, marks: [] };
+    var eventMode = ctx.mode === 'event';
+    var endTime = null;
     var softTime = false;
 
     // #list and @person first (their words are never dates)
@@ -325,13 +361,17 @@
         if (r.kind === 'time' && out.time && !softTime) break;
         if (r.kind === 'repeat' && out.repeat) break;
         if (r.kind === 'important' && out.important) { work = blank(work, mm.index, mm.index + mm[0].length); out.marks.push({ start: mm.index, end: mm.index + mm[0].length, kind: 'important' }); continue; }
+        if (r.event && !eventMode) break;
         var got = r.take(mm);
         if (!got) continue;
+        // (event mode) „nach Erledigung“ is no rule of an event: the words stay
+        if (eventMode && got.repeat && got.repeat.type === 'after') continue;
         if (got.time && r.kind === 'time' && out.time && softTime && got.soft) continue;
         if (got.repeat) out.repeat = got.repeat;
         if (got.date) out.date = got.date;
         // a time of a word („morgen früh“, „abends“) gives way to a written one („morgen früh 7 Uhr“)
         if (got.time && (!out.time || softTime)) { out.time = got.time; softTime = !!got.soft || r.kind === 'date'; }
+        if (got.endTime) endTime = got.endTime;
         if (got.important) out.important = true;
         var start = mm.index;
         var end = mm.index + mm[0].length;
@@ -363,12 +403,35 @@
     }
     if (out.date && out.time) out.remind = { date: out.date, time: out.time };
 
-    out.title = work.replace(/\s+/g, ' ')
-      .replace(/\s+([,;:.!?])/g, '$1')
-      .replace(/([,;:])(?=[,;:])/g, '')
-      .replace(/^[\s,;:\-–—]+|[\s,;:\-–—]+$/g, '')
-      .replace(/\s*,\s*,+/g, ',')
-      .trim();
+    // the line names a date and a time: it may be an event (a client asks, it never switches by itself)
+    out.looksLikeEvent = !!out.time && out.marks.some(function (k) { return k.kind === 'date'; });
+    out.endTime = null;
+    out.allDay = false;
+    out.location = null;
+    if (eventMode) {
+      out.allDay = !out.time;
+      if (out.time) {
+        // a written end that is not the start itself; else an hour (past midnight it wraps: the next day)
+        if (endTime && endTime !== out.time) out.endTime = endTime;
+        else { var hm = out.time.split(':'); out.endTime = hhmm((+hm[0] + 1) % 24, +hm[1]); }
+      }
+      // the place: after „im“, „in“, „bei“, „beim“ the rest of what is left
+      // (an article right behind the word goes with it: „in der Schule“ → „Schule“)
+      var pm = new RegExp(B + '(?:im|in|beim|bei)\\s+(?:(?:der|die|das|dem|den|the)\\s+)?(?=' + L + ')', 'iu').exec(work);
+      if (pm) {
+        var rest = work.slice(pm.index + pm[0].length);
+        var loc = tidy(rest);
+        if (loc) {
+          out.location = loc;
+          out.marks.push({ start: pm.index, end: pm.index + pm[0].length + rest.replace(/[\s,;:\-–—]+$/, '').length, kind: 'place' });
+          work = work.slice(0, pm.index);
+        }
+      }
+    }
+
+    out.title = tidy(work);
+    // a line that is only a place („beim Zahnarzt“) keeps it as its title
+    if (eventMode && !out.title && out.location) out.title = out.location;
     out.marks.sort(function (a, b) { return a.start - b.start; });
     return out;
   }

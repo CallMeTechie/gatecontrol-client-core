@@ -25,6 +25,10 @@
  *          (whose turn, stars, the family's list — plugin 1.6.0: `turn`, `people`, `stars` of POST / PATCH tasks; a parent
  *          ticks off for a member of the family with `userId`; an older plugin passes the new fields over in silence)
  *   GET    items/<id> · POST items/<id>/complete · POST items/<id>/carry
+ *   GET    events/calendars · POST events { title, date, time?, endTime?, endDate?, allDay?, location?, calendarId?,
+ *          reminder?, repeat?, clientId? } · PATCH|DELETE events/<id> · POST parse { text, mode: 'event' }
+ *          („Termin“, plugin 1.9.0 `calendarEvents`: an event in a calendar of Mail, stored only there — an older plugin
+ *          answers 404; PATCH / DELETE only for events made through the hub)
  *   GET|POST notebooks · PATCH|DELETE notebooks/<id> · PUT notebooks/<id>/members
  *   GET|POST notes · GET|PATCH|DELETE notes/<id> · POST notes/<id>/check · POST notes/<id>/task
  *   POST   attachments · GET|DELETE attachments/<id> · PUT attachments/<id>/text
@@ -43,6 +47,7 @@
 const MessengerApi = require('./messenger-api');
 const GateDropApi = require('./gatedrop-api');
 const N = require('../utils/notes');
+const E = require('../utils/notes-events');
 const drive = require('../utils/drive');
 
 const { MessengerError: NotesError } = MessengerApi;
@@ -122,6 +127,12 @@ class NotesApi {
     // `listId` (plugin 1.6.0): the list the line is typed in — only there the server reads stars
     const r = await this.api('POST', 'parse', { body: { text, ...(area ? { area } : {}), ...(listId ? { listId } : {}) } });
     return { parsed: N.normalizeParsed(r.parsed), attach: N.normalizeAttach(r.attach), place: N.normalizePlaceSuggest(r.place) };
+  }
+
+  /** POST parse { text, mode: 'event' } (plugin 1.9.0) → what the parser makes of the line as an event (location, endTime …). */
+  async parseEvent(text) {
+    const r = await this.api('POST', 'parse', { body: { text, mode: 'event' } });
+    return N.normalizeParsed(r.parsed);
   }
 
   async people() { return N.normalizePeople(await this.api('GET', 'people')); }
@@ -276,6 +287,23 @@ class NotesApi {
   }
 
   async carryItem(id) { return N.normalizeTask((await this.api('POST', `items/${this._id(id)}/carry`, { body: {} })).task); }
+
+  // ── events of the calendar in Mail (plugin 1.9.0) ────────
+
+  /** GET events/calendars → utils/notes-events.js normalizeCalendars */
+  async eventCalendars() { return E.normalizeCalendars(await this.api('GET', 'events/calendars')); }
+
+  /** POST events (the body of utils/notes-events.js eventCreate, with the clientId of this PC) → { event, items, clientId, replayed } */
+  async createEvent(body) {
+    const r = E.normalizeCreated(await this.api('POST', 'events', { body }));
+    if (!r.event.id) throw new NotesError('bad event answer', { code: 'bad_response' });
+    return r;
+  }
+
+  async updateEvent(id, body) { return E.normalizeCreated(await this.api('PATCH', `events/${this._id(id)}`, { body })); }
+
+  /** DELETE events/<id> → { removed } (false: not made through the hub, or gone already) — safe to repeat. */
+  async deleteEvent(id) { const r = await this.api('DELETE', `events/${this._id(id)}`); return { removed: r.removed === true }; }
 
   // ── notebooks and notes ──────────────────────────────────
 
