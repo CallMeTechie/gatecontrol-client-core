@@ -12,6 +12,7 @@
  *   POST …/v1/shares/{id}/checked { protocol: 'smb', ok, problem? }
  *   POST …/v1/sources/{id}/report { way, ok, problem? }   the way to a source (only on a change)
  *   DELETE …/v1/jellyfin/device?sourceId=…                this PC signed out of that Jellyfin (before its access goes here)
+ *   GET  …/v1/convert/status · POST …/v1/convert/request  „Videos umwandeln“ (1.6.0): `convert` (services/media-convert.js)
  *   GET  /api/v1/client/home-network?local=…              at home? GateControl's home-network detection (homeNetwork())
  *
  * - When: at start, after a push reconnect, after the event `media.changed` (event `plugin` of the push stream), after
@@ -41,6 +42,8 @@ const MessengerApi = require('./messenger-api');
 const { PLUGINS_PATH } = require('../utils/messenger');
 const MSV = require('../utils/media-server');
 const MS = require('../utils/media-sources');
+const MC = require('../utils/media-convert');
+const MediaConvert = require('./media-convert');
 
 const DEFAULT_TIMING = Object.freeze({
   refreshMs: 15 * 60 * 1000,     // the list at the latest every 15 minutes
@@ -94,6 +97,8 @@ class MediaServerSources extends EventEmitter {
     this._reports = new Map(); // `${sid}|${way}` → 'ok' | problem (sent)
     this._smbFails = new Set();
     this._leaving = null; // the transport to the server signed in before (serverChanging → signOutAll)
+    // „Videos umwandeln“: only while the plugin is there, visible and at least 1.6.0
+    this.convert = new MediaConvert({ api: this.api, now, log: this.log, enabled: () => this._convertEnabled() });
     media.setServerSources(this);
   }
 
@@ -136,6 +141,7 @@ class MediaServerSources extends EventEmitter {
     this._reports.clear();
     this._pairFails.clear();
     this._smbFails.clear();
+    this.convert.reset();
     this._setState('unknown', null);
     if (this._started) this._job(this.refresh({ full: true }));
   }
@@ -243,6 +249,11 @@ class MediaServerSources extends EventEmitter {
       cast: { enabled: !!(c.cast && c.cast.enabled) },
       notice: c.notice || null,
     };
+  }
+
+  _convertEnabled() {
+    const st = this.status();
+    return st.visible === true && MC.versionOk(st.version);
   }
 
   _setState(state, reason) {

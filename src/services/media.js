@@ -53,6 +53,7 @@ const SI = require('../utils/media-share-index');
 const MP = require('../utils/media-playable');
 const L = require('../utils/media-lan');
 const MSV = require('../utils/media-server');
+const MC = require('../utils/media-convert');
 const { normalizeFingerprint, localAddresses } = require('../utils/home-cache');
 const MediaNet = require('./media-net');
 const MediaDiscovery = require('./media-discovery');
@@ -120,6 +121,7 @@ class MediaService extends EventEmitter {
     this.now = now;
     this.timing = { ...DEFAULT_TIMING, ...timing };
     this._caps = J.capsOf({}, this.appName);
+    this._pictures = new Map(); // `${id}|${itemId}` → [{ versionId, video }] of the last detail („Videos umwandeln“)
     this._links = new Map();   // source id → { atHome, via, localAddress, bps, measuredAt, checkedAt, route }
     this._pins = new Map();    // origin → fingerprint, confirmed in the sign-in before a source exists
     this._flows = new Map();   // Quick Connect of this PC: flow → { address, q, server, exp }
@@ -890,6 +892,7 @@ class MediaService extends EventEmitter {
     const l = this.link(id);
     const { title, versions } = r.value;
     const choice = title.seriesId ? this.store.trackChoice(title.seriesId) : null;
+    this._keepPictures(id, itemId, versions);
     return {
       ok: true,
       title: this._decorate(title),
@@ -904,6 +907,57 @@ class MediaService extends EventEmitter {
       })),
       link: l,
     };
+  }
+
+  // ── „Videos umwandeln“ (gatecontrol-medien 1.6.0) ──────────
+
+  _keepPictures(id, itemId, versions) {
+    const key = `${id}|${itemId}`;
+    this._pictures.delete(key);
+    this._pictures.set(key, versions.map((v) => ({ versionId: v.id, video: publicVersion(v).video })));
+    while (this._pictures.size > 200) this._pictures.delete(this._pictures.keys().next().value);
+  }
+
+  /** The plugin's convert (MediaServerSources.convert) for a Jellyfin source of the server's list; else null. */
+  _convertFor(id) {
+    const src = this.store.source(id);
+    const c = this._server && this._server.convert;
+    return src && src.kind === 'jellyfin' && src.managed === true && c ? c : null;
+  }
+
+  /**
+   * media:convert:hint — the hint before playing (Entwurf Bild 5/6): only when this PC's Chromium does not show the
+   * picture itself (MC.videoProblem with the caps now, from the last detail) and the plugin knows the file.
+   * → { ok: true, hint: null | { kind: 'offer' | 'requested' | 'queued' | 'running', position?, startsAt?, percent?,
+   *   problem: { code, codec } } }
+   */
+  async convertHint(id, itemId, versionId = null) {
+    const c = this._convertFor(id);
+    const pics = this._pictures.get(`${id}|${itemId}`);
+    if (!c || !pics || !pics.length) return { ok: true, hint: null };
+    const pic = (versionId && pics.find((p) => p.versionId === versionId)) || pics[0];
+    const problem = MC.videoProblem(pic.video, this._caps);
+    if (!problem) return { ok: true, hint: null };
+    const hint = await c.hint(itemId, problem);
+    return { ok: true, hint: hint ? { ...hint, problem } : null };
+  }
+
+  /** media:convert:prefetch — a season's episodes asked ahead in one question (nothing shown from it). */
+  async convertPrefetch(id, itemIds) {
+    const c = this._convertFor(id);
+    if (c && Array.isArray(itemIds) && itemIds.length) await c.prefetch(itemIds.slice(0, MC.MAX_IDS));
+    return { ok: true };
+  }
+
+  /** media:convert:request — „Für heute Nacht vormerken“: onto the plugin's list only (the admin queues it). */
+  async convertRequest(id, itemId) {
+    const c = this._convertFor(id);
+    if (!c) return no('unavailable');
+    const r = await c.request(itemId);
+    if (!r.ok) return no(r.code);
+    const pics = this._pictures.get(`${id}|${itemId}`);
+    const problem = pics && pics.length ? MC.videoProblem(pics[0].video, this._caps) : null;
+    return { ok: true, hint: { ...r.hint, problem } };
   }
 
   /**
@@ -1161,6 +1215,7 @@ class MediaService extends EventEmitter {
     this._dropShares();
     this._libs.clear();
     this._checks.clear();
+    this._pictures.clear();
     this.external.forget();
     this.store.forgetAll();
     // a cast running here ends (the phone belongs to the person signed in before), this PC's id goes with the store
