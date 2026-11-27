@@ -111,6 +111,21 @@ describe('vendor/notizen: the plugin\'s quick entry and repeat rules (its frozen
     assert.deepEqual(Q.parse(qv.cases[0].input, qv.ctx).marks, qv.marksOfFirst);
   });
 
+  it('quick entry, plugin 1.9.0 „Termin“: every event vector (mode event) and the signal of task mode', () => {
+    assert.ok(qv.eventCases.length >= 25 && qv.signalCases.length >= 8);
+    for (const c of qv.eventCases) {
+      const p = Q.parse(c.input, { ...qv.ctx, mode: 'event' });
+      assert.deepEqual({ title: p.title, date: p.date, time: p.time, endTime: p.endTime, allDay: p.allDay, location: p.location, repeat: p.repeat }, c.expect, c.input);
+      assert.deepEqual(p.marks, c.marks, `${c.input} (marks)`);
+    }
+    for (const c of qv.signalCases) assert.equal(Q.parse(c.input, qv.ctx).looksLikeEvent, c.looksLikeEvent, c.input);
+    // task mode stays what it was: no place, no span, no end
+    for (const c of [...qv.cases, ...qv.eventCases]) {
+      const p = Q.parse(c.input, qv.ctx);
+      assert.deepEqual([p.endTime, p.allDay, p.location, p.marks.some((m) => m.kind === 'place')], [null, false, null, false], c.input);
+    }
+  });
+
   it('repeat rules: every vector', () => {
     for (const c of rv.next) assert.equal(R.next(c.rule, { due: c.due, done: c.done }), c.expect, JSON.stringify(c));
     for (const c of rv.first) assert.equal(R.first(c.rule, c.today), c.expect, JSON.stringify(c));

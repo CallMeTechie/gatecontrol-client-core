@@ -236,3 +236,49 @@ the plugin's files of 1.8.1, byte for byte: a weekday directly before or after a
 from the date itself; a wrong weekday stays in the title. A case of the vectors may carry its own `marks`;
 `test/notes.test.js` checks them where they are given, `test/notes-family.test.js` holds the new check sums. Nothing
 else changes: no new call, no new channel.
+
+## Plugin 1.9.0: „Termin“ in the quick entry
+
+Told by the word `calendarEvents` of `me.features` only (never by a version). An older plugin sends none of the fields;
+the service refuses the new calls — and `notes:parse` with `mode: 'event'` — with `unsupported` before the server is
+asked. The event goes into a calendar of Mail (≥ 1.18.0) and is stored **only there**: the hub hands it over and keeps
+no copy (contract `apps-contract-termine`, questions 103–120).
+
+| What | Where |
+|---|---|
+| The parser and its frozen vectors: the plugin's files of 1.9.0, byte for byte (`eventCases` with `mode: 'event'`, `signalCases`) | `src/vendor/notizen/quickparse.js`, `test/fixtures/notes/quickparse-vectors.json` (check sums in `test/notes-family.test.js`) |
+| `me.events` ({ available, reason }), `Item.event` ({ end, location, calendar: { key, name, color, kind }, eventId, recurring, writable } — no tick box, never overdue), `parsed.endTime` / `allDay` / `location` / `looksLikeEvent`, the group choice `show` (and `null`: back to the default) | `utils/notes.js` `normalizeMe`, `normalizeItem` (`eventOf`), `normalizeParsed`, `normalizePrefs`, `groupsArg` |
+| The calendars (`GET events/calendars`: state, reason, calendars with `target` / `isDefault` / `shown`, `targets`, `defaultId`, `reminders`), what the renderer may send (`eventCreate`, `eventPatch`), why no event can be made (`why`, `permanent`, `blocked`), the default reminder of a chip, the form of „Mehr Angaben …“ (`formPrefill`) | `utils/notes-events.js` |
+| `GET events/calendars` · `POST events` · `PATCH` / `DELETE events/<id>` · `POST parse { text, mode: 'event' }` | `services/notes-api.js` |
+| The calls, the queue | `services/notes.js` `eventCalendars()`, `createEvent()`, `updateEvent()`, `deleteEvent()`, `unqueueEvent()`, `pendingEvents()`, `parse({ mode })` — IPC `notes:events:calendars`, `notes:event:create` / `:update` / `:delete` / `:unqueue`, `notes:events:pending`; bridge `notes.eventCalendars()`, `createEvent()`, … |
+
+`createEvent(body)` sends at once while nothing waits; `calendarId` and `reminder` only when the person chose them (else
+the calendar's at the time of sending). The clientId is made in the main process (`crypto.randomUUID()`), never by the
+renderer. The answers:
+
+- 200 → `{ event: { id, calendarId }, items, queued: false }` — `items` are the event as the overview shows it.
+- 404 `{ field: 'calendarId' }` → once more without `calendarId` (the default calendar), with a new clientId.
+- 503 `unavailable` with a reason that does not pass (`no_mail`, `mail_old`, `feature_off`, `not_allowed`,
+  `not_licensed`, `no_seat`, `no_calendar`) → the failure with `reason` (the page shows „Kein Kalender“ and offers „Als
+  Aufgabe mit Datum speichern“); nothing is queued.
+- No answer (no network, a time-out), 5xx, 429, 503 `unreachable` and other reasons → it waits: `{ queued: true,
+  clientId, pending }` (`pending`: its row). When the last known answer of the calendars says `state: 'none'` for good
+  and the server cannot be asked, it is refused instead (contract § 7).
+- 400 → the failure with `field`, never queued.
+
+The queue (`notesEventQueue` in the store, for this server and person only): the finished body with its clientId, in
+order; sent on a reconnect of the push stream, when the plugin answers again, before a new event. The server makes
+exactly one event per clientId — but the key lives as long as the event (no `410 gone` as with tasks), so an entry
+leaves the queue after the **first 200** (also `replayed: true`) and is never sent again; a new body gets a new
+clientId. A waiting event the server refuses (`utils/notes-events.js refused`, the rules of the Android app): it stays
+while Mail does not answer, goes once more without a gone calendar, becomes a task with its day, time (a reminder at the
+start), place (in the note) and rule when no event can be made for good, and is dropped on a 400. „Rückgängig“ before
+it was sent is `unqueueEvent(clientId)`. „Mein Tag“ (`view('myday')`, private area) shows the waiting ones: today's
+under „Termine heute“, those of the next 14 days under „Demnächst“ (`pending: true`, uid `q:<clientId>`).
+
+`eventCalendars()` keeps the last answer (`notesEventCalendars`): without a connection it answers that with `stale: true`.
+
+The test server (`test/fixtures/notes-server.js`) has the routes and fields only with the word (`STAGE7`): the person's
+calendars (`state.calendars`, `state.defaultCalendarId`, `state.eventReminders`), `state.eventsReason` (a reason makes
+POST events 503 and GET events/calendars `state: 'none'`), `srv.addEvent()` (an event made in Mail). Tests:
+`test/notes-events.test.js`.

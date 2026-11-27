@@ -964,7 +964,7 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       nav:           (area) => ipcRenderer.invoke('notes:nav', { area }),
       // 'myday' | 'important' | 'planned' | 'assigned' | 'list:<id>' | 'source:<plugin>'
       view:          (name, area) => ipcRenderer.invoke('notes:view', { name, area }),
-      parse:         (text, area, listId) => ipcRenderer.invoke('notes:parse', { text, area, listId: listId || null }),
+      parse:         (text, area, listId, mode) => ipcRenderer.invoke('notes:parse', { text, area, listId: listId || null, ...(mode === 'event' ? { mode } : {}) }),
       people:        () => ipcRenderer.invoke('notes:people'),
       search:        (q, area) => ipcRenderer.invoke('notes:search', { q, area }),
       prefs:         () => ipcRenderer.invoke('notes:prefs'),
@@ -1012,6 +1012,13 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       setPlaceFav:   (key, placeId) => ipcRenderer.invoke('notes:place:fav', { key, placeId: placeId || null }),
       searchPlaces:  (input) => ipcRenderer.invoke('notes:place:search', { ...(input || {}) }),
       placeConsent:  (id, accept) => ipcRenderer.invoke('notes:task:place:consent', { id, accept: accept === true }),
+      // „Termin“ (plugin 1.9.0): an event in a calendar of Mail; offline it waits (clientId made in the main process)
+      eventCalendars: () => ipcRenderer.invoke('notes:events:calendars'),
+      pendingEvents: () => ipcRenderer.invoke('notes:events:pending'),
+      createEvent:   (event) => ipcRenderer.invoke('notes:event:create', { event: { ...(event || {}) } }),
+      updateEvent:   (id, patch) => ipcRenderer.invoke('notes:event:update', { id, patch: { ...(patch || {}) } }),
+      deleteEvent:   (id) => ipcRenderer.invoke('notes:event:delete', { id }),
+      unqueueEvent:  (clientId) => ipcRenderer.invoke('notes:event:unqueue', { clientId }),
       item:          (id) => ipcRenderer.invoke('notes:item', { id }),
       completeItem:  (id, done) => ipcRenderer.invoke('notes:item:complete', { id, done: done !== false }),
       carryItem:     (id) => ipcRenderer.invoke('notes:item:carry', { id }),

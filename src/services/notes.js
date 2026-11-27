@@ -43,6 +43,13 @@
  *   of their places: this PC has no position and sends none; refused here while `me.places.search.state` is not `on`)
  *   and the consent for a place someone else set (placeConsent(); the push's buttons are callbacks the notification
  *   center answers itself). Without the words the calls — and a task body with `place` — are refused with `unsupported`.
+ * - „Termin“ (plugin 1.9.0, feature `calendarEvents`; utils/notes-events.js): an event of the quick entry goes into a
+ *   calendar of Mail (POST events) — the hub keeps no copy. The calendars (GET events/calendars, the last answer kept
+ *   for when the server cannot be reached), why none can be made (`me.events`, `reason`). Without a connection — and
+ *   while Mail does not answer — the event waits in a queue (`notesEventQueue`) with its finished body and a clientId
+ *   made here; it leaves the queue after the first 200 and is never sent again (the key lives as long as the event).
+ *   A calendar that is gone: once more without it; no event possible for good: a task with its day and time. „Mein
+ *   Tag“ shows the waiting ones („wartet auf Verbindung“).
  *
  * Events: 'state' (status()), 'changed' ({ what }), 'vault' ({ vault, event }), 'vaultLock' ({ locked, reason }),
  * 'import' (the DS Note import: { state, done, total, notes, skipped, protectedSkipped, vault?, code? }).
@@ -60,6 +67,7 @@ const MessengerApi = require('./messenger-api');
 const { openNsx, runImport, ImportError } = require('./notes-import');
 const N = require('../utils/notes');
 const Shop = require('../utils/notes-shopping');
+const Ev = require('../utils/notes-events');
 const { guessMime } = require('../utils/gatedrop');
 const { unsafeToOpen, safeFileName } = require('../utils/messenger');
 const { openExternalSafely } = require('../utils/external-url');
@@ -76,6 +84,8 @@ const DEFAULT_TIMING = {
 };
 const MAX_PATHS = 20;
 const SHOP_QUEUE_KEY = 'notesShopQueue';
+const EVENT_QUEUE_KEY = 'notesEventQueue';
+const EVENT_CALS_KEY = 'notesEventCalendars';
 const OCR_MAX_BYTES = 12 * 1024 * 1024;
 const OCR_MIME_RE = /^image\/(jpeg|png|bmp|gif|tiff)$/;
 // Microsoft's device-code pages (Mail 1.12.0 ms_tasks_consent): only these open in the browser
@@ -154,6 +164,9 @@ class NotesService extends EventEmitter {
     this._shop = Shop.newState(); // the shopping lists as the server said last (utils/notes-shopping.js)
     this._shopQueue = null;      // operations not confirmed yet (null: not read from the store yet)
     this._shopFlushing = null;
+    this._evQueue = null;        // events waiting for the server (null: not read from the store yet)
+    this._evFlushing = null;
+    this._evCals = undefined;    // the last answer of GET events/calendars (undefined: not read from the store yet)
     this._scope = this._scopeNow();
   }
 
@@ -168,7 +181,10 @@ class NotesService extends EventEmitter {
       const onHello = () => {
         if (this._state.state !== 'available') { this.check().catch(() => {}); return; }
         // what was ticked off without the server goes out first; the pages fetch again either way
-        if (this._queue().length) this._shopFlush().catch(() => {}).then(() => this.emit('changed', N.changedOf({})));
+        const waits = [];
+        if (this._queue().length) waits.push(this._shopFlush().catch(() => {}));
+        if (this._offers('calendarEvents') && this._eventQueue().length) waits.push(this._eventFlush().catch(() => {}));
+        if (waits.length) Promise.all(waits).then(() => this.emit('changed', N.changedOf({})));
         else this.emit('changed', N.changedOf({}));
       };
       const onEvent = (ev) => {
@@ -229,6 +245,8 @@ class NotesService extends EventEmitter {
     this._nbVault.clear();
     this._shop = Shop.newState();
     this._shopQueue = null;
+    this._evQueue = null;
+    this._evCals = undefined;
     this._retry = 0;
     this._scope = this._scopeNow();
     this._setState({ state: 'unknown', reason: null, version: null, checkedAt: null });
@@ -273,6 +291,8 @@ class NotesService extends EventEmitter {
           this._me = await this.api.me();
           this._retry = 0;
           this._setState({ state: 'available', reason: null, version, checkedAt: this.now() });
+          // events made without a connection go out as soon as the plugin answers again
+          if (this._offers('calendarEvents') && this._eventQueue().length) this._eventFlush().then((r) => { if (r.sent || r.changed) this.emit('changed', N.changedOf({ what: ['items', 'tasks'] })); }, () => {});
         } catch (err) {
           if (err && (err.status === 403 || err.status === 404)) gone(err.status === 403 ? 'forbidden' : 'not_found');
           else throw err;
@@ -317,6 +337,8 @@ class NotesService extends EventEmitter {
     this._nbVault.clear();
     this._shop = Shop.newState();
     this._shopQueue = null;
+    this._evQueue = null;
+    this._evCals = undefined;
     this.vault.clear();
     this.vaultLock.lock('server');
   }
@@ -372,15 +394,25 @@ class NotesService extends EventEmitter {
   }
 
   async view({ name, area } = {}) {
-    return this._run(async () => ({ ok: true, view: await this.api.view(name, N.areaOf(area) || undefined) }));
+    return this._run(async () => {
+      const v = await this.api.view(name, N.areaOf(area) || undefined);
+      // plugin 1.9.0: events waiting for the server show in „Mein Tag“ („wartet auf Verbindung“, private area)
+      const ev = v.view === 'myday' && (N.areaOf(area) || 'private') === 'private' && this._offers('calendarEvents') ? this._eventQueue() : [];
+      return { ok: true, view: ev.length ? Ev.overlay(v, ev) : v };
+    });
   }
 
   /**
    * The quick entry's line as the server reads it; `attach`: the shopping list it names (plugin 1.4.0, `taskList`) or
    * null; `place`: the place it names (plugin 1.5.0, `places` — found by the server, not by the parser) or null.
    */
-  async parse({ text, area, listId = null } = {}) {
+  async parse({ text, area, listId = null, mode = null } = {}) {
     return this._run(async () => {
+      // plugin 1.9.0: the line as an event of a calendar (span of time, the place after im / in / bei / beim)
+      if (mode === 'event') {
+        this._feature('calendarEvents');
+        return { ok: true, parsed: await this.api.parseEvent(text), attach: null, place: null };
+      }
       // plugin 1.6.0: the list the line is typed in (only there the server reads „2 Sterne“); what it says about several
       // people, „reihum“ / „wer zuerst“ and stars comes back in `parsed` (people, turn, stars) — never from an older plugin
       const turns = this._offers('taskTurns');
@@ -692,6 +724,226 @@ class NotesService extends EventEmitter {
 
   _shopPut(list) {
     if (list && !list.deleted && this._shop.loaded) this._shop.lists.set(list.id, list);
+  }
+
+  // ── „Termin“: events of the calendar in Mail (plugin 1.9.0) ──
+
+  /** The last answer of GET events/calendars (read once from the store: this server and person only) or null. */
+  _lastCalendars() {
+    if (this._evCals === undefined) {
+      let stored = null;
+      try { stored = this.store ? this.store.get(EVENT_CALS_KEY) : null; } catch { stored = null; }
+      this._evCals = stored && stored.scope === this._scopeNow() && stored.value ? Ev.normalizeCalendars(stored.value) : null;
+    }
+    return this._evCals;
+  }
+
+  _keepCalendars(c) {
+    this._evCals = c;
+    if (!this.store) return;
+    try { this.store.set(EVENT_CALS_KEY, { scope: this._scopeNow(), value: c }); } catch (err) { this.log.warn(`Notizen: calendars not stored: ${err.message}`); }
+  }
+
+  /**
+   * The person's calendars in Mail → { ok, calendars: { state, reason, calendars, targets, defaultId, reminders,
+   * timeZone }, stale }. `stale: true`: the server could not be reached — the last answer (contract § 7).
+   */
+  async eventCalendars() {
+    return this._run(async () => {
+      this._feature('calendarEvents');
+      try {
+        const c = await this.api.eventCalendars();
+        this._keepCalendars(c);
+        return { ok: true, calendars: c, stale: false };
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        const last = this._lastCalendars();
+        if (e.status || !last) throw e;
+        return { ok: true, calendars: last, stale: true };
+      }
+    });
+  }
+
+  /** The events not sent yet (read once from the store: those of this server and person). */
+  _eventQueue() {
+    if (!this._evQueue) {
+      let stored = null;
+      try { stored = this.store ? this.store.get(EVENT_QUEUE_KEY) : null; } catch { stored = null; }
+      this._evQueue = Ev.storedQueue(stored, this._scopeNow());
+    }
+    return this._evQueue;
+  }
+
+  _saveEventQueue() {
+    if (!this.store) return;
+    try { this.store.set(EVENT_QUEUE_KEY, { scope: this._scopeNow(), ops: this._eventQueue().slice(0, Ev.QUEUE_MAX) }); } catch (err) { this.log.warn(`Notizen: event queue not stored: ${err.message}`); }
+  }
+
+  _enqueueEvent(body) {
+    const q = this._eventQueue();
+    if (q.length >= Ev.QUEUE_MAX) throw new NotesError('too many events are waiting', { code: 'too_many' });
+    const op = { what: 'event', clientId: body.clientId, body, at: this.now() };
+    q.push(op);
+    this._saveEventQueue();
+    return op;
+  }
+
+  /**
+   * A new event (utils/notes-events.js eventCreate — checked by the IPC) → { ok, event, items, queued, clientId,
+   * pending? }. Sent at once while nothing waits; without a connection, or while Mail does not answer (503
+   * unreachable), it waits in the queue (`queued: true`, `pending`: its row). A calendar that is gone (404 calendarId):
+   * once more without it — the default calendar. Refused for good (no Mail, the calendar off, no calendar to write
+   * into): the failure with `reason`, nothing is queued — the page offers „Als Aufgabe mit Datum speichern“; the same
+   * when the last known answer of the calendars says so and the server cannot be asked.
+   */
+  async createEvent(body) {
+    return this._run(async () => {
+      this._feature('calendarEvents');
+      const draft = { ...body };
+      delete draft.clientId;
+      const queued = () => {
+        const op = this._enqueueEvent({ ...draft, clientId: crypto.randomUUID() });
+        return { ok: true, event: null, items: [], queued: true, clientId: op.clientId, pending: Ev.pendingItem(op) };
+      };
+      // something waits already: in order behind it
+      if (this._eventQueue().length) {
+        const op = queued();
+        const sent = await this._eventFlush();
+        if (sent.sent) this.emit('changed', N.changedOf({ what: ['items', 'tasks'] }));
+        const still = this._eventQueue().some((x) => x.clientId === op.clientId);
+        const made = sent.made.find((m) => m.clientId === op.clientId);
+        if (!still && made) return { ok: true, event: made.event, items: made.items, queued: false, clientId: op.clientId };
+        const gone = sent.dropped.find((d) => d.clientId === op.clientId);
+        if (!still && gone) throw new NotesError('the event was refused', { code: gone.code, status: gone.status, body: gone.body });
+        if (still) return op;
+        // no event possible for good while it waited: it was made a task (or went another way) — it is no longer waiting
+        return { ok: true, event: null, items: [], queued: false, clientId: op.clientId, converted: true };
+      }
+      let calendarTried = false;
+      for (;;) {
+        const b = { ...draft, clientId: crypto.randomUUID() };
+        try {
+          const r = await this.api.createEvent(b);
+          return { ok: true, event: r.event, items: r.items, queued: false, clientId: b.clientId, replayed: r.replayed };
+        } catch (err) {
+          const e = MessengerApi.toMessengerError(err);
+          const reason = e.body && typeof e.body.reason === 'string' ? e.body.reason : null;
+          const field = e.body && typeof e.body.field === 'string' ? e.body.field : null;
+          if (e.status === 404 && field === 'calendarId' && draft.calendarId != null && !calendarTried) {
+            calendarTried = true;
+            delete draft.calendarId;
+            continue;
+          }
+          if (e.status === 503 && Ev.permanent(reason)) {
+            const last = this._lastCalendars();
+            if (last) this._keepCalendars({ ...last, state: 'none', reason });
+            throw e;
+          }
+          const offline = !e.status || e.status === 408 || e.status === 429 || e.status >= 500;
+          if (!offline) throw e;
+          // no answer: the last known word of the calendars decides — no calendar for good, nothing is queued
+          const stop = !e.status ? Ev.blocked(this._me, this._lastCalendars()) : null;
+          if (stop) throw new NotesError('no event can be made', { code: 'unavailable', status: 503, body: { code: 'unavailable', reason: stop } });
+          const op = this._enqueueEvent({ ...draft, clientId: b.clientId });
+          return { ok: true, event: null, items: [], queued: true, clientId: op.clientId, pending: Ev.pendingItem(op), offline: !e.status };
+        }
+      }
+    });
+  }
+
+  /** „Rückgängig“ of an event that still waits: it leaves the queue unsent → { ok, removed }. */
+  async unqueueEvent(clientId) {
+    return this._run(async () => {
+      const q = this._eventQueue();
+      const i = q.findIndex((x) => x.clientId === clientId);
+      if (i < 0) return { ok: true, removed: false };
+      q.splice(i, 1);
+      this._saveEventQueue();
+      return { ok: true, removed: true };
+    });
+  }
+
+  /** The events waiting for the server, as rows (`pending: true`) → { ok, items }. */
+  async pendingEvents() {
+    return this._run(async () => ({ ok: true, items: this._offers('calendarEvents') ? this._eventQueue().map(Ev.pendingItem).filter(Boolean) : [] }));
+  }
+
+  /** PATCH events/<id> (only an event made through the hub; any other: not_found — it is changed in Mail's form). */
+  async updateEvent(id, body) {
+    return this._run(async () => { this._feature('calendarEvents'); return { ok: true, ...(await this.api.updateEvent(id, body)) }; });
+  }
+
+  /** DELETE events/<id> → { ok, removed } — safe to repeat; an event the hub did not make: removed false. */
+  async deleteEvent(id) {
+    return this._run(async () => {
+      this._feature('calendarEvents');
+      try {
+        return { ok: true, ...(await this.api.deleteEvent(id)) };
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (e.status === 404 && e.code === 'not_found') return { ok: true, removed: false };
+        throw e;
+      }
+    });
+  }
+
+  /**
+   * Sends the waiting events in order. No answer (no network, 5xx but 503, 429): the rest stays as it is. Every 200
+   * takes the entry out at once (also `replayed`). A refusal (utils/notes-events.js refused): 503 with a reason that
+   * passes keeps it, a gone calendar sends it once more without it, no event possible for good makes it a task, 400 and
+   * the rest drop it.
+   * @returns {Promise<{ sent, changed, made: [{ clientId, event, items }], dropped: [{ clientId, code, status, body }], asTask }>}
+   */
+  _eventFlush() {
+    const run = (this._evFlushing || Promise.resolve()).catch(() => {}).then(() => this._eventFlushNow());
+    this._evFlushing = run;
+    run.catch(() => {}).then(() => { if (this._evFlushing === run) this._evFlushing = null; });
+    return run;
+  }
+
+  async _eventFlushNow() {
+    const out = { sent: 0, changed: false, made: [], dropped: [], asTask: [] };
+    const scope = this._scopeNow();
+    if (scope !== this._scope) return out;
+    const q = this._eventQueue();
+    let guard = 0;
+    while (q.length && guard++ < Ev.QUEUE_MAX * 3) {
+      const op = q[0];
+      try {
+        if (op.what === 'event') {
+          const r = await this.api.createEvent(op.body);
+          if (scope !== this._scopeNow()) break;
+          out.made.push({ clientId: op.clientId, event: r.event, items: r.items });
+        } else {
+          // offlineEdits (plugin 1.1.0): a task with a clientId is made once, whatever is sent again
+          const body = { ...op.body };
+          if (!this._offers('offlineEdits')) delete body.clientId;
+          const r = await this.api.createTask(body);
+          if (scope !== this._scopeNow()) break;
+          out.asTask.push({ clientId: op.clientId, task: r.task });
+        }
+        q.shift();
+        this._saveEventQueue();
+        out.sent++;
+        continue;
+      } catch (err) {
+        const e = MessengerApi.toMessengerError(err);
+        if (scope !== this._scopeNow()) break;
+        const next = Ev.refused(op, e, () => crypto.randomUUID());
+        if (next === 'keep') break;
+        if (next === 'drop') {
+          q.shift();
+          out.dropped.push({ clientId: op.clientId, code: N.errorCode(e), status: e.status || null, body: e.body || null });
+          this.log.info(`Notizen: a waiting event was refused (${N.errorCode(e)})`);
+        } else {
+          q[0] = next.op;
+          if (next.op.what === 'task' && this._lastCalendars()) this._keepCalendars({ ...this._lastCalendars(), state: 'none', reason: next.op.reason || 'no_calendar' });
+        }
+        this._saveEventQueue();
+        out.changed = true;
+      }
+    }
+    return out;
   }
 
   async item(id) { return this._run(async () => ({ ok: true, ...(await this.api.item(id)) })); }
