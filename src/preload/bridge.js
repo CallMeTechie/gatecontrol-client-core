@@ -603,18 +603,34 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       // folder dialog ("Ordner hochladen") → { ok, paths }; then upload(parentId, paths)
       pickFolders:  () => ipcRenderer.invoke('drive:pick-folders'),
       upload:       (parentId, paths) => ipcRenderer.invoke('drive:upload', { parentId, paths }),
-      // dropped File objects (drag & drop) → the same as upload()
-      uploadDropped: (parentId, fileList) => {
+      // dropped File objects (drag & drop from the Explorer: files and folders) → the same as upload(), with `dropped`
+      // (a folder there already takes the files). The path comes from Electron's webUtils only — never from a
+      // property of the object; more than 200 go in turns of 200, one answer for all.
+      uploadDropped: async (parentId, fileList) => {
         const paths = [];
         for (const f of Array.from(fileList || [])) {
           let p = '';
-          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : (f && f.path) || ''; } catch { p = ''; }
-          if (p) paths.push(p);
+          try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : ''; } catch { p = ''; }
+          if (typeof p === 'string' && p && !paths.includes(p)) paths.push(p);
         }
-        return ipcRenderer.invoke('drive:upload', { parentId, paths });
+        if (paths.length <= 200) return ipcRenderer.invoke('drive:upload', { parentId, paths, dropped: true });
+        const all = { ok: true, queued: [], rejected: [], folders: 0, skipped: 0, move: null };
+        for (let i = 0; i < paths.length; i += 200) {
+          const r = await ipcRenderer.invoke('drive:upload', { parentId, paths: paths.slice(i, i + 200), dropped: true });
+          if (!r || !r.ok) return i ? all : r;
+          all.queued.push(...(r.queued || []));
+          all.rejected.push(...(r.rejected || []));
+          all.folders += r.folders || 0;
+          all.skipped += r.skipped || 0;
+          all.move = all.move || r.move || null;
+        }
+        return all;
       },
       // a taken name: 'version' | 'rename' (keep both) | null (skip)
       resolve:      (id, choice) => ipcRenderer.invoke('drive:upload:resolve', { id, choice: choice || null }),
+      // "Abbrechen": one upload / a folder (its row id), or every upload not through yet
+      cancelUpload: (id) => ipcRenderer.invoke('drive:upload:cancel', { id }),
+      cancelUploads: () => ipcRenderer.invoke('drive:upload:cancel', { all: true }),
       transfers:    () => ipcRenderer.invoke('drive:transfers'),
       clearTransfers: () => ipcRenderer.invoke('drive:transfers:clear'),
       open:         (id, versionId) => ipcRenderer.invoke('drive:open', { id, versionId: versionId || null }),
