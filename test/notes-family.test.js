@@ -76,8 +76,8 @@ describe('vendor/notizen: whose turn and stars from the typed line (the plugin\'
   });
 
   it('the parser, its vectors, the new module and its vectors are the plugin\'s files, byte for byte', () => {
-    assert.equal(sha('src/vendor/notizen/quickparse.js'), '1fcb5e337f4fd5ea8e42a8e73be614b3e94c75aeddf4f9ef6975b8dbbc8793d7');
-    assert.equal(sha('test/fixtures/notes/quickparse-vectors.json'), '72f79800c231127a286f816230b3822ff6bc28d7cf0cc5a80c110a9cc90e8367');
+    assert.equal(sha('src/vendor/notizen/quickparse.js'), '9d8b1cb444308a60f75005121dc8cf073f515534d97e771995bcb6990bf0f9aa');
+    assert.equal(sha('test/fixtures/notes/quickparse-vectors.json'), 'ee7a6f38b8fb7c4cbe5ceae7220f2968987877b8c308e767416d8665c34ea84e');
     assert.equal(sha('src/vendor/notizen/turnwords.js'), 'c4165bd24a00400a0e696eed661d24852be005ccfe9caf78f6fcc03f50544b37');
     assert.equal(sha('test/fixtures/notes/turnwords-vectors.json'), '37594e565a64772f2884a40a2bb00c4ec82d10cb5f3201b132476c9ac38159a3');
   });

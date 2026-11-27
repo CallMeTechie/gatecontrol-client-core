@@ -226,3 +226,13 @@ true` and `notMoved` (what the move could not take), `me.places.profile` says th
 profile. `notes:place:create` / `:update` take `icon` and `visibility`; `notes:place:delete` answers code `in_use` with
 `usedBy` and `ref` while another plugin uses the place, `{ force: true }` deletes it all the same. A task's place may be
 `{ ref: 'profile:<id>' }`.
+
+## Plugin 1.8.1: a weekday next to a date belongs to it
+
+Typed lines like „Freitag, 4.12. Outlet“ or „4. Dezember, Freitag Outlet“ left the weekday in the title. The parser
+(`src/vendor/notizen/quickparse.js`) and its frozen vectors (`test/fixtures/notes/quickparse-vectors.json`, 73 cases) are
+the plugin's files of 1.8.1, byte for byte: a weekday directly before or after a calendar date (ISO, `4.12.`,
+`4. Dezember`, `December 4`) is taken with it when it is that date's weekday — one mark over both, the date always comes
+from the date itself; a wrong weekday stays in the title. A case of the vectors may carry its own `marks`;
+`test/notes.test.js` checks them where they are given, `test/notes-family.test.js` holds the new check sums. Nothing
+else changes: no new call, no new channel.

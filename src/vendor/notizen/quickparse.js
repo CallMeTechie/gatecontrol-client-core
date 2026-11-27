@@ -20,7 +20,10 @@
  *     „am Wochenende“ / „weekend“ = Saturday (today when it is Saturday or Sunday)
  *   in 3 Tagen / in einer Woche / in 2 Wochen / in einem Monat / in 1 Jahr, in 3 days / in a week / in 2 months
  *   13.11. / 13.11.2026 / 13.11.26 / 13. November / 13. Nov / November 13 / 13 november / 2026-11-13 (without a
- *     year the next such day from today on)
+ *     year the next such day from today on); a weekday right before or right after such a date belongs to it and
+ *     goes with it („Freitag, 4.12.“, „am Freitag den 4. Dezember“, „Fr 4.12.“, „4. Dezember, Freitag“,
+ *     „Friday, December 4“, „Fri 4 Dec“) — the date counts; a weekday that is not the date's stays in the title
+ *     („Samstag 4. Dezember“ when that is a Friday)
  *   9 Uhr, 9:30, 9.30 Uhr, um 9, um 9:30, halb 10 (9:30), 14h, 9 am, 9:30 pm, at 9
  *   früh, morgens, vormittags, mittags, nachmittags, abends, heute Abend, morgen früh, nachts, morning, noon,
  *     afternoon, evening, tonight (ctx.times, defaults above)
@@ -80,6 +83,10 @@
   // a weekday word: written out, or two/three letters with a dot or right before a time
   var WD_WORD = '(?:' + WD_FULL + '|(?:' + WD_SHORT + ')(?:\\.|' + TIME_AHEAD + '))';
   var PRE = '(?:(?:am|bis|ab|on|by|due|until|für|for)\\s+)?';
+  // a weekday next to a calendar date (rules with `cal`): right before it — written out or short, the dot optional,
+  // then an optional comma and „den“/„dem“/„the“ — or right after it (an optional comma, then a weekday word)
+  var WD_BEFORE = new RegExp(B + PRE + '(' + WD_FULL + '|' + WD_SHORT + ')\\.?\\s*,?\\s*(?:(?:den|dem|the)\\s+)?$', 'iu');
+  var WD_AFTER = new RegExp('^\\s*,?\\s*(' + WD_WORD + ')' + E, 'iu');
 
   function weekdayOf(word) {
     var w = String(word).toLowerCase().replace(/\.$/, '');
@@ -182,23 +189,23 @@
       { kind: 'repeat', re: 'monatlich|jeden\\s+monat|monthly|every\\s+month', take: function () { return { repeat: { type: 'monthly', interval: 1 } }; } },
       { kind: 'repeat', re: 'jährlich|jaehrlich|jedes\\s+jahr|yearly|annually|every\\s+year', take: function () { return { repeat: { type: 'yearly', interval: 1 } }; } },
       // ── a date ──
-      { kind: 'date', re: PRE + '(\\d{4})-(\\d{2})-(\\d{2})',
+      { kind: 'date', cal: true, re: PRE + '(\\d{4})-(\\d{2})-(\\d{2})',
         take: function (m) { var y = +m[1], mo = +m[2], d = +m[3]; return validDate(y, mo, d) ? { date: m[1] + '-' + m[2] + '-' + m[3] } : null; } },
-      { kind: 'date', re: PRE + '(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4}|\\d{2})?',
+      { kind: 'date', cal: true, re: PRE + '(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4}|\\d{2})?',
         take: function (m) {
           var d = +m[1], mo = +m[2];
           if (m[3]) { var y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return validDate(y, mo, d) ? { date: y + '-' + pad(mo) + '-' + pad(d) } : null; }
           var u = upcoming(today, mo, d);
           return u ? { date: u } : null;
         } },
-      { kind: 'date', re: PRE + '(\\d{1,2})(?:\\.|st|nd|rd|th)?\\s+(?:of\\s+)?(' + MON + ')\\.?(?:\\s+(\\d{4}))?',
+      { kind: 'date', cal: true, re: PRE + '(\\d{1,2})(?:\\.|st|nd|rd|th)?\\s+(?:of\\s+)?(' + MON + ')\\.?(?:\\s+(\\d{4}))?',
         take: function (m) {
           var d = +m[1], mo = monthOf(m[2]);
           if (m[3]) return validDate(+m[3], mo, d) ? { date: m[3] + '-' + pad(mo) + '-' + pad(d) } : null;
           var u = upcoming(today, mo, d);
           return u ? { date: u } : null;
         } },
-      { kind: 'date', re: PRE + '(' + MON + ')\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?',
+      { kind: 'date', cal: true, re: PRE + '(' + MON + ')\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?',
         take: function (m) {
           var mo = monthOf(m[1]), d = +m[2];
           if (m[3]) return validDate(+m[3], mo, d) ? { date: m[3] + '-' + pad(mo) + '-' + pad(d) } : null;
@@ -326,8 +333,21 @@
         // a time of a word („morgen früh“, „abends“) gives way to a written one („morgen früh 7 Uhr“)
         if (got.time && (!out.time || softTime)) { out.time = got.time; softTime = !!got.soft || r.kind === 'date'; }
         if (got.important) out.important = true;
-        out.marks.push({ start: mm.index, end: mm.index + mm[0].length, kind: r.kind });
-        work = blank(work, mm.index, mm.index + mm[0].length);
+        var start = mm.index;
+        var end = mm.index + mm[0].length;
+        if (r.cal) {
+          // the weekday next to the date goes with it when it is that date's weekday and nothing between them was
+          // taken before (a #list, a repeat); before the date first, else after it
+          var wd = R.weekday(got.date);
+          var near = WD_BEFORE.exec(work.slice(0, start));
+          if (near && weekdayOf(near[1]) === wd && src.slice(near.index, start) === work.slice(near.index, start)) start = near.index;
+          else {
+            near = WD_AFTER.exec(work.slice(end));
+            if (near && weekdayOf(near[1]) === wd && src.slice(end, end + near[0].length) === work.slice(end, end + near[0].length)) end += near[0].length;
+          }
+        }
+        out.marks.push({ start: start, end: end, kind: r.kind });
+        work = blank(work, start, end);
         if (r.kind !== 'important') break;
       }
     });
