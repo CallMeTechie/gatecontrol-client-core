@@ -602,21 +602,23 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
       pick:         () => ipcRenderer.invoke('drive:pick'),
       // folder dialog ("Ordner hochladen") → { ok, paths }; then upload(parentId, paths)
       pickFolders:  () => ipcRenderer.invoke('drive:pick-folders'),
-      upload:       (parentId, paths) => ipcRenderer.invoke('drive:upload', { parentId, paths }),
+      // opts.copy: into a vault "Kopieren" — the originals stay (else they are moved)
+      upload:       (parentId, paths, opts) => ipcRenderer.invoke('drive:upload', { parentId, paths, ...(opts && opts.copy ? { copy: true } : {}) }),
       // dropped File objects (drag & drop from the Explorer: files and folders) → the same as upload(), with `dropped`
-      // (a folder there already takes the files). The path comes from Electron's webUtils only — never from a
+      // (temporary files left out). The path comes from Electron's webUtils only — never from a
       // property of the object; more than 200 go in turns of 200, one answer for all.
-      uploadDropped: async (parentId, fileList) => {
+      uploadDropped: async (parentId, fileList, opts) => {
+        const copy = opts && opts.copy ? { copy: true } : {};
         const paths = [];
         for (const f of Array.from(fileList || [])) {
           let p = '';
           try { p = webUtils && typeof webUtils.getPathForFile === 'function' ? webUtils.getPathForFile(f) : ''; } catch { p = ''; }
           if (typeof p === 'string' && p && !paths.includes(p)) paths.push(p);
         }
-        if (paths.length <= 200) return ipcRenderer.invoke('drive:upload', { parentId, paths, dropped: true });
+        if (paths.length <= 200) return ipcRenderer.invoke('drive:upload', { parentId, paths, dropped: true, ...copy });
         const all = { ok: true, queued: [], rejected: [], folders: 0, skipped: 0, move: null };
         for (let i = 0; i < paths.length; i += 200) {
-          const r = await ipcRenderer.invoke('drive:upload', { parentId, paths: paths.slice(i, i + 200), dropped: true });
+          const r = await ipcRenderer.invoke('drive:upload', { parentId, paths: paths.slice(i, i + 200), dropped: true, ...copy });
           if (!r || !r.ok) return i ? all : r;
           all.queued.push(...(r.queued || []));
           all.rejected.push(...(r.rejected || []));

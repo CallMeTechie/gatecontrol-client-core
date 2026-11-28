@@ -325,11 +325,12 @@ describe('DriveService: folders, PDFs, portal, live, guard', () => {
     assert.equal(childNamed(srv, childNamed(srv, u.id, 'app').id, 'node_modules'), undefined);
     const row = svc.transfers().find((t) => t.folder);
     assert.deepEqual([row.name, row.state, row.files], ['Urlaub', 'done', 3]);
-    // the same folder again: a free name, nothing mixed into the first
+    // the same folder again: into the one there (no "Urlaub (2)"), the same files are "schon vorhanden"
     const again = await svc.upload(1, [top]);
     assert.equal(again.queued.length, 3);
     await until(() => svc.transfers().every((t) => !['queued', 'running'].includes(t.state)));
-    assert.ok(childNamed(srv, 1, 'Urlaub (2)'));
+    assert.equal(childNamed(srv, 1, 'Urlaub (2)'), undefined);
+    assert.deepEqual(svc.transfers().filter((t) => again.queued.includes(t.id)).map((t) => t.state), ['same', 'same', 'same']);
   });
 
   it('empty files of a folder go to Drives with emptyFiles', async () => {

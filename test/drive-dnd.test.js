@@ -128,15 +128,33 @@ describe('Drive drag & drop: folders', () => {
     assert.ok(childrenOf(srv, p.id).includes('Plan.txt'));
   });
 
-  it('without `dropped` ("Ordner hochladen") a taken top folder still gets a free name', async () => {
+  it('without `dropped` ("Ordner hochladen") a taken top folder takes the files too (no "Fotos (2)")', async () => {
     const { srv, svc } = await setup({ features: [] });
     const top = path.join(tmpDir('drive-dnd-'), 'Fotos');
     write(top, 'a.txt', 'a');
     await svc.upload(1, [top]);
     await until(() => settled(svc));
+    write(top, 'Mai/b.txt', 'b');
     await svc.upload(1, [top]);
     await until(() => settled(svc));
-    assert.ok(childNamed(srv, 1, 'Fotos (2)'));
+    assert.equal(childNamed(srv, 1, 'Fotos (2)'), undefined);
+    const f = childNamed(srv, 1, 'Fotos');
+    assert.deepEqual(childrenOf(srv, f.id), ['Mai', 'a.txt']);
+    assert.ok(childNamed(srv, childNamed(srv, f.id, 'Mai').id, 'b.txt'));
+  });
+
+  it('a file of the folder\'s name there: the folder gets a free name', async () => {
+    const { srv, svc } = await setup({ features: [] });
+    const base = tmpDir('drive-dnd-');
+    await svc.upload(1, [write(base, 'Notizen', 'eine Datei')]);
+    await until(() => settled(svc));
+    const top = path.join(tmpDir('drive-dnd-'), 'Notizen');
+    write(top, 'a.txt', 'a');
+    await svc.upload(1, [top]);
+    await until(() => settled(svc));
+    const dir = childNamed(srv, 1, 'Notizen (2)');
+    assert.ok(dir && dir.isDir);
+    assert.ok(childNamed(srv, dir.id, 'a.txt'));
   });
 
   it('several files and folders at once; a dropped Thumbs.db, the same path twice and a link left out', async () => {
@@ -306,12 +324,13 @@ describe('Drive drag & drop: media upload abort, IPC, bridge', () => {
     assert.ok(srv.state.uploadCalls.length <= 2, `${srv.state.uploadCalls.length} parts went`);
   });
 
-  it('IPC: drive:upload takes `dropped`, drive:upload:cancel { id } | { all }', async () => {
+  it('IPC: drive:upload takes `dropped` and `copy`, drive:upload:cancel { id } | { all }', async () => {
     const { svc } = await setup({ features: [] });
     const handlers = {};
     registerDriveHandlers((ch, fn) => { handlers[ch] = fn; }, { drive: svc, getMainWindow: () => null, log });
     const call = (ch, arg) => handlers[ch]({}, arg);
     assert.equal((await call('drive:upload', { parentId: 1, paths: [], dropped: 'ja' })).code, 'invalid');
+    assert.equal((await call('drive:upload', { parentId: 1, paths: [], copy: 1 })).code, 'invalid');
     assert.equal((await call('drive:upload:cancel', {})).code, 'invalid');
     assert.equal((await call('drive:upload:cancel', { id: 'u999' })).code, 'not_found');
     assert.deepEqual(await call('drive:upload:cancel', { all: true }), { ok: true, cancelled: 0 });
@@ -319,7 +338,8 @@ describe('Drive drag & drop: media upload abort, IPC, bridge', () => {
     svc.upload = async (...args) => { calls.push(args); return { ok: true, queued: [], rejected: [], folders: 0, skipped: 0, move: null }; };
     await call('drive:upload', { parentId: 1, paths: ['/x'], dropped: true });
     await call('drive:upload', { parentId: 1, paths: ['/y'] });
-    assert.deepEqual(calls, [[1, ['/x'], { dropped: true }], [1, ['/y'], { dropped: false }]]);
+    await call('drive:upload', { parentId: 1, paths: ['/z'], copy: true });
+    assert.deepEqual(calls, [[1, ['/x'], { dropped: true, copy: false }], [1, ['/y'], { dropped: false, copy: false }], [1, ['/z'], { dropped: false, copy: true }]]);
   });
 
   it('bridge: paths from webUtils only, each once, in turns of 200; cancel channels', async () => {
@@ -344,6 +364,14 @@ describe('Drive drag & drop: media upload abort, IPC, bridge', () => {
     invoked.length = 0;
     await createBridgeApi(ipc, { t: (k) => k }).drive.uploadDropped(7, files.slice(0, 2));
     assert.deepEqual(invoked[0][1].paths, []);
+    // copy (into a vault "Kopieren") goes along, in every turn; without it nothing is added
+    invoked.length = 0;
+    await api.drive.uploadDropped(7, files.slice(0, 250), { copy: true });
+    assert.deepEqual(invoked.map(([, a]) => a.copy), [true, true]);
+    invoked.length = 0;
+    await api.drive.upload(7, ['/a'], { copy: true });
+    await api.drive.upload(7, ['/b']);
+    assert.deepEqual(invoked, [['drive:upload', { parentId: 7, paths: ['/a'], copy: true }], ['drive:upload', { parentId: 7, paths: ['/b'] }]]);
     invoked.length = 0;
     await api.drive.cancelUpload('u3');
     await api.drive.cancelUploads();
