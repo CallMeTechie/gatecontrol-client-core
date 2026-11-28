@@ -36,6 +36,7 @@
  *   media:search          ({ id, q }) → { ok, items }
  *   media:libraries       ({ id }) → { ok, folders: [{ id, name }], items: [] }   "Ordner": the Jellyfin libraries
  *   media:library:items   ({ id, parentId }) → { ok, folders: [{ id, name }], items, total }   a library's or folder's content
+ *   media:library:search  ({ id, parentId, q }) → { ok, items }   „Im Ordner suchen“: the titles below a library or folder
  *   media:detail          ({ id, itemId }) → { ok, title, versions: [{ …, videoLabel, hdr, audio: [{ …, label, fate:
  *                         'decoded' | 'converted' }], subtitles: [{ …, burnIn }], pick: { audioIndex, subtitleIndex },
  *                         quality: { originalBps, originalFits, adaptedBps, suggestAdapted } }], link }
@@ -47,6 +48,8 @@
  *   media:stream:end      ({ url | playId }) → { ok }   the addresses stop working
  *   media:share:list      ({ id, dir? }) → { ok, dir, via: 'smb' | 'webdav', items: [{ name, path, directory, size,
  *                         modifiedAt, kind, progress }], link }
+ *   media:share:search    ({ id, dir?, q }) → { ok, dir, items: [entry of media:share:list + folder] }   „Im Ordner suchen“:
+ *                         the videos below the folder whose file name holds every word (the share's index, at most 60)
  *   media:share:open      ({ id, path }) → { ok, playId, url, mime, size, via, check: { verdict: 'yes' | 'partial' |
  *                         'no' | 'unknown', video, audio, reasons, external, streams }, progress }
  *   media:share:check     ({ id, path | itemId }) → { ok, check, size, via }   the format check before the start (4h)
@@ -143,6 +146,7 @@ function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, l
   }));
   handle('media:search', wrap(async (a) => (isId(a.id) && isStr(a.q, 200) ? m.search(a.id, a.q) : invalid())));
   handle('media:libraries', wrap(async (a) => (isId(a.id) ? m.libraries(a.id) : invalid())));
+  handle('media:library:search', wrap(async (a) => (isId(a.id) && typeof a.parentId === 'string' && J.ID_RE.test(a.parentId) && isStr(a.q, 200) ? m.librarySearch(a.id, a.parentId, a.q) : invalid())));
   handle('media:library:items', wrap(async (a) => (isId(a.id) && typeof a.parentId === 'string' && J.ID_RE.test(a.parentId) ? m.libraryItems(a.id, a.parentId) : invalid())));
   handle('media:detail', wrap(async (a) => (isId(a.id) && isItem(a.itemId) ? m.detail(a.id, a.itemId) : invalid())));
   handle('media:play', wrap(async (a) => {
@@ -163,6 +167,7 @@ function registerMediaHandlers(handle, { media: m, cast = null, getMainWindow, l
     return v ? m.stream.revoke(v) : invalid();
   }));
   handle('media:share:list', wrap(async (a) => (isId(a.id) && (a.dir == null || isStr(a.dir, 1024)) ? m.shareList({ sourceId: a.id, dir: a.dir || '' }) : invalid())));
+  handle('media:share:search', wrap(async (a) => (isId(a.id) && (a.dir == null || isStr(a.dir, 1024)) && isStr(a.q, 200) ? m.shareSearch({ sourceId: a.id, dir: a.dir || '', q: a.q }) : invalid())));
   handle('media:share:open', wrap(async (a) => (isId(a.id) && isStr(a.path, 1024) && a.path ? m.shareOpen({ sourceId: a.id, path: a.path }) : invalid())));
   const sharePath = (a) => (isStr(a.path, 1024) && a.path ? { path: a.path } : isItem(a.itemId) && a.itemId.startsWith('f:') ? { itemId: a.itemId } : null);
   handle('media:share:check', wrap(async (a) => {
