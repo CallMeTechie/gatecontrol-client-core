@@ -397,6 +397,54 @@ describe('DriveService: "In Tresor verschieben"', () => {
     assert.equal(fs.existsSync(path.join(top, 'b', 'zwei.txt')), true);
   });
 
+  it('copy ("Kopieren"): files and a folder are encrypted into the vault, the originals stay, no move event', async () => {
+    const { svc, vaultId, moves, row, names } = await vaultSetup();
+    const src = tmpDir('dvm-copy-');
+    const a = write(path.join(src, 'Steuer.pdf'), '%PDF-1.4 Steuer');
+    const dir = path.join(src, 'Belege');
+    const b = write(path.join(dir, '2024', 'b.txt'), 'b');
+    const q = await svc.upload(vaultId, [a, dir], { copy: true });
+    assert.equal(q.move, null);
+    assert.equal(q.queued.length, 2);
+    await until(() => q.queued.every((id) => row(id).state === 'done'));
+    assert.deepEqual(q.queued.map((id) => [row(id).move, row(id).original]), [[undefined, undefined], [undefined, undefined]]);
+    assert.equal(fs.readFileSync(a, 'utf8'), '%PDF-1.4 Steuer');
+    assert.equal(fs.readFileSync(b, 'utf8'), 'b');
+    assert.deepEqual(await names(vaultId), ['Belege', 'Steuer.pdf']);
+    assert.deepEqual(moves, []);
+  });
+
+  it('a folder of the same (decrypted) name in the vault takes the files — its subfolders too; a file of the name: a free name', async () => {
+    const { svc, vaultId, row, names } = await vaultSetup();
+    const src = tmpDir('dvm-merge-');
+    const dir = path.join(src, 'Belege');
+    write(path.join(dir, 'a.txt'), 'a');
+    write(path.join(dir, '2024', 'b.txt'), 'b');
+    const q = await svc.upload(vaultId, [dir], { copy: true, dropped: true });
+    await until(() => q.queued.every((id) => row(id).state === 'done'));
+    write(path.join(dir, 'c.txt'), 'c');
+    write(path.join(dir, '2024', 'd.txt'), 'd');
+    const q2 = await svc.upload(vaultId, [dir], { copy: true, dropped: true });
+    await until(() => q2.queued.every((id) => ['done', 'same', 'conflict'].includes(row(id).state)));
+    assert.deepEqual(await names(vaultId), ['Belege']);
+    const belege = (await svc.folder(vaultId)).items.find((n) => n.name === 'Belege');
+    assert.deepEqual(await names(belege.id), ['2024', 'a.txt', 'c.txt']);
+    const y = (await svc.folder(belege.id)).items.find((n) => n.name === '2024');
+    assert.deepEqual(await names(y.id), ['b.txt', 'd.txt']);
+    // "Ordner hochladen" (not dropped) merges the same way; a file of the folder's name: the folder gets a free name
+    const q3 = await svc.upload(vaultId, [dir], { copy: true });
+    await until(() => q3.queued.every((id) => ['done', 'same', 'conflict'].includes(row(id).state)));
+    assert.deepEqual(await names(vaultId), ['Belege']);
+    const f = write(path.join(tmpDir('dvm-file-'), 'Notizen'), 'eine Datei');
+    const qf = await svc.upload(vaultId, [f], { copy: true });
+    await until(() => row(qf.queued[0]).state === 'done');
+    const nd = path.join(src, 'Notizen');
+    write(path.join(nd, 'x.txt'), 'x');
+    const q4 = await svc.upload(vaultId, [nd], { copy: true });
+    await until(() => q4.queued.every((id) => row(id).state === 'done'));
+    assert.deepEqual(await names(vaultId), ['Belege', 'Notizen', 'Notizen (2)']);
+  });
+
   it('the event reaches the window as drive:vault-move', async () => {
     const { svc, vaultId, moved } = await vaultSetup();
     const sent = [];

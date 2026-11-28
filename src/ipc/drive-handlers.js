@@ -26,9 +26,10 @@
  *   drive:preview         ({ mediaId, large? }) → { ok, mime, data: Uint8Array }
  *   drive:pick            () → file dialog → { ok, paths } | { ok: false, code: 'cancelled' }
  *   drive:pick-folders    () → folder dialog ("Ordner hochladen") → { ok, paths } | { ok: false, code: 'cancelled' }
- *   drive:upload          ({ parentId, paths, dropped? }) → { ok, queued, rejected, folders, skipped, move }  (files and
- *                         whole folders; into a vault `move` is the batch id: the originals are deleted once in the vault;
- *                         dropped: from the Explorer — a folder there already takes the files)
+ *   drive:upload          ({ parentId, paths, dropped?, copy? }) → { ok, queued, rejected, folders, skipped, move }  (files
+ *                         and whole folders — a folder there already takes the files; into a vault `move` is the batch id:
+ *                         the originals are deleted once in the vault, with copy they stay (move null);
+ *                         dropped: from the Explorer — temporary files left out)
  *   drive:upload:resolve  ({ id, choice: 'version' | 'rename' | null }) → { ok }
  *   drive:upload:cancel   ({ id } | { all: true }) → { ok, cancelled }   "Abbrechen" of an upload / a folder, or of all
  *   drive:transfers       () → { ok, transfers }
@@ -287,7 +288,8 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
   handle('drive:upload', wrap(async (a) => {
     if (!isId(a.parentId) || !Array.isArray(a.paths) || a.paths.length > 200 || !a.paths.every((p) => isStr(p, 4096))) return invalid();
     if (!(a.dropped === undefined || typeof a.dropped === 'boolean')) return invalid();
-    return s.upload(a.parentId, a.paths, { dropped: a.dropped === true });
+    if (!(a.copy === undefined || typeof a.copy === 'boolean')) return invalid();
+    return s.upload(a.parentId, a.paths, { dropped: a.dropped === true, copy: a.copy === true });
   }));
   handle('drive:upload:cancel', wrap(async (a) => {
     if (a.all === true) return s.cancelUploads();
