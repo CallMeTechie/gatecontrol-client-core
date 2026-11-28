@@ -374,6 +374,7 @@ describe('MediaService: a share\'s films, series and folders', () => {
     assert.equal(all.items[0].itemId, 'f:Serien/Graufeld/Staffel 1/Graufeld.S01E01.Flut.mkv');
     assert.match(all.items[0].poster, /Serien\/Graufeld\/poster\.jpg$/);
     assert.equal(all.items[0].directory, false);
+    assert.equal(all.items[0].kind, 'video', 'as an entry of the folder');
     // below a folder only; every word; the extension is no word
     assert.deepEqual((await media.shareSearch({ sourceId: smb.id, dir: 'Filme', q: 'graufeld' })).items, []);
     assert.deepEqual((await media.shareSearch({ sourceId: smb.id, dir: 'Filme', q: 'kobalt 2025' })).items.map((e) => e.folder), ['Filme/Kobaltnacht (2025)']);

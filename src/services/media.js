@@ -1187,7 +1187,7 @@ class MediaService extends EventEmitter {
     const progress = this.store.all(`${sourceId}|`);
     const items = r.value.map((v) => {
       const at = v.path.lastIndexOf('/');
-      const e = { name: v.path.slice(at + 1), path: v.path, directory: false, size: v.size || 0, modifiedAt: v.modifiedAt };
+      const e = { name: v.path.slice(at + 1), path: v.path, directory: false, size: v.size || 0, modifiedAt: v.modifiedAt, kind: 'video' };
       return { ...this._shareItem(sourceId, e, v, progress), folder: at > 0 ? v.path.slice(0, at) : '' };
     });
     return { ok: true, dir: clean, items };
