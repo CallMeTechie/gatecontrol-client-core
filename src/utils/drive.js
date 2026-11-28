@@ -39,7 +39,8 @@ const LINK_EXPIRES = Object.freeze(['1d', '7d', '30d', 'never']);
 const LINK_KINDS = Object.freeze(['files', 'folder', 'upload']);
 // Drive 1.5: `mark` / `unmark` – a file is marked for a delayed delete (deleteAt) or no longer
 // 'scan' (Drive 1.19): the host's virus scan changed `scan` of the node — no new content, `rev` stays
-const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark', 'scan']);
+// 'local' (Drive 1.32 'vaultLocal'): a vault folder became / stopped being a placeholder ("Nur auf diesem Gerät")
+const CHANGE_OPS = Object.freeze(['create', 'update', 'move', 'delete', 'restore', 'purge', 'mark', 'unmark', 'scan', 'local']);
 const CHANGES_MAX = 1000;
 
 const MEDIA_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
@@ -157,6 +158,49 @@ function normalizeAreas(raw) {
   return { areas: sortAreas(arr(r.areas).slice(0, 500).map(normalizeArea).filter(Boolean)) };
 }
 
+const LOCAL_STATES = Object.freeze(['moving', 'local', 'returning']);
+const LOCAL_DEVICE_STATES = Object.freeze(['approved', 'pending', 'revoked']);
+const LOCAL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+
+/**
+ * Drive 1.32 ('vaultLocal', „Nur auf diesem Gerät“): the field `local` of a vault folder that is a placeholder — its
+ * content lies only on one device of the person → { nodeId, vaultId, deviceId, deviceName, platform, deviceState, state,
+ * since, mine, thisDevice, leaseUntil, purgeAt, undo } or null (no placeholder, or not understood: then the folder is
+ * shown as before). state: 'moving' (being moved to the device, still readable), 'local' (only there), 'returning'
+ * (being brought back to the server).
+ */
+function normalizeLocal(v) {
+  const o = obj(v);
+  if (!o || !LOCAL_STATES.includes(o.state)) return null;
+  const platform = typeof o.platform === 'string' && /^[a-z0-9_-]{1,20}$/.test(o.platform) ? o.platform : null;
+  return {
+    nodeId: posId(o.nodeId),
+    vaultId: typeof o.vaultId === 'string' && LOCAL_ID_RE.test(o.vaultId) ? o.vaultId : null,
+    deviceId: typeof o.deviceId === 'string' && LOCAL_ID_RE.test(o.deviceId) ? o.deviceId : null,
+    deviceName: line(o.deviceName, 80),
+    platform,
+    deviceState: LOCAL_DEVICE_STATES.includes(o.deviceState) ? o.deviceState : null,
+    state: o.state,
+    since: msOf(o.since),
+    mine: bool(o.mine),
+    thisDevice: bool(o.thisDevice),
+    leaseUntil: msOf(o.leaseUntil),
+    purgeAt: msOf(o.purgeAt),
+    // only for the person's own: true = "Rückgängig" still possible (24 h), false = over, null = not told
+    undo: typeof o.undo === 'boolean' ? o.undo : null,
+  };
+}
+
+/**
+ * Drive 1.32: the refusal of a write into a placeholder as the server words it → { code, status, body } for a
+ * DriveError (409 local_only, local_moving while it is being moved to the device; the device's name for the page).
+ */
+function localRefusalOf(local) {
+  const l = local || {};
+  const code = l.state === 'moving' ? 'local_moving' : 'local_only';
+  return { code, status: 409, body: { code, nodeId: l.nodeId || null, deviceId: l.deviceId || null, deviceName: l.deviceName || null, state: l.state || null } };
+}
+
 /** A node (folder or file) → clean object or null. */
 function normalizeNode(v) {
   const o = obj(v);
@@ -217,6 +261,8 @@ function normalizeNode(v) {
       nameCipher: typeof o.nameCipher === 'string' && o.nameCipher.length <= 2000 && /^[A-Za-z0-9_-]+$/.test(o.nameCipher) ? o.nameCipher : null,
       keyVersion: posId(o.keyVersion),
     } : { encrypted: false }),
+    // Drive 1.32 ('vaultLocal'): a vault folder whose content lies only on one device (a placeholder)
+    ...(isDir && o.encrypted === true && normalizeLocal(o.local) ? { local: normalizeLocal(o.local) } : {}),
   };
 }
 
@@ -253,6 +299,9 @@ function normalizeFolder(nodeAnswer, childrenAnswer) {
   const role = ROLES.includes(roleRaw) ? roleRaw : 'read';
   const crumbs = crumbsOf(n.crumbs || na.crumbs);
   if (!crumbs.length || crumbs[crumbs.length - 1].id !== node.id) crumbs.push({ id: node.id, name: node.name });
+  // Drive 1.32 ('vaultLocal'): the children of a placeholder carry its `local` at the top level
+  const local = node.isDir && node.encrypted ? (node.local || normalizeLocal(ca.local)) : null;
+  if (local && !node.local) node.local = local;
   return {
     node,
     crumbs,
@@ -1863,6 +1912,9 @@ module.exports = {
   normalizeArea,
   normalizeAreas,
   normalizeNode,
+  normalizeLocal,
+  localRefusalOf,
+  LOCAL_STATES,
   normalizeItems,
   normalizeFolder,
   normalizeMe,

@@ -85,6 +85,9 @@
  *   drive:vault:decline   ({ vaultId, deviceId }) → { ok, device }
  *   drive:vault:recover   ({ vaultId, recoveryKey }) → { ok, state }
  *   drive:vault:rotate    ({ vaultId }) → { ok, vault, recoveryKey }
+ *   drive:vault:local:forget ({ vaultId, nodeId }) → { ok, forgotten, trashed }   Drive 1.32 'vaultLocal': "Platzhalter
+ *                         entfernen" of a folder that lies only on another device (409 conflict purge_pending | state);
+ *                         a write into a placeholder fails with 409 local_only | local_moving and its deviceName
  *   drive:tree            ({ id }) → { ok, items: [{ id, name, hasDirs }], more }    Drive 1.11: the menu's folder tree
  *   drive:vault:lock-status () → { ok, enforced, unlocked, settings, hello: { available, reason }, choices, lastLock }
  *   drive:vault:unlock    ({ vaultId? }) → { ok, unlocked, state? } | { ok: false, code: 'hello_cancelled' | 'hello_not_set_up' | … }
@@ -185,6 +188,13 @@ function fail(err) {
   const b = err && err.body;
   if (b && typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason)) out.reason = b.reason;
   if (b && typeof b.field === 'string' && /^[A-Za-z_.]{1,40}$/.test(b.field)) out.field = b.field;
+  // Drive 1.32 'vaultLocal': which device holds the folder (409 local_only | local_moving | local_nested), until when
+  // a placeholder cannot be removed from here (409 conflict purge_pending)
+  if (b && /^local_(only|moving|nested)$/.test(out.code)) {
+    out.deviceName = typeof b.deviceName === 'string' ? b.deviceName.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 80) || null : null;
+    if (Number.isSafeInteger(b.nodeId) && b.nodeId > 0) out.nodeId = b.nodeId;
+  }
+  if (b && typeof b.purgeAt === 'string' && b.purgeAt.length <= 40 && Number.isFinite(Date.parse(b.purgeAt))) out.purgeAt = b.purgeAt;
   // Drive 1.19: the virus scan's refusal (423 scan_pending | quarantined | scan_blocked, 422 infected, 503
   // scan_unavailable) → its scan, finding, retryAfter
   return { ...out, ...SC.refusalFields(err) };
@@ -457,6 +467,7 @@ function registerDriveHandlers(handle, { drive: s, sync = null, maps = null, str
   handle('drive:vault:decline', byVault(async (a) => (isVaultId(a.deviceId) ? s.vaultDecline(a.vaultId, a.deviceId) : invalid())));
   handle('drive:vault:recover', byVault(async (a) => (isStr(a.recoveryKey, 200) ? s.vaultRecover(a.vaultId, a.recoveryKey) : invalid())));
   handle('drive:vault:rotate', byVault(async (a) => s.vaultRotate(a.vaultId)));
+  handle('drive:vault:local:forget', byVault(async (a) => (isId(a.nodeId) ? s.vaultLocalForget(a.vaultId, a.nodeId) : invalid())));
   // ── Drive 1.11 ─────────────────────────────────────────
   handle('drive:tree', byId(async (a) => s.tree(a.id)));
   handle('drive:vault:lock-status', wrap(async () => s.vaultLockStatus()));

@@ -1138,8 +1138,9 @@ class DriveSync extends EventEmitter {
     while (dirs.length) {
       const id = dirs.shift();
       for (const n of await this.api.childrenAll(id)) {
-        // Drive 1.9: vault folders and their content are never synced (opaque names, ciphertext)
-        if (n.deleted || n.encrypted) continue;
+        // Drive 1.9: vault folders and their content are never synced (opaque names, ciphertext); Drive 1.32: nor a
+        // placeholder (`local`, a vault folder whose content lies only on one device)
+        if (n.deleted || n.encrypted || n.local) continue;
         tree[n.id] = S.slimNode(n);
         if (n.isDir) dirs.push(n.id);
         if (++count > 500000) throw new DriveError('too many files', { code: 'too_many_files' });

@@ -901,6 +901,22 @@ class DriveService extends EventEmitter {
     });
   }
 
+  /**
+   * Drive 1.32 ('vaultLocal', „Nur auf diesem Gerät“): "Platzhalter entfernen" of a vault folder whose content lies only
+   * on another device of the person (that device is lost) → { ok, forgotten, trashed }. Sent with this PC's vault device
+   * and without proof (the server allows that to the owner only after the 24 hours: 409 conflict purge_pending, and
+   * pushes to all the person's devices). Not asked for the feature: a placeholder stays after the setting went off.
+   */
+  async vaultLocalForget(vaultId, nodeId) {
+    return this._run(async () => {
+      if (!drive.vaultIdOf(vaultId) || !drive.posId(nodeId)) throw new DriveError('invalid id', { code: 'invalid' });
+      const dev = await this.vault.device({ create: false });
+      if (!dev) throw new DriveError('no vault device on this PC', { code: 'forbidden' });
+      const r = await this.api.vaultLocalForget(vaultId, nodeId, dev.id);
+      return { ok: true, ...r };
+    });
+  }
+
   /** A folder in a vault (the top one of an uploaded folder: a free name) → node with its name. */
   async _vaultMkdir(vaultId, parentId, name, { free = false } = {}) {
     let n = name;
@@ -2098,6 +2114,8 @@ class DriveService extends EventEmitter {
     // Drive 1.9: into a vault only encrypted (this PC needs its key)
     const parent = await this._run(() => this._vaultNodeOf(folderId));
     const vaultId = parent ? parent.vaultId : null;
+    // Drive 1.32 ('vaultLocal'): nothing goes into a placeholder — its content lies only on one device
+    if (parent && parent.local) { const r = drive.localRefusalOf(parent.local); throw new DriveError(r.code, r); }
     if (vaultId) {
       await this.vault.tryOpen(vaultId);
       this.vault.keys(vaultId);

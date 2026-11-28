@@ -75,7 +75,7 @@ describe('createBridgeApi', () => {
       'drive:sync:remove', 'drive:sync:run', 'drive:sync:settings', 'drive:sync:status', 'drive:sync:suspect',
       'drive:timetravel', 'drive:timetravel:preview',
       'drive:transfers', 'drive:transfers:clear', 'drive:trash', 'drive:tree', 'drive:upload', 'drive:upload:cancel', 'drive:upload:resolve',
-      'drive:vault:approve', 'drive:vault:create', 'drive:vault:decline', 'drive:vault:devices', 'drive:vault:lock', 'drive:vault:lock-settings',
+      'drive:vault:approve', 'drive:vault:create', 'drive:vault:decline', 'drive:vault:devices', 'drive:vault:local:forget', 'drive:vault:lock', 'drive:vault:lock-settings',
       'drive:vault:lock-status', 'drive:vault:open', 'drive:vault:protect', 'drive:vault:recover',
       'drive:vault:request', 'drive:vault:rotate', 'drive:vault:status', 'drive:vault:touch', 'drive:vault:unlock', 'drive:vault:view', 'drive:vault:view:close', 'drive:vaults', 'drive:version:restore',
       'drive:versions', 'drive:zip',
