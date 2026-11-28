@@ -32,9 +32,8 @@
  *   remembered per server (store key `driveLastFolder`).
  *
  * - Whole folders (dropped, or "Ordner hochladen"): the structure is made
- *   first (with "Ordner hochladen" a taken top name gets a free one,
- *   "Fotos (2)"; dropped from the Explorer, a folder that is there already
- *   takes the files — a taken file name asks as always), the files go into
+ *   first (a folder that is there already takes the files, in a vault by its
+ *   decrypted name too — a taken file name asks as always), the files go into
  *   the queue; temporary files (Thumbs.db, desktop.ini …), node_modules /
  *   .git, links and names Drive does not take are left out (like "Ordner
  *   sichern"), a folder reached twice (a loop) only once; empty folders are
@@ -927,6 +926,18 @@ class DriveService extends EventEmitter {
     const node = await this.vault.withCurrent(vaultId, (cur) => this.api.mkdirEncrypted(parentId, this.vault.encryptName(vaultId, n, cur)));
     this.vault.nameOf(node);
     return { ...node, name: n, opaqueName: node.name, locked: false };
+  }
+
+  /**
+   * A folder `name` in the vault folder `parentId`: the one there already of the same decrypted name, else made (a
+   * free name when a file has it) → node with its name.
+   */
+  async _vaultMkdirOrExisting(vaultId, parentId, name) {
+    const siblings = await this._vaultSiblings(parentId, vaultId);
+    const same = siblings.filter((x) => S.keyOf(x.name) === S.keyOf(name));
+    const have = same.find((x) => x.node.isDir);
+    if (have) return { ...have.node, name: have.name, opaqueName: have.node.name, locked: false };
+    return this._vaultMkdir(vaultId, parentId, name, { free: same.length > 0 });
   }
 
   /**
@@ -2099,15 +2110,16 @@ class DriveService extends EventEmitter {
    * Queues files (and whole folders) from disk for the folder `parentId`
    * → { ok, queued, rejected, folders, skipped, move }. Unreadable paths are rejected ({ name, code });
    * a folder is made in Drive with its structure (folders: how many), what is left out counts in skipped.
-   * Into a vault it is "In Tresor verschieben" (services/drive-vault-move.js): `move` is the batch's id, each
+   * Into a vault it is "In Tresor verschieben" (services/drive-vault-move.js) unless `copy` (the originals stay, `move`
+   * null): `move` is the batch's id, each
    * original is deleted for good once its upload is verified (its row: `move`, `original` 'deleted' | 'kept' + `originalReason`),
    * a dropped folder's emptied folders after its last file; when the batch is through: event 'vaultMove'
    * ({ id, folderId, moved, deleted, kept, keptFiles [{ name, reason }], notMoved, folders { removed, kept } }).
-   * `dropped` (drag & drop from the Explorer): a folder there already takes the files (not in a vault: its names
-   * are encrypted, a dropped folder gets a free name there as before), temporary files (Thumbs.db, desktop.ini …)
-   * dropped along are left out, the same path twice goes once.
+   * A folder there already takes the files (dropped or "Ordner hochladen"; in a vault the one of the same decrypted
+   * name). `dropped` (drag & drop from the Explorer): temporary files (Thumbs.db, desktop.ini …) dropped along are
+   * left out. The same path twice goes once.
    */
-  async upload(parentId, paths, { dropped = false } = {}) {
+  async upload(parentId, paths, { dropped = false, copy = false } = {}) {
     const folderId = drive.posId(parentId);
     if (!folderId) throw new DriveError('invalid folder', { code: 'invalid' });
     this._need();
@@ -2123,8 +2135,9 @@ class DriveService extends EventEmitter {
     const list = Array.isArray(paths) ? paths.slice(0, MAX_PATHS) : [];
     const out = { queued: [], rejected: [], folders: 0, skipped: 0 };
     const seen = new Set();
-    // Drive 1.9: into a vault the files are moved (the originals go once they are in the vault, verified)
-    const batch = vaultId ? this._moveBatch(folderId) : null;
+    // Drive 1.9: into a vault the files are moved (the originals go once they are in the vault, verified) — with
+    // `copy` ("Kopieren") they are only encrypted into it, the originals stay
+    const batch = vaultId && !copy ? this._moveBatch(folderId) : null;
     try {
       for (const p of list) {
         if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0') || !path.isAbsolute(p)) continue;
@@ -2134,7 +2147,7 @@ class DriveService extends EventEmitter {
         const base = path.basename(p);
         let st;
         try { st = await fs.promises.lstat(p); } catch { out.rejected.push({ name: base, code: 'missing' }); continue; }
-        if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId, batch, { merge: dropped && !vaultId }); continue; }
+        if (st.isDirectory()) { await this._queueFolder(folderId, p, out, vaultId, batch); continue; }
         if (!st.isFile()) { out.rejected.push({ name: base, code: 'missing' }); continue; }
         if (dropped && S.isTempName(base.normalize('NFC'))) continue;
         this._queueFile(folderId, p, base, st, out, vaultId, { batch });
@@ -2219,12 +2232,12 @@ class DriveService extends EventEmitter {
   }
 
   /**
-   * A whole folder: its structure in Drive first (the top folder gets a free name when taken; `merge`: a folder
-   * there already takes the files), then its files into the queue. Left out like "Ordner sichern": temporary files,
+   * A whole folder: its structure in Drive first (a folder there already takes the files; in a vault the one of
+   * the same decrypted name), then its files into the queue. Left out like "Ordner sichern": temporary files,
    * node_modules / .git, names Drive does not take, links (and junctions); a folder reached a second time (the same
    * real path) is walked once. Empty folders are made too. cancelUpload(row id) stops the walk.
    */
-  async _queueFolder(parentId, abs, out, vaultId = null, batch = null, { merge = false } = {}) {
+  async _queueFolder(parentId, abs, out, vaultId = null, batch = null) {
     const base = path.basename(abs);
     const top = drive.safeName(base);
     if (!top) { out.rejected.push({ name: base, code: 'invalid_name' }); return; }
@@ -2248,8 +2261,7 @@ class DriveService extends EventEmitter {
     let files = 0;
     let dirs = 0;
     try {
-      const made = await this._run(() => (vaultId ? this._vaultMkdir(vaultId, parentId, top, { free: true })
-        : merge ? this._mkdirOrExisting(parentId, top) : this.api.mkdir(parentId, top, { rename: true })));
+      const made = vaultId ? await this._run(() => this._vaultMkdirOrExisting(vaultId, parentId, top)) : await this._mkdirOrExisting(parentId, top, { free: true });
       dirs++;
       const walk = async (dirAbs, nodeId, rel) => {
         if (ctl.cancelled) return;
@@ -2269,7 +2281,7 @@ class DriveService extends EventEmitter {
           if (e.isSymbolicLink()) { left(dirAbs); continue; }
           if (e.isDirectory()) {
             if (S.excluded(r, { dir: true }, settings) || dirs >= FOLDER_MAX_DIRS) { left(dirAbs); continue; }
-            const child = vaultId ? await this._run(() => this._vaultMkdir(vaultId, nodeId, name)) : await this._mkdirOrExisting(nodeId, name);
+            const child = vaultId ? await this._run(() => this._vaultMkdirOrExisting(vaultId, nodeId, name)) : await this._mkdirOrExisting(nodeId, name);
             dirs++;
             await walk(p, child.id, r);
           } else if (e.isFile()) {
@@ -2302,14 +2314,18 @@ class DriveService extends EventEmitter {
     }
   }
 
-  /** A folder `name` in `parentId` (not a vault's): made, or the one there already (409) → node. */
-  async _mkdirOrExisting(parentId, name) {
+  /**
+   * A folder `name` in `parentId` (not a vault's): made, or the one there already (409) → node. `free`: when a file
+   * (not a folder) has the name, a folder with a free name ("Fotos (2)").
+   */
+  async _mkdirOrExisting(parentId, name, { free = false } = {}) {
     return this._run(() => this.api.mkdir(parentId, name, { rename: false })).catch(async (err) => {
       if (!(err && err.status === 409)) throw err;
       const kids = await this.api.childrenAll(parentId);
       const have = kids.find((k) => k.isDir && !k.encrypted && S.keyOf(k.name) === S.keyOf(name));
-      if (!have) throw err;
-      return have;
+      if (have) return have;
+      if (free) return this._run(() => this.api.mkdir(parentId, name, { rename: true }));
+      throw err;
     });
   }
 
