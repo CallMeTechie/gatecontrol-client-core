@@ -75,6 +75,14 @@
 // state.frame: the album „Fotorahmen“ { id, items } or null, made at the first share; skipped not_found / not_image /
 // vault (encrypted) / blocked (srv.frameBlocked: a Set of ids) / child (srv.frameChild: a Set of ids);
 // srv.frameForbidden → POST / DELETE 403 { code: 'forbidden', field: 'frame' }; state.frameCalls).
+// Drive 1.32: 'vaultLocal' („Nur auf diesem Gerät“) — a vault folder as a placeholder: srv.setLocal(nodeId, { deviceName,
+// platform, state: 'local' | 'moving' | 'returning', since, mine, undo, purgeAt }) (logs the op `local`), srv.clearLocal(id);
+// the nodes carry `local` (also without the feature: a placeholder stays when the setting goes off), children of a
+// placeholder are [] (moving: the content) with `local` on top; writes into one (POST nodes, uploads/commit, PATCH /
+// ops move or copy into it, trash / offline of it) → 409 local_only (moving: local_moving) { nodeId, deviceId, deviceName,
+// state } with a readable `error`; ops blocked[].reason local_only; GET vaults/<id>/local/<nodeId>, POST
+// vaults/<id>/local/<nodeId>/forget { deviceId } (an approved device of the person; srv.localPurgePending → 409 conflict
+// purge_pending) → the placeholder into the trash; state.localForgets.
 
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -120,6 +128,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
   state.docAiOff = new Set();
   // Drive 1.9 'vault': id → { id, nodeId, areaId, keyVersion, recoveryPub, recoveryAuth (sha256 hex), recoveryBy, needsRotation, devices, wraps }
   state.vaults = new Map();
+  // Drive 1.32 'vaultLocal': nodeId → { deviceId, deviceName, platform, deviceState, state, since, mine, undo, purgeAt }
+  state.vaultLocal = new Map();
+  state.localForgets = [];
   state.officeCalls = [];
   const snap = () => new Map([...state.nodes.values()].map((n) => [n.id, { name: n.name, parentId: n.parentId, isDir: n.isDir, deleted: !!n.deleted, mediaId: n.mediaId, size: n.size, sha256: n.sha256, mime: n.mime }]));
   const logChange = (op, n, device = '42', areaId = n.areaId) => {
@@ -295,6 +306,7 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       if (!n || (fromTrash && !n.deleted)) { block('not_found'); continue; }
       if (b.op !== 'copy' && !writable(n)) { block('forbidden'); continue; }
       if ((b.op === 'move' || b.op === 'copy') && (isVaultRoot(n) || (n.vaultId || null) !== (target.vaultId || null) || (b.op === 'copy' && n.encrypted))) { block('encrypted'); continue; }
+      if ((b.op === 'trash' || b.op === 'copy') && [...state.vaultLocal.keys()].some((pid) => pid === n.id || srv.below(pid).some((x) => x.id === n.id))) { block('local_only'); continue; }
       if (!n.parentId && b.op !== 'copy') { block('root'); continue; }
       if (target && up.has(n.id)) { block('into_itself'); continue; }
       if (b.op === 'move' && n.parentId === target.id) { block('same_folder'); continue; }
@@ -455,6 +467,17 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     state.insights.set(id, { status: 'ready', kind: 'other', title: null, date: null, sender: null, amount: null, currency: null, error: null, at: iso(Date.now()), suggestion: null, ...ins, deadlines });
   };
   // Drive 1.9: another device of the person asks for vault `vaultId` (pending)
+  srv.setLocal = (id, { deviceName = 'Pixel 8', platform = 'android', state: st = 'local', since = Date.now() - 86400000, mine = true, undo = false, purgeAt = null, deviceId = 'PixelDevice00000000000A', deviceState = 'approved', log = true } = {}) => {
+    const n = state.nodes.get(id);
+    state.vaultLocal.set(id, { deviceId, deviceName, platform, deviceState, state: st, since: iso(since), mine, undo, purgeAt: purgeAt ? iso(purgeAt) : null });
+    if (log && n) logChange('local', n);
+  };
+  srv.clearLocal = (id, { log = true } = {}) => {
+    state.vaultLocal.delete(id);
+    const n = state.nodes.get(id);
+    if (log && n) logChange('local', n);
+  };
+  srv.localPurgePending = false;
   srv.vaultAsk = (vaultId, publicKey, name = 'Pixel') => {
     const v = state.vaults.get(vaultId);
     const deviceId = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('gcdrive-v1:device:'), Buffer.from(publicKey, 'base64url')])).digest().subarray(0, 16).toString('base64url');
@@ -480,8 +503,15 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
     const i = state.insights.get(n.id);
     return i ? { status: i.status, kind: i.status === 'ready' ? i.kind : null } : { status: 'none', kind: null };
   };
+  const localOf = (n) => {
+    const l = n && state.vaultLocal.get(n.id);
+    if (!l) return null;
+    const { undo, purgeAt, ...rest } = l;
+    return { nodeId: n.id, vaultId: n.vaultId, ...rest, ...(l.mine ? { undo, purgeAt } : {}) };
+  };
   const view = (n) => ({
     ...n,
+    ...(localOf(n) ? { local: localOf(n) } : {}),
     preview: !n.isDir && n.mediaId && !n.encrypted && /^image\//.test(n.mime || '') ? { url: `${MEDIA}/${n.mediaId}/preview`, largeUrl: `${MEDIA}/${n.mediaId}/preview?size=large` } : (n.isDir ? undefined : null),
     ...(features && features.includes('docAi') && !n.isDir ? { insight: insightOf(n) } : {}),
   });
@@ -689,6 +719,30 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       return json(res, 200, { ok: true, device: devView(d) });
     }
     const has = (f) => !!(features && features.includes(f));
+    // ── Drive 1.32 'vaultLocal': no write into a placeholder ──
+    const placeholderAt = (id) => {
+      for (let c = state.nodes.get(Number(id)); c; c = c.parentId ? state.nodes.get(c.parentId) : null) if (state.vaultLocal.has(c.id)) return c;
+      return null;
+    };
+    const localRefuse = (ph) => {
+      const l = state.vaultLocal.get(ph.id);
+      const code = l.state === 'moving' ? 'local_moving' : 'local_only';
+      const en = url.searchParams.get('lang') === 'en';
+      const dn = l.deviceName || (en ? 'another device' : 'einem anderen Gerät');
+      const error = code === 'local_moving'
+        ? (en ? `This folder is being moved to “${dn}” – changes later.` : `Dieser Ordner wird gerade auf „${dn}“ verschoben – Änderungen später.`)
+        : (en ? `This folder is only on “${dn}”.` : `Dieser Ordner liegt nur auf „${dn}“.`);
+      return json(res, 409, { ok: false, code, nodeId: ph.id, deviceId: l.deviceId, deviceName: l.deviceName, state: l.state, error });
+    };
+    if (state.vaultLocal.size && req.method !== 'GET') {
+      let into = null;
+      if ((route === 'nodes' && req.method === 'POST') || (seg[0] === 'uploads' && seg[1] === 'commit')) into = body && body.parentId;
+      else if (seg[0] === 'nodes' && seg.length === 2 && req.method === 'PATCH' && body && body.parentId) into = body.parentId;
+      else if (seg[0] === 'ops' && seg.length <= 2 && (seg.length === 1 || seg[1] === 'check') && body && (body.op === 'move' || body.op === 'copy')) into = body.target;
+      const self = (seg[0] === 'nodes' && seg.length === 2 && req.method === 'DELETE') || (seg[0] === 'nodes' && seg[2] === 'offline' && req.method === 'PUT') ? seg[1] : null;
+      const ph = (into && placeholderAt(into)) || (self && placeholderAt(self));
+      if (ph) return localRefuse(ph);
+    }
     // ── Drive 1.20 'offline' ──
     if (has('offline') && route === 'offline' && req.method === 'GET') {
       const items = [...state.offline.entries()].sort((a, b) => b[1] - a[1]).map(([id, at]) => state.nodes.get(id))
@@ -904,6 +958,28 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
         Object.assign(d, { state: 'revoked', revokedAt: iso(Date.now()) });
         for (const k of [...v.wraps.keys()]) if (k.startsWith(`${d.deviceId}|`)) v.wraps.delete(k);
         return json(res, 200, { ok: true, device: d });
+      }
+      // Drive 1.32 'vaultLocal'
+      if (seg[2] === 'local' && seg.length === 4 && req.method === 'GET') {
+        const n = state.nodes.get(Number(seg[3]));
+        if (!n || n.vaultId !== v.id || !state.vaultLocal.has(n.id)) return refuse(res, 404, 'not_found');
+        return json(res, 200, { ok: true, local: localOf(n) });
+      }
+      if (seg[2] === 'local' && seg.length === 5 && seg[4] === 'forget' && req.method === 'POST') {
+        const n = state.nodes.get(Number(seg[3]));
+        const l = n && state.vaultLocal.get(n.id);
+        if (!l || n.vaultId !== v.id || !l.mine) return refuse(res, 404, 'not_found');
+        const d = v.devices.get(body.deviceId);
+        if (!d || d.userId !== 2 || d.state !== 'approved') return json(res, 403, { ok: false, code: 'forbidden', reason: 'device', error: 'forbidden' });
+        if (l.state !== 'local') return json(res, 409, { ok: false, code: 'conflict', reason: 'state', state: l.state, error: 'conflict' });
+        if (srv.localPurgePending) return json(res, 409, { ok: false, code: 'conflict', reason: 'purge_pending', purgeAt: iso(Date.now() + 3600000), error: 'conflict' });
+        state.localForgets.push({ nodeId: n.id, deviceId: body.deviceId, proof: body.proof || null });
+        state.vaultLocal.delete(n.id);
+        logChange('local', n);
+        n.deleted = true;
+        n.deletedAt = iso(Date.now());
+        logChange('delete', n);
+        return json(res, 200, { ok: true, forgotten: true, trashed: 1 });
       }
       if (seg[2] === 'rotate' && req.method === 'POST') {
         if (body.keyVersion !== v.keyVersion + 1) return json(res, 409, { ok: false, code: 'conflict', keyVersion: v.keyVersion, error: 'conflict' });
@@ -1538,6 +1614,9 @@ async function driveServer({ plugin = true, version = '1.4.0', seat = 'family', 
       }
       if (seg[2] === 'children' && req.method === 'GET') {
         let kids = children(n.id);
+        // Drive 1.32 'vaultLocal': a placeholder has no content here (moving: still the content), its `local` on top
+        const loc = localOf(n);
+        if (loc && loc.state !== 'moving') return json(res, 200, { ok: true, items: [], total: 0, next: null, role: areaOf(n).role, local: loc });
         // Drive 1.11 'vaultsApart': no vault folders outside a vault (vaults=1: as before); dirs=1: folders with hasDirs
         if (has('vaultsApart') && !n.encrypted && url.searchParams.get('vaults') !== '1') kids = kids.filter((k) => !k.encrypted);
         const dirs = has('vaultsApart') && url.searchParams.get('dirs') === '1';

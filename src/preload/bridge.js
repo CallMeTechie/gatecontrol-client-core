@@ -767,6 +767,8 @@ function createBridgeApi(ipcRenderer, i18n, { updateReadyChannel = 'update-ready
         decline:  (vaultId, deviceId) => ipcRenderer.invoke('drive:vault:decline', { vaultId, deviceId }),
         recover:  (vaultId, recoveryKey) => ipcRenderer.invoke('drive:vault:recover', { vaultId, recoveryKey }),
         rotate:   (vaultId) => ipcRenderer.invoke('drive:vault:rotate', { vaultId }),
+        // Drive 1.32 'vaultLocal': "Platzhalter entfernen" (the folder lies only on a lost device)
+        localForget: (vaultId, nodeId) => ipcRenderer.invoke('drive:vault:local:forget', { vaultId, nodeId }),
         onEvent:  (cb) => subscribe('drive:vault', cb),
         // Drive 1.11: the vault lock (Windows Hello first)
         lockStatus:   () => ipcRenderer.invoke('drive:vault:lock-status'),

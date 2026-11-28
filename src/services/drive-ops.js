@@ -122,6 +122,11 @@ class DriveOps {
     if ((op === 'move' || op === 'copy') && (vaultId || tgtVault) && (vaultId !== tgtVault || op === 'copy')) {
       return { bulk, local: true, vaultId, blockedAll: 'encrypted' };
     }
+    // Drive 1.32 'vaultLocal': nothing goes into a placeholder (its content lies only on one device)
+    if ((op === 'move' || op === 'copy') && tgt && tgt.local) {
+      const r = drive.localRefusalOf(tgt.local);
+      throw new DriveError(r.code, r);
+    }
     // copying needs Drive 1.12 and GateControl's media copy ('copyServer'; the bytes are never brought by this app)
     if (op === 'copy' && !(bulk && await this.api.has('copyServer').catch(() => false))) throw new DriveError('Drive cannot copy', { code: 'unsupported' });
     // a vault's move runs here (Drive knows only the encrypted names); everything else on the server when it can
@@ -185,6 +190,8 @@ class DriveOps {
       const id = list[i];
       if (!n || n.deleted) { out.blocked.push({ id, reason: 'not_found' }); continue; }
       if (vaultId && n.vaultId !== vaultId) { out.blocked.push({ id, reason: 'encrypted' }); continue; }
+      // Drive 1.32: a placeholder is only removed by "Platzhalter entfernen", never put into the trash
+      if (op === 'trash' && n.local) { out.blocked.push({ id, reason: n.local.state === 'moving' ? 'local_moving' : 'local_only' }); continue; }
       if (op !== 'trash') {
         if (n.id === tgt || (n.isDir && crumbs.includes(n.id))) { out.blocked.push({ id, reason: 'into_itself' }); continue; }
         if (n.parentId === tgt) { out.blocked.push({ id, reason: 'same_folder' }); continue; }

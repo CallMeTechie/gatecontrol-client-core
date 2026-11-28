@@ -361,8 +361,9 @@ function applyChanges(tree, rootId, changes) {
       continue;
     }
     const known = !!tree[c.nodeId];
-    // Drive 1.9: a node of a vault folder is never part of the tree (as if it were not there)
-    if (!n || n.deleted || n.encrypted || c.op === 'purge') {
+    // Drive 1.9: a node of a vault folder is never part of the tree (as if it were not there) — nor a placeholder of
+    // Drive 1.32 (`local`, op 'local': its content lies only on one device)
+    if (!n || n.deleted || n.encrypted || n.local || c.op === 'purge') {
       if (known) { dropSubtree(tree, c.nodeId); touched = true; }
       rescan.delete(c.nodeId);
       continue;

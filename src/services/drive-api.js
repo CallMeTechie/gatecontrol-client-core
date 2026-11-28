@@ -42,6 +42,10 @@
  *   POST   …/api/nodes/<id>/office                               Drive 1.9 'office' → { url, mode, expiresAt }
  *   GET|POST …/api/vaults · GET vaults/<id> · GET vaults/<id>/keys?deviceId · GET|PUT vaults/<id>/recovery
  *   GET|POST …/api/vaults/<id>/devices · POST …/devices/<did>/approve · DELETE …/devices/<did> · POST vaults/<id>/rotate
+ *   GET    …/api/vaults/<id>/local/<nodeId>?deviceId · POST vaults/<id>/local/<nodeId>/forget { deviceId }
+ *          Drive 1.32 'vaultLocal' („Nur auf diesem Gerät“): a placeholder (`local` on the folder) and "Platzhalter
+ *          entfernen" from another own device (no proof; 409 conflict { reason: 'purge_pending' | 'state' }). Writes
+ *          into a placeholder: 409 local_only / local_moving { nodeId, deviceId, deviceName, state }.
  *          (Drive 1.9 'vault'; POST nodes, uploads/commit and PATCH nodes/<id> take encrypted, nameCipher, keyVersion)
  *   POST   …/api/ops/check { op, ids, target? } · POST ops { op, ids, target?, onConflict? } · GET ops/<id> · GET ops?state
  *   DELETE …/api/ops/<id> · POST ops/<id>/undo                   Drive 1.12 'bulk': jobs for many nodes (move, copy, trash …)
@@ -1382,6 +1386,24 @@ class DriveApi {
   /** POST vaults/<id>/rotate { keyVersion, wraps, recoveryWrap | recovery } → vault */
   rotateVault(id, body) {
     return this._vaultAnswer(this.api('POST', `vaults/${this._vaultId(id)}/rotate`, { body }));
+  }
+
+  // ── „Nur auf diesem Gerät“ (Drive 1.32, 'vaultLocal') ─────
+
+  /** GET vaults/<id>/local/<nodeId>?deviceId= → the placeholder's `local` (utils/drive.js normalizeLocal) or null. */
+  async vaultLocal(id, nodeId, deviceId = null) {
+    const params = deviceId ? { deviceId: this._deviceId(deviceId) } : undefined;
+    const r = await this.api('GET', `vaults/${this._vaultId(id)}/local/${this._id(nodeId)}`, { params });
+    return drive.normalizeLocal(r && r.local);
+  }
+
+  /**
+   * POST vaults/<id>/local/<nodeId>/forget { deviceId } → { forgotten, trashed }: "Platzhalter entfernen" from another
+   * own device of the vault (no proof: only after the 24 hours, else 409 conflict { reason: 'purge_pending', purgeAt }).
+   */
+  async vaultLocalForget(id, nodeId, deviceId) {
+    const r = await this.api('POST', `vaults/${this._vaultId(id)}/local/${this._id(nodeId)}/forget`, { body: { deviceId: this._deviceId(deviceId) } });
+    return { forgotten: !!(r && r.forgotten === true), trashed: !!(r && r.trashed) };
   }
 
   /** Streams the media `mediaId` into `dest` → { bytes, mime }. */
