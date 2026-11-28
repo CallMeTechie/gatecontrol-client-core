@@ -129,4 +129,19 @@ function sortKey(name) {
   return plain.replace(/[^\p{L}\p{Nd} ]/gu, '').replace(/ +/g, ' ').trim();
 }
 
-module.exports = { VIDEO, IMAGE, extension, hidden, isVideo, isImage, skipDir, seasonOfDir, clean, parse, key, sortKey };
+/**
+ * „Im Ordner suchen“ (as Android's `ShareFolders.matches`): a file name (without its extension) or a folder's name
+ * (`folder`) holds every word of `text`, in any case and spelling of accents ("fussball" finds "Fußball", "oma" finds
+ * "Geburtstag.Oma.mkv").
+ */
+function matches(name, text, folder = false) {
+  const words = sortKey(text).split(' ').filter(Boolean);
+  if (!words.length) return false;
+  const n = String(name || '');
+  const dot = folder ? -1 : n.lastIndexOf('.');
+  const base = dot > 0 ? n.slice(0, dot) : n;
+  const hay = sortKey(base.replace(/[._]/g, ' '));
+  return words.every((w) => hay.includes(w));
+}
+
+module.exports = { VIDEO, IMAGE, extension, hidden, isVideo, isImage, skipDir, seasonOfDir, clean, parse, key, sortKey, matches };

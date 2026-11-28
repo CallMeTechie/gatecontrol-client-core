@@ -58,6 +58,11 @@ the core what Chromium plays: `media.setCaps({ hevc, av1, vp9, mkv, hdr, ac3, ea
   (Jellyfin wins) and mixes the sources A–Z — as Android's `MediaLogic`.
 - `media:share:list` gives each video its title from the name and the picture beside it (`gcmedia://image/<token>/<path>`,
   one token per share, jpg/png/webp up to 4 MB), and its `itemId` for detail and play.
+- „Im Ordner suchen“ (as Android): `media:share:search` ({ id, dir, q }) finds the videos below the folder whose file
+  name holds every word (any case, accents, without the extension; `N.matches`) in the share's index — entries as
+  `media:share:list` gives them, with `folder` (where each lies), A–Z, at most 60. In a Jellyfin library or folder
+  `media:library:search` ({ id, parentId, q }) asks Jellyfin's search below it (`parentId`, recursive).
+  „Als gesehen markieren“ of a file is `media:played` (kept on this PC, as before).
 - Before a file plays its start is read once (`check`, kept per size): `media:share:check` for the detail column,
   `media:play` / `media:share:open` carry it as well. `check.external`: "In VLC öffnen" (`media:share:external`, app
   `vlc`) when `media:external:info` finds VLC, else "In anderer App öffnen" (app `default`, SMB only: WebDAV has no path

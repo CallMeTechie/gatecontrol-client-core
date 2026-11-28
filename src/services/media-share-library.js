@@ -143,6 +143,20 @@ class ShareLibrary {
 
   search(q) { return this._with((i, _a, wp) => search([...i.movies, ...i.series], q).slice(0, 60).map(wp)); }
 
+  /**
+   * „Im Ordner suchen“ (as Android's `ShareLibrary.searchBelow`): the videos of the index below folder `dir` ("" the
+   * root) whose file name holds every word of `text`, A–Z, at most `limit` → the index's records ({ path, parsed, … }).
+   */
+  searchBelow(dir, text, limit = 60) {
+    const prefix = dir ? `${dir}/` : '';
+    return this._with((i) => i.videos
+      .filter((v) => v.path.startsWith(prefix) && N.matches(v.path.slice(v.path.lastIndexOf('/') + 1), text))
+      .map((v) => ({ v, sk: N.sortKey(v.path.slice(v.path.lastIndexOf('/') + 1)) }))
+      .sort((a, b) => (a.sk < b.sk ? -1 : a.sk > b.sk ? 1 : 0) || (a.v.path < b.v.path ? -1 : a.v.path > b.v.path ? 1 : 0))
+      .slice(0, limit)
+      .map((x) => x.v));
+  }
+
   /** A film or episode with its one version (the file as it is), or a series without one. */
   async detail(itemId) {
     const r = await this.index();

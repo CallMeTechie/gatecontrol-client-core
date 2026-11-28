@@ -126,6 +126,16 @@ describe('ShareNames (the cases of Android)', () => {
     assert.equal(N.sortKey('Straße'), 'strasse');
   });
 
+  it('„Im Ordner suchen“: every word, any case and accents, without the extension (as Android)', () => {
+    assert.equal(N.matches('Geburtstag.Oma.mkv', 'oma'), true);
+    assert.equal(N.matches('Fußball WM 2014.mp4', 'fussball 2014'), true);
+    assert.equal(N.matches('Fußball WM 2014.mp4', 'fussball 2018'), false, 'every word');
+    assert.equal(N.matches('Kupferstadt.2025.1080p.mkv', 'mkv'), false, 'not the extension');
+    assert.equal(N.matches('Strand.Urlaub', 'urlaub', true), true, 'a folder keeps its whole name');
+    assert.equal(N.matches('Strände_2019.mkv', 'strande'), true);
+    assert.equal(N.matches('x.mkv', '  '), false, 'no words: no hit');
+  });
+
   it('share item ids: files and series, nothing else', () => {
     assert.equal(SI.isItemId('f:Filme/Kobaltnacht (2025).mkv'), true);
     assert.equal(SI.isItemId('s:graufeld'), true);
@@ -351,6 +361,33 @@ describe('MediaService: a share\'s films, series and folders', () => {
     assert.equal(c.ok, true);
     assert.equal(c.size, 10);
     assert.equal(c.via, 'smb');
+  });
+
+  it('„Im Ordner suchen“: the videos below the folder from the index, A–Z, with their folder and progress', async () => {
+    const smb = await addSmb();
+    const all = await media.shareSearch({ sourceId: smb.id, q: 'graufeld' });
+    assert.equal(all.ok, true);
+    assert.deepEqual(all.items.map((e) => [e.name, e.folder, e.title, e.season, e.episode]), [
+      ['Graufeld.S01E01.Flut.mkv', 'Serien/Graufeld/Staffel 1', 'Flut', 1, 1],
+      ['Graufeld.S01E02.Ebbe.mkv', 'Serien/Graufeld/Staffel 1', 'Ebbe', 1, 2],
+    ]);
+    assert.equal(all.items[0].itemId, 'f:Serien/Graufeld/Staffel 1/Graufeld.S01E01.Flut.mkv');
+    assert.match(all.items[0].poster, /Serien\/Graufeld\/poster\.jpg$/);
+    assert.equal(all.items[0].directory, false);
+    assert.equal(all.items[0].kind, 'video', 'as an entry of the folder');
+    // below a folder only; every word; the extension is no word
+    assert.deepEqual((await media.shareSearch({ sourceId: smb.id, dir: 'Filme', q: 'graufeld' })).items, []);
+    assert.deepEqual((await media.shareSearch({ sourceId: smb.id, dir: 'Filme', q: 'kobalt 2025' })).items.map((e) => e.folder), ['Filme/Kobaltnacht (2025)']);
+    assert.deepEqual((await media.shareSearch({ sourceId: smb.id, q: 'mkv' })).items, []);
+    assert.deepEqual((await media.shareSearch({ sourceId: smb.id, q: 'alt' })).items.map((e) => e.path), ['Filme/Kobaltnacht (2025)/Kobaltnacht (2025).mkv'], 'part of a word counts; the recycle bin is not searched');
+    // the progress of this PC, as in the folder
+    await media.setPlayed(smb.id, 'f:Filme/Kupferstadt.2025.1080p.mkv', true);
+    const hit = (await media.shareSearch({ sourceId: smb.id, q: 'kupfer' })).items[0];
+    assert.equal(hit.progress.played, true);
+    assert.equal(hit.folder, 'Filme');
+    assert.deepEqual(await media.shareSearch({ sourceId: smb.id, q: '' }), { ok: true, dir: '', items: [] });
+    assert.deepEqual(await media.shareSearch({ sourceId: smb.id, dir: '../x', q: 'a' }), { ok: false, code: 'not_found' });
+    assert.equal((await media.shareSearch({ sourceId: 'nope', q: 'a' })).code, 'not_found');
   });
 
   it('"In VLC öffnen" through the loopback, "In anderer App öffnen" with the UNC path', async () => {

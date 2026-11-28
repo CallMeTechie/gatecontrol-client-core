@@ -13,6 +13,7 @@
  *   JellyfinLibrary({ source, client, caps? })          resume, latest, movies, series, seasons, episodes, views,
  *                                                       children ("Ordner"), latestMovies, latestEpisodes, nextUp,
  *                                                       favorites, collections, collection, genres, setFavorite, search,
+ *                                                       searchIn („Im Ordner suchen“),
  *                                                       detail, play, started/progress/stopped, setPlayed, measure,
  *                                                       authorize (Quick Connect code of another device)
  *   JellyfinSignIn({ client })                          server, quickConnectEnabled, quickConnect, confirmed,
@@ -279,6 +280,17 @@ class JellyfinLibrary {
     return this._items(await this.client.get('Items', {
       userId: this.user, searchTerm: term, includeItemTypes: 'Movie,Series,Episode', recursive: true, limit,
       fields: J.FIELDS, enableUserData: true, enableImageTypes: J.IMAGES,
+    }));
+  }
+
+  /** „Im Ordner suchen“: films, series, episodes and videos below library or folder `parentId` whose name has `q`. */
+  async searchIn(parentId, q, limit = 60) {
+    if (!idOk(parentId)) return no('not_found');
+    const term = typeof q === 'string' ? q.trim().slice(0, 100) : '';
+    if (!term) return ok([]);
+    return this._items(await this.client.get('Items', {
+      userId: this.user, parentId, searchTerm: term, includeItemTypes: 'Movie,Series,Episode,Video', recursive: true, limit,
+      sortBy: 'SortName', sortOrder: 'Ascending', fields: J.FIELDS, enableUserData: true, enableImageTypes: J.IMAGES,
     }));
   }
 

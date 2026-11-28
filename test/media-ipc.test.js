@@ -26,7 +26,7 @@ function fakeMedia() {
   for (const n of ['status', 'setCaps', 'setQuality', 'check', 'networkChanged', 'discover', 'server', 'trust', 'quickConnectStart', 'quickConnectPoll',
     'quickConnectCancel', 'signIn', 'authorizeDevice', 'addShare', 'removeSource', 'setAlwaysOriginal', 'resume', 'latest', 'movies', 'series', 'seasons',
     'episodes', 'search', 'detail', 'play', 'report', 'setPlayed', 'shareList', 'shareOpen', 'trackChoice', 'setTrackChoice', 'forgetAll',
-    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest', 'libraries', 'libraryItems', 'latestMovies', 'latestEpisodes', 'nextUp', 'favorites', 'collections', 'collection', 'genres', 'setFavorite']) m[n] = rec(n);
+    'serverStatus', 'serverRefresh', 'convertHint', 'convertPrefetch', 'convertRequest', 'libraries', 'libraryItems', 'librarySearch', 'shareSearch', 'latestMovies', 'latestEpisodes', 'nextUp', 'favorites', 'collections', 'collection', 'genres', 'setFavorite']) m[n] = rec(n);
   m.stream = { revoke: rec('revoke') };
   m.boom = () => { throw Object.assign(new Error('bad'), { code: 'offline' }); };
   return m;
@@ -87,6 +87,18 @@ describe('media-handlers', () => {
     assert.equal((await call('media:libraries', { id: 's1' })).name, 'libraries');
     assert.equal((await call('media:library:items', { id: 's1', parentId: 'v1' })).name, 'libraryItems');
     assert.deepEqual(m.calls.map((c) => c.slice(1)), [['s1'], ['s1', 'v1']]);
+    // „Im Ordner suchen“: a folder's id (Jellyfin) or a share's folder, the words at most 200 characters
+    m.calls.length = 0;
+    assert.equal((await call('media:library:search', { id: 's1', parentId: '../Users', q: 'x' })).code, 'invalid');
+    assert.equal((await call('media:library:search', { id: 's1', parentId: 'v1' })).code, 'invalid');
+    assert.equal((await call('media:library:search', { id: 's1', parentId: 'v1', q: 'x'.repeat(201) })).code, 'invalid');
+    assert.equal((await call('media:share:search', { id: '../x', q: 'oma' })).code, 'invalid');
+    assert.equal((await call('media:share:search', { id: 's1', dir: 5, q: 'oma' })).code, 'invalid');
+    assert.equal(m.calls.length, 0);
+    assert.equal((await call('media:library:search', { id: 's1', parentId: 'v1', q: 'kobalt' })).name, 'librarySearch');
+    assert.equal((await call('media:share:search', { id: 's1', dir: 'Filme', q: 'oma' })).name, 'shareSearch');
+    assert.equal((await call('media:share:search', { id: 's1', q: 'oma' })).name, 'shareSearch');
+    assert.deepEqual(m.calls.map((c) => c.slice(1)), [['s1', 'v1', 'kobalt'], [{ sourceId: 's1', dir: 'Filme', q: 'oma' }], [{ sourceId: 's1', dir: '', q: 'oma' }]]);
     // the overview "Ergänzt": ids checked, the heart only with a boolean
     m.calls.length = 0;
     assert.equal((await call('media:favorite', { id: 's1', itemId: 'm1', favorite: 'yes' })).code, 'invalid');

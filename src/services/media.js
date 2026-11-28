@@ -919,6 +919,11 @@ class MediaService extends EventEmitter {
     return this._isShare(id) ? Promise.resolve(no('not_found')) : this._rows(id, (l) => l.children(parentId, 500));
   }
 
+  /** „Im Ordner suchen“ in a Jellyfin library or folder: its titles below whose name has `q` → { ok, items }. */
+  librarySearch(id, parentId, q) {
+    return this._isShare(id) ? Promise.resolve(no('not_found')) : this._rows(id, (l) => l.searchIn(parentId, q));
+  }
+
   /** A share's title: its one version (the file as it is) and, when read before, what Chromium does with it. */
   async _shareDetail(id, itemId) {
     const lib = this._shareLib(id);
@@ -1142,21 +1147,50 @@ class MediaService extends EventEmitter {
     const names = clean ? clean.split('/') : [];
     const above = names.length && N.seasonOfDir(names[names.length - 1]) !== null ? await fsx.list(MSH.parent(clean)).catch(() => null) : null;
     const videos = new Map(SI.videosOf(names, r.value, above && above.ok ? SI.imagesOf(above.value) : null).map((v) => [v.path, v]));
-    const items = r.value.map((e) => {
-      const out = { ...e, progress: e.directory ? null : progress[this._progressKey(sourceId, e.path)] || null };
-      const v = videos.get(e.path);
-      if (v) {
-        const pic = v.poster || v.seriesPoster;
-        Object.assign(out, {
-          itemId: SI.fileId(e.path), title: v.parsed.isEpisode ? v.parsed.episodeName || v.parsed.title : v.parsed.title,
-          seriesName: v.parsed.isEpisode ? v.parsed.title : null, year: v.parsed.year, season: v.parsed.season, episode: v.parsed.episode,
-          poster: pic ? this.stream.shareImageUrl(sourceId, pic) : null,
-        });
-      }
-      return out;
-    });
+    const items = r.value.map((e) => this._shareItem(sourceId, e, videos.get(e.path), progress));
     items.sort((a, b) => (a.directory === b.directory ? a.name.localeCompare(b.name, 'de', { numeric: true, sensitivity: 'base' }) : a.directory ? -1 : 1));
     return { ok: true, dir: clean, via: fsx.kind, items, link: this.link(sourceId) };
+  }
+
+  /** An entry of a folder (or a hit of the search) with its progress and, a video, what its name says. */
+  _shareItem(sourceId, e, v, progress) {
+    const out = { ...e, progress: e.directory ? null : progress[this._progressKey(sourceId, e.path)] || null };
+    if (v) {
+      const pic = v.poster || v.seriesPoster;
+      Object.assign(out, {
+        itemId: SI.fileId(e.path), title: v.parsed.isEpisode ? v.parsed.episodeName || v.parsed.title : v.parsed.title,
+        seriesName: v.parsed.isEpisode ? v.parsed.title : null, year: v.parsed.year, season: v.parsed.season, episode: v.parsed.episode,
+        poster: pic ? this.stream.shareImageUrl(sourceId, pic) : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * „Im Ordner suchen“ (as Android): the videos below folder `dir` of a share whose file name holds every word of `q`,
+   * from the share's index (its folders read again after 10 minutes), A–Z, at most 60 — each as an entry of
+   * shareList with `folder` (where it lies, relative to the share's root).
+   */
+  async shareSearch({ sourceId, dir = '', q = '' }) {
+    const src = this.store.source(sourceId);
+    if (!src || !MS.isShare(src.kind)) return no('not_found');
+    const clean = MSH.clean(dir);
+    if (clean === null) return no('not_found');
+    const text = typeof q === 'string' ? q.trim().slice(0, 100) : '';
+    if (!text) return { ok: true, dir: clean, items: [] };
+    const lib = this._shareLib(sourceId);
+    if (!lib) return no('not_found');
+    const b = await this._ready(sourceId);
+    if (b) return b;
+    const r = await this._viaShare(sourceId, () => lib.searchBelow(clean, text));
+    if (!r.ok) return no(r.code, r.winError !== undefined ? { winError: r.winError } : {});
+    const progress = this.store.all(`${sourceId}|`);
+    const items = r.value.map((v) => {
+      const at = v.path.lastIndexOf('/');
+      const e = { name: v.path.slice(at + 1), path: v.path, directory: false, size: v.size || 0, modifiedAt: v.modifiedAt, kind: 'video' };
+      return { ...this._shareItem(sourceId, e, v, progress), folder: at > 0 ? v.path.slice(0, at) : '' };
+    });
+    return { ok: true, dir: clean, items };
   }
 
   /** The start of a file read for the check: what it says (Matroska / MP4) and whether Chromium can play it. */

@@ -176,6 +176,18 @@ describe('MediaService with a fake Jellyfin', () => {
     assert.equal(inside.total, 2);
     assert.equal(srv.take().query.get('parentId'), 'v1');
     assert.equal((await media.libraries('nope')).code, 'not_found');
+    // „Im Ordner suchen“: below the folder, in its sub-folders too (Jellyfin's search with parentId)
+    srv.json({ Items: [movie, { Id: 'x1', Name: 'Ordner', Type: 'Folder', IsFolder: true }], TotalRecordCount: 2 });
+    const found = await media.librarySearch(source.id, 'v1', ' kobalt ');
+    assert.equal(found.ok, true);
+    assert.deepEqual(found.items.map((t) => t.id), ['m1'], 'a folder is no hit');
+    const q = srv.take().query;
+    assert.equal(q.get('parentId'), 'v1');
+    assert.equal(q.get('searchTerm'), 'kobalt');
+    assert.equal(q.get('recursive'), 'true');
+    assert.equal(q.get('includeItemTypes'), 'Movie,Series,Episode,Video');
+    assert.deepEqual(await media.librarySearch(source.id, 'v1', '  '), { ok: true, items: [] });
+    assert.equal((await media.librarySearch('nope', 'v1', 'a')).code, 'not_found');
   });
 
   it('the overview "Ergänzt": Als Nächstes, Neue Folgen, Genres, the heart over the service', async () => {

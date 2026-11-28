@@ -1215,6 +1215,9 @@ function createMediaBridge(ipcRenderer) {
     // "Ordner": the Jellyfin libraries and what a library or folder holds
     libraries:     (id) => inv('media:libraries', { id }),
     libraryItems:  (id, parentId) => inv('media:library:items', { id, parentId }),
+    // „Im Ordner suchen“: below a Jellyfin library / folder, below a share's folder (its index)
+    librarySearch: (id, parentId, q) => inv('media:library:search', { id, parentId, q: String(q || '') }),
+    shareSearch:   (id, dir, q) => inv('media:share:search', { id, dir: dir || '', q: String(q || '') }),
     detail:        (id, itemId) => inv('media:detail', { id, itemId }),
     play:          (id, itemId, opts) => inv('media:play', { ...(opts && typeof opts === 'object' ? opts : {}), id, itemId }),
     report:        (playId, event, opts) => inv('media:report', { ...(opts && typeof opts === 'object' ? opts : {}), playId, event }),
